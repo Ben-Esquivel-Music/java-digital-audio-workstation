@@ -23,6 +23,7 @@ User story 019 describes full project save/load/auto-save. The `ProjectManager`,
 - Deserialize and restore a saved project so that reopening produces the exact same state
 - Verify round-trip fidelity with automated tests (save → load → compare)
 - Handle missing audio files gracefully (show a notification listing missing files, allow relinking)
+  - The audio-reload and relink halves of this goal landed in story 329 (Audio Reloads on Project Open): clip audio is decoded again on open, missing assets are reported once with Locate file, Locate folder and Skip, and relinked references are saved project-relative under the project folder; the rest of this story's serialization scope stays with stories 330 and 334.
 
 ## Non-Goals
 

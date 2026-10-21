@@ -49,6 +49,8 @@ class DawActionTest {
                 DawAction.EXPORT_RENDER_QUEUE,
                 // Story 189 — File-menu only, no keyboard accelerator.
                 DawAction.ARCHIVE_PROJECT, DawAction.RESTORE_FROM_ARCHIVE,
+                // Story 329 — File-menu / Command Palette only, no keyboard accelerator.
+                DawAction.RELINK_MISSING_ASSETS,
                 // Sessions Stage 3 — Window-menu only, no keyboard accelerator.
                 DawAction.TOGGLE_SESSION_MANAGER);
         for (DawAction action : DawAction.values()) {

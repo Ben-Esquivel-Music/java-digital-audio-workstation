@@ -126,7 +126,7 @@ class HubAndWelcomeOpenWhileRecordingTest {
                     new VBox(),
                     new ProjectLifecycleController.Deps(project::get, project::set, undoManager::get,
                             undoManager::set, () -> { }, () -> { }, rebuilds::incrementAndGet,
-                            () -> null, _ -> { }),
+                            () -> null, _ -> { }, () -> { }),
                     new ProjectArchiver());
             lifecycle.setTakeBeingWrittenCheck(controller::isTakeBeingWritten);
             lifecycle.setRecordingInFlightCheck(controller::isRecordingInFlight);

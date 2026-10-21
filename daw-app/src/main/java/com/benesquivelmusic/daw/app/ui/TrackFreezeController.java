@@ -22,6 +22,7 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -106,6 +107,16 @@ public final class TrackFreezeController {
 
     /** Captured state of the most recent freeze for tooltip rendering. */
     private record FreezeRecord(CacheState state, Instant when) { }
+
+    /**
+     * Story 329 (decision D19) — whether a freeze of these tracks may render
+     * now: {@code MainController} wires the open project's
+     * {@link RenderReadinessGuard}, which refuses while clip audio is still
+     * loading and asks before rendering clips that would be silent. Consulted
+     * before a freeze renders anything; the pure-unit default never refuses.
+     * FX thread.
+     */
+    private Predicate<List<Track>> renderGuard = _ -> true;
 
     /**
      * The project and undo manager one gesture runs against, read once from
@@ -265,6 +276,9 @@ public final class TrackFreezeController {
             statusReporter.accept("No mixer channel for: " + track.getName(), DawIcon.INFO_CIRCLE);
             return;
         }
+        if (!renderGuard.test(List.of(track))) {
+            return;
+        }
         runFreezeAsync(new FreezeRun(generation, List.of(track), false));
     }
 
@@ -314,7 +328,20 @@ public final class TrackFreezeController {
             statusReporter.accept("Nothing to freeze in selection", DawIcon.INFO_CIRCLE);
             return;
         }
+        if (!renderGuard.test(targets)) {
+            return;
+        }
         runFreezeAsync(new FreezeRun(generation, targets, true));
+    }
+
+    /**
+     * Story 329 (decision D19) — sets the check a freeze consults before it
+     * renders: the open project's {@link RenderReadinessGuard}.
+     *
+     * @param renderGuard whether a render of the given tracks may proceed
+     */
+    void setRenderGuard(Predicate<List<Track>> renderGuard) {
+        this.renderGuard = Objects.requireNonNull(renderGuard, "renderGuard must not be null");
     }
 
     /**

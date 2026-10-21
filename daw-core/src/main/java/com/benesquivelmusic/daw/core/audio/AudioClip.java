@@ -408,8 +408,9 @@ public final class AudioClip implements TimelineRegion, Clip {
     }
 
     /**
-     * Returns the raw audio sample data, or {@code null} if this clip
-     * references an external file rather than an in-memory buffer.
+     * Returns the raw audio sample data, or {@code null} while no audio is
+     * attached — the clip then plays as silence and the render path skips
+     * it.
      *
      * <p>A clip the recording pipeline builds names its segment files
      * ({@link #getSourceSegmentPaths()}) and declares what was captured
@@ -417,11 +418,20 @@ public final class AudioClip implements TimelineRegion, Clip {
      * them. Its audio is what the caller read back from those files, off
      * the capture path: handed to the pipeline before the stop is completed,
      * it is attached before the clip is added to its track; otherwise — no
-     * audio was handed over, or the read failed — the clip is in that state
-     * and plays as silence until someone attaches it. The field is volatile, so
-     * a reader on any thread — the audio thread reads it each time it
-     * renders the clip — sees either {@code null} or the array a completed
-     * {@link #setAudioData} published.</p>
+     * audio was handed over, or the read failed — the clip has none.</p>
+     *
+     * <p>A clip a project load builds ({@code ProjectDeserializer}) carries
+     * only its source references; after the open, the clip rehydrator
+     * ({@code com.benesquivelmusic.daw.core.persistence.ClipRehydrator})
+     * decodes each source off the owner thread and attaches the audio on it,
+     * the same array to every clip that reads from one source. A source that
+     * is missing or does not decode leaves its clips without audio and is a
+     * row of the missing-assets report until it is relinked or skipped (a
+     * skipped clip stays silent).</p>
+     *
+     * <p>The field is volatile, so a reader on any thread — the audio thread
+     * reads it each time it renders the clip — sees either {@code null} or
+     * the array a completed {@link #setAudioData} published.</p>
      *
      * @return audio data as {@code [channel][sample]} in [-1.0, 1.0], or {@code null}
      */

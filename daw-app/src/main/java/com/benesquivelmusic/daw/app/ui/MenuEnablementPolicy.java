@@ -30,13 +30,16 @@ public final class MenuEnablementPolicy {
      * @param hasClipboard whether the clipboard holds content that can be pasted
      * @param hasSelection whether there is a current clip/note selection
      * @param hasTracks    whether the project contains at least one track
+     * @param hasUnresolvedAssets whether the open's missing-assets report
+     *                     still has rows (story 329)
      */
     public record MenuState(boolean projectDirty,
                             boolean canUndo,
                             boolean canRedo,
                             boolean hasClipboard,
                             boolean hasSelection,
-                            boolean hasTracks) { }
+                            boolean hasTracks,
+                            boolean hasUnresolvedAssets) { }
 
     /**
      * Resolved enable/disable flags for each state-sensitive menu item.
@@ -44,6 +47,7 @@ public final class MenuEnablementPolicy {
      */
     public record MenuEnablement(boolean saveDisabled,
                                  boolean exportSessionDisabled,
+                                 boolean relinkMissingAssetsDisabled,
                                  boolean undoDisabled,
                                  boolean redoDisabled,
                                  boolean copyDisabled,
@@ -62,6 +66,7 @@ public final class MenuEnablementPolicy {
         return new MenuEnablement(
                 !state.projectDirty(),
                 !state.hasTracks(),
+                !state.hasUnresolvedAssets(),
                 !state.canUndo(),
                 !state.canRedo(),
                 !state.hasSelection(),

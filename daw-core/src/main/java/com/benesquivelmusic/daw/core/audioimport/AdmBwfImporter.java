@@ -19,11 +19,11 @@ import javax.xml.parsers.ParserConfigurationException;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.charset.StandardCharsets;
+import java.nio.channels.FileChannel;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -77,7 +77,11 @@ public final class AdmBwfImporter {
      * {@code axml} chunk (i.e. an ADM BWF file).
      *
      * <p>Used by {@link AudioFileImporter} to route {@code .wav} imports
-     * through this importer when ADM metadata is present.</p>
+     * through this importer when ADM metadata is present, and by the
+     * project-open clip rehydrator before it decodes a {@code .wav} clip
+     * source. The probe walks the RIFF chunk headers and seeks past every
+     * chunk body ({@link RiffChunks}): it reads a few bytes per chunk, never
+     * the whole file.</p>
      *
      * @param path the file to inspect
      * @return {@code true} if the file is an ADM BWF
@@ -88,11 +92,20 @@ public final class AdmBwfImporter {
             if (!Files.isRegularFile(path) || Files.size(path) < 44) {
                 return false;
             }
-            byte[] data = Files.readAllBytes(path);
-            return findAxmlChunk(data).isPresent();
+            try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
+                return hasAxmlChunk(channel);
+            }
         } catch (IOException ignored) {
             return false;
         }
+    }
+
+    /**
+     * Whether the RIFF/WAVE file behind {@code channel} carries an
+     * {@code axml} chunk, judged from the chunk headers alone.
+     */
+    static boolean hasAxmlChunk(SeekableByteChannel channel) throws IOException {
+        return RiffChunks.find(channel, AXML_CHUNK_ID).isPresent();
     }
 
     /**
@@ -110,9 +123,8 @@ public final class AdmBwfImporter {
         // Read interleaved audio + format using the existing WAV reader
         WavFileReader.WavReadResult wav = WavFileReader.read(path);
 
-        // Locate and parse the axml chunk
-        byte[] fileBytes = Files.readAllBytes(path);
-        byte[] admXml = findAxmlChunk(fileBytes).orElseThrow(() ->
+        // Locate and read the axml chunk alone (the audio was read above)
+        byte[] admXml = readAxmlChunk(path).orElseThrow(() ->
                 new IllegalArgumentException("Not an ADM BWF file (no axml chunk): " + path));
 
         ParsedAdm parsed = parseAdmXml(admXml);
@@ -168,42 +180,19 @@ public final class AdmBwfImporter {
     // ── axml chunk extraction ──────────────────────────────────────────────
 
     /**
-     * Scans a RIFF/WAVE file for the {@code axml} chunk and returns its
-     * payload, or {@link Optional#empty()} if not present.
+     * Reads the payload of a RIFF/WAVE file's {@code axml} chunk, or returns
+     * {@link Optional#empty()} if the chunk walk ({@link RiffChunks}) does
+     * not reach one. Only the chunk headers and the {@code axml} body are
+     * read.
      */
-    static Optional<byte[]> findAxmlChunk(byte[] fileBytes) {
-        if (fileBytes.length < 12) {
-            return Optional.empty();
-        }
-        ByteBuffer buf = ByteBuffer.wrap(fileBytes).order(ByteOrder.LITTLE_ENDIAN);
-        byte[] tag = new byte[4];
-        buf.get(tag);
-        if (!"RIFF".equals(new String(tag, StandardCharsets.US_ASCII))) {
-            return Optional.empty();
-        }
-        buf.getInt(); // riff size (skip)
-        buf.get(tag);
-        if (!"WAVE".equals(new String(tag, StandardCharsets.US_ASCII))) {
-            return Optional.empty();
-        }
-        while (buf.remaining() >= 8) {
-            buf.get(tag);
-            String chunkId = new String(tag, StandardCharsets.US_ASCII);
-            int chunkSize = buf.getInt();
-            if (chunkSize < 0 || chunkSize > buf.remaining()) {
+    private static Optional<byte[]> readAxmlChunk(Path path) throws IOException {
+        try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
+            Optional<RiffChunks.Chunk> axml = RiffChunks.find(channel, AXML_CHUNK_ID);
+            if (axml.isEmpty()) {
                 return Optional.empty();
             }
-            if (AXML_CHUNK_ID.equals(chunkId)) {
-                byte[] payload = new byte[chunkSize];
-                buf.get(payload);
-                return Optional.of(payload);
-            }
-            // Skip chunk body (chunks are padded to even length per RIFF spec)
-            int padded = chunkSize + (chunkSize % 2);
-            int skip = Math.min(padded, buf.remaining());
-            buf.position(buf.position() + skip);
+            return Optional.of(RiffChunks.readBody(channel, axml.get(), Integer.MAX_VALUE));
         }
-        return Optional.empty();
     }
 
     // ── ADM XML parsing ───────────────────────────────────────────────────

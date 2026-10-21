@@ -91,6 +91,14 @@ public final class ProjectManager {
     private boolean migrationBackupPending;
 
     /**
+     * Missing-assets report built when the currently open project was loaded
+     * (Persistence Integrity book §4.3, §5.3 step 5 ACCOUNT) — see
+     * {@link #getLastMissingAssets()}. {@link MissingAssetsReport#EMPTY} when
+     * no deserialized project is open.
+     */
+    private MissingAssetsReport lastMissingAssets = MissingAssetsReport.EMPTY;
+
+    /**
      * Creates a project manager with the given checkpoint manager.
      *
      * @param checkpointManager the checkpoint manager to use for auto-saves
@@ -188,6 +196,7 @@ public final class ProjectManager {
         currentProject = metadata;
         currentDawProject = null;
         readOnly = false;
+        lastMissingAssets = MissingAssetsReport.EMPTY;
         recentProjects.put(projectDir.toString(), metadata);
         recordRecentProject(projectDir);
         // createUniqueProjectDirectory() atomically created a brand-new folder, so
@@ -231,6 +240,14 @@ public final class ProjectManager {
      * <p>If the project file contains full XML project state, it is deserialized
      * into a {@link DawProject} accessible via {@link #getCurrentDawProject()}.
      * Legacy project files that contain only metadata are also supported.</p>
+     *
+     * <p>The deserialized project's clips carry their source references but
+     * no sample data; the caller rehydrates them ({@link ClipRehydrator}).
+     * What the load found missing is classified here, without further disk
+     * I/O, into {@link #getLastMissingAssets()} — next to
+     * {@link #getLastMigrationReport()} — so the caller can announce the
+     * open's outcome before any decode finishes. A legacy metadata-only file
+     * has no clips: its report is {@link MissingAssetsReport#EMPTY}.</p>
      *
      * @param projectDirectory the project directory
      * @return the project metadata
@@ -281,6 +298,8 @@ public final class ProjectManager {
             currentProject = metadata;
             lastMigrationReport = deserializer.getLastMigrationReport();
             migrationBackupPending = lastMigrationReport.wasMigrated();
+            lastMissingAssets = MissingAssetsReport.atOpen(
+                    dawProject, deserializer.getMissingFiles(), projectDirectory);
         } else {
             ProjectMetadata metadata = parseProjectFile(content, projectDirectory);
             currentProject = metadata;
@@ -288,6 +307,9 @@ public final class ProjectManager {
             lastMigrationReport = MigrationReport.noOp(
                     com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION);
             migrationBackupPending = false;
+            // The deserializer did not run: its missing-files list is the
+            // previous open's, and this file has no clips to report.
+            lastMissingAssets = MissingAssetsReport.EMPTY;
         }
 
         readOnly = openedReadOnly;
@@ -385,6 +407,7 @@ public final class ProjectManager {
         migrationBackupPending = false;
         lastMigrationReport = MigrationReport.noOp(
                 com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION);
+        lastMissingAssets = MissingAssetsReport.EMPTY;
     }
 
     /**
@@ -407,6 +430,7 @@ public final class ProjectManager {
         migrationBackupPending = false;
         lastMigrationReport = MigrationReport.noOp(
                 com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION);
+        lastMissingAssets = MissingAssetsReport.EMPTY;
     }
 
     /**
@@ -420,6 +444,26 @@ public final class ProjectManager {
      */
     public MigrationReport getLastMigrationReport() {
         return lastMigrationReport;
+    }
+
+    /**
+     * Returns the missing-assets report built when the currently open
+     * project was loaded by {@link #openProject(Path)}: the clip sources the
+     * load found missing or unresolvable, one row per asset, plus the missing
+     * reference-track files for the log. Always non-null;
+     * {@link MissingAssetsReport#EMPTY} when no deserialized project is open
+     * — after {@link #createProject}, {@link #closeProject()},
+     * {@link #abandonProject()}, and a legacy metadata-only open.
+     *
+     * <p>The UI layer consults it to qualify the open announcement and to
+     * present the missing-assets report; the clip rehydrator skips the
+     * sources it names. Rows the rehydration adds later (a file that does
+     * not decode, …) are the caller's to track: this report is the open's.</p>
+     *
+     * @return the open's missing-assets report
+     */
+    public MissingAssetsReport getLastMissingAssets() {
+        return lastMissingAssets;
     }
 
     /**

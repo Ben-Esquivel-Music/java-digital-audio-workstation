@@ -131,7 +131,7 @@ class ProjectChangeWhileTakeIsWrittenTest {
                     new VBox(),
                     new ProjectLifecycleController.Deps(project::get, project::set, undoManager::get,
                             undoManager::set, () -> { }, () -> { }, rebuilds::incrementAndGet,
-                            () -> null, _ -> { }),
+                            () -> null, _ -> { }, () -> { }),
                     new ProjectArchiver());
             lifecycle.setTakeBeingWrittenCheck(takeBeingWritten::get);
         });
@@ -298,7 +298,7 @@ class ProjectChangeWhileTakeIsWrittenTest {
         Path destination = anotherProjectOnDisk("Song B"); // stands for the extracted archive
         DawProject songAModel = project.get();
 
-        runOnFx(() -> lifecycle.openRestoredArchive(destination, "Song B", 0));
+        runOnFx(() -> lifecycle.openRestoredArchive(destination, "Song B", List.of()));
 
         assertRefusedOnceWith(ProjectLifecycleController.lateLoadRefusalMessage(
                 "The archive was restored to " + destination));
@@ -307,7 +307,7 @@ class ProjectChangeWhileTakeIsWrittenTest {
         assertSongAIsStillOpen(songAModel);
 
         takeBeingWritten.set(false);
-        runOnFx(() -> lifecycle.openRestoredArchive(destination, "Song B", 0));
+        runOnFx(() -> lifecycle.openRestoredArchive(destination, "Song B", List.of()));
         assertThat(projectManager.getCurrentProject().projectPath())
                 .as("once the take is written, the restored project opens").isEqualTo(destination);
         assertThat(shown.getEntries().getLast().message()).isEqualTo("Restored archive: Song B");
@@ -372,7 +372,7 @@ class ProjectChangeWhileTakeIsWrittenTest {
                         () -> null,
                         project::get,
                         () -> lifecycle == null || lifecycle.confirmProjectMayClose(),
-                        (restored, label) -> restores.incrementAndGet()));
+                        (restored, label, missingAssets) -> restores.incrementAndGet()));
         SnapshotEntry entry = snapshots.createCheckpointWithLabel("Before the take");
 
         runOnFx(() -> snapshots.restoreEntry(entry));

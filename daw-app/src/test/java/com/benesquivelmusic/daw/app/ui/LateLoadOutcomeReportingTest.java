@@ -160,7 +160,7 @@ class LateLoadOutcomeReportingTest {
                     new VBox(),
                     new ProjectLifecycleController.Deps(project::get, project::set, undoManager::get,
                             undoManager::set, () -> { }, () -> { }, rebuilds::incrementAndGet,
-                            () -> null, _ -> { }),
+                            () -> null, _ -> { }, () -> { }),
                     new ProjectArchiver());
             lifecycle.setTakeBeingWrittenCheck(takeBeingWritten::get);
             lifecycle.setWelcomePresenter(_ -> { });
@@ -379,7 +379,8 @@ class LateLoadOutcomeReportingTest {
     void anArchiveRestoredWithMissingAssetsOpensWithAWarningThatCountsThem() throws Exception {
         Path songB = anotherProjectOnDisk("Song B"); // stands for the extracted archive
 
-        runOnFx(() -> lifecycle.openRestoredArchive(songB, "Song B", 2));
+        runOnFx(() -> lifecycle.openRestoredArchive(songB, "Song B",
+                List.of("assets/0a_kick.wav", "assets/0b_strings.sf2")));
 
         assertThat(projectManager.getCurrentProject().projectPath()).isEqualTo(songB);
         assertThat(onFx(shown::getEntries).getLast()).satisfies(entry -> {

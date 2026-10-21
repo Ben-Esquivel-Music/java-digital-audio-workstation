@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.persistence.migration.MigrationReport;
 import javafx.application.Platform;
+import javafx.scene.control.ButtonBar;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.DialogPane;
@@ -74,9 +75,13 @@ class MigrationReportDialogTest {
 
     @Test
     void hasOkButton(@TempDir Path projectDir) throws Exception {
-        boolean hasOk = onFx(() -> new MigrationReportDialog(sampleReport(), projectDir)
-                .getDialogPane().getButtonTypes().contains(ButtonType.OK));
-        assertThat(hasOk).isTrue();
+        List<ButtonType> types = onFx(() -> List.copyOf(new MigrationReportDialog(sampleReport(), projectDir)
+                .getDialogPane().getButtonTypes()));
+        assertThat(types).contains(MigrationReportDialog.OK_BUTTON_TYPE);
+        assertThat(MigrationReportDialog.OK_BUTTON_TYPE.getText()).isEqualTo(ButtonType.OK.getText());
+        assertThat(MigrationReportDialog.OK_BUTTON_TYPE.getButtonData())
+                .as("OK is also the dialog's cancel, so Esc and the close button mean OK")
+                .isEqualTo(ButtonBar.ButtonData.CANCEL_CLOSE);
     }
 
     @Test
@@ -148,20 +153,27 @@ class MigrationReportDialogTest {
     }
 
     @Test
-    void resultConverterRunsRollbackActionWhenRollbackButtonPicked(@TempDir Path projectDir)
+    void resultConverterOnlyRecordsAPickedRollbackWhichRunsOnceAfterward(@TempDir Path projectDir)
             throws Exception {
         java.util.concurrent.atomic.AtomicInteger invoked =
                 new java.util.concurrent.atomic.AtomicInteger();
-        onFx(() -> {
+        List<Integer> rollbacks = onFx(() -> {
             MigrationReportDialog dialog = new MigrationReportDialog(
                     sampleReport(), projectDir, invoked::incrementAndGet);
             // Simulate the user choosing the Roll back button by going
             // through the dialog's result converter directly — avoids
-            // showAndWait()/event-loop blocking in headless tests.
+            // showAndWait()/event-loop blocking in headless tests. A close
+            // converts again with the cancel button, which is the dialog's OK.
             dialog.getResultConverter().call(MigrationReportDialog.ROLLBACK_BUTTON_TYPE);
-            return null;
+            dialog.getResultConverter().call(MigrationReportDialog.OK_BUTTON_TYPE);
+            int byTheConverter = invoked.get();
+            // What showIfNeeded does once showAndWait() returned.
+            dialog.runConfirmedRollback();
+            dialog.runConfirmedRollback();
+            return List.of(byTheConverter, invoked.get());
         });
-        assertThat(invoked.get()).isEqualTo(1);
+        assertThat(rollbacks).as("the converter only records it; it runs once, after the dialog closed")
+                .containsExactly(0, 1);
     }
 
     @Test
@@ -171,7 +183,8 @@ class MigrationReportDialogTest {
         onFx(() -> {
             MigrationReportDialog dialog = new MigrationReportDialog(
                     sampleReport(), projectDir, invoked::incrementAndGet);
-            dialog.getResultConverter().call(ButtonType.OK);
+            dialog.getResultConverter().call(MigrationReportDialog.OK_BUTTON_TYPE);
+            dialog.runConfirmedRollback();
             return null;
         });
         assertThat(invoked.get()).isZero();

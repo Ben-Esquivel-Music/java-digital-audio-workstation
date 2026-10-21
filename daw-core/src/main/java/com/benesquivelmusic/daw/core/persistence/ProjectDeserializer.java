@@ -137,10 +137,13 @@ public final class ProjectDeserializer {
      * Returns a list of audio file paths referenced by the project that were
      * not found on the file system at the time of deserialization.
      *
-     * <p>This list is populated during {@link #deserialize(String, Path)} and
-     * can be used by the UI layer to present a "missing files" notification
-     * with relinking options; no production code reads it yet (story 329
-     * turns it into the missing-assets report). Entries are the references as
+     * <p>This list is populated during {@link #deserialize(String, Path)}.
+     * {@code ProjectManager.openProject} turns it into the open's
+     * missing-assets report ({@link MissingAssetsReport#atOpen}, read back
+     * through {@code ProjectManager.getLastMissingAssets()}), which matches
+     * these strings against the clips holding them — deduplicated, one row
+     * per asset, reference-track files kept apart — and which the
+     * application surfaces with relink options. Entries are the references as
      * held in memory: a clip reference the project directory resolved
      * appears as its absolute resolved path, every other reference as
      * written. A clip reference that is
@@ -150,7 +153,9 @@ public final class ProjectDeserializer {
      * this platform — is listed whether or not a file exists anywhere it
      * could name, because the deserializer does not resolve it (see
      * {@link #deserialize(String, Path)}). A recorded take's segments are
-     * listed one per missing segment file, the head segment once. The list
+     * listed one per missing segment file, the head segment once; a reference
+     * held by several clips (split halves, duplicates) is listed once per
+     * clip, and a reference track's missing file is listed as well. The list
      * is cleared at the start of each deserialization call.</p>
      *
      * @return an unmodifiable view of missing file paths
@@ -203,9 +208,10 @@ public final class ProjectDeserializer {
      * anywhere it could name. With a directory, every clip reference is
      * therefore absolute or unresolvable after this call, and the code that
      * opens clip references — {@code ProjectArchiver}, the Archive Project
-     * pre-flight in {@code ProjectLifecycleController} and
-     * {@code ClipProcessingService} — treats an unresolvable one as naming
-     * no file ({@link ProjectPaths#isAbsoluteReference}). A usable reference is
+     * pre-flight in {@code ProjectLifecycleController},
+     * {@code ClipProcessingService} and the {@link ClipRehydrator} — treats an
+     * unresolvable one as naming no file
+     * ({@link ProjectPaths#isAbsoluteReference}). A usable reference is
      * reported missing only when no file exists at its in-memory path. A
      * clip with segments is checked through its segments only: the head IS
      * the first segment ({@code AudioClip.setSourceSegmentPaths} makes it
@@ -216,10 +222,14 @@ public final class ProjectDeserializer {
      *
      * <p>The WARNING goes only to {@code java.util.logging}'s default console
      * handler (standard error); the application installs no handler of its
-     * own until story 336. So in the packaged app the visible trace of an
-     * unresolvable reference is the Archive Project pre-flight, which lists
-     * it as missing unless it is blank. {@link #getMissingFiles()} has no
-     * production reader until story 329.</p>
+     * own until story 336. The visible trace of an unresolvable reference is
+     * the missing-assets report the open builds from
+     * {@link #getMissingFiles()} ({@link MissingAssetsReport#atOpen}), where
+     * it is an {@link MissingAssetReason#UNRESOLVABLE} row, and the Archive
+     * Project pre-flight, which lists it as missing unless it is blank.</p>
+     *
+     * <p>The clips this call builds carry their references but no sample
+     * data: the {@link ClipRehydrator} loads it after the open.</p>
      *
      * <p>Called on whichever thread opens the project (the caller of
      * {@code ProjectManager.openProject}, a recovery subtask of

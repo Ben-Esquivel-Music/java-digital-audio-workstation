@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.core.persistence.migration.MigrationSuppression;
 import javafx.event.ActionEvent;
 import javafx.geometry.Insets;
 import javafx.scene.control.Alert;
+import javafx.scene.control.Button;
 import javafx.scene.control.ButtonBar;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.CheckBox;
@@ -42,7 +43,35 @@ public final class MigrationReportDialog extends Dialog<Void> {
     static final ButtonType ROLLBACK_BUTTON_TYPE =
             new ButtonType("Roll back\u2026", ButtonBar.ButtonData.LEFT);
 
+    /**
+     * The dialog's OK, which is also its cancel (story 329, decision D32): a
+     * dialog whose result is {@code null} closes only through a cancel-data
+     * button, so with {@code Roll back…} beside a plain
+     * {@link ButtonType#OK} nothing could close it — not OK, not a confirmed
+     * roll-back, not Esc, not the window's close button. Esc and the close
+     * button now mean OK: the suppression checkbox is honoured, nothing is
+     * rolled back. Enter still presses it.
+     */
+    static final ButtonType OK_BUTTON_TYPE =
+            new ButtonType(ButtonType.OK.getText(), ButtonBar.ButtonData.CANCEL_CLOSE);
+
     private final CheckBox suppressFutureCheckbox;
+
+    /**
+     * The roll-back action, run by {@link #runConfirmedRollback()} — never by
+     * the dialog while it is showing — or {@code null} when none was supplied.
+     */
+    private final Runnable rollbackAction;
+
+    /**
+     * Whether the result converter did its work (story 329, decision D42):
+     * a close converts twice — the pressed button, then, as the result is
+     * {@code null}, the cancel button — and only the first counts.
+     */
+    private boolean converted;
+
+    /** Whether the user confirmed {@code Roll back…}; the roll-back has not run yet. */
+    private boolean rollbackConfirmed;
 
     /**
      * Creates a dialog for the given report with no roll-back action.
@@ -61,10 +90,12 @@ public final class MigrationReportDialog extends Dialog<Void> {
      * @param projectDirectory the project directory; may be {@code null},
      *                         in which case the suppression checkbox is
      *                         shown but disabled
-     * @param rollbackAction   optional action invoked on the FX thread
-     *                         when the user clicks "Roll back…" and
-     *                         confirms the destructive prompt. When
-     *                         {@code null}, no roll-back button is shown.
+     * @param rollbackAction   optional action run on the FX thread, by
+     *                         {@link #runConfirmedRollback()} once the
+     *                         dialog closed, when the user clicked
+     *                         "Roll back…" and confirmed the destructive
+     *                         prompt. When {@code null}, no roll-back button
+     *                         is shown.
      */
     public MigrationReportDialog(MigrationReport report,
                                  Path projectDirectory,
@@ -73,6 +104,7 @@ public final class MigrationReportDialog extends Dialog<Void> {
             throw new IllegalArgumentException(
                     "MigrationReportDialog requires a non-empty migration report");
         }
+        this.rollbackAction = rollbackAction;
 
         setTitle("Project Migrated");
         setHeaderText("This project was migrated from schema version "
@@ -111,19 +143,39 @@ public final class MigrationReportDialog extends Dialog<Void> {
                         }
                     });
         }
-        getDialogPane().getButtonTypes().add(ButtonType.OK);
+        getDialogPane().getButtonTypes().add(OK_BUTTON_TYPE);
+        ((Button) getDialogPane().lookupButton(OK_BUTTON_TYPE)).setDefaultButton(true);
 
         ThemeManager.getDefault().applyTo(getDialogPane());
 
+        // Story 329 (D42) — the converter does its work once per dialog, and
+        // only records a confirmed roll-back: the roll-back reloads the
+        // project, and may show this dialog's successor, so it runs once this
+        // dialog closed (showIfNeeded), never inside its close.
         setResultConverter(button -> {
+            if (converted) {
+                return null;
+            }
+            converted = true;
             if (projectDirectory != null && suppressFutureCheckbox.isSelected()) {
                 MigrationSuppression.suppress(projectDirectory, report.toVersion());
             }
-            if (button == ROLLBACK_BUTTON_TYPE && rollbackAction != null) {
-                rollbackAction.run();
-            }
+            rollbackConfirmed = button == ROLLBACK_BUTTON_TYPE && rollbackAction != null;
             return null;
         });
+    }
+
+    /**
+     * Runs the roll-back action when the user confirmed {@code Roll back…},
+     * once: a second call does nothing. {@link #showIfNeeded} calls it after
+     * the dialog closed. FX thread.
+     */
+    void runConfirmedRollback() {
+        if (!rollbackConfirmed) {
+            return;
+        }
+        rollbackConfirmed = false;
+        rollbackAction.run();
     }
 
     /**
@@ -197,8 +249,9 @@ public final class MigrationReportDialog extends Dialog<Void> {
 
     /**
      * Variant of {@link #showIfNeeded(MigrationReport, Path)} that
-     * supplies an optional roll-back action invoked when the user
-     * clicks "Roll back…" and confirms.
+     * supplies an optional roll-back action, run when the user clicked
+     * "Roll back…" and confirmed — after the dialog closed, so the
+     * reload it starts never runs under this dialog.
      */
     public static boolean showIfNeeded(MigrationReport report,
                                        Path projectDirectory,
@@ -209,7 +262,9 @@ public final class MigrationReportDialog extends Dialog<Void> {
         if (MigrationSuppression.isSuppressed(projectDirectory, report.toVersion())) {
             return false;
         }
-        new MigrationReportDialog(report, projectDirectory, rollbackAction).showAndWait();
+        MigrationReportDialog dialog = new MigrationReportDialog(report, projectDirectory, rollbackAction);
+        dialog.showAndWait();
+        dialog.runConfirmedRollback();
         return true;
     }
 }

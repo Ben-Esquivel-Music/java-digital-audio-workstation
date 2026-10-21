@@ -152,7 +152,7 @@ class RecordedTakeUnsavedChangesTest {
             lifecycle = new ProjectLifecycleController(projectManager, new SessionInterchangeController(),
                     lifecycleToasts, progress, new BorderPane(), new VBox(),
                     new ProjectLifecycleController.Deps(() -> project, _ -> { }, undoManager::get,
-                            undoManager::set, () -> { }, () -> { }, () -> { }, () -> null, _ -> { }),
+                            undoManager::set, () -> { }, () -> { }, () -> { }, () -> null, _ -> { }, () -> { }),
                     new ProjectArchiver());
             lifecycle.setTakeBeingWrittenCheck(controller::isTakeBeingWritten);
             lifecycle.setRecordingInFlightCheck(controller::isRecordingInFlight);

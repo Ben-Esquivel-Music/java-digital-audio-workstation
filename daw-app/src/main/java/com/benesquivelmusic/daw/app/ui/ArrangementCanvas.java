@@ -21,6 +21,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.function.Function;
 import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
@@ -123,6 +125,15 @@ public final class ArrangementCanvas extends Pane {
     private SelectionModel selectionModel;
 
     /**
+     * Story 329 (decision D18) — what each audio clip's body shows: its
+     * waveform, or the {@code Loading…} / {@code Offline} placeholder.
+     * {@code MainController} wires the open project's owner
+     * ({@link OpenProjectAudio#stateOf}); until then nothing loads, so a
+     * clip without audio that reads from a file is offline.
+     */
+    private Function<AudioClip, ClipAudioState> clipAudioStates = ClipAudioState::unmanaged;
+
+    /**
      * Tracks which track IDs have their automation lane expanded.
      * Key: track ID, Value: the selected {@link AutomationParameter}.
      */
@@ -170,6 +181,17 @@ public final class ArrangementCanvas extends Pane {
                     .collect(java.util.stream.Collectors.toSet());
             automationLaneVisibility.keySet().retainAll(validIds);
         }
+        redraw();
+    }
+
+    /**
+     * Sets where each audio clip's body state comes from (story 329,
+     * decision D18) and redraws.
+     *
+     * @param states answers a clip's {@link ClipAudioState}; must not be {@code null}
+     */
+    void setClipAudioStates(Function<AudioClip, ClipAudioState> states) {
+        this.clipAudioStates = Objects.requireNonNull(states, "states must not be null");
         redraw();
     }
 
@@ -793,7 +815,7 @@ public final class ArrangementCanvas extends Pane {
                     ClipOverlayRenderer.drawAudioClip(gc, clip, trackColor,
                             laneY, trackHeight, pixelsPerBeat, scrollXBeats,
                             canvasWidth, canvasHeight, selectionModel,
-                            samplesPerBeat, sessionRateHz);
+                            samplesPerBeat, sessionRateHz, clipAudioStates.apply(clip));
                 }
 
                 MidiClip midiClip = track.getMidiClip();

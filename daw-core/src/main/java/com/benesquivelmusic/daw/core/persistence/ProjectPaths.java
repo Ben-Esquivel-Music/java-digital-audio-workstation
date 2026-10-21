@@ -11,11 +11,14 @@ import java.util.Optional;
  * {@link ProjectSerializer}) and the read side ({@link #resolve} and
  * {@link #unresolvable}, used by {@link ProjectDeserializer}) share it so the
  * two cannot drift, and the code that opens a clip reference held in memory
- * — {@code ProjectArchiver}, the Archive Project pre-flight and
- * {@code ClipProcessingService} — follows its in-memory rule
- * ({@link #isAbsoluteReference}), with the two exceptions stated below: a
- * load with no project directory, and the relocation
- * {@code ProjectArchiver.openArchive} does.
+ * — {@code ProjectArchiver}, the Archive Project pre-flight,
+ * {@code ClipProcessingService} and the {@link ClipRehydrator} — follows its
+ * in-memory rule ({@link #isAbsoluteReference}), with the two exceptions
+ * stated below: a load with no project directory, and the relocation
+ * {@code ProjectArchiver.openArchive} does. Relink ({@link AssetRelinker},
+ * {@link MissingAssetSearch}) never opens the reference a clip holds: it
+ * finds the clips by that reference as held — an unresolvable one included
+ * — and opens only the absolute paths of the file the user located.
  *
  * <p><strong>Rationale.</strong> Recording Reliability book §3.3 / §5.3
  * "Relative paths" and §9.5: a clip reference to anything under the project
@@ -81,9 +84,11 @@ import java.util.Optional;
  *   <li>{@link #isAbsoluteReference(String)} — the in-memory rule: a clip
  *       reference names a file only when it is an absolute path on this
  *       platform. {@code ProjectArchiver}, the Archive Project pre-flight in
- *       {@code ProjectLifecycleController} and {@code ClipProcessingService}
- *       treat every other clip reference as naming no file, and never
- *       resolve one against the JVM's working directory. Only a load with
+ *       {@code ProjectLifecycleController}, {@code ClipProcessingService} and
+ *       the {@link ClipRehydrator} treat every other clip reference as naming
+ *       no file, and never resolve one against the JVM's working directory
+ *       (the rehydrator does not decode it; the open's missing-assets report
+ *       lists it as {@link MissingAssetReason#UNRESOLVABLE}). Only a load with
  *       no project directory (the one-argument
  *       {@link ProjectDeserializer#deserialize(String)}) still checks a
  *       relative clip reference's existence there, for
@@ -133,8 +138,15 @@ import java.util.Optional;
  *
  * <p>Story 323 applies the rule to every clip reference (a clip's
  * {@code source-file} and its {@code <source-segment>} children, recorded or
- * imported). Story 329 extends it to the other asset references and to
- * relinked paths; the archive's own relocation logic
+ * imported). A relinked clip is no exception: {@link AssetRelinker} gives it
+ * the located file's absolute path, and the next save writes that
+ * project-relative under the root and verbatim outside it. The other asset
+ * references are not under the rule: a reference track's
+ * {@code source-file} is written as held and, when relative, checked
+ * against the JVM's working directory on load, and a SoundFont
+ * assignment's path is written as held (with forward slashes) and not
+ * checked on load. Bringing them in is deferred — reference-track audio,
+ * with its relink, to future story 359. The archive's own relocation logic
  * ({@code ProjectArchiver.openArchive}) keys on the stored form and is
  * deliberately not routed through {@link #resolve}.</p>
  *
@@ -262,9 +274,11 @@ public final class ProjectPaths {
      * {@code null}, empty, one that does not parse on this platform, a
      * relative one and, on Windows, a drive- or root-relative one — so the
      * code that opens clip references ({@code ProjectArchiver}, the Archive
-     * Project pre-flight and {@code ClipProcessingService}) lists it as
-     * missing, skips it or refuses it, and never resolves it against the
-     * JVM's working directory. Only a load with no project directory (the
+     * Project pre-flight, {@code ClipProcessingService} and the
+     * {@link ClipRehydrator}) lists it as missing, skips it or refuses it,
+     * and never resolves it against the JVM's working directory; relink
+     * ({@link AssetRelinker}) re-points the clips that hold it without
+     * opening it. Only a load with no project directory (the
      * one-argument {@link ProjectDeserializer#deserialize(String)}) still
      * checks a relative clip reference's existence there, for
      * {@link ProjectDeserializer#getMissingFiles()}. After a load with a

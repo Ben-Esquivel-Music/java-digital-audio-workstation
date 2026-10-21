@@ -246,7 +246,7 @@ class ProjectLifecycleControllerTest {
         };
         ProjectLifecycleController.Deps deps = new ProjectLifecycleController.Deps(
                 project::get, installIncomingDirty, undoManager::get, undoManager::set,
-                () -> { }, () -> { }, rebuildGeneration, () -> null, json -> { });
+                () -> { }, () -> { }, rebuildGeneration, () -> null, json -> { }, () -> { });
         AtomicReference<Boolean> loaded = new AtomicReference<>();
         runOnFxThread(() -> loaded.set(new ProjectLifecycleController(
                 pm, dummySessionInterchange(), dummyNotificationBar(),
@@ -474,6 +474,7 @@ class ProjectLifecycleControllerTest {
                 () -> { },
                 () -> { },
                 () -> null,
-                json -> { });
+                json -> { },
+                () -> { });
     }
 }

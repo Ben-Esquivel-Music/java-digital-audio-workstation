@@ -39,10 +39,28 @@ final class ClipOverlayRenderer {
 
     private static final Font CLIP_LABEL_FONT = Font.font("SansSerif", 10);
     private static final double CLIP_LABEL_PADDING = 4.0;
+    /** The baseline of the clip name, from the clip's top edge. */
+    private static final double CLIP_LABEL_BASELINE = 12.0;
     private static final double CLIP_OPACITY = 0.75;
     private static final double FADE_OVERLAY_OPACITY = 0.3;
     private static final double FADE_HANDLE_SIZE = ClipFadeHandler.HANDLE_SIZE_PIXELS;
     private static final int FADE_CURVE_SEGMENTS = 20;
+
+    /** Story 329 (D18) — the placeholder words, from the application's resources. */
+    private static final String LOADING_LABEL = ProjectAudioText.text("clipPlaceholder.loading");
+    private static final String OFFLINE_LABEL = ProjectAudioText.text("clipPlaceholder.offline");
+    /** Dash and gap of the loading placeholder's centre line, and the offline hatch spacing (4 px grid). */
+    private static final double PLACEHOLDER_DASH = 4.0;
+    private static final double PLACEHOLDER_HATCH_SPACING = 8.0;
+    /** The placeholder word sits one 12 px line under the clip name, in a clip at least this tall. */
+    private static final double PLACEHOLDER_LINE_HEIGHT = 12.0;
+    private static final double PLACEHOLDER_LABEL_MIN_HEIGHT = 28.0;
+    /**
+     * How far past the visible span a placeholder's pattern is still drawn:
+     * one period, wider than a 1 px stroke's anti-aliased edge, so the
+     * visible pixels are those of the whole pattern.
+     */
+    private static final double PLACEHOLDER_PATTERN_MARGIN = PLACEHOLDER_HATCH_SPACING;
 
     private ClipOverlayRenderer() {
     }
@@ -82,7 +100,30 @@ final class ClipOverlayRenderer {
                               int sessionRateHz) {
         drawAudioClip(gc, clip, trackColor, laneY, trackHeight,
                 pixelsPerBeat, scrollXBeats, canvasWidth, canvasHeight,
-                selectionModel, samplesPerBeat);
+                selectionModel, samplesPerBeat, sessionRateHz, ClipAudioState.unmanaged(clip));
+    }
+
+    /**
+     * Renders the audio clip as {@link #drawAudioClip(GraphicsContext,
+     * AudioClip, Color, double, double, double, double, double, double,
+     * SelectionModel, double, int)} does, with the body {@code state} asks
+     * for (story 329, decision D18): the waveform once the clip has audio,
+     * otherwise the {@code Loading…} or {@code Offline} placeholder — never
+     * an empty body for a clip that reads from a file.
+     *
+     * @param state what the clip's body shows ({@link OpenProjectAudio#stateOf})
+     */
+    static void drawAudioClip(GraphicsContext gc, AudioClip clip, Color trackColor,
+                              double laneY, double trackHeight,
+                              double pixelsPerBeat, double scrollXBeats,
+                              double canvasWidth, double canvasHeight,
+                              SelectionModel selectionModel,
+                              double samplesPerBeat,
+                              int sessionRateHz,
+                              ClipAudioState state) {
+        drawAudioClipBody(gc, clip, trackColor, laneY, trackHeight,
+                pixelsPerBeat, scrollXBeats, canvasWidth, canvasHeight,
+                selectionModel, samplesPerBeat, state);
         if (sessionRateHz <= 0) {
             return;
         }
@@ -116,6 +157,48 @@ final class ClipOverlayRenderer {
                               double canvasWidth, double canvasHeight,
                               SelectionModel selectionModel,
                               double samplesPerBeat) {
+        drawAudioClipBody(gc, clip, trackColor, laneY, trackHeight,
+                pixelsPerBeat, scrollXBeats, canvasWidth, canvasHeight,
+                selectionModel, samplesPerBeat, ClipAudioState.unmanaged(clip));
+    }
+
+    /**
+     * Which body a clip in {@code state} gets: the waveform branch whenever
+     * the clip has audio (or reads from no file, the plain body as before),
+     * a placeholder otherwise (story 329, decision D18).
+     *
+     * @param clip  the clip
+     * @param state what the clip's owner says about its audio
+     * @return the body to draw
+     */
+    static ClipBody bodyFor(AudioClip clip, ClipAudioState state) {
+        if (clip.getAudioData() != null) {
+            return ClipBody.WAVEFORM;
+        }
+        return switch (state) {
+            case LOADING -> ClipBody.LOADING_PLACEHOLDER;
+            case OFFLINE -> ClipBody.OFFLINE_PLACEHOLDER;
+            case LOADED, NO_SOURCE -> ClipBody.WAVEFORM;
+        };
+    }
+
+    /** The body of an audio clip ({@link #bodyFor}). */
+    enum ClipBody {
+        /** The waveform of the clip's audio (nothing when it has none and reads from no file). */
+        WAVEFORM,
+        /** "Loading…" over a dashed centre line: the open's run still owes the clip's source. */
+        LOADING_PLACEHOLDER,
+        /** "Offline" over a diagonal hatch: nothing is loading the clip's source. */
+        OFFLINE_PLACEHOLDER
+    }
+
+    private static void drawAudioClipBody(GraphicsContext gc, AudioClip clip, Color trackColor,
+                                          double laneY, double trackHeight,
+                                          double pixelsPerBeat, double scrollXBeats,
+                                          double canvasWidth, double canvasHeight,
+                                          SelectionModel selectionModel,
+                                          double samplesPerBeat,
+                                          ClipAudioState state) {
         double clipX = (clip.getStartBeat() - scrollXBeats) * pixelsPerBeat;
         double clipWidth = clip.getDurationBeats() * pixelsPerBeat;
 
@@ -149,8 +232,12 @@ final class ClipOverlayRenderer {
             }
         }
 
-        ClipWaveformRenderer.draw(gc, clip.getAudioData(),
-                clipX, clipY, clipWidth, clipHeight, canvasWidth);
+        switch (bodyFor(clip, state)) {
+            case WAVEFORM -> ClipWaveformRenderer.draw(gc, clip.getAudioData(),
+                    clipX, clipY, clipWidth, clipHeight, canvasWidth);
+            case LOADING_PLACEHOLDER -> drawLoadingPlaceholder(gc, clipX, clipY, clipWidth, clipHeight, canvasWidth);
+            case OFFLINE_PLACEHOLDER -> drawOfflinePlaceholder(gc, clipX, clipY, clipWidth, clipHeight, canvasWidth);
+        }
 
         if (samplesPerBeat > 0.0) {
             clip.gainEnvelope().ifPresent(env ->
@@ -417,6 +504,155 @@ final class ClipOverlayRenderer {
         gc.strokePolygon(xs, ys, 3);
     }
 
+    /**
+     * The part of a placeholder's repeating pattern worth drawing: the
+     * pattern positions from {@code first} up to, not including,
+     * {@code end}. A clip can be far wider than the canvas — four minutes
+     * at the highest zoom is two million pixels — so only the positions
+     * near the visible span are drawn, and they are positions of the whole
+     * pattern: it stays anchored to the clip and does not crawl while the
+     * arrangement scrolls.
+     *
+     * @param first the first position to draw, a position of the pattern
+     * @param end   every position drawn is below it
+     */
+    record PatternSpan(double first, double end) {
+
+        /**
+         * Returns whether there is no position to draw.
+         *
+         * @return {@code true} if the span is empty
+         */
+        boolean isEmpty() {
+            return !(first < end);
+        }
+    }
+
+    /**
+     * The hatch lines of the {@code Offline} placeholder worth drawing on a
+     * canvas {@code canvasWidth} wide. Each line rises from {@code x} at the
+     * clip's bottom to {@code x + clipHeight} at its top; the pattern starts
+     * at {@code clipX - clipHeight} and repeats every
+     * hatch spacing up to the clip's end, as the
+     * whole hatch does, and only the lines within one period of the visible
+     * part of the clip are kept.
+     *
+     * @param clipX       the clip's left edge on the canvas (may be negative)
+     * @param clipWidth   the clip's width
+     * @param clipHeight  the clip body's height
+     * @param canvasWidth the canvas width
+     * @return the start positions of the lines to draw
+     */
+    static PatternSpan hatchSpan(double clipX, double clipWidth, double clipHeight, double canvasWidth) {
+        double visibleStart = Math.max(clipX, 0.0);
+        double visibleEnd = Math.min(clipX + clipWidth, canvasWidth);
+        return patternSpan(clipX - clipHeight, PLACEHOLDER_HATCH_SPACING, clipX + clipWidth,
+                visibleStart - clipHeight, visibleEnd);
+    }
+
+    /**
+     * The dashed centre line of the {@code Loading…} placeholder worth
+     * drawing on a canvas {@code canvasWidth} wide: the whole line runs from
+     * one label padding inside the clip's left edge to one inside its right
+     * edge, its dash pattern starting at the left end; the part kept starts
+     * at a whole period of the pattern, so the dashes fall where the whole
+     * line's would.
+     *
+     * @param clipX       the clip's left edge on the canvas (may be negative)
+     * @param clipWidth   the clip's width
+     * @param canvasWidth the canvas width
+     * @return where the part of the line to draw starts and ends
+     */
+    static PatternSpan dashSpan(double clipX, double clipWidth, double canvasWidth) {
+        double visibleStart = Math.max(clipX, 0.0);
+        double visibleEnd = Math.min(clipX + clipWidth, canvasWidth);
+        return patternSpan(clipX + CLIP_LABEL_PADDING, 2 * PLACEHOLDER_DASH,
+                clipX + clipWidth - CLIP_LABEL_PADDING, visibleStart, visibleEnd);
+    }
+
+    /**
+     * The positions of a pattern that starts at {@code origin}, repeats
+     * every {@code period} and ends before {@code patternEnd}, kept to
+     * within {@link #PLACEHOLDER_PATTERN_MARGIN} of
+     * {@code [visibleStart, visibleEnd]}.
+     */
+    private static PatternSpan patternSpan(double origin, double period, double patternEnd,
+                                           double visibleStart, double visibleEnd) {
+        double from = visibleStart - PLACEHOLDER_PATTERN_MARGIN;
+        double first = from <= origin ? origin : origin + Math.floor((from - origin) / period) * period;
+        return new PatternSpan(first, Math.min(patternEnd, visibleEnd + PLACEHOLDER_PATTERN_MARGIN));
+    }
+
+    /**
+     * The {@code Loading…} placeholder (decision D18): a dashed line where
+     * the waveform's centre will be and the word under the clip name, in
+     * the clip's own border and label colours. Only the part of the line
+     * near the canvas is stroked ({@link #dashSpan}).
+     */
+    private static void drawLoadingPlaceholder(GraphicsContext gc,
+                                               double clipX, double clipY,
+                                               double clipWidth, double clipHeight,
+                                               double canvasWidth) {
+        PatternSpan line = dashSpan(clipX, clipWidth, canvasWidth);
+        if (!line.isEmpty()) {
+            gc.save();
+            gc.beginPath();
+            gc.rect(clipX, clipY, clipWidth, clipHeight);
+            gc.clip();
+            double centreY = clipY + clipHeight / 2.0;
+            gc.setStroke(CLIP_BORDER_COLOR);
+            gc.setLineWidth(1.0);
+            gc.setLineDashes(PLACEHOLDER_DASH, PLACEHOLDER_DASH);
+            gc.strokeLine(line.first(), centreY, line.end(), centreY);
+            gc.restore();
+        }
+        drawPlaceholderLabel(gc, LOADING_LABEL, clipX, clipY, clipWidth, clipHeight);
+    }
+
+    /**
+     * The {@code Offline} placeholder (decision D18): a diagonal hatch over
+     * the body and the word under the clip name, in the clip's own border
+     * and label colours. Only the lines near the canvas are stroked
+     * ({@link #hatchSpan}).
+     */
+    private static void drawOfflinePlaceholder(GraphicsContext gc,
+                                               double clipX, double clipY,
+                                               double clipWidth, double clipHeight,
+                                               double canvasWidth) {
+        PatternSpan lines = hatchSpan(clipX, clipWidth, clipHeight, canvasWidth);
+        if (clipHeight > 0.0 && !lines.isEmpty()) {
+            gc.save();
+            gc.beginPath();
+            gc.rect(clipX, clipY, clipWidth, clipHeight);
+            gc.clip();
+            gc.setStroke(CLIP_BORDER_COLOR);
+            gc.setLineWidth(1.0);
+            for (double x = lines.first(); x < lines.end(); x += PLACEHOLDER_HATCH_SPACING) {
+                gc.strokeLine(x, clipY + clipHeight, x + clipHeight, clipY);
+            }
+            gc.restore();
+        }
+        drawPlaceholderLabel(gc, OFFLINE_LABEL, clipX, clipY, clipWidth, clipHeight);
+    }
+
+    /** The placeholder's word, one line under the clip name, when the clip has room for it. */
+    private static void drawPlaceholderLabel(GraphicsContext gc, String text,
+                                             double clipX, double clipY,
+                                             double clipWidth, double clipHeight) {
+        if (clipWidth < 20 || clipHeight < PLACEHOLDER_LABEL_MIN_HEIGHT) {
+            return;
+        }
+        gc.save();
+        gc.setFont(CLIP_LABEL_FONT);
+        gc.setFill(CLIP_LABEL_COLOR);
+        gc.setTextAlign(TextAlignment.LEFT);
+        gc.beginPath();
+        gc.rect(clipX, clipY, clipWidth, clipHeight);
+        gc.clip();
+        gc.fillText(text, clipX + CLIP_LABEL_PADDING, clipY + CLIP_LABEL_BASELINE + PLACEHOLDER_LINE_HEIGHT);
+        gc.restore();
+    }
+
     private static void drawClipLabel(GraphicsContext gc, String name,
                                       double clipX, double clipY,
                                       double clipWidth, double clipHeight) {
@@ -431,7 +667,7 @@ final class ClipOverlayRenderer {
         gc.beginPath();
         gc.rect(clipX, clipY, clipWidth, clipHeight);
         gc.clip();
-        gc.fillText(name, clipX + CLIP_LABEL_PADDING, clipY + 12);
+        gc.fillText(name, clipX + CLIP_LABEL_PADDING, clipY + CLIP_LABEL_BASELINE);
         gc.restore();
     }
 
