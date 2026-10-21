@@ -82,6 +82,14 @@ final class FileSourceDecoder implements SourceDecoder {
 
     @Override
     public DecodedAudio decode(AssetReference source, int projectSampleRate) throws IOException {
+        DecodedAudio decoded = decodeSource(source, projectSampleRate);
+        if (decoded.seconds() <= 0.0) {
+            throw new IOException("Audio source contains no sample frames: " + source.references());
+        }
+        return decoded;
+    }
+
+    private static DecodedAudio decodeSource(AssetReference source, int projectSampleRate) throws IOException {
         return switch (source) {
             case AssetReference.SingleFile file -> decodeFile(Path.of(file.reference()), projectSampleRate);
             case AssetReference.Take take -> decodeTake(take.files());
