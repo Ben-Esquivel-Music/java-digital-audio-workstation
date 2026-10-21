@@ -212,7 +212,8 @@ class ProjectLifecycleArchiveFailureTest {
                 () -> { },
                 () -> { },
                 noLayout,
-                json -> { });
+                json -> { },
+                () -> { });
     }
 
     private static void onFx(Runnable action) throws Exception {

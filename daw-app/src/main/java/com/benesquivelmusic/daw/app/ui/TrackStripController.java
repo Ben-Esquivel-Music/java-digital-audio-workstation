@@ -66,6 +66,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -230,6 +231,15 @@ final class TrackStripController {
      * frequent add/remove-track operations.</p>
      */
     private final java.util.Map<Track, Label> freezeIndicatorByTrack = new java.util.WeakHashMap<>();
+    /**
+     * Story 329 (decision D19) — whether an "Export as WAV" of these tracks
+     * may render now: {@code MainController} wires the open project's
+     * {@link RenderReadinessGuard}, which refuses while clip audio is still
+     * loading and asks before rendering clips that would be silent.
+     * Consulted before the export asks for a file; the pure-unit default
+     * never refuses. FX thread.
+     */
+    private Predicate<List<Track>> renderGuard = _ -> true;
 
     TrackStripController(DawProject project,
                          UndoManager undoManager,
@@ -321,6 +331,16 @@ final class TrackStripController {
     void setTrackFreezeController(TrackFreezeController controller) {
         this.trackFreezeController = controller;
         refreshAllFreezeIndicators();
+    }
+
+    /**
+     * Story 329 (decision D19) — sets the check "Export as WAV" consults
+     * before it renders: the open project's {@link RenderReadinessGuard}.
+     *
+     * @param renderGuard whether a render of the given tracks may proceed
+     */
+    void setRenderGuard(Predicate<List<Track>> renderGuard) {
+        this.renderGuard = Objects.requireNonNull(renderGuard, "renderGuard must not be null");
     }
 
     /**
@@ -1506,6 +1526,11 @@ final class TrackStripController {
             Tooltip.install(exportWav.getGraphic(), new Tooltip("No audio data to export"));
         }
         exportWav.setOnAction(_ -> {
+            // Story 329 (D19) — no file is asked for, and nothing rendered,
+            // while clip audio loads or without consent to silent clips.
+            if (!renderGuard.test(List.of(track))) {
+                return;
+            }
             FileChooser fileChooser = new FileChooser();
             fileChooser.setTitle("Export Track as WAV");
             fileChooser.setInitialFileName(track.getName() + ".wav");

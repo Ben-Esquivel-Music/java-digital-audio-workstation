@@ -2228,6 +2228,81 @@
     -fx-icon-color: -text-hi;
 }
 
+/* Story 329 — the missing-assets report (MissingAssetsDialog, decision
+ * D15). Two-class selectors under .dawg-dialog so they win over the
+ * global `.dialog-pane .label` rule, as the section header above does.
+ * One row per asset: the D6 label in -warn (the one state hue; never
+ * the accent), the path in -text-hi, the detail and the clips that use
+ * the asset in -text-mute, rows divided by -line-soft. */
+.dawg-dialog .missing-assets-rows {
+    -fx-spacing: 0;
+}
+
+.dawg-dialog .missing-assets-scroll,
+.dawg-dialog .missing-assets-scroll > .viewport {
+    -fx-background-color: transparent;
+}
+
+.dawg-dialog .missing-assets-row {
+    -fx-padding: 8 0 8 0;
+    -fx-border-color: -line-soft;
+    -fx-border-width: 0 0 1 0;
+}
+
+.dawg-dialog .missing-assets-reason {
+    -fx-text-fill: -warn;
+    -fx-font-size: 12px;
+    -fx-font-weight: 600;
+}
+
+.dawg-dialog .missing-assets-path {
+    -fx-text-fill: -text-hi;
+    -fx-font-size: 12px;
+}
+
+.dawg-dialog .missing-assets-detail,
+.dawg-dialog .missing-assets-used-by {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 11px;
+}
+
+.dawg-dialog .missing-assets-row-actions {
+    -fx-spacing: 8;
+    -fx-padding: 4 0 0 0;
+}
+
+.dawg-dialog .missing-assets-archive {
+    -fx-text-fill: -text;
+    -fx-padding: 0;
+}
+
+.dawg-dialog .missing-assets-archive:hover {
+    -fx-text-fill: -text-hi;
+}
+
+/* Story 329 — relink (decisions D16, D17). A row's status line: a check in
+ * flight in -text-mute, a refusal or a tie the user must act on in -warn
+ * (the one state hue). Above the rows, Locate folder… and, while a search
+ * runs, the folder it walks in -text-mute beside Cancel search. */
+.dawg-dialog .missing-assets-status {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 11px;
+}
+
+.dawg-dialog .missing-assets-status-attention {
+    -fx-text-fill: -warn;
+    -fx-font-size: 11px;
+}
+
+.dawg-dialog .missing-assets-folder-bar {
+    -fx-spacing: 8;
+}
+
+.dawg-dialog .missing-assets-searching {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 11px;
+}
+
 /* §5.9 / §3.1 primary (accent-filled) footer button. The base
  * .dawg-button:armed/:pressed/:active block (lines ~280) already paints
  * -accent; .primary makes the accent the RESTING state too and keeps it

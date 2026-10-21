@@ -1297,6 +1297,12 @@ public final class MainController {
                         commandPaletteView.setOwner(primaryStage);
                     }
                     primaryStage.setOnHidden(_ -> runWindowTeardown(() -> {
+                        // Story 329 (D21) — retire the open project's audio:
+                        // cancel its decodes and fence off anything in flight.
+                        if (projectLifecycleController != null) {
+                            projectLifecycleController.dispose();
+                        }
+                    }, () -> {
                         // Story 293 — release the view-model layer (binders + VM
                         // listeners + continuous channels) so nothing leaks on close.
                         for (Runnable disposer : vmDisposers) { disposer.run(); }
@@ -1788,7 +1794,10 @@ public final class MainController {
                         () -> historyPanelController.rebuild(),
                         this::handleProjectRebuild,
                         this::captureLayoutJsonForSave,
-                        json -> { if (layoutManager != null) { layoutManager.fromJson(json); } }),
+                        json -> { if (layoutManager != null) { layoutManager.fromJson(json); } },
+                        // Story 329 — the arrangement repaint the open project's
+                        // audio runs once per drain of loaded clip audio.
+                        this::repaintArrangementCanvas),
                 new ProjectArchiver(),
                 dispatcher());
         // Story 323 review — no in-app door replaces the open project while a
@@ -1797,6 +1806,16 @@ public final class MainController {
         // that is current at that moment.
         projectLifecycleController.setTakeBeingWrittenCheck(this::isTakeBeingWritten);
         projectLifecycleController.setRecordingInFlightCheck(this::isRecordingInFlight);
+        // Story 329 (D17) — a relink replaces a clip's audio, so the engine's
+        // cached sample-rate conversions of the old audio are dropped. The
+        // engine is built once, so its cache is captured once.
+        if (audioEngine != null) {
+            projectLifecycleController.setClipConversionInvalidator(
+                    audioEngine.getSampleRateConversionCache()::invalidateForClip);
+        }
+        // Story 329 (D15) — "Relink Missing Assets…" follows the open's report.
+        // The owner lives as long as this controller: the listener is never removed.
+        projectLifecycleController.openProjectAudio().addChangeListener(this::syncMenuStateIfPresent);
         // Story 298 — the journal-open hook: on every open / new, atomically
         // close the prior project's journal (sealing its segments into the
         // outgoing session) then open the new one — all off the FX thread on a
@@ -2107,32 +2126,16 @@ public final class MainController {
      * Story 190 — applies a project restored from the snapshot browser.
      * Mirrors {@link ProjectLifecycleController#loadProjectFromPath} but
      * skips the on-disk read because the {@link DawProject} has already
-     * been deserialized from the snapshot's stored XML.
+     * been deserialized from the snapshot's stored XML. Story 329 (D21):
+     * the install lives in {@link ProjectLifecycleController#installRestoredSnapshot},
+     * the one owner of the open project's audio — it retires the previous
+     * run, loads the restored clips' audio, and qualifies the restore's
+     * announcement by what they could not find.
      */
-    private void applySnapshotRestoredProject(DawProject restored, String label) {
-        if (restored == null) return;
-        replacePluginProject(restored);
-        this.undoManager = new UndoManager();
-        if (historyPanelController != null) historyPanelController.rebuild();
-        if (trackCreationController != null) trackCreationController.resetCounters();
-        trackListPanel.getChildren().clear();
-        Label header = new Label("TRACKS");
-        header.getStyleClass().add("panel-header");
-        // No icon-next-to-label per UI Design Book §2.4.
-        trackListPanel.getChildren().add(header);
-        handleProjectRebuild();
-        // Mark dirty AFTER the rebuild so the DIRTY signal lands on the freshly built
-        // ProjectVM (the outgoing VM was disposed in rebuildViewModels and the new one
-        // is wired to `project` there), which re-syncs the Save menu through its dirty
-        // listener. Marking BEFORE the rebuild announced to no live listener and left
-        // the bit visible only via the new VM's constructor seed — correct merely by
-        // coincidence of ordering. A restored snapshot is unsaved relative to disk, so
-        // it must be dirty.
-        this.project.markDirty();
-        if (notificationBar != null && label != null) {
-            notificationBar.show(NotificationLevel.INFO,
-                    "Restored snapshot: " + label);
-        }
+    private void applySnapshotRestoredProject(DawProject restored, String label,
+                                              com.benesquivelmusic.daw.core.persistence.MissingAssetsReport missingAssets) {
+        if (restored == null || projectLifecycleController == null) return;
+        projectLifecycleController.installRestoredSnapshot(restored, label, missingAssets);
     }
 
     /**
@@ -2286,6 +2289,21 @@ public final class MainController {
                 // and the session input the per-track input dialog preselects as a fallback.
                 this::trackControlWiring,
                 sessionInputSelection);
+        // Story 329 (D19, D28) — "Export as WAV" asks the open's audio first, in export words.
+        trackStripController.setRenderGuard(
+                tracks -> mayRenderClipAudio(RenderReadinessGuard.RenderPath.EXPORT, tracks));
+    }
+
+    /**
+     * Story 329 (decisions D19, D28) — whether a render of {@code tracks} into a
+     * file through {@code path} (export, freeze) may proceed: the lifecycle
+     * controller's {@link RenderReadinessGuard} refuses while a clip of
+     * {@code tracks} loads and asks, in the path's words, before rendering
+     * clips that would be silent.
+     */
+    private boolean mayRenderClipAudio(RenderReadinessGuard.RenderPath path, List<Track> tracks) {
+        return projectLifecycleController == null
+                || projectLifecycleController.renderGuard().mayRender(path, tracks);
     }
 
     private void createPluginViewController() {
@@ -2626,6 +2644,9 @@ public final class MainController {
                 },
                 this::status,
                 dispatcher());
+        // Story 329 (D19, D28) — a freeze asks the open's audio before it renders, in freeze words.
+        trackFreezeController.setRenderGuard(
+                tracks -> mayRenderClipAudio(RenderReadinessGuard.RenderPath.FREEZE, tracks));
     }
 
     private void createHistoryPanelController() {
@@ -2673,6 +2694,7 @@ public final class MainController {
                     @Override public void onExportSession() { projectLifecycleController.onExportSession(); }
                     @Override public void onArchiveProject() { projectLifecycleController.onArchiveProject(); }
                     @Override public void onRestoreFromArchive() { projectLifecycleController.onRestoreFromArchive(); }
+                    @Override public void onRelinkMissingAssets() { projectLifecycleController.onRelinkMissingAssets(); }
                     @Override public void onOpenRenderQueue() { MainController.this.onOpenRenderQueue(); }
                     @Override public void onImportAudioFile() { audioImportController.onImportAudioFile(); }
                     @Override public void onToggleSnap() { viewNavigationController.onToggleSnap(); }
@@ -3087,6 +3109,11 @@ public final class MainController {
                 },
                 this::seekToPosition);
         arrangementCanvas = result.canvas();
+        // Story 329 (D18) — each clip's body: its waveform, or Loading… while
+        // the open's run still owes its source, or Offline.
+        if (projectLifecycleController != null) {
+            arrangementCanvas.setClipAudioStates(projectLifecycleController.openProjectAudio()::stateOf);
+        }
         timelineRuler = result.ruler();
         clipInteractionController = result.clipInteraction();
         if (animationController != null) {
@@ -3129,6 +3156,7 @@ public final class MainController {
                     }
                     @Override public void onArchiveProject() { projectLifecycleController.onArchiveProject(); }
                     @Override public void onRestoreFromArchive() { projectLifecycleController.onRestoreFromArchive(); }
+                    @Override public void onRelinkMissingAssets() { projectLifecycleController.onRelinkMissingAssets(); }
                     @Override public void onUndo() { MainController.this.onUndo(); }
                     @Override public void onRedo() { MainController.this.onRedo(); }
                     @Override public void onCopy() { clipEditController.onCopy(); }
@@ -3213,7 +3241,10 @@ public final class MainController {
                 () -> undoManager.canRedo(),
                 () -> clipboardManager.hasContent(),
                 () -> selectionModel.hasClipSelection(),
-                () -> !project.getTracks().isEmpty());
+                () -> !project.getTracks().isEmpty(),
+                // Story 329 (D15) — "Relink Missing Assets…" is enabled while the
+                // open's report has rows; the owner's change listener re-syncs it.
+                () -> projectLifecycleController != null && projectLifecycleController.hasUnresolvedAssets());
         javafx.scene.control.MenuBar bar = menuBarController.build();
         // Wire the per-user Workspaces menu (Save Current as… / Switch to…).
         // The WorkspaceManager seeds the six default workspaces on first run

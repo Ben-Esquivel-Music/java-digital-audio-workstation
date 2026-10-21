@@ -55,7 +55,8 @@ class DawMenuBarControllerTest {
                 () -> host.canRedo,
                 () -> host.clipboard,
                 () -> host.selection,
-                () -> !host.project.getTracks().isEmpty());
+                () -> !host.project.getTracks().isEmpty(),
+                () -> host.unresolvedAssets);
     }
 
     /**
@@ -70,6 +71,7 @@ class DawMenuBarControllerTest {
         boolean canRedo;
         boolean clipboard;
         boolean selection;
+        boolean unresolvedAssets;
 
         int newProjectCalls;
         int openProjectCalls;
@@ -141,6 +143,9 @@ class DawMenuBarControllerTest {
         @Override public void onTimeStretchClip() { /* not used */ }
         @Override public void onPitchShiftClip() { /* not used */ }
         @Override public void onHelp() { helpCalls++; }
+        // Story 329 — re-presents the open's missing-assets report
+        int relinkMissingAssetsCalls;
+        @Override public void onRelinkMissingAssets() { relinkMissingAssetsCalls++; }
     }
 
     private KeyBindingManager freshKeyBindingManager() {
@@ -155,7 +160,7 @@ class DawMenuBarControllerTest {
     void shouldRejectNullHost() {
         BooleanSupplier off = () -> false;
         assertThatThrownBy(() -> new DawMenuBarController(
-                null, freshKeyBindingManager(), off, off, off, off, off, off))
+                null, freshKeyBindingManager(), off, off, off, off, off, off, off))
                 .isInstanceOf(NullPointerException.class);
     }
 
@@ -163,7 +168,7 @@ class DawMenuBarControllerTest {
     void shouldRejectNullKeyBindingManager() {
         BooleanSupplier off = () -> false;
         assertThatThrownBy(() -> new DawMenuBarController(
-                new StubHost(), null, off, off, off, off, off, off))
+                new StubHost(), null, off, off, off, off, off, off, off))
                 .isInstanceOf(NullPointerException.class);
     }
 
@@ -642,6 +647,41 @@ class DawMenuBarControllerTest {
                     .filter(item -> "Paste".equals(item.getText()))
                     .findFirst().orElseThrow();
             assertThat(paste.isDisable()).isFalse();
+        });
+    }
+
+    /**
+     * Story 329 (D15) — "Relink Missing Assets…" sits beside the archive
+     * actions, is enabled exactly while the supplier says the open's report
+     * has rows, and routes to the host. Run through the fixture's FX helper,
+     * which rethrows what the FX action threw.
+     */
+    @Test
+    void relinkMissingAssetsFollowsTheUnresolvedAssetsQueryAndDelegatesToHost() throws Exception {
+        OpenProjectFixture.runOnFx(() -> {
+            StubHost host = new StubHost();
+            DawMenuBarController controller = newController(host);
+            controller.build();
+            List<MenuItem> fileItems = controller.getMenuBar().getMenus().getFirst().getItems();
+            MenuItem relink = fileItems.stream()
+                    .filter(item -> "Relink Missing Assets…".equals(item.getText()))
+                    .findFirst().orElseThrow();
+            MenuItem restore = fileItems.stream()
+                    .filter(item -> "Restore from Archive…".equals(item.getText()))
+                    .findFirst().orElseThrow();
+            assertThat(fileItems.indexOf(relink)).as("next to the archive actions")
+                    .isEqualTo(fileItems.indexOf(restore) + 1);
+            assertThat(relink.isDisable()).as("nothing unresolved").isTrue();
+
+            host.unresolvedAssets = true;
+            controller.syncMenuState();
+            assertThat(relink.isDisable()).isFalse();
+            relink.fire();
+            assertThat(host.relinkMissingAssetsCalls).isEqualTo(1);
+
+            host.unresolvedAssets = false;
+            controller.syncMenuState();
+            assertThat(relink.isDisable()).isTrue();
         });
     }
 

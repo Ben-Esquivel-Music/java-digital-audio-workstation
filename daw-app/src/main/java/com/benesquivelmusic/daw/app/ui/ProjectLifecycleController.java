@@ -19,6 +19,10 @@ import com.benesquivelmusic.daw.core.persistence.journal.RecoverySummary;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
+import com.benesquivelmusic.daw.core.persistence.AssetReference;
+import com.benesquivelmusic.daw.core.persistence.ClipRehydrator;
+import com.benesquivelmusic.daw.core.persistence.MissingAsset;
+import com.benesquivelmusic.daw.core.persistence.MissingAssetsReport;
 import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectPaths;
@@ -120,6 +124,11 @@ final class ProjectLifecycleController {
      * {@code project().get().isDirty()} and calls {@code markDirty()}/
      * {@code markClean()} directly through the project supplier — the imperative
      * {@code MainController.projectDirty} boolean it used to poke is gone.</p>
+     *
+     * <p>Story 329 — {@code repaintArrangement} repaints the arrangement canvas
+     * (the repaint {@code AudioImportController} also receives): the open
+     * project's audio ({@link OpenProjectAudio}) runs it once per drain of
+     * loaded clip audio, so waveforms and placeholders follow the load.</p>
      */
     record Deps(
             Supplier<DawProject> project,
@@ -130,7 +139,8 @@ final class ProjectLifecycleController {
             Runnable rebuildHistoryPanel,
             Runnable onProjectUIRebuild,
             Supplier<String> captureLayoutJson,
-            Consumer<String> applyLayoutJson) {
+            Consumer<String> applyLayoutJson,
+            Runnable repaintArrangement) {
         Deps {
             Objects.requireNonNull(project, "project must not be null");
             Objects.requireNonNull(setProject, "setProject must not be null");
@@ -141,6 +151,7 @@ final class ProjectLifecycleController {
             Objects.requireNonNull(onProjectUIRebuild, "onProjectUIRebuild must not be null");
             Objects.requireNonNull(captureLayoutJson, "captureLayoutJson must not be null");
             Objects.requireNonNull(applyLayoutJson, "applyLayoutJson must not be null");
+            Objects.requireNonNull(repaintArrangement, "repaintArrangement must not be null");
         }
     }
 
@@ -172,6 +183,32 @@ final class ProjectLifecycleController {
      * {@link FxDispatcher#getDefault()}); {@link #postFx} tolerates the null.
      */
     private final FxDispatcher fxDispatcher;
+
+    /**
+     * Story 329 — the FX-confined owner of the open project's audio: the
+     * clip rehydration run of the current open, its live missing-assets
+     * report, the {@code Loading audio — N of M} strip operation and the
+     * report window. Every door that installs a project begins a run;
+     * every door that replaces or abandons one retires it
+     * ({@link #resetProjectState()}, {@link #dispose()}; an open from disk
+     * through {@link OpenProjectAudio#begin}, once the new project parsed).
+     */
+    private final OpenProjectAudio openProjectAudio;
+
+    /**
+     * Story 329 — relink in the open session (decisions D16, D17): what the
+     * missing-assets report's {@code Locate file…}, {@code Skip} and
+     * {@code Locate folder…} do, against {@link #openProjectAudio}'s report.
+     */
+    private final AssetRelinkFlow assetRelink;
+
+    /**
+     * Story 329 — the check every export, bounce and freeze entry point runs
+     * before it renders (decisions D19, D28): refused while a clip it renders
+     * loads, confirmed in the render path's words when clips would render
+     * silent.
+     */
+    private final RenderReadinessGuard renderGuard;
 
     /**
      * Story 296 — supplies the destination <em>parent</em> directory for a
@@ -252,6 +289,21 @@ final class ProjectLifecycleController {
     private BooleanSupplier recordingInFlight = () -> false;
 
     /**
+     * Story 329 (decision D41) — the number of {@link #loadProjectFromPath}
+     * calls so far. A migration dialog's Roll back re-enters the method while
+     * the outer call waits for the dialog; the outer call, its number no
+     * longer the last, then stays quiet. FX thread.
+     */
+    private long loadAttempts;
+
+    /**
+     * Story 329 (decision D41) — what the last {@link #loadProjectFromPath}
+     * call to return returned: a call a re-entrant load superseded returns
+     * the superseding call's result. FX thread.
+     */
+    private boolean lastLoadResult;
+
+    /**
      * Story 296 — the single auxiliary window currently hosting a Hub / Welcome
      * surface (opened by {@link #showInOwnedStage(String, Parent)}), or
      * {@code null} when none is open. Tracked so a repeat "Project Hub…" closes
@@ -293,6 +345,17 @@ final class ProjectLifecycleController {
         // May be null in a pure-unit context; postFx() / the leaf views fall
         // back to the static seam, preserving today's behaviour byte-for-byte.
         this.fxDispatcher = fxDispatcher;
+        // The drain and the relink results run as keyed work, so the owner
+        // and the relink flow need a real dispatcher: the injected one, else
+        // the app-scoped default (resolved once, shared by both).
+        FxDispatcher audioDispatcher = resolveDispatcher();
+        this.openProjectAudio = new OpenProjectAudio(audioDispatcher, progress, notificationBar,
+                deps.project(), deps.repaintArrangement(), this::presentMissingAssetsDialog);
+        this.assetRelink = new AssetRelinkFlow(openProjectAudio, audioDispatcher, notificationBar,
+                deps.repaintArrangement(), this::chooseRelinkFile, this::chooseRelinkFolder,
+                message -> confirm(ProjectAudioText.text("missingAssets.confirm.title"), message,
+                        ProjectAudioText.text("missingAssets.confirm.button")));
+        this.renderGuard = new RenderReadinessGuard(openProjectAudio, notificationBar, this::confirm);
     }
 
     /**
@@ -794,15 +857,15 @@ final class ProjectLifecycleController {
                         String xml = new ProjectSerializer().serialize(archived.project());
                         Files.writeString(destination.resolve("project.daw"), xml);
 
-                        int missingCount = archived.missingAssets().size();
+                        List<String> archiveMissing = archived.missingAssets();
                         String projectName = archived.header().projectName();
 
-                        // Load the restored project on the FX thread; only
-                        // show the success notification if loading succeeded.
+                        // Load the restored project on the FX thread; the
+                        // load announces the restore only if it succeeded.
                         postFx(() -> {
                             progress.removeOperation(restoreOp);
                             restoreProgress.close();
-                            openRestoredArchive(destination, projectName, missingCount);
+                            openRestoredArchive(destination, projectName, archiveMissing);
                         });
                         LOG.info(() -> "Restored archive " + archivePath
                                 + " into " + destination);
@@ -821,24 +884,64 @@ final class ProjectLifecycleController {
     /**
      * The FX half of {@link #onRestoreFromArchive()}, once the archive has
      * been extracted into {@code destination}: loads the restored project
-     * and, only if that load succeeded, shows the success notification.
-     * While a recording is in flight or a take is being written the load is
-     * refused (story 323 review) and the one WARNING names
-     * {@code destination}, since the archive is already there.
-     * Package-private so a test can drive it without the choosers. FX
-     * thread.
+     * through the {@link OpenDoor.ArchiveRestore} door, whose one
+     * announcement — made only if the load succeeded — counts the distinct
+     * union of the open's missing assets and the references the archive
+     * could not resolve itself ({@code archiveMissing}, story 329). While a
+     * recording is in flight or a take is being written the load is refused
+     * (story 323 review) and the one WARNING names {@code destination},
+     * since the archive is already there. Package-private so a test can
+     * drive it without the choosers. FX thread.
+     *
+     * @param destination    the folder the archive was extracted into
+     * @param projectName    the archived project's name
+     * @param archiveMissing the references the archive could not resolve, as stored
      */
-    void openRestoredArchive(Path destination, String projectName, int missingCount) {
+    void openRestoredArchive(Path destination, String projectName, List<String> archiveMissing) {
         if (refuseLateLoadWhileATakeIsRecordingOrBeingWritten("The archive was restored to " + destination)) {
             return;
         }
-        if (loadProjectFromPath(destination)) {
-            String message = "Restored archive: " + projectName
-                    + (missingCount == 0 ? "" : " (" + missingCount + " missing assets)");
-            notificationBar.show(
-                    missingCount == 0 ? NotificationLevel.SUCCESS : NotificationLevel.WARNING,
-                    message);
-        }
+        loadProjectFromPath(destination, new OpenDoor.ArchiveRestore(projectName, archiveMissing));
+    }
+
+    /**
+     * Installs a project restored from the snapshot browser (story 190;
+     * story 329, decision D21) — the {@code SnapshotsController} restore
+     * sink {@code MainController} wires. The same install as an open from
+     * disk without the read: the restored project becomes the live project
+     * with a fresh undo history, its audio begins loading (the previous
+     * run is retired), the UI is rebuilt, the project is marked dirty — a
+     * restored snapshot is unsaved relative to disk — and the
+     * {@link OpenDoor.SnapshotRestore} door's one announcement, qualified
+     * by what the snapshot's clips could not find, replaces the old
+     * unconditional {@code Restored snapshot} INFO. The project manager's
+     * project is not abandoned: a snapshot is a state of the open project.
+     * FX thread.
+     *
+     * @param restored      the deserialized snapshot
+     * @param label         the snapshot's label
+     * @param missingAssets what the snapshot's deserialization found missing
+     */
+    void installRestoredSnapshot(DawProject restored, String label, MissingAssetsReport missingAssets) {
+        Objects.requireNonNull(restored, "restored must not be null");
+        Objects.requireNonNull(missingAssets, "missingAssets must not be null");
+        deps.setProject().accept(restored);
+        deps.setUndoManager().accept(new UndoManager());
+        deps.rebuildHistoryPanel().run();
+        deps.resetTrackCounters().run();
+        Path projectDir = restored.getMetadata().projectPath();
+        OpenProjectAudio.Generation generation = openProjectAudio.begin(restored, projectDir, missingAssets,
+                restored.getTransport().getPositionInBeats());
+        rebuildUI();
+        // Mark dirty AFTER the rebuild so the DIRTY signal lands on the freshly built
+        // ProjectVM (the outgoing VM was disposed in rebuildViewModels and the new one
+        // is wired to the project there), which re-syncs the Save menu through its dirty
+        // listener. Marking BEFORE the rebuild announced to no live listener and left
+        // the bit visible only via the new VM's constructor seed — correct merely by
+        // coincidence of ordering. A restored snapshot is unsaved relative to disk, so
+        // it must be dirty.
+        deps.project().get().markDirty();
+        openProjectAudio.announce(generation, new OpenDoor.SnapshotRestore(label), projectDir);
     }
 
     /**
@@ -1108,11 +1211,72 @@ final class ProjectLifecycleController {
      *         is already surfaced in the notification bar)
      */
     boolean loadProjectFromPath(Path projectDir) {
+        return loadProjectFromPath(projectDir, OpenDoor.PLAIN);
+    }
+
+    /**
+     * Loads a project from the given directory through {@code door} (story
+     * 329; Persistence Integrity book §5.3): refused as
+     * {@link #loadProjectFromPath(Path)} says, then
+     * <ol>
+     *   <li>PARSE — {@link ProjectManager#openProject} reads and deserializes
+     *       the project (its clips carry references, no samples);</li>
+     *   <li>ACCOUNT — the open's missing-assets report
+     *       ({@link ProjectManager#getLastMissingAssets()}), classified
+     *       without decoding anything;</li>
+     *   <li>the project is installed as the live project, clean;</li>
+     *   <li>REHYDRATE — {@link OpenProjectAudio#begin} retires the previous
+     *       open's audio and queues the decode of every clip source the
+     *       report does not name, off the FX thread; an open that failed
+     *       before here left the project on screen and its audio alone
+     *       (decision D31);</li>
+     *   <li>CASCADE — the UI is rebuilt and the project's layout applied;</li>
+     *   <li>the migration report dialog, when the load migrated the schema;
+     *       its Roll back, run once the dialog closed, may re-enter this
+     *       method (decisions D41, D42);</li>
+     *   <li>ANNOUNCE — unless a Roll back re-entered this method, and only
+     *       if this open is still the current one, the door's one
+     *       announcement, qualified by the missing assets, and the report,
+     *       presented once;</li>
+     *   <li>the write-ahead journal opens, on the same two conditions as the
+     *       announcement; a Roll back with no backup abandons the project
+     *       without re-entering this method, so it opens none (decision
+     *       D48).</li>
+     * </ol>
+     * The announcement is the only notification a successful load shows:
+     * the doors that used to add their own pass their {@link OpenDoor}
+     * instead. Decodes never hold the open: the window is interactive while
+     * clips load, each showing {@code Loading…} until its audio lands. A
+     * load a Roll back re-entered is superseded by the inner load, which
+     * says what happened — its announcement, or its error — and opens the
+     * journal when it succeeds: the outer load then announces nothing,
+     * opens no journal and returns the inner load's result.
+     *
+     * @param projectDir the project directory
+     * @param door       how the project is being opened
+     * @return {@code true} if the project loaded successfully,
+     *         {@code false} if it was refused or failed (the warning or error
+     *         is already surfaced in the notification bar); for a load a
+     *         Roll back superseded, the superseding load's result
+     */
+    boolean loadProjectFromPath(Path projectDir, OpenDoor door) {
+        Objects.requireNonNull(door, "door must not be null");
+        long attempt = ++loadAttempts;
+        boolean loaded = loadAttempt(projectDir, door, attempt);
+        lastLoadResult = loaded;
+        return loaded;
+    }
+
+    /** One {@link #loadProjectFromPath(Path, OpenDoor)} call, numbered {@code attempt}. */
+    private boolean loadAttempt(Path projectDir, OpenDoor door, long attempt) {
         if (refuseWhileATakeIsRecordingOrBeingWritten()) {
             return false;
         }
         try {
-            resetProjectState();
+            // Story 329 (D31) — the open project's audio is retired only once the
+            // new one parsed (begin() retires it): a failed open leaves the project
+            // still on screen loading, reported and relinkable.
+            abandonOpenProject();
             projectManager.openProject(projectDir);
             DawProject dawProject = projectManager.getCurrentDawProject();
             if (dawProject == null) {
@@ -1120,30 +1284,46 @@ final class ProjectLifecycleController {
                         projectManager.getCurrentProject().name(),
                         AudioFormat.STUDIO_QUALITY);
             }
+            MissingAssetsReport missingAssets = projectManager.getLastMissingAssets();
             deps.setProject().accept(dawProject);
             deps.setUndoManager().accept(new UndoManager());
             deps.rebuildHistoryPanel().run();
             deps.resetTrackCounters().run();
             deps.project().get().markClean();
+            OpenProjectAudio.Generation generation = openProjectAudio.begin(dawProject, projectDir,
+                    missingAssets, dawProject.getTransport().getPositionInBeats());
             rebuildUI();
             // Story 282 — Mission Control. Apply the layout JSON blob
             // embedded in the project file (may be {@code null} for
             // legacy projects, in which case the layout manager falls
             // back to the Default built-in).
             deps.applyLayoutJson().accept(dawProject.getLayoutJson());
-            notificationBar.show(NotificationLevel.SUCCESS,
-                    "Opened project: " + projectDir.getFileName());
             LOG.info("Opened project from " + projectDir);
             // Story 247 — surface the migration report dialog when the
             // load triggered any registry-driven schema migrations. The
             // dialog itself short-circuits when the user has already
             // chosen "Don't show again" for this project.
             maybeShowMigrationReport(projectDir);
-            // Story 298 — open the write-ahead journal for the just-loaded
-            // project (no-op when journaled persistence is disabled). The hook
-            // is set by MainController, which owns the journal coordinator
-            // alongside the checkpoint manager + session it must seal.
-            notifyJournalOpen(projectDir);
+            // Story 329 (D41) — a Roll back re-entered this method: the inner
+            // load said what happened, announced or failed, and opened the
+            // journal if it succeeded. This load stays quiet and answers with
+            // the inner load's result.
+            if (attempt != loadAttempts) {
+                return lastLoadResult;
+            }
+            // Story 329 — the one announcement, after the migration dialog,
+            // and only if the open is still the current one.
+            if (openProjectAudio.isCurrent(generation)) {
+                openProjectAudio.announce(generation, door, projectDir);
+                // Story 298 — open the write-ahead journal for the just-loaded
+                // project (no-op when journaled persistence is disabled). The hook
+                // is set by MainController, which owns the journal coordinator
+                // alongside the checkpoint manager + session it must seal.
+                // Story 329 (D48) — only for the open still current: a Roll back
+                // with no .bak abandoned this project for an Untitled one without
+                // re-entering the load, so its folder gets no journal.
+                notifyJournalOpen(projectDir);
+            }
             return true;
         } catch (MigrationException e) {
             // Unmapped or broken migration chain — surface as an error
@@ -1235,12 +1415,9 @@ final class ProjectLifecycleController {
                         StandardCopyOption.COPY_ATTRIBUTES);
                 LOG.info("Rolled back migration: restored " + selectedBackup
                         + " over " + projectFile);
-                if (loadProjectFromPath(projectDir)) {
-                    notificationBar.show(NotificationLevel.SUCCESS,
-                            "Restored on-disk project file to v"
-                                    + report.fromVersion()
-                                    + " (in-memory migrations were re-applied)");
-                }
+                // Story 329 — the reload's one announcement says what the
+                // roll-back did, qualified by what it could not find.
+                loadProjectFromPath(projectDir, new OpenDoor.MigrationRollback(report.fromVersion()));
             } else {
                 // No backup yet: the migrated DawProject lives only in
                 // memory, so abandoning is a complete rollback.
@@ -1382,7 +1559,29 @@ final class ProjectLifecycleController {
         }
     }
 
+    /**
+     * Abandons the open project before a door replaces it without reading a
+     * project file — New project, Import session, a roll-back that abandons
+     * the migrated project — and, first, retires its audio (story 329,
+     * decisions D21, D31): its decodes are cancelled, its report window
+     * closes and nothing it still had in flight reaches the project that
+     * replaces it. An open from disk retires the audio only once the new
+     * project parsed.
+     */
     void resetProjectState() {
+        openProjectAudio.retire();
+        abandonOpenProject();
+    }
+
+    /**
+     * Abandons the open project in the project manager, leaving its audio
+     * alone: the open path's first step, before PARSE (decision D31). The
+     * audio is retired only when the new project replaces it
+     * ({@link OpenProjectAudio#begin}); an open that fails before then
+     * leaves the project on screen with its clips still loading, its report
+     * and its relink.
+     */
+    private void abandonOpenProject() {
         if (projectManager.getCurrentProject() != null) {
             projectManager.abandonProject();
         }
@@ -1632,56 +1831,76 @@ final class ProjectLifecycleController {
                 postFx(() -> openLastCleanSaveAfterFailedReplay(projectDir, e.getMessage()));
             } catch (IOException e) {
                 LOG.log(Level.WARNING, "Failed to persist recovered project for " + projectDir, e);
-                postFx(() -> {
-                    String failed = "Could not write recovered project: " + e.getMessage();
-                    if (refuseLateLoadWhileATakeIsRecordingOrBeingWritten(failed)) {
-                        return;
-                    }
-                    notificationBar.show(NotificationLevel.ERROR, failed);
-                    loadProjectFromPath(projectDir);
-                });
+                String failure = e.getMessage();
+                postFx(() -> openLastCleanSaveAfterRecoveredWriteFailed(projectDir, failure));
             }
         });
     }
 
     /**
+     * The FX half of a journal replay whose recovered project could not be
+     * written: opens the last clean save through the
+     * {@link OpenDoor.RecoveredWriteFailed} door, whose one ERROR says both
+     * — the write failed, the last clean save was opened — qualified by the
+     * missing assets (story 329: the old ERROR was replaced on the bar by
+     * the load's own SUCCESS a moment later). When that load fails too, the
+     * ERROR says so after the load's own. While a recording is in flight or
+     * a take is being written the load is refused (story 323 review) and
+     * the one WARNING carries the failure instead. Package-private so a test
+     * can drive it without a journal. FX thread.
+     *
+     * @param projectDir the project
+     * @param failure    why the recovered project could not be written
+     */
+    void openLastCleanSaveAfterRecoveredWriteFailed(Path projectDir, String failure) {
+        String failed = "Could not write recovered project: " + failure;
+        if (refuseLateLoadWhileATakeIsRecordingOrBeingWritten(failed)) {
+            return;
+        }
+        if (!loadProjectFromPath(projectDir, new OpenDoor.RecoveredWriteFailed(failure))) {
+            notificationBar.show(NotificationLevel.ERROR,
+                    ProjectAudioText.text("projectOpen.recoveredWriteFailed.notOpened", String.valueOf(failure)));
+        }
+    }
+
+    /**
      * The FX half of a journal replay whose recovered changes have been
-     * written to {@code projectFile}: loads the project and, only if that
-     * load succeeded, shows the success notification. While a recording is
-     * in flight or a take is being written the load is refused (story 323
-     * review) and the one WARNING says that the changes are already in
-     * {@code projectFile}. Package-private so a test can drive it without a
-     * journal. FX thread.
+     * written to {@code projectFile}: loads the project through the
+     * {@link OpenDoor.JournalReplay} door, whose one announcement — made
+     * only if the load succeeded — says how many changes were recovered. While a
+     * recording is in flight or a take is being written the load is refused
+     * (story 323 review) and the one WARNING says that the changes are
+     * already in {@code projectFile}. Package-private so a test can drive it
+     * without a journal. FX thread.
      */
     void openRecoveredProject(Path projectDir, Path projectFile, int applied) {
         if (refuseLateLoadWhileATakeIsRecordingOrBeingWritten(applied + " recovered change"
                 + (applied == 1 ? " was" : "s were") + " written to " + projectFile)) {
             return;
         }
-        if (loadProjectFromPath(projectDir)) {
-            notificationBar.show(NotificationLevel.SUCCESS,
-                    "Recovered " + applied + " change" + (applied == 1 ? "" : "s") + " from the journal");
-        }
+        loadProjectFromPath(projectDir, new OpenDoor.JournalReplay(applied));
     }
 
     /**
      * The FX half of a journal replay that failed and was rolled back: opens
-     * the last clean save, then says the recovery failed and what the load
-     * did — said after the load, so it never claims an open that did not
-     * happen. While a recording is in flight or a take is being written the
-     * load is refused (story 323 review) and the one WARNING carries the
-     * failure instead. Package-private so a test can drive it without a
-     * journal. FX thread.
+     * the last clean save through the {@link OpenDoor.FailedReplayFallback}
+     * door, whose one ERROR — made after the load, so it never claims an
+     * open that did not happen — says the recovery failed and the last
+     * clean save was opened instead. When that load fails too, the ERROR
+     * says so after the load's own. While a recording is in flight or a
+     * take is being written the load is refused (story 323 review) and the
+     * one WARNING carries the failure instead. Package-private so a test can
+     * drive it without a journal. FX thread.
      */
     void openLastCleanSaveAfterFailedReplay(Path projectDir, String failure) {
         String failed = "Recovery failed (" + failure + ")";
         if (refuseLateLoadWhileATakeIsRecordingOrBeingWritten(failed)) {
             return;
         }
-        boolean opened = loadProjectFromPath(projectDir);
-        notificationBar.show(NotificationLevel.ERROR, failed + (opened
-                ? "; opened the last clean save instead"
-                : "; the last clean save could not be opened either"));
+        if (!loadProjectFromPath(projectDir, new OpenDoor.FailedReplayFallback(failure))) {
+            notificationBar.show(NotificationLevel.ERROR,
+                    ProjectAudioText.text("projectOpen.failedReplay.notOpened", String.valueOf(failure)));
+        }
     }
 
     /**
@@ -1909,6 +2128,173 @@ final class ProjectLifecycleController {
         }
         FxDispatcher def = FxDispatcher.getDefault();
         return def != null ? def : new FxDispatcher();
+    }
+
+    // ── The open project's audio (story 329) ──────────────────────────────────
+
+    /**
+     * Returns the owner of the open project's audio: the arrangement asks it
+     * what each clip's body shows, and the relink, export and menu wiring
+     * ask it what is loading and what is unresolved.
+     *
+     * @return the open project's audio
+     */
+    OpenProjectAudio openProjectAudio() {
+        return openProjectAudio;
+    }
+
+    /**
+     * Retires the open project's audio for good — the window is closing
+     * (decision D21, called from the primary stage's hidden handler): its
+     * decodes are cancelled and nothing it still has in flight has an
+     * effect. FX thread.
+     */
+    void dispose() {
+        openProjectAudio.retire();
+    }
+
+    /**
+     * Returns the relink flow of the open project's report (tests answer its
+     * choosers and confirmation and hold its workers).
+     *
+     * @return the relink flow
+     */
+    AssetRelinkFlow assetRelink() {
+        return assetRelink;
+    }
+
+    /**
+     * Returns the check every export, bounce and freeze entry point runs
+     * before it renders (decision D19).
+     *
+     * @return the render readiness guard
+     */
+    RenderReadinessGuard renderGuard() {
+        return renderGuard;
+    }
+
+    /**
+     * Sets what drops a relinked clip's cached sample-rate conversions — the
+     * engine's {@code SampleRateConversionCache::invalidateForClip}, wired by
+     * {@code MainController} (decision D17).
+     *
+     * @param invalidator called with the id of each re-pointed clip
+     */
+    void setClipConversionInvalidator(Consumer<String> invalidator) {
+        assetRelink.setInvalidator(invalidator);
+    }
+
+    /**
+     * "Relink Missing Assets…" (decision D15): presents the open's one
+     * missing-assets report again — the same window — while it has rows;
+     * otherwise says there is nothing to relink.
+     */
+    void onRelinkMissingAssets() {
+        Optional<OpenProjectAudio.Generation> generation = openProjectAudio.currentGeneration();
+        if (generation.isEmpty() || !hasUnresolvedAssets()) {
+            notificationBar.show(NotificationLevel.INFO, ProjectAudioText.text("missingAssets.nothingToRelink"));
+            return;
+        }
+        openProjectAudio.presentReport(generation.get());
+    }
+
+    /**
+     * Whether the open's missing-assets report still has rows — what
+     * enables "Relink Missing Assets…".
+     *
+     * @return {@code true} if a relink can still act on something
+     */
+    boolean hasUnresolvedAssets() {
+        return !openProjectAudio.report().isEmpty();
+    }
+
+    /**
+     * Default {@link OpenProjectAudio.ReportPresenter}: the non-modal
+     * {@link MissingAssetsDialog}, owned by the main window, shown now.
+     */
+    private OpenProjectAudio.ReportView presentMissingAssetsDialog(OpenProjectAudio.Generation generation,
+                                                                    MissingAssetsReport report) {
+        MissingAssetsDialog dialog = missingAssetsDialog(generation, report);
+        dialog.present();
+        return dialog;
+    }
+
+    /**
+     * Builds the missing-assets report window of {@code generation}, not yet
+     * shown: its rows' actions are the relink flow's, its archive link the
+     * archive flow.
+     *
+     * @param generation the open the report belongs to
+     * @param report     the report as it is now
+     * @return the report window
+     */
+    MissingAssetsDialog missingAssetsDialog(OpenProjectAudio.Generation generation, MissingAssetsReport report) {
+        return new MissingAssetsDialog(mainWindow(), report,
+                assetRelink.actionsFor(generation, this::onArchiveProject));
+    }
+
+    /** Locate file's default chooser: opens in the project folder. */
+    private Optional<Path> chooseRelinkFile(MissingAsset row, Optional<Path> initialDirectory) {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle(switch (row.reference()) {
+            case AssetReference.SingleFile file -> ProjectAudioText.text("missingAssets.chooser.file",
+                    fileNameOf(file.reference()));
+            case AssetReference.Take _ -> ProjectAudioText.text("missingAssets.chooser.take");
+        });
+        initialDirectory.filter(Files::isDirectory).ifPresent(folder -> chooser.setInitialDirectory(folder.toFile()));
+        java.io.File picked = chooser.showOpenDialog(mainWindow());
+        return picked == null ? Optional.empty() : Optional.of(picked.toPath());
+    }
+
+    /** Locate folder's default chooser: opens in the project folder. */
+    private Optional<Path> chooseRelinkFolder(Optional<Path> initialDirectory) {
+        DirectoryChooser chooser = new DirectoryChooser();
+        chooser.setTitle(ProjectAudioText.text("missingAssets.chooser.folder"));
+        initialDirectory.filter(Files::isDirectory).ifPresent(folder -> chooser.setInitialDirectory(folder.toFile()));
+        java.io.File picked = chooser.showDialog(mainWindow());
+        return picked == null ? Optional.empty() : Optional.of(picked.toPath());
+    }
+
+    /** The default confirmation of the relink flow and the render guard: a §5.9 confirm dialog. */
+    private boolean confirm(String title, String message, String confirmLabel) {
+        DawgDialog<ButtonType> dialog = DawgDialog.confirm(title, message, confirmLabel);
+        Window owner = mainWindow();
+        if (owner != null) {
+            dialog.initOwner(owner);
+        }
+        return dialog.showAndWait()
+                .filter(pressed -> pressed.getButtonData() == ButtonBar.ButtonData.OK_DONE)
+                .isPresent();
+    }
+
+    private Window mainWindow() {
+        return rootPane.getScene() == null ? null : rootPane.getScene().getWindow();
+    }
+
+    /** The last element of a clip reference, whichever separator it was written with. */
+    private static String fileNameOf(String reference) {
+        int slash = Math.max(reference.lastIndexOf('/'), reference.lastIndexOf('\\'));
+        return slash < 0 ? reference : reference.substring(slash + 1);
+    }
+
+    /**
+     * Overrides the rehydrator later opens start (story 329). Tests inject one
+     * whose decode threads they hold, and record where decodes run.
+     *
+     * @param rehydrator the rehydrator; must not be {@code null}
+     */
+    void setClipRehydrator(ClipRehydrator rehydrator) {
+        openProjectAudio.setRehydrator(rehydrator);
+    }
+
+    /**
+     * Overrides the missing-assets report presenter (story 329). Tests inject
+     * a capturing presenter that shows nothing and counts presentations.
+     *
+     * @param presenter the presenter; must not be {@code null}
+     */
+    void setMissingAssetsPresenter(OpenProjectAudio.ReportPresenter presenter) {
+        openProjectAudio.setPresenter(presenter);
     }
 
     // ── Seam overrides (story 296) ────────────────────────────────────────────

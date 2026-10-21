@@ -22,6 +22,14 @@ import java.util.Objects;
  * <p>If the imported file's sample rate differs from the project's sample rate,
  * automatic conversion is performed using high-quality windowed sinc
  * interpolation via {@link SampleRateConverter}.</p>
+ *
+ * <p>The decode, the rate conversion and the ADM BWF clip extraction are the
+ * shared ones — {@link ReferenceFileLoader#read(Path)},
+ * {@link ReferenceFileLoader#convertSampleRate(float[][], int, int)} and
+ * {@link AdmClipAudio#extract(AdmImportResult, int)} — which the
+ * project-open clip rehydrator also uses, so a clip reloaded from a saved
+ * project holds the same samples its import produced (Persistence
+ * Integrity book §4.3, §5.1).</p>
  */
 public final class AudioFileImporter {
 
@@ -101,20 +109,17 @@ public final class AudioFileImporter {
 
         listener.onProgress(file, 0.0);
 
-        // Read the audio file using the appropriate reader
-        AudioReadResult readResult = readAudioFile(file, format);
+        // Read the audio file with the shared decode
+        AudioReadResult readResult = ReferenceFileLoader.read(file, format);
         listener.onProgress(file, 0.3);
 
-        // Convert sample rate if needed
-        float[][] audioData = readResult.audioData();
+        // Convert to the project's sample rate (the shared helper returns the
+        // decoded array itself when the rates already match)
         int fileSampleRate = readResult.sampleRate();
         int projectSampleRate = (int) project.getFormat().sampleRate();
-        boolean wasConverted = false;
-
-        if (fileSampleRate != projectSampleRate) {
-            audioData = convertSampleRate(audioData, fileSampleRate, projectSampleRate);
-            wasConverted = true;
-        }
+        boolean wasConverted = fileSampleRate != projectSampleRate;
+        float[][] audioData = ReferenceFileLoader.convertSampleRate(
+                readResult.audioData(), fileSampleRate, projectSampleRate);
         listener.onProgress(file, 0.8);
 
         // Calculate clip duration in beats
@@ -269,42 +274,28 @@ public final class AudioFileImporter {
         boolean wasConverted = adm.sampleRate() != projectSampleRate;
         double tempo = project.getTransport().getTempo();
 
-        Track firstTrack = null;
-        AudioClip firstClip = null;
-
-        // Bed track: combine all bed-channel buffers into one multi-channel clip
-        if (!adm.bedAudio().isEmpty()) {
-            float[][] bedData = adm.bedAudio().toArray(new float[0][]);
-            if (wasConverted) {
-                bedData = convertSampleRate(bedData, adm.sampleRate(), projectSampleRate);
-            }
-            double bedBeats = framesToBeats(bedData[0].length, projectSampleRate, tempo);
-            String bedTrackName = "Bed (" + adm.bedLayout().name() + ")";
-            Track bedTrack = (targetTrack != null) ? targetTrack : project.createAudioTrack(bedTrackName);
-            AudioClip bedClip = new AudioClip(bedTrackName, startBeat, bedBeats, file.toString());
-            bedClip.setAudioData(bedData);
-            bedTrack.addClip(bedClip);
-            firstTrack = bedTrack;
-            firstClip = bedClip;
-        }
+        // The bed clip (all bed channels, one multi-channel clip) and one clip
+        // per ADM audioObject, at the project rate and with their import
+        // names — the same extraction the project-open rehydrator uses.
+        List<AdmClipAudio> admClips = AdmClipAudio.extract(adm, projectSampleRate);
         listener.onProgress(file, 0.6);
 
-        // Object tracks: one per ADM audioObject
-        for (int i = 0; i < adm.objectAudio().size(); i++) {
-            float[] mono = adm.objectAudio().get(i);
-            float[][] objData = new float[][]{mono};
-            if (wasConverted) {
-                objData = convertSampleRate(objData, adm.sampleRate(), projectSampleRate);
-            }
-            double objBeats = framesToBeats(objData[0].length, projectSampleRate, tempo);
-            String objName = "Object " + (i + 1);
-            Track objTrack = project.createAudioTrack(objName);
-            AudioClip objClip = new AudioClip(objName, startBeat, objBeats, file.toString());
-            objClip.setAudioData(objData);
-            objTrack.addClip(objClip);
+        Track firstTrack = null;
+        AudioClip firstClip = null;
+        for (AdmClipAudio admClip : admClips) {
+            float[][] clipData = admClip.audio();
+            double clipBeats = framesToBeats(clipData[0].length, projectSampleRate, tempo);
+            String clipName = admClip.clipName();
+            // The bed may land on the caller's track; every object gets its own.
+            Track clipTrack = (admClip.bed() && targetTrack != null)
+                    ? targetTrack
+                    : project.createAudioTrack(clipName);
+            AudioClip clip = new AudioClip(clipName, startBeat, clipBeats, file.toString());
+            clip.setAudioData(clipData);
+            clipTrack.addClip(clip);
             if (firstTrack == null) {
-                firstTrack = objTrack;
-                firstClip = objClip;
+                firstTrack = clipTrack;
+                firstClip = clip;
             }
         }
         listener.onProgress(file, 1.0);
@@ -319,32 +310,6 @@ public final class AudioFileImporter {
     private static double framesToBeats(int numFrames, int sampleRate, double tempo) {
         double durationSeconds = (double) numFrames / sampleRate;
         return durationSeconds * (tempo / 60.0);
-    }
-
-
-    private static float[][] convertSampleRate(float[][] audioData, int sourceSampleRate, int targetSampleRate) {
-        int channels = audioData.length;
-        float[][] converted = new float[channels][];
-        for (int ch = 0; ch < channels; ch++) {
-            converted[ch] = SampleRateConverter.convert(audioData[ch], sourceSampleRate, targetSampleRate);
-        }
-        return converted;
-    }
-
-    /**
-     * Reads an audio file using the reader appropriate for the given format.
-     */
-    private static AudioReadResult readAudioFile(Path file, SupportedAudioFormat format) throws IOException {
-        return switch (format) {
-            case WAV -> {
-                WavFileReader.WavReadResult wav = WavFileReader.read(file);
-                yield new AudioReadResult(wav.audioData(), wav.sampleRate(), wav.channels(), wav.bitDepth());
-            }
-            case FLAC -> FlacFileReader.read(file);
-            case AIFF -> AiffFileReader.read(file);
-            case OGG -> OggVorbisFileReader.read(file);
-            case MP3 -> Mp3FileReader.read(file);
-        };
     }
 
     /**

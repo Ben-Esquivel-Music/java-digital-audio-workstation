@@ -115,7 +115,7 @@ class MigrationRollBackAndRecoveryGuardTest {
                     new VBox(),
                     new ProjectLifecycleController.Deps(project::get, project::set, undoManager::get,
                             undoManager::set, () -> { }, () -> { }, rebuilds::incrementAndGet,
-                            () -> null, _ -> { }),
+                            () -> null, _ -> { }, () -> { }),
                     new ProjectArchiver());
             lifecycle.setTakeBeingWrittenCheck(takeBeingWritten::get);
         });

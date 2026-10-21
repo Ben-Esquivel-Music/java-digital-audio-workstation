@@ -142,6 +142,14 @@ public enum DawAction {
      * surfaced via the File menu and the Command Palette.
      */
     RESTORE_FROM_ARCHIVE("Restore from Archive\u2026", Category.EDITING, null),
+    /**
+     * Story 329 (Persistence Integrity book \u00a74.3, decision D15) \u2014 present
+     * the open project's missing-assets report again, to relink or skip what
+     * the open could not load. Enabled only while the report has rows. No
+     * default shortcut \u2014 surfaced beside the archive actions in the File
+     * menu and in the Command Palette.
+     */
+    RELINK_MISSING_ASSETS("Relink Missing Assets\u2026", Category.EDITING, null),
 
     // ── Audio file import ───────────────────────────────────────────────────
     IMPORT_AUDIO_FILE("Import Audio File", Category.EDITING,

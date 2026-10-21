@@ -84,7 +84,7 @@ class RestoreAllDefaultsIsGuardedTest {
             KeyCombination custom = new KeyCodeCombination(
                     KeyCode.F24, KeyCombination.SHORTCUT_DOWN);
             model.getKeyBindingManager().setBinding(rebindable, custom);
-            // A NULL-default action too (nine DawActions ship unbound):
+            // A NULL-default action too (ten DawActions ship unbound):
             // restore-all must CLEAR a custom binding here — falling back
             // to the persisted binding would let it silently survive.
             DawAction nullDefaultAction = DawAction.TOGGLE_PRE_ROLL;

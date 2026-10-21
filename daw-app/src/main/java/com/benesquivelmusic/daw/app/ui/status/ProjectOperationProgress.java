@@ -389,6 +389,28 @@ public final class ProjectOperationProgress {
     }
 
     /**
+     * Replaces a registered operation with {@code replacement} in place, so
+     * an operation whose name carries its progress ("Loading audio — 3 of
+     * 40", story 329) keeps its slot in the strip. Nothing happens when
+     * {@code current} is no longer registered — it finished or was removed
+     * meanwhile. Discrete — routed un-keyed, after every earlier add and
+     * remove.
+     *
+     * @param current     the operation shown now; must not be {@code null}
+     * @param replacement the operation to show instead; must not be {@code null}
+     */
+    public void replaceOperation(NamedOperation current, NamedOperation replacement) {
+        Objects.requireNonNull(current, "current must not be null");
+        Objects.requireNonNull(replacement, "replacement must not be null");
+        dispatcher.onFx(() -> {
+            int index = operationsBacking.indexOf(current);
+            if (index >= 0) {
+                operationsBacking.set(index, replacement);
+            }
+        });
+    }
+
+    /**
      * Binds {@link #dirtyProperty()} to story 292's {@code ProjectVM.dirty}
      * (the §1.2 "one dirty bit"), so the model mirrors the live core dirty bit
      * rather than re-deriving it (§295 goal). Idempotent re-binding is the

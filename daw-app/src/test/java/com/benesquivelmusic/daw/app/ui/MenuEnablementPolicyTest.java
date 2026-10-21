@@ -22,10 +22,12 @@ class MenuEnablementPolicyTest {
                 /* canRedo     */ false,
                 /* hasClipboard*/ false,
                 /* hasSelection*/ false,
-                /* hasTracks   */ false));
+                /* hasTracks   */ false,
+                /* hasUnresolvedAssets */ false));
 
         assertThat(enablement.saveDisabled()).isTrue();
         assertThat(enablement.exportSessionDisabled()).isTrue();
+        assertThat(enablement.relinkMissingAssetsDisabled()).isTrue();
         assertThat(enablement.undoDisabled()).isTrue();
         assertThat(enablement.redoDisabled()).isTrue();
         assertThat(enablement.copyDisabled()).isTrue();
@@ -38,26 +40,38 @@ class MenuEnablementPolicyTest {
     @Test
     void dirtyProjectEnablesSave() {
         var enablement = MenuEnablementPolicy.compute(new MenuEnablementPolicy.MenuState(
-                true, false, false, false, false, false));
+                true, false, false, false, false, false, false));
         assertThat(enablement.saveDisabled()).isFalse();
     }
 
     @Test
     void havingTracksEnablesExportSession() {
         var enablement = MenuEnablementPolicy.compute(new MenuEnablementPolicy.MenuState(
-                false, false, false, false, false, true));
+                false, false, false, false, false, true, false));
         assertThat(enablement.exportSessionDisabled()).isFalse();
+    }
+
+    /** Story 329 (D15) — "Relink Missing Assets…" is enabled exactly while the report has rows. */
+    @Test
+    void unresolvedAssetsAloneEnableRelinkMissingAssets() {
+        MenuEnablementPolicy.MenuEnablement unresolved = MenuEnablementPolicy.compute(
+                new MenuEnablementPolicy.MenuState(false, false, false, false, false, false, true));
+        assertThat(unresolved.relinkMissingAssetsDisabled()).isFalse();
+
+        MenuEnablementPolicy.MenuEnablement everythingElse = MenuEnablementPolicy.compute(
+                new MenuEnablementPolicy.MenuState(true, true, true, true, true, true, false));
+        assertThat(everythingElse.relinkMissingAssetsDisabled()).isTrue();
     }
 
     @Test
     void undoRedoFlagsControlUndoRedoMenuItems() {
         var canUndoOnly = MenuEnablementPolicy.compute(new MenuEnablementPolicy.MenuState(
-                false, true, false, false, false, false));
+                false, true, false, false, false, false, false));
         assertThat(canUndoOnly.undoDisabled()).isFalse();
         assertThat(canUndoOnly.redoDisabled()).isTrue();
 
         var canRedoOnly = MenuEnablementPolicy.compute(new MenuEnablementPolicy.MenuState(
-                false, false, true, false, false, false));
+                false, false, true, false, false, false, false));
         assertThat(canRedoOnly.undoDisabled()).isTrue();
         assertThat(canRedoOnly.redoDisabled()).isFalse();
     }
@@ -66,7 +80,7 @@ class MenuEnablementPolicyTest {
     void selectionEnablesCopyCutDuplicateDeleteButNotPaste() {
         var enablement = MenuEnablementPolicy.compute(new MenuEnablementPolicy.MenuState(
                 false, false, false, /* hasClipboard */ false,
-                /* hasSelection */ true, false));
+                /* hasSelection */ true, false, false));
 
         assertThat(enablement.copyDisabled()).isFalse();
         assertThat(enablement.cutDisabled()).isFalse();
@@ -80,17 +94,18 @@ class MenuEnablementPolicyTest {
     void clipboardEnablesPasteRegardlessOfSelection() {
         var enablement = MenuEnablementPolicy.compute(new MenuEnablementPolicy.MenuState(
                 false, false, false, /* hasClipboard */ true,
-                /* hasSelection */ false, false));
+                /* hasSelection */ false, false, false));
         assertThat(enablement.pasteDisabled()).isFalse();
     }
 
     @Test
     void allEnabledStateMatchesAFullyLoadedSession() {
         var enablement = MenuEnablementPolicy.compute(new MenuEnablementPolicy.MenuState(
-                true, true, true, true, true, true));
+                true, true, true, true, true, true, true));
 
         assertThat(enablement.saveDisabled()).isFalse();
         assertThat(enablement.exportSessionDisabled()).isFalse();
+        assertThat(enablement.relinkMissingAssetsDisabled()).isFalse();
         assertThat(enablement.undoDisabled()).isFalse();
         assertThat(enablement.redoDisabled()).isFalse();
         assertThat(enablement.copyDisabled()).isFalse();

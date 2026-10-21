@@ -73,6 +73,7 @@ final class MenuConstructionService {
      */
     record SyncableItems(MenuItem saveItem,
                          MenuItem exportSessionItem,
+                         MenuItem relinkMissingAssetsItem,
                          MenuItem importAudioFileItem,
                          MenuItem undoItem,
                          MenuItem redoItem,
@@ -96,6 +97,10 @@ final class MenuConstructionService {
                 DawAction.EXPORT_RENDER_QUEUE, host::onOpenRenderQueue);
         MenuItem importAudioFileItem = menuItem("Import Audio File\u2026", DawIcon.WAVEFORM,
                 DawAction.IMPORT_AUDIO_FILE, host::onImportAudioFile);
+        // Story 329 \u2014 re-presents the open's missing-assets report; enabled
+        // only while it has rows (MenuEnablementPolicy).
+        MenuItem relinkMissingAssetsItem = menuItem("Relink Missing Assets\u2026", DawIcon.FOLDER,
+                DawAction.RELINK_MISSING_ASSETS, host::onRelinkMissingAssets);
 
         // Edit menu items needing state sync
         MenuItem undoItem = menuItem("Undo", DawIcon.UNDO,
@@ -114,12 +119,13 @@ final class MenuConstructionService {
                 DawAction.DELETE_SELECTION, host::onDeleteSelection);
 
         SyncableItems sync = new SyncableItems(
-                saveItem, exportSessionItem, importAudioFileItem,
+                saveItem, exportSessionItem, relinkMissingAssetsItem, importAudioFileItem,
                 undoItem, redoItem, copyItem, cutItem, pasteItem,
                 duplicateItem, deleteItem);
 
         List<Menu> menus = List.of(
-                buildFileMenu(saveItem, exportSessionItem, renderQueueItem, importAudioFileItem),
+                buildFileMenu(saveItem, exportSessionItem, renderQueueItem, importAudioFileItem,
+                        relinkMissingAssetsItem),
                 buildEditMenu(undoItem, redoItem, copyItem, cutItem,
                         pasteItem, duplicateItem, deleteItem),
                 buildTracksMenu(),
@@ -137,7 +143,8 @@ final class MenuConstructionService {
     private Menu buildFileMenu(MenuItem saveItem,
                                MenuItem exportSessionItem,
                                MenuItem renderQueueItem,
-                               MenuItem importAudioFileItem) {
+                               MenuItem importAudioFileItem,
+                               MenuItem relinkMissingAssetsItem) {
         Menu fileMenu = new Menu("File");
         fileMenu.getStyleClass().add("daw-menu");
 
@@ -173,7 +180,7 @@ final class MenuConstructionService {
                 importSession, exportSessionItem,
                 renderQueueItem,
                 new SeparatorMenuItem(),
-                archiveProject, restoreArchive,
+                archiveProject, restoreArchive, relinkMissingAssetsItem,
                 new SeparatorMenuItem(),
                 importAudioFileItem
         );

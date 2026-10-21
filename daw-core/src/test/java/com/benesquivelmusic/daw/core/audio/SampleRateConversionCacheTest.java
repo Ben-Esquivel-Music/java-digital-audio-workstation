@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.sdk.audio.SampleRateConverter.QualityTier;
 import com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -58,7 +59,9 @@ class SampleRateConversionCacheTest {
         float[][] second = cache.get("clip-1", meta, 48_000, QualityTier.MEDIUM,
                 () -> { calls.incrementAndGet(); return raw; });
 
-        assertThat(calls.get()).isEqualTo(1);          // supplier invoked exactly once
+        // The supplier is consulted on every lookup — the entry is served only
+        // while the clip still holds the array it converted — but converts once.
+        assertThat(calls.get()).isEqualTo(2);
         assertThat(first).isSameAs(second);            // cached buffer returned
         assertThat(first[0].length).isEqualTo(4_800);  // 100 ms @ 48 kHz
         assertThat(first).isNotSameAs(raw);
@@ -134,6 +137,35 @@ class SampleRateConversionCacheTest {
                 () -> { calls.incrementAndGet(); return raw; });
 
         assertThat(calls.get()).isEqualTo(2);
+    }
+
+    @Test
+    void aConversionOfTheOldArrayStoredAfterTheInvalidationIsNeverServedForTheNewArray() {
+        SampleRateConversionCache cache = new SampleRateConversionCache();
+        SourceRateMetadata meta = SourceRateMetadata.of(44_100, 1);
+        float[][] oldAudio = makeBuffer(4_410);
+        float[][] newAudio = new float[1][4_410];
+        Arrays.fill(newAudio[0], 0.5f);
+        float[][] newConverted = new SampleRateConversionCache()
+                .get("elsewhere", meta, 48_000, QualityTier.MEDIUM, () -> newAudio);
+        float[][] oldConverted = cache.get("clip-1", meta, 48_000, QualityTier.MEDIUM, () -> oldAudio);
+
+        // A relink publishes the new array and invalidates the clip, but a
+        // render block that had read the old array before the publish misses
+        // the cache afterwards and stores a conversion of the OLD array.
+        cache.invalidateForClip("clip-1");
+        float[][] lateOldConversion = cache.get("clip-1", meta, 48_000, QualityTier.MEDIUM, () -> oldAudio);
+        // Every later block reads the new array.
+        float[][] served = cache.get("clip-1", meta, 48_000, QualityTier.MEDIUM, () -> newAudio);
+
+        assertThat(lateOldConversion).as("fixture: the late block converted the old audio")
+                .isNotSameAs(oldConverted);
+        assertThat(served).as("never the old audio's conversion").isNotSameAs(lateOldConversion);
+        assertThat(Arrays.deepEquals(served, newConverted)).as("a conversion of the new array").isTrue();
+        assertThat(Arrays.deepEquals(served, oldConverted)).isFalse();
+        assertThat(cache.get("clip-1", meta, 48_000, QualityTier.MEDIUM, () -> newAudio))
+                .as("and from then on the cached conversion of the new array").isSameAs(served);
+        assertThat(cache.size()).as("the entry was replaced, not added").isEqualTo(1);
     }
 
     @Test

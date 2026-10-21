@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
+import com.benesquivelmusic.daw.core.persistence.MissingAssetsReport;
 import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
@@ -28,7 +29,6 @@ import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -69,15 +69,16 @@ final class SnapshotsController {
      * {@code ProjectLifecycleController.confirmProjectMayClose()}, which
      * refuses while a recording is in flight or a take is being written and
      * otherwise asks about unsaved changes); the restore cascade is a
-     * {@link BiConsumer} that swaps the
+     * {@link RestoredProjectSink} that swaps the
      * project, resets the undo manager, and rebuilds the UI exactly as for an
-     * open-from-disk.
+     * open-from-disk — and, story 329, loads the restored clips' audio and
+     * announces the restore qualified by what they could not find.
      */
     record Deps(
             Supplier<Stage> ownerStage,
             Supplier<DawProject> currentProject,
             BooleanSupplier confirmProjectMayClose,
-            BiConsumer<DawProject, String> applyRestoredProject) {
+            RestoredProjectSink applyRestoredProject) {
         Deps {
             Objects.requireNonNull(ownerStage, "ownerStage must not be null");
             Objects.requireNonNull(currentProject, "currentProject must not be null");
@@ -85,6 +86,25 @@ final class SnapshotsController {
                     "confirmProjectMayClose must not be null");
             Objects.requireNonNull(applyRestoredProject, "applyRestoredProject must not be null");
         }
+    }
+
+    /**
+     * Installs a restored snapshot as the live project — the restore cascade
+     * of {@link Deps}.
+     */
+    @FunctionalInterface
+    interface RestoredProjectSink {
+
+        /**
+         * Installs {@code restored}.
+         *
+         * @param restored      the deserialized snapshot
+         * @param label         the snapshot's label
+         * @param missingAssets the clip sources its deserialization found
+         *                      missing or unresolvable (story 329), classified
+         *                      without decoding anything
+         */
+        void apply(DawProject restored, String label, MissingAssetsReport missingAssets);
     }
 
     private final SnapshotBrowserService service;
@@ -297,7 +317,11 @@ final class SnapshotsController {
         }
         try {
             DawProject project = loadFromEntry(entry);
-            deps.applyRestoredProject().accept(project, entry.label());
+            // Story 329 — what this deserialization found missing, read right
+            // after it (the deserializer is reused: the next load clears it).
+            MissingAssetsReport missingAssets = MissingAssetsReport.atOpen(
+                    project, deserializer.getMissingFiles(), currentProjectDirectory());
+            deps.applyRestoredProject().apply(project, entry.label(), missingAssets);
             if (browserView != null) {
                 browserView.refresh();
             }
@@ -340,13 +364,18 @@ final class SnapshotsController {
      */
     DawProject loadFromEntry(SnapshotEntry entry) throws IOException {
         Objects.requireNonNull(entry, "entry must not be null");
-        ProjectMetadata current = projectManager.getCurrentProject();
-        Path projectDirectory = current != null ? current.projectPath() : null;
+        Path projectDirectory = currentProjectDirectory();
         DawProject project = deserializer.deserialize(entry.loadContent(), projectDirectory);
         if (projectDirectory != null) {
             project.setMetadata(project.getMetadata().withPath(projectDirectory));
         }
         return project;
+    }
+
+    /** The open project's directory, against which snapshots resolve; {@code null} when there is none. */
+    private Path currentProjectDirectory() {
+        ProjectMetadata current = projectManager.getCurrentProject();
+        return current != null ? current.projectPath() : null;
     }
 
     private void showDiffDialog(SnapshotEntry entry, SnapshotDiff diff) {

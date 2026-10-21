@@ -2,10 +2,12 @@ package com.benesquivelmusic.daw.core.audioimport;
 
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.export.AdmBwfExporter;
+import com.benesquivelmusic.daw.core.export.WavExporter;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.spatial.objectbased.AudioObject;
 import com.benesquivelmusic.daw.core.spatial.objectbased.BedChannel;
 import com.benesquivelmusic.daw.sdk.export.AudioMetadata;
+import com.benesquivelmusic.daw.sdk.export.DitherType;
 import com.benesquivelmusic.daw.sdk.spatial.ObjectMetadata;
 import com.benesquivelmusic.daw.sdk.spatial.SpeakerLabel;
 import com.benesquivelmusic.daw.sdk.spatial.SpeakerLayout;
@@ -14,8 +16,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
 import java.util.List;
 
@@ -48,6 +54,31 @@ class AdmBwfImporterTest {
         };
         Files.write(plain, header);
         assertThat(AdmBwfImporter.isAdmBwf(plain)).isFalse();
+    }
+
+    @Test
+    void theAdmProbeReadsOnlyChunkHeadersOfAPlainWavNeverItsAudio() throws IOException {
+        Path plain = tempDir.resolve("big-plain.wav");
+        WavExporter.write(new float[2][96_000], 48_000, 16, DitherType.NONE, AudioMetadata.EMPTY, plain);
+        assertThat(Files.size(plain)).isGreaterThan(300_000L);
+
+        try (CountingChannel channel = new CountingChannel(FileChannel.open(plain, StandardOpenOption.READ))) {
+            assertThat(AdmBwfImporter.hasAxmlChunk(channel)).isFalse();
+            assertThat(channel.bytesRead())
+                    .as("the 12-byte preamble and a few 8-byte chunk headers, not the 384 000 data bytes")
+                    .isLessThan(128L);
+        }
+        assertThat(AdmBwfImporter.isAdmBwf(plain)).isFalse();
+    }
+
+    @Test
+    void theAdmProbeFindsAnAxmlChunkThatFollowsTheAudioWithoutReadingTheAudio() throws IOException {
+        Path admFile = exportSimpleAdm("probe.wav");
+
+        try (CountingChannel channel = new CountingChannel(FileChannel.open(admFile, StandardOpenOption.READ))) {
+            assertThat(AdmBwfImporter.hasAxmlChunk(channel)).isTrue();
+            assertThat(channel.bytesRead()).isLessThan(128L);
+        }
     }
 
     @Test
@@ -204,5 +235,65 @@ class AdmBwfImporterTest {
         float[] buf = new float[size];
         Arrays.fill(buf, value);
         return buf;
+    }
+
+    /** A channel that counts the bytes its reads return. */
+    private static final class CountingChannel implements SeekableByteChannel {
+        private final SeekableByteChannel delegate;
+        private long bytesRead;
+
+        CountingChannel(SeekableByteChannel delegate) {
+            this.delegate = delegate;
+        }
+
+        long bytesRead() {
+            return bytesRead;
+        }
+
+        @Override
+        public int read(ByteBuffer dst) throws IOException {
+            int n = delegate.read(dst);
+            if (n > 0) {
+                bytesRead += n;
+            }
+            return n;
+        }
+
+        @Override
+        public int write(ByteBuffer src) throws IOException {
+            return delegate.write(src);
+        }
+
+        @Override
+        public long position() throws IOException {
+            return delegate.position();
+        }
+
+        @Override
+        public SeekableByteChannel position(long newPosition) throws IOException {
+            delegate.position(newPosition);
+            return this;
+        }
+
+        @Override
+        public long size() throws IOException {
+            return delegate.size();
+        }
+
+        @Override
+        public SeekableByteChannel truncate(long size) throws IOException {
+            delegate.truncate(size);
+            return this;
+        }
+
+        @Override
+        public boolean isOpen() {
+            return delegate.isOpen();
+        }
+
+        @Override
+        public void close() throws IOException {
+            delegate.close();
+        }
     }
 }

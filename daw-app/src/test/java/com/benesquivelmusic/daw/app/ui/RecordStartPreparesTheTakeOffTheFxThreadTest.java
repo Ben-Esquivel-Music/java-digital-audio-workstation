@@ -454,7 +454,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
                     new SessionInterchangeController(), lifecycleToasts,
                     new ProjectOperationProgress(new FxDispatcher()), new BorderPane(), new VBox(),
                     new ProjectLifecycleController.Deps(() -> project, _ -> { }, undoManager::get,
-                            undoManager::set, () -> { }, () -> { }, () -> { }, () -> null, _ -> { }),
+                            undoManager::set, () -> { }, () -> { }, () -> { }, () -> null, _ -> { }, () -> { }),
                     new ProjectArchiver());
             doors.setTakeBeingWrittenCheck(controller::isTakeBeingWritten);
             doors.setRecordingInFlightCheck(controller::isRecordingInFlight);

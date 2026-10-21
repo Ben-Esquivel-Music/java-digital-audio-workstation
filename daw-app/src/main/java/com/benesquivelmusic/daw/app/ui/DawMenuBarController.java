@@ -89,6 +89,12 @@ public final class DawMenuBarController {
          * load the restored project. Default no-op for tests.
          */
         default void onRestoreFromArchive() { }
+        /**
+         * Story 329 — present the open project's missing-assets report
+         * again, to relink or skip what the open could not load. Default
+         * no-op for tests.
+         */
+        default void onRelinkMissingAssets() { }
 
         // Edit actions
         void onUndo();
@@ -199,6 +205,7 @@ public final class DawMenuBarController {
     private final BooleanSupplier hasClipboardContent;
     private final BooleanSupplier hasSelection;
     private final BooleanSupplier hasTracks;
+    private final BooleanSupplier hasUnresolvedAssets;
 
     private MenuConstructionService.SyncableItems syncableItems;
 
@@ -213,6 +220,9 @@ public final class DawMenuBarController {
      * @param hasClipboardContent live "clipboard has content" query
      * @param hasSelection        live "a clip selection exists" query
      * @param hasTracks           live "project has at least one track" query
+     * @param hasUnresolvedAssets live "the open's missing-assets report has
+     *                            rows" query (story 329 — enables
+     *                            "Relink Missing Assets…")
      */
     public DawMenuBarController(MenuActions actions,
                                 KeyBindingManager keyBindingManager,
@@ -221,7 +231,8 @@ public final class DawMenuBarController {
                                 BooleanSupplier canRedo,
                                 BooleanSupplier hasClipboardContent,
                                 BooleanSupplier hasSelection,
-                                BooleanSupplier hasTracks) {
+                                BooleanSupplier hasTracks,
+                                BooleanSupplier hasUnresolvedAssets) {
         Objects.requireNonNull(actions, "actions must not be null");
         this.constructionService = new MenuConstructionService(actions,
                 Objects.requireNonNull(keyBindingManager, "keyBindingManager must not be null"));
@@ -232,6 +243,8 @@ public final class DawMenuBarController {
                 hasClipboardContent, "hasClipboardContent must not be null");
         this.hasSelection = Objects.requireNonNull(hasSelection, "hasSelection must not be null");
         this.hasTracks = Objects.requireNonNull(hasTracks, "hasTracks must not be null");
+        this.hasUnresolvedAssets = Objects.requireNonNull(hasUnresolvedAssets,
+                "hasUnresolvedAssets must not be null");
         this.menuBar = new MenuBar();
         this.menuBar.getStyleClass().add("daw-menu-bar");
         this.menuBar.setUseSystemMenuBar(false);
@@ -276,10 +289,12 @@ public final class DawMenuBarController {
                         canRedo.getAsBoolean(),
                         hasClipboardContent.getAsBoolean(),
                         hasSelection.getAsBoolean(),
-                        hasTracks.getAsBoolean()));
+                        hasTracks.getAsBoolean(),
+                        hasUnresolvedAssets.getAsBoolean()));
 
         syncableItems.saveItem().setDisable(enablement.saveDisabled());
         syncableItems.exportSessionItem().setDisable(enablement.exportSessionDisabled());
+        syncableItems.relinkMissingAssetsItem().setDisable(enablement.relinkMissingAssetsDisabled());
 
         syncableItems.undoItem().setDisable(enablement.undoDisabled());
         syncableItems.redoItem().setDisable(enablement.redoDisabled());

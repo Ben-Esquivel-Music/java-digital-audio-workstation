@@ -219,7 +219,7 @@ class RecordedAudioLoadsOffTheFxThreadContractTest {
                     new SessionInterchangeController(), doorBar,
                     new ProjectOperationProgress(new FxDispatcher()), new BorderPane(), new VBox(),
                     new ProjectLifecycleController.Deps(() -> project, _ -> { }, fixture::undoManager, _ -> { },
-                            () -> { }, () -> { }, () -> { }, () -> null, _ -> { }),
+                            () -> { }, () -> { }, () -> { }, () -> null, _ -> { }, () -> { }),
                     new ProjectArchiver());
             lifecycle.setTakeBeingWrittenCheck(fixture.controller::isTakeBeingWritten);
             door.set(lifecycle);

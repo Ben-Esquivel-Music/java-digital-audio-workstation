@@ -50,6 +50,11 @@ final class KeyboardShortcutController {
         default void onArchiveProject() { }
         /** Story 189 — Restore project from {@code .dawz} archive. */
         default void onRestoreFromArchive() { }
+        /**
+         * Story 329 — present the open project's missing-assets report
+         * again. Default no-op for tests that do not exercise relink.
+         */
+        default void onRelinkMissingAssets() { }
         void onImportAudioFile();
         void onToggleSnap();
         void onAddAudioTrack();
@@ -223,6 +228,8 @@ final class KeyboardShortcutController {
         // ── Project Archive (Story 189) ──────────────────────────────────────
         actionHandlers.put(DawAction.ARCHIVE_PROJECT, host::onArchiveProject);
         actionHandlers.put(DawAction.RESTORE_FROM_ARCHIVE, host::onRestoreFromArchive);
+        // ── Relink missing assets (Story 329) ────────────────────────────────
+        actionHandlers.put(DawAction.RELINK_MISSING_ASSETS, host::onRelinkMissingAssets);
         actionHandlers.put(DawAction.IMPORT_AUDIO_FILE, host::onImportAudioFile);
         actionHandlers.put(DawAction.TOGGLE_SNAP, host::onToggleSnap);
         actionHandlers.put(DawAction.ADD_AUDIO_TRACK, host::onAddAudioTrack);
