@@ -23,8 +23,12 @@ import java.util.Optional;
 
 /**
  * Modal dialog shown after a project file has been migrated through one
- * or more {@link MigrationReport.AppliedMigration}s. Lists what was
- * migrated, offers a "Don't show again for this project" checkbox
+ * or more {@link MigrationReport.AppliedMigration}s of which at least one
+ * changes what the user authored
+ * ({@link MigrationReport#changesAuthoredContent()}; story 330): a load whose
+ * migrations only re-express the file format has nothing to review or roll
+ * back, and opens without it — {@link #showIfNeeded} applies that gate. Lists
+ * what was migrated, offers a "Don't show again for this project" checkbox
  * (via {@link MigrationSuppression}), and — when a rollback action is
  * supplied — a "Roll back…" button that, after a confirmation, reverts
  * the in-memory migrated project to the pre-migration version.
@@ -237,9 +241,12 @@ public final class MigrationReportDialog extends Dialog<Void> {
 
     /**
      * Convenience helper that wires the standard "show after load"
-     * behaviour: if the report indicates migrations were applied and
-     * the user has not previously suppressed the dialog for this
-     * project, build and {@link #showAndWait()} the dialog.
+     * behaviour: if the report indicates that a migration which changes
+     * what the user authored was applied
+     * ({@link MigrationReport#changesAuthoredContent()}) and the user has not
+     * previously suppressed the dialog for this project, build and
+     * {@link #showAndWait()} the dialog. A report whose migrations are all
+     * format-only shows nothing.
      *
      * <p>Returns {@code true} if the dialog was actually shown.</p>
      */
@@ -256,7 +263,7 @@ public final class MigrationReportDialog extends Dialog<Void> {
     public static boolean showIfNeeded(MigrationReport report,
                                        Path projectDirectory,
                                        Runnable rollbackAction) {
-        if (report == null || !report.wasMigrated()) {
+        if (report == null || !report.changesAuthoredContent()) {
             return false;
         }
         if (MigrationSuppression.isSuppressed(projectDirectory, report.toVersion())) {

@@ -266,9 +266,11 @@ class ProjectRelativePersistenceContractTest {
             assertThat(record.getLevel()).isEqualTo(Level.WARNING);
             assertThat(record.getMessage()).contains("'" + escaping + "' escapes the project directory");
         });
-        assertThat(records.get(0).getMessage()).contains("Escaping head").contains("source-file");
-        assertThat(records.get(1).getMessage()).contains("Escaping middle segment")
-                .contains("<source-segment> 1 of 3");
+        assertThat(records.get(0).getMessage())
+                .startsWith("Track 1 'Edited': clip 1 'Escaping head' source file not resolved — ");
+        assertThat(records.get(1).getMessage())
+                .startsWith("Track 1 'Edited': clip 2 'Escaping middle segment' source segment 2 of 3"
+                        + " not resolved — ");
 
         // ProjectManager.openProject stamps the directory; the next save
         // writes the escaping reference back unchanged, in its place.
@@ -353,11 +355,17 @@ class ProjectRelativePersistenceContractTest {
                 .containsExactly(driveRelative, rootRelative, unparseable);
         assertThat(records).extracting(LogRecord::getLevel).containsOnly(Level.WARNING);
         assertThat(records).hasSize(3);
-        assertThat(records.get(0).getMessage()).contains("'Drive relative'").contains("source-file")
-                .contains("'" + driveRelative + "' is drive- or root-relative on this platform");
-        assertThat(records.get(1).getMessage()).contains("'Root relative take'").contains("<source-segment> 1 of 2")
-                .contains("'" + rootRelative + "' is drive- or root-relative on this platform");
-        assertThat(records.get(2).getMessage()).contains("'Unparseable'")
+        // A reference longer than a log line quotes is cut there
+        // (UnreadProjectItem.logText); the missing list above holds it whole.
+        assertThat(records.get(0).getMessage())
+                .startsWith("Track 1 'Edited': clip 1 'Drive relative' source file not resolved — ")
+                .contains("'" + UnreadProjectItem.logText(driveRelative)
+                        + "' is drive- or root-relative on this platform");
+        assertThat(records.get(1).getMessage())
+                .startsWith("Track 1 'Edited': clip 2 'Root relative take' source segment 2 of 2 not resolved — ")
+                .contains("'" + UnreadProjectItem.logText(rootRelative)
+                        + "' is drive- or root-relative on this platform");
+        assertThat(records.get(2).getMessage()).contains("clip 3 'Unparseable'")
                 .contains("'" + unparseable + "' is not a valid path on this platform");
     }
 

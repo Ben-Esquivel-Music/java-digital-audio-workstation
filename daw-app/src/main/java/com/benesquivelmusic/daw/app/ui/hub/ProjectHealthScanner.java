@@ -51,7 +51,9 @@ public final class ProjectHealthScanner {
 
     /**
      * Matches a pre-migration backup sibling written by
-     * {@code ProjectManager.writeMigrationBackup}:
+     * {@code ProjectManager.writeSiblingBackup} — not the backup of a
+     * degraded open, {@code project.daw.degraded.<stamp>.bak}, which is no
+     * migration:
      * {@code project.daw.v<digits>.<stamp>.bak} (optionally
      * {@code …-<n>.bak} on a same-second collision). Group 1 is the version;
      * group 2 is the {@code yyyyMMdd-HHmmss[-<n>]} stamp, which is

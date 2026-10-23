@@ -19,9 +19,9 @@ package com.benesquivelmusic.daw.sdk.transport;
  * configuration.</p>
  *
  * @param preBars  number of bars of pre-roll before the start/punch-in
- *                 (must be &ge; 0)
+ *                 (0 to {@link #MAX_BARS})
  * @param postBars number of bars of post-roll after the stop/punch-out
- *                 (must be &ge; 0)
+ *                 (0 to {@link #MAX_BARS})
  * @param enabled  {@code true} to apply pre-roll/post-roll to transport
  *                 commands, {@code false} to keep the configuration stored
  *                 but inert (e.g. for a UI toggle)
@@ -32,10 +32,18 @@ public record PreRollPostRoll(int preBars, int postBars, boolean enabled) {
     public static final PreRollPostRoll DISABLED = new PreRollPostRoll(0, 0, false);
 
     /**
+     * The largest pre-roll or post-roll bar count: the constructor rejects a
+     * larger one, the transport controls offer 0 to this value, and the
+     * project reader restores a saved count above it as this value, with a
+     * WARNING. One constant governs all three; raise it here to offer more.
+     */
+    public static final int MAX_BARS = 8;
+
+    /**
      * Canonical constructor; validates invariants.
      *
      * @throws IllegalArgumentException if {@code preBars} or {@code postBars}
-     *                                  is negative
+     *                                  is negative or above {@link #MAX_BARS}
      */
     public PreRollPostRoll {
         if (preBars < 0) {
@@ -46,13 +54,21 @@ public record PreRollPostRoll(int preBars, int postBars, boolean enabled) {
             throw new IllegalArgumentException(
                     "postBars must not be negative: " + postBars);
         }
+        if (preBars > MAX_BARS) {
+            throw new IllegalArgumentException(
+                    "preBars must not exceed " + MAX_BARS + ": " + preBars);
+        }
+        if (postBars > MAX_BARS) {
+            throw new IllegalArgumentException(
+                    "postBars must not exceed " + MAX_BARS + ": " + postBars);
+        }
     }
 
     /**
      * Creates an enabled configuration with the given bar counts.
      *
-     * @param preBars  pre-roll bar count (&ge; 0)
-     * @param postBars post-roll bar count (&ge; 0)
+     * @param preBars  pre-roll bar count (0 to {@link #MAX_BARS})
+     * @param postBars post-roll bar count (0 to {@link #MAX_BARS})
      * @return an enabled {@code PreRollPostRoll}
      */
     public static PreRollPostRoll enabled(int preBars, int postBars) {

@@ -25,16 +25,28 @@ import java.util.function.UnaryOperator;
  * and <strong>must</strong> be deterministic — they are run on every
  * load of a legacy project file.</p>
  *
- * @param fromVersion the source schema version (inclusive); must be &gt;= 1
- * @param toVersion   the target schema version; must be &gt; {@code fromVersion}
- * @param description short, human-readable summary of what this migration
- *                    changes — surfaced in the migration report dialog
- * @param apply       the pure transformation applied to the document
+ * <p>A migration also says whether it changes what the user authored
+ * ({@link #changesAuthoredContent()}): most do, and are surfaced in the
+ * migration report dialog; a {@linkplain #formatOnly format-only} step that
+ * merely re-expresses the same session in the new schema opens silently and
+ * is still recorded (history view, pre-migration backup, hub badge).</p>
+ *
+ * @param fromVersion            the source schema version (inclusive); must be &gt;= 1
+ * @param toVersion              the target schema version; must be &gt; {@code fromVersion}
+ * @param description            short, human-readable summary of what this
+ *                               migration changes — surfaced in the migration
+ *                               report dialog and the migration history
+ * @param apply                  the pure transformation applied to the document
+ * @param changesAuthoredContent whether the step changes what the user
+ *                               authored ({@code true}), or only re-expresses
+ *                               the same content in the new schema
+ *                               ({@code false})
  */
 public record ProjectMigration(int fromVersion,
                                int toVersion,
                                String description,
-                               UnaryOperator<Document> apply) {
+                               UnaryOperator<Document> apply,
+                               boolean changesAuthoredContent) {
 
     public ProjectMigration {
         if (fromVersion < 1) {
@@ -53,13 +65,41 @@ public record ProjectMigration(int fromVersion,
     }
 
     /**
+     * Creates a migration that changes what the user authored — the
+     * default for every step not built by {@link #formatOnly}.
+     */
+    public ProjectMigration(int fromVersion,
+                            int toVersion,
+                            String description,
+                            UnaryOperator<Document> apply) {
+        this(fromVersion, toVersion, description, apply, true);
+    }
+
+    /**
      * Convenience factory for the common case of a single-step migration
-     * from version {@code n} to version {@code n + 1}.
+     * from version {@code n} to version {@code n + 1} that changes what the
+     * user authored.
      */
     public static ProjectMigration step(int fromVersion,
                                         String description,
                                         UnaryOperator<Document> apply) {
         return new ProjectMigration(fromVersion, fromVersion + 1, description, apply);
+    }
+
+    /**
+     * Factory for a single-step migration from version {@code n} to
+     * {@code n + 1} that only re-expresses the format: the session the user
+     * authored is the same before and after (for example, an element keyed
+     * by a new stable name, or new elements that older files simply lack).
+     * The step is recorded like any other — migration history, the
+     * pre-migration backup on first save, the hub badge — but it does not by
+     * itself make the open show the migration report dialog
+     * ({@link MigrationReport#changesAuthoredContent()}).
+     */
+    public static ProjectMigration formatOnly(int fromVersion,
+                                              String description,
+                                              UnaryOperator<Document> apply) {
+        return new ProjectMigration(fromVersion, fromVersion + 1, description, apply, false);
     }
 
     /**

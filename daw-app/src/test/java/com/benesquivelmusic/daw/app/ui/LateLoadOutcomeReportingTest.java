@@ -366,7 +366,7 @@ class LateLoadOutcomeReportingTest {
     void aReplayWhoseProjectCouldNotBeOpenedClaimsNoRecovery() throws Exception {
         Path notAProject = Files.createDirectories(workspace.resolve("Not a project"));
 
-        runOnFx(() -> lifecycle.openRecoveredProject(notAProject, notAProject.resolve("project.daw"), 2));
+        runOnFx(() -> lifecycle.openRecoveredProject(notAProject, notAProject.resolve("project.daw"), 2, List.of()));
 
         assertThat(onFx(shown::getEntries))
                 .as("the failed load says so, and no SUCCESS claims the recovered changes were opened")
@@ -380,7 +380,7 @@ class LateLoadOutcomeReportingTest {
         Path songB = anotherProjectOnDisk("Song B"); // stands for the extracted archive
 
         runOnFx(() -> lifecycle.openRestoredArchive(songB, "Song B",
-                List.of("assets/0a_kick.wav", "assets/0b_strings.sf2")));
+                List.of("assets/0a_kick.wav", "assets/0b_strings.sf2"), List.of()));
 
         assertThat(projectManager.getCurrentProject().projectPath()).isEqualTo(songB);
         assertThat(onFx(shown::getEntries).getLast()).satisfies(entry -> {

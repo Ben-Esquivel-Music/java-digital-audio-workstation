@@ -328,7 +328,8 @@ public final class MigrationHistoryView extends VBox {
             applied.add(new MigrationReport.AppliedMigration(
                     migration.fromVersion(),
                     migration.toVersion(),
-                    migration.description()));
+                    migration.description(),
+                    migration.changesAuthoredContent()));
             version = migration.toVersion();
             if (version >= toVersion) {
                 break;

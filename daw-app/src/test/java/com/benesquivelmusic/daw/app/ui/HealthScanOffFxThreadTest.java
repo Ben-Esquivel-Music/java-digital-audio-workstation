@@ -118,6 +118,22 @@ class HealthScanOffFxThreadTest {
     }
 
     @Test
+    void scanBlockingDoesNotTakeTheBackupOfADegradedOpenForAMigration() throws IOException {
+        // Story 330: ProjectManager backs up the original of an open that
+        // could not honour everything its file saved as
+        // project.daw.degraded.<stamp>[-<n>].bak — no migration happened.
+        writeXmlProject("Repaired Song", Instant.parse("2026-10-21T00:00:00Z"));
+        Files.writeString(projectDir.resolve("project.daw.degraded.20261021-120000.bak"), "<old/>");
+        Files.writeString(projectDir.resolve("project.daw.degraded.20261021-120000-1.bak"), "<old/>");
+
+        ProjectScanResult result =
+                ProjectHealthScanner.scanBlocking(projectDir, InstantSource.system());
+
+        assertThat(result.health()).isEqualTo(HealthBadge.HEALTHY);
+        assertThat(result.backupSchemaVersion()).isEqualTo(-1);
+    }
+
+    @Test
     void scanBlockingReportsHealthyWhenNoBackupSibling() throws IOException {
         writeXmlProject("Clean Song", Instant.parse("2026-01-01T00:00:00Z"));
 

@@ -333,7 +333,7 @@ class ProjectChangeWhileRecordingTest {
                         () -> null,
                         project::get,
                         () -> lifecycle == null || lifecycle.confirmProjectMayClose(),
-                        (restored, label, missingAssets) -> restores.incrementAndGet()));
+                        (restored, label, missingAssets, unreadItems) -> restores.incrementAndGet()));
         SnapshotEntry entry = snapshots.createCheckpointWithLabel("Before the take");
         record(RecordingInFlightFixture.audio(project.get()));
 
@@ -361,7 +361,7 @@ class ProjectChangeWhileRecordingTest {
         Path destination = anotherProjectOnDisk("Song B"); // stands for the extracted archive
         DawProject songAModel = project.get();
 
-        runOnFx(() -> lifecycle.openRestoredArchive(destination, "Song B", List.of()));
+        runOnFx(() -> lifecycle.openRestoredArchive(destination, "Song B", List.of(), List.of()));
 
         assertRefusedOnceWith(ProjectLifecycleController.lateLoadRefusalWhileRecordingMessage(
                 "The archive was restored to " + destination));
@@ -371,7 +371,7 @@ class ProjectChangeWhileRecordingTest {
         recording.assertStillRecording();
 
         recording.stop();
-        runOnFx(() -> lifecycle.openRestoredArchive(destination, "Song B", List.of()));
+        runOnFx(() -> lifecycle.openRestoredArchive(destination, "Song B", List.of(), List.of()));
         assertThat(projectManager.getCurrentProject().projectPath())
                 .as("once the recording is stopped, the restored project opens").isEqualTo(destination);
         assertThat(shown.getEntries().getLast().message()).isEqualTo("Restored archive: Song B");
@@ -385,7 +385,7 @@ class ProjectChangeWhileRecordingTest {
         Path projectFile = songB.resolve("project.daw");
         DawProject songAModel = project.get();
 
-        runOnFx(() -> lifecycle.openRecoveredProject(songB, projectFile, 3));
+        runOnFx(() -> lifecycle.openRecoveredProject(songB, projectFile, 3, List.of()));
 
         assertRefusedOnceWith(ProjectLifecycleController.lateLoadRefusalWhileRecordingMessage(
                 "3 recovered changes were written to " + projectFile));
@@ -393,7 +393,7 @@ class ProjectChangeWhileRecordingTest {
         recording.assertStillRecording();
 
         recording.stop();
-        runOnFx(() -> lifecycle.openRecoveredProject(songB, projectFile, 3));
+        runOnFx(() -> lifecycle.openRecoveredProject(songB, projectFile, 3, List.of()));
         assertThat(projectManager.getCurrentProject().projectPath()).isEqualTo(songB);
         assertThat(shown.getEntries().getLast().message()).isEqualTo("Recovered 3 changes from the journal");
     }
@@ -522,7 +522,7 @@ class ProjectChangeWhileRecordingTest {
         String alreadyDone = "The archive was restored to " + destination;
         runOnFx(() -> lifecycle.setRecordingInFlightCheck(() -> true));
 
-        runOnFx(() -> lifecycle.openRestoredArchive(destination, "Song B", List.of()));
+        runOnFx(() -> lifecycle.openRestoredArchive(destination, "Song B", List.of(), List.of()));
 
         String ownWords = "; the project was not opened, because the open project can't be replaced"
                 + " while recording — stop the recording, then open it";
@@ -548,7 +548,7 @@ class ProjectChangeWhileRecordingTest {
         });
 
         assertThat(onFx(lifecycle::confirmProjectMayClose)).isFalse();
-        runOnFx(() -> lifecycle.openRestoredArchive(destination, "Song B", List.of()));
+        runOnFx(() -> lifecycle.openRestoredArchive(destination, "Song B", List.of(), List.of()));
 
         assertThat(shown.getEntries()).extracting(NotificationEntry::level, NotificationEntry::message)
                 .containsExactly(

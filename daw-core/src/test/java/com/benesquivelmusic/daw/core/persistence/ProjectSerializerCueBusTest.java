@@ -11,13 +11,20 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Cue buses and their sends round-trip through {@link ProjectSerializer} /
+ * {@link ProjectDeserializer}. A cue send names a track by id, so every
+ * fixture sends real tracks of the project — the only state the application
+ * produces; a send naming a track the file does not hold is covered by
+ * {@code MixerTrackReferencePersistenceTest}.
+ */
 class ProjectSerializerCueBusTest {
 
     @Test
     void shouldSerializeCueBusesAndSends() throws IOException {
         DawProject project = new DawProject("Session", AudioFormat.CD_QUALITY);
+        UUID vocals = UUID.fromString(project.createAudioTrack("Vocals").getId());
         CueBus bus = project.getCueBusManager().createCueBus("Singer", 1);
-        UUID vocals = UUID.randomUUID();
         project.getCueBusManager().replace(
                 bus.withSend(new CueSend(vocals, 0.8, -0.2, true)));
 
@@ -45,8 +52,8 @@ class ProjectSerializerCueBusTest {
     @Test
     void shouldRoundTripCueBusesAndSends() throws IOException {
         DawProject project = new DawProject("Session", AudioFormat.CD_QUALITY);
-        UUID vocals = UUID.randomUUID();
-        UUID drums = UUID.randomUUID();
+        UUID vocals = UUID.fromString(project.createAudioTrack("Vocals").getId());
+        UUID drums = UUID.fromString(project.createAudioTrack("Drums").getId());
         CueBus singerBus = project.getCueBusManager().createCueBus("Singer", 1);
         project.getCueBusManager().replace(singerBus
                 .withSend(new CueSend(vocals, 0.85, -0.25, true))
@@ -55,7 +62,8 @@ class ProjectSerializerCueBusTest {
         CueBus drummerBus = project.getCueBusManager().createCueBus("Drummer", 2);
 
         String xml = new ProjectSerializer().serialize(project);
-        DawProject restored = new ProjectDeserializer().deserialize(xml);
+        ProjectDeserializer deserializer = new ProjectDeserializer();
+        DawProject restored = deserializer.deserialize(xml);
 
         assertThat(restored.getCueBusManager().getCueBuses()).hasSize(2);
         CueBus restoredSinger = restored.getCueBusManager().getById(singerBus.id());
@@ -71,12 +79,19 @@ class ProjectSerializerCueBusTest {
         assertThat(restoredVocals.preFader()).isTrue();
         CueSend restoredDrums = restoredSinger.findSend(drums);
         assertThat(restoredDrums).isNotNull();
+        assertThat(restoredDrums.gain()).isEqualTo(0.40);
+        assertThat(restoredDrums.pan()).isEqualTo(0.10);
         assertThat(restoredDrums.preFader()).isFalse();
+        assertThat(restored.getTracks())
+                .as("each send resolves to a reopened track")
+                .extracting(track -> UUID.fromString(track.getId()))
+                .containsExactly(vocals, drums);
 
         CueBus restoredDrummer = restored.getCueBusManager().getById(drummerBus.id());
         assertThat(restoredDrummer).isNotNull();
         assertThat(restoredDrummer.hardwareOutputIndex()).isEqualTo(2);
         assertThat(restoredDrummer.sends()).isEmpty();
+        assertThat(deserializer.getUnreadItems()).isEmpty();
     }
 
     @Test

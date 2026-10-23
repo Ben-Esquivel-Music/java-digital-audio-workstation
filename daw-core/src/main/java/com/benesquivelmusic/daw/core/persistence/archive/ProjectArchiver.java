@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
 import com.benesquivelmusic.daw.core.persistence.ProjectPaths;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
+import com.benesquivelmusic.daw.core.persistence.UnreadProjectItem;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 
@@ -380,12 +381,15 @@ public final class ProjectArchiver {
             }
 
             DawProject project = deserializer.deserialize(new String(docBytes, StandardCharsets.UTF_8));
+            // Read right after the load: the deserializer is reused, and the
+            // next load clears its list.
+            List<UnreadProjectItem> unreadItems = deserializer.getUnreadItems();
 
             // Resolve relative asset paths against the extracted directory; for
             // anything missing, give the resolver a chance to relocate it.
             List<String> missing = resolveAssetPaths(project, extractDir, header, resolver);
 
-            return new ArchivedProject(project, extractDir, header, missing);
+            return new ArchivedProject(project, extractDir, header, missing, unreadItems);
         } catch (IOException | RuntimeException e) {
             if (useStaging) {
                 deleteRecursively(extractDir);

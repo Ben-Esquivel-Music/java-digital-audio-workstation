@@ -10,6 +10,7 @@ import com.benesquivelmusic.daw.core.persistence.MissingAssetsReport;
 import com.benesquivelmusic.daw.core.persistence.RehydrationListener;
 import com.benesquivelmusic.daw.core.persistence.RehydrationOutcome;
 import com.benesquivelmusic.daw.core.persistence.RehydrationSession;
+import com.benesquivelmusic.daw.core.persistence.UnreadProjectItem;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 
@@ -306,7 +307,8 @@ final class OpenProjectAudio {
 
     /**
      * Shows the open's one announcement (§5.3 step 8 ANNOUNCE; decisions
-     * D8, D14) for {@code door}, and — when the live report has rows —
+     * D8, D14) for {@code door}, qualified by the run's report and by
+     * {@code unreadItems} (story 330), and — when the live report has rows —
      * presents the report, once (D15). Does nothing unless
      * {@code generation} is current, so a load whose migration dialog was
      * rolled back, which re-entered the load, announces nothing.
@@ -314,13 +316,16 @@ final class OpenProjectAudio {
      * @param generation       the open
      * @param door             how it was opened
      * @param projectDirectory the opened folder (the archive's destination)
+     * @param unreadItems      the saved items the open's read could not honour
+     *                         as written ({@link OpenAnnouncement#of})
      */
-    void announce(Generation generation, OpenDoor door, Path projectDirectory) {
+    void announce(Generation generation, OpenDoor door, Path projectDirectory,
+                  List<UnreadProjectItem> unreadItems) {
         if (!isCurrent(generation)) {
             return;
         }
         Run run = current;
-        OpenAnnouncement announcement = OpenAnnouncement.of(door, projectDirectory, run.report);
+        OpenAnnouncement announcement = OpenAnnouncement.of(door, projectDirectory, run.report, unreadItems);
         run.announced = assetsOf(run.report);
         if (announcement.offersReview()) {
             notificationBar.show(announcement.level(), announcement.message(),

@@ -45,7 +45,14 @@ import java.util.Objects;
  * pause, stop, the seeks and record are not edits of the project, although
  * {@code ProjectSerializer} writes the playhead position too; a recorded take
  * marks the project dirty when it is published ({@code RecordCoordinator}), not
- * here. Loop-record is not written to the project file at all. And
+ * here. Loop-record is not written to the project file at all. Pre/post-roll,
+ * which the project file stores too (story 330), is no intent of this handler:
+ * {@code TransportController}'s pre/post-roll toggles and spinners set it on
+ * the transport themselves and mark the project dirty by the same rule as the
+ * punch region: only when the value they set differs from the stored one,
+ * with no undo entry. Unlike the punch region, which this handler announces
+ * as {@link TransportEvent.PunchChanged}, they publish no bus event, because
+ * no {@code TransportEvent} exists for pre/post-roll. And
  * {@link #setTempo(double)} is reached only through {@link SetTempoCommand},
  * whose one raiser, {@code TransportControlBinder.bindTempoField}, has no
  * production caller: the transport bar's tempo edit is

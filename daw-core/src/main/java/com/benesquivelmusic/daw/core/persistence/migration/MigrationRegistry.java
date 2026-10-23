@@ -25,7 +25,8 @@ import java.util.Objects;
  *   <li><strong>Legacy-batch consolidation.</strong> Migrations older
  *       than {@value #LEGACY_BATCH_THRESHOLD} versions can be folded
  *       into a single "legacy-batch" {@link ProjectMigration} that
- *       spans a range — see the project change log when consolidating.</li>
+ *       spans a range — record any consolidation in the "Schema Version
+ *       History" section of {@code docs/project-migrations.md}.</li>
  *   <li><strong>No I/O.</strong> The registry only mutates the in-memory
  *       DOM; persistence (backups, save) is the caller's responsibility.</li>
  * </ul>
@@ -36,8 +37,12 @@ import java.util.Objects;
  */
 public final class MigrationRegistry {
 
-    /** Schema version emitted by the current {@code ProjectSerializer}. */
-    public static final int CURRENT_VERSION = 1;
+    /**
+     * Schema version emitted by the current {@code ProjectSerializer}. The
+     * versions and what each changed are listed in the "Schema Version
+     * History" section of {@code docs/project-migrations.md}.
+     */
+    public static final int CURRENT_VERSION = 2;
 
     /**
      * The number of versions before "now" beyond which migrations can be
@@ -247,10 +252,11 @@ public final class MigrationRegistry {
 
     /**
      * Returns the registry baked into this build. The current schema
-     * version is {@value #CURRENT_VERSION} and the registry contains
-     * no migrations yet (the persistence format has not yet evolved
-     * past version 1). Future schema bumps must register exactly one
-     * migration per step here.
+     * version is {@value #CURRENT_VERSION}; the registry holds exactly one
+     * migration per step from version 1 up to it — today the single
+     * format-only 1 → 2 step that keys MIDI effects by their plugin id.
+     * Future schema bumps must register exactly one migration per step
+     * here.
      */
     public static MigrationRegistry defaultRegistry() {
         return DefaultRegistryHolder.INSTANCE;
@@ -289,10 +295,13 @@ public final class MigrationRegistry {
         // Keep this list in strict ascending order. When you bump
         // CURRENT_VERSION, register exactly one ProjectMigration here for
         // the new step, add a unit test with golden XML in/out, and
-        // record the change in the project change log. After ten or more
-        // intermediate versions you may consolidate the oldest hops into
-        // a legacy-batch ProjectMigration that spans a range.
+        // record the change in the "Schema Version History" section of
+        // docs/project-migrations.md. After ten or more intermediate
+        // versions you may consolidate the oldest hops into a
+        // legacy-batch ProjectMigration that spans a range.
         private static final MigrationRegistry INSTANCE =
-                MigrationRegistry.builder(CURRENT_VERSION).build();
+                MigrationRegistry.builder(CURRENT_VERSION)
+                        .add(MidiEffectPluginIdMigration.step())
+                        .build();
     }
 }

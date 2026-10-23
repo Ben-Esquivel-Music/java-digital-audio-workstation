@@ -668,26 +668,31 @@ class TransportControllerTest {
     }
 
     @Test
-    void onTogglePreRollTwiceShouldDisablePreservingBarCounts() throws Exception {
+    void onTogglePreRollTwiceShouldTurnPreRollOffThenBackOnAtTheDefaultBarsWithPostRollRolling() throws Exception {
         DawProject project = new DawProject("test",
                 new AudioFormat(48000, 2, 16, 256));
         // Start with pre=3, post=1 enabled.
         project.getTransport().setPreRollPostRoll(PreRollPostRoll.enabled(3, 1));
         TransportController controller = newController(project);
+        AtomicReference<PreRollPostRoll> afterTheFirstClick = new AtomicReference<>();
 
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
-            controller.onTogglePreRoll(); // toggles pre off → preBars becomes 0
+            controller.onTogglePreRoll(); // pre off: its bars become 0
+            afterTheFirstClick.set(project.getTransport().getPreRollPostRoll());
+            controller.onTogglePreRoll(); // pre on again, with the default bars
             latch.countDown();
         });
         assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
 
-        PreRollPostRoll prpr = project.getTransport().getPreRollPostRoll();
-        // Pre is now off; post is untouched.
-        assertThat(prpr.preBars()).isEqualTo(0);
-        assertThat(prpr.postBars()).isEqualTo(1);
-        // enabled is derived: still true because postBars > 0.
-        assertThat(prpr.enabled()).isTrue();
+        // The first click turns pre off. Post-roll still rolls, so the one
+        // enabled flag stays set (story 330: a click never changes whether
+        // the other side rolls) and pre's count is dropped to 0.
+        assertThat(afterTheFirstClick.get()).isEqualTo(new PreRollPostRoll(0, 1, true));
+        // The second click turns pre back on. Its stored count was dropped,
+        // so it comes back at the default, not at 3; post is untouched.
+        assertThat(project.getTransport().getPreRollPostRoll())
+                .isEqualTo(new PreRollPostRoll(TransportController.DEFAULT_BARS, 1, true));
     }
 
     @Test
@@ -750,21 +755,26 @@ class TransportControllerTest {
         DawProject project = new DawProject("test",
                 new AudioFormat(48000, 2, 16, 256));
         TransportController controller = newController(project);
+        AtomicReference<Boolean> preToggleAfterTheEdit = new AtomicReference<>();
 
-        CountDownLatch latch = new CountDownLatch(1);
-        Platform.runLater(() -> {
+        runHandler(() -> {
             controller.createPreRollPostRollControls();
             // Simulate the user typing "5" into the pre-roll spinner.
             controller.preRollSpinnerForTest().getValueFactory().setValue(5);
-            latch.countDown();
+            preToggleAfterTheEdit.set(controller.preRollToggleForTest().isSelected());
         });
-        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
 
-        // Spinner edits propagate to the transport configuration; the
-        // enabled flag is derived (true because preBars = 5 > 0).
-        PreRollPostRoll prpr = project.getTransport().getPreRollPostRoll();
-        assertThat(prpr.preBars()).isEqualTo(5);
-        assertThat(prpr.enabled()).isTrue();
+        // Story 330 — spinner edits propagate to the transport's bar count;
+        // enabled is a stored fact of its own, so changing the amount of a
+        // side that is off arms nothing, and its toggle stays off.
+        assertThat(project.getTransport().getPreRollPostRoll()).isEqualTo(new PreRollPostRoll(5, 0, false));
+        assertThat(preToggleAfterTheEdit.get()).isFalse();
+
+        // The Pre-Roll click then turns it on, with the bar count the spinner set.
+        runHandler(controller::onTogglePreRoll);
+
+        assertThat(project.getTransport().getPreRollPostRoll()).isEqualTo(new PreRollPostRoll(5, 0, true));
+        runHandler(() -> assertThat(controller.preRollToggleForTest().isSelected()).isTrue());
     }
 
     @Test

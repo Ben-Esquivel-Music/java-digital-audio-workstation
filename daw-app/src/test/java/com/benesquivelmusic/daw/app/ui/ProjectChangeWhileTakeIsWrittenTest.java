@@ -298,7 +298,7 @@ class ProjectChangeWhileTakeIsWrittenTest {
         Path destination = anotherProjectOnDisk("Song B"); // stands for the extracted archive
         DawProject songAModel = project.get();
 
-        runOnFx(() -> lifecycle.openRestoredArchive(destination, "Song B", List.of()));
+        runOnFx(() -> lifecycle.openRestoredArchive(destination, "Song B", List.of(), List.of()));
 
         assertRefusedOnceWith(ProjectLifecycleController.lateLoadRefusalMessage(
                 "The archive was restored to " + destination));
@@ -307,7 +307,7 @@ class ProjectChangeWhileTakeIsWrittenTest {
         assertSongAIsStillOpen(songAModel);
 
         takeBeingWritten.set(false);
-        runOnFx(() -> lifecycle.openRestoredArchive(destination, "Song B", List.of()));
+        runOnFx(() -> lifecycle.openRestoredArchive(destination, "Song B", List.of(), List.of()));
         assertThat(projectManager.getCurrentProject().projectPath())
                 .as("once the take is written, the restored project opens").isEqualTo(destination);
         assertThat(shown.getEntries().getLast().message()).isEqualTo("Restored archive: Song B");
@@ -320,14 +320,14 @@ class ProjectChangeWhileTakeIsWrittenTest {
         Path projectFile = songB.resolve("project.daw");
         DawProject songAModel = project.get();
 
-        runOnFx(() -> lifecycle.openRecoveredProject(songB, projectFile, 3));
+        runOnFx(() -> lifecycle.openRecoveredProject(songB, projectFile, 3, List.of()));
 
         assertRefusedOnceWith(ProjectLifecycleController.lateLoadRefusalMessage(
                 "3 recovered changes were written to " + projectFile));
         assertSongAIsStillOpen(songAModel);
 
         takeBeingWritten.set(false);
-        runOnFx(() -> lifecycle.openRecoveredProject(songB, projectFile, 3));
+        runOnFx(() -> lifecycle.openRecoveredProject(songB, projectFile, 3, List.of()));
         assertThat(projectManager.getCurrentProject().projectPath()).isEqualTo(songB);
         assertThat(shown.getEntries().getLast().message()).isEqualTo("Recovered 3 changes from the journal");
     }
@@ -372,7 +372,7 @@ class ProjectChangeWhileTakeIsWrittenTest {
                         () -> null,
                         project::get,
                         () -> lifecycle == null || lifecycle.confirmProjectMayClose(),
-                        (restored, label, missingAssets) -> restores.incrementAndGet()));
+                        (restored, label, missingAssets, unreadItems) -> restores.incrementAndGet()));
         SnapshotEntry entry = snapshots.createCheckpointWithLabel("Before the take");
 
         runOnFx(() -> snapshots.restoreEntry(entry));

@@ -9,27 +9,25 @@ import com.benesquivelmusic.daw.core.track.TrackType;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SnapshotDiffTest {
 
+    /** The id of the "Vocals" track in both snapshots of a comparison. */
+    private static final UUID VOCALS = UUID.fromString("00000000-0000-0000-0000-00000000000a");
+    private static final UUID DRUMS = UUID.fromString("00000000-0000-0000-0000-00000000000b");
+    private static final UUID BASS = UUID.fromString("00000000-0000-0000-0000-00000000000c");
+
     /**
      * Builds a new {@link Track} with a deterministic ID. The diff
      * compares snapshots by stable IDs (preserved across save/load), so
-     * tests need a way to construct paired tracks that share an ID
-     * without going through the full serializer round-trip.
+     * tests construct paired tracks that share an ID without going
+     * through the full serializer round-trip.
      */
-    private static Track track(String id, String name, TrackType type) {
-        Track t = new Track(name, type);
-        try {
-            Field idField = Track.class.getDeclaredField("id");
-            idField.setAccessible(true);
-            idField.set(t, id);
-        } catch (ReflectiveOperationException e) {
-            throw new AssertionError(e);
-        }
-        return t;
+    private static Track track(UUID id, String name, TrackType type) {
+        return new Track(id, name, type);
     }
 
     private static AudioClip clip(String id, String name,
@@ -49,12 +47,12 @@ class SnapshotDiffTest {
     @Test
     void emptyDiffWhenProjectsAreIdentical() {
         DawProject a = new DawProject("Song", AudioFormat.CD_QUALITY);
-        a.addTrack(track("v", "Vocals", TrackType.AUDIO));
-        a.addTrack(track("d", "Drums", TrackType.AUDIO));
+        a.addTrack(track(VOCALS, "Vocals", TrackType.AUDIO));
+        a.addTrack(track(DRUMS, "Drums", TrackType.AUDIO));
 
         DawProject b = new DawProject("Song", AudioFormat.CD_QUALITY);
-        b.addTrack(track("v", "Vocals", TrackType.AUDIO));
-        b.addTrack(track("d", "Drums", TrackType.AUDIO));
+        b.addTrack(track(VOCALS, "Vocals", TrackType.AUDIO));
+        b.addTrack(track(DRUMS, "Drums", TrackType.AUDIO));
 
         SnapshotDiff diff = SnapshotDiff.between(a, b);
 
@@ -65,11 +63,11 @@ class SnapshotDiffTest {
     @Test
     void detectsAddedAndRemovedTracks() {
         DawProject from = new DawProject("Song", AudioFormat.CD_QUALITY);
-        from.addTrack(track("v", "Vocals", TrackType.AUDIO));
+        from.addTrack(track(VOCALS, "Vocals", TrackType.AUDIO));
 
         DawProject to = new DawProject("Song", AudioFormat.CD_QUALITY);
-        to.addTrack(track("d", "Drums", TrackType.AUDIO));
-        to.addTrack(track("b", "Bass", TrackType.AUDIO));
+        to.addTrack(track(DRUMS, "Drums", TrackType.AUDIO));
+        to.addTrack(track(BASS, "Bass", TrackType.AUDIO));
 
         SnapshotDiff diff = SnapshotDiff.between(from, to);
 
@@ -85,13 +83,13 @@ class SnapshotDiffTest {
     @Test
     void detectsAddedAndRemovedClips() {
         DawProject from = new DawProject("Song", AudioFormat.CD_QUALITY);
-        Track tFrom = track("v", "Vocals", TrackType.AUDIO);
+        Track tFrom = track(VOCALS, "Vocals", TrackType.AUDIO);
         tFrom.addClip(clip("verse", "Verse", 0, 4, "v.wav"));
         tFrom.addClip(clip("chorus", "Chorus", 4, 4, "c.wav"));
         from.addTrack(tFrom);
 
         DawProject to = new DawProject("Song", AudioFormat.CD_QUALITY);
-        Track tTo = track("v", "Vocals", TrackType.AUDIO);
+        Track tTo = track(VOCALS, "Vocals", TrackType.AUDIO);
         tTo.addClip(clip("verse", "Verse", 0, 4, "v.wav"));
         tTo.addClip(clip("bridge", "Bridge", 8, 2, "b.wav"));
         to.addTrack(tTo);
@@ -111,12 +109,12 @@ class SnapshotDiffTest {
     @Test
     void detectsModifiedClipParameters() {
         DawProject from = new DawProject("Song", AudioFormat.CD_QUALITY);
-        Track tFrom = track("v", "Vocals", TrackType.AUDIO);
+        Track tFrom = track(VOCALS, "Vocals", TrackType.AUDIO);
         tFrom.addClip(clip("verse", "Verse", 0, 4, "v.wav"));
         from.addTrack(tFrom);
 
         DawProject to = new DawProject("Song", AudioFormat.CD_QUALITY);
-        Track tTo = track("v", "Vocals", TrackType.AUDIO);
+        Track tTo = track(VOCALS, "Vocals", TrackType.AUDIO);
         tTo.addClip(clip("verse", "Verse", 8, 4, "v.wav"));
         to.addTrack(tTo);
 
@@ -130,12 +128,12 @@ class SnapshotDiffTest {
     @Test
     void detectsMixerParameterChanges() {
         DawProject from = new DawProject("Song", AudioFormat.CD_QUALITY);
-        Track tFrom = track("v", "Vocals", TrackType.AUDIO);
+        Track tFrom = track(VOCALS, "Vocals", TrackType.AUDIO);
         tFrom.setVolume(0.5);
         from.addTrack(tFrom);
 
         DawProject to = new DawProject("Song", AudioFormat.CD_QUALITY);
-        Track tTo = track("v", "Vocals", TrackType.AUDIO);
+        Track tTo = track(VOCALS, "Vocals", TrackType.AUDIO);
         tTo.setVolume(0.8);
         tTo.setMuted(true);
         tTo.setSolo(true);
@@ -157,10 +155,10 @@ class SnapshotDiffTest {
     @Test
     void detectsTrackRenameAsModification() {
         DawProject from = new DawProject("Song", AudioFormat.CD_QUALITY);
-        from.addTrack(track("v", "Vocals", TrackType.AUDIO));
+        from.addTrack(track(VOCALS, "Vocals", TrackType.AUDIO));
 
         DawProject to = new DawProject("Song", AudioFormat.CD_QUALITY);
-        to.addTrack(track("v", "Lead Vocals", TrackType.AUDIO));
+        to.addTrack(track(VOCALS, "Lead Vocals", TrackType.AUDIO));
 
         SnapshotDiff diff = SnapshotDiff.between(from, to);
 
@@ -185,7 +183,7 @@ class SnapshotDiffTest {
     @Test
     void nullSidesAreReportedAsWholeAddOrRemove() {
         DawProject p = new DawProject("Song", AudioFormat.CD_QUALITY);
-        p.addTrack(track("v", "Vocals", TrackType.AUDIO));
+        p.addTrack(track(VOCALS, "Vocals", TrackType.AUDIO));
 
         SnapshotDiff added = SnapshotDiff.between(null, p);
         SnapshotDiff removed = SnapshotDiff.between(p, null);
