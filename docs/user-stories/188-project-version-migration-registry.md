@@ -16,7 +16,7 @@ labels: ["enhancement", "persistence", "schema", "reliability"]
 - `ProjectDeserializer` on load: read the `version` field; if it matches current, deserialize; otherwise apply each migration in order from the file's version up to current, then deserialize.
 - Extract every existing ad-hoc migration branch into a discrete `ProjectMigration` record.
 - Per-migration unit tests: each migration gets a "golden" JSON input and expected JSON output so future changes cannot regress it.
-- Deprecation strategy: migrations older than 10 versions can be consolidated into a "legacy-batch" migration; the change log records the consolidation.
+- Deprecation strategy: migrations older than 10 versions can be consolidated into a "legacy-batch" migration; the "Schema Version History" section of `docs/project-migrations.md` records the consolidation.
 - `MigrationReportDialog` shown after load when migrations ran, listing what was migrated with "Don't show again for this project" checkbox.
 - Persist no state change if the user chose to open the file without saving (migrations are in-memory; save triggers a backup of the original file first).
 - Tests: a version-1 file migrates through all intermediate versions and produces the same final state as a natively current-version file.

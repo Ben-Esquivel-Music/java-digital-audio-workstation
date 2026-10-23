@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.persistence.journal;
 
 import com.benesquivelmusic.daw.core.concurrent.DawScope;
 import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
+import com.benesquivelmusic.daw.core.persistence.UnreadProjectItem;
 import com.benesquivelmusic.daw.core.project.DawProject;
 
 import java.io.IOException;
@@ -107,7 +108,7 @@ public final class JournalReplayer {
             // Each lambda captures `ctx` explicitly — the no-ThreadLocal seam.
             DawScope.Subtask<Void> checksum = scope.fork("checksum",
                     () -> { verifyChecksums(ctx, segments); return null; });
-            DawScope.Subtask<DawProject> base = scope.fork("load-checkpoint",
+            DawScope.Subtask<LoadedCheckpoint> base = scope.fork("load-checkpoint",
                     () -> loadCheckpoint(ctx, checkpointPath));
             DawScope.Subtask<List<JournalRecord>> recs = scope.fork("replay-segment",
                     () -> readRecords(ctx, segments));
@@ -115,14 +116,15 @@ public final class JournalReplayer {
             scope.joinAll();   // throws ExecutionException if ANY fork failed
 
             // All three inputs are valid — merge onto the FRESH project only now.
-            DawProject recovered = base.resultNow();
+            LoadedCheckpoint loaded = base.resultNow();
+            DawProject recovered = loaded.project();
             List<JournalRecord> records = recs.resultNow();
             int applied = applyRecords(recovered, records);
 
             RecoverySummary summary = buildSummary(ctx, checkpointPath, segments, records);
             // Touch the checksum result so its successful completion is observed.
             checksum.resultNow();
-            return new RecoveryResult(recovered, summary, applied);
+            return new RecoveryResult(recovered, summary, applied, loaded.unreadItems());
         } catch (ExecutionException e) {
             Throwable cause = e.getCause() != null ? e.getCause() : e;
             throw new JournalRecoveryException("recovery rolled back", cause);
@@ -173,17 +175,24 @@ public final class JournalReplayer {
      * recovered project's metadata (mirroring
      * {@code ProjectManager.openProject}): the references the deserializer
      * resolved are absolute in memory, and a serializer can only write them
-     * project-relative again when the project knows its directory.
+     * project-relative again when the project knows its directory. The saved
+     * items the read could not honour as written are taken with it, read right
+     * after the load in this subtask.
      */
-    private DawProject loadCheckpoint(ProjectContext ctx, Path checkpointPath) throws IOException {
+    private LoadedCheckpoint loadCheckpoint(ProjectContext ctx, Path checkpointPath) throws IOException {
         Objects.requireNonNull(ctx, "ctx must not be null");
         if (!Files.exists(checkpointPath)) {
             throw new IOException("checkpoint file not found: " + checkpointPath);
         }
         String xml = Files.readString(checkpointPath);
         DawProject project = deserializer.deserialize(xml, ctx.projectDirectory());
+        List<UnreadProjectItem> unreadItems = deserializer.getUnreadItems();
         project.setMetadata(project.getMetadata().withPath(ctx.projectDirectory()));
-        return project;
+        return new LoadedCheckpoint(project, unreadItems);
+    }
+
+    /** A loaded checkpoint and the saved items its read could not honour as written. */
+    private record LoadedCheckpoint(DawProject project, List<UnreadProjectItem> unreadItems) {
     }
 
     /**

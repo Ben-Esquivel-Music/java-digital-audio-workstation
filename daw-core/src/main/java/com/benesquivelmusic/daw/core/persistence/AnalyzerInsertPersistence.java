@@ -29,7 +29,24 @@ final class AnalyzerInsertPersistence {
         }
     }
 
-    static InsertSlot read(Element element, AudioFormat format) {
+    /**
+     * Rebuilds the analyzer insert {@code element} saves, or returns
+     * {@code null} for an analyzer this build does not know.
+     *
+     * @param element     the {@code <insert>} element
+     * @param format      the project's audio format, which the analyzer is
+     *                    initialized with
+     * @param strip       the mixer strip the insert is saved on, as the log
+     *                    names it: the owning track for a track channel,
+     *                    {@code Mixer master}, {@code Mixer return bus <n>
+     *                    '<name>'}, or {@code Mixer channel <n>} for a
+     *                    channel no track owns
+     * @param insertIndex the insert's zero-based position among the strip's
+     *                    saved {@code <insert>} elements (the log numbers it
+     *                    from 1)
+     * @return the insert slot, or {@code null}
+     */
+    static InsertSlot read(Element element, AudioFormat format, UnreadProjectItem.Location strip, int insertIndex) {
         LiveAnalyzerPlugin plugin = switch (element.getAttribute("analyzer-plugin-id")) {
             case SpectrumAnalyzerPlugin.PLUGIN_ID -> new SpectrumAnalyzerPlugin();
             case TunerPlugin.PLUGIN_ID -> new TunerPlugin();
@@ -43,7 +60,8 @@ final class AnalyzerInsertPersistence {
             @Override public int getAudioChannels() { return format.channels(); }
             @Override public void log(String message) { LOGGER.log(System.Logger.Level.INFO, message); }
         });
-        restoreConfiguration(element, plugin);
+        restoreConfiguration(element, plugin, strip.describe() + ": insert " + (insertIndex + 1) + " analyzer "
+                + plugin.getDescriptor().id());
         if (!element.hasAttribute("analyzer-active")
                 || Boolean.parseBoolean(element.getAttribute("analyzer-active"))) {
             plugin.activate();
@@ -52,26 +70,71 @@ final class AnalyzerInsertPersistence {
         return new InsertSlot(name, plugin.asAudioProcessor().orElseThrow(), null, plugin);
     }
 
-    private static void restoreConfiguration(Element element, LiveAnalyzerPlugin plugin) {
-        try {
-            if (plugin instanceof SpectrumAnalyzerPlugin spectrum) {
-                int fftSize = element.hasAttribute("fft-size")
-                        ? Integer.parseInt(element.getAttribute("fft-size")) : spectrum.getAnalyzer().getFftSize();
-                if (fftSize <= 0 || fftSize > MAX_PERSISTED_FFT_SIZE || (fftSize & (fftSize - 1)) != 0) {
-                    throw new IllegalArgumentException("FFT size must be a power of two up to " + MAX_PERSISTED_FFT_SIZE);
+    /**
+     * Applies the saved configuration, or keeps the analyzer's defaults whole
+     * when a saved value cannot be used — a usable sibling setting is not
+     * applied either — with a WARNING naming the insert, the attribute and
+     * its value as saved ({@link #keepDefaults}).
+     *
+     * @param insert the insert as the log names it: {@code <strip>: insert
+     *               <k> analyzer <plugin-id>}
+     */
+    private static void restoreConfiguration(Element element, LiveAnalyzerPlugin plugin, String insert) {
+        if (plugin instanceof SpectrumAnalyzerPlugin spectrum) {
+            int fftSize = spectrum.getAnalyzer().getFftSize();
+            if (element.hasAttribute("fft-size")) {
+                String raw = element.getAttribute("fft-size");
+                try {
+                    fftSize = Integer.parseInt(raw);
+                } catch (NumberFormatException e) {
+                    keepDefaults(insert, "fft-size", raw, "is not an integer");
+                    return;
                 }
-                WindowType window = element.hasAttribute("window-type")
-                        ? WindowType.valueOf(element.getAttribute("window-type")) : spectrum.getAnalyzer().getWindowType();
-                spectrum.reconfigure(fftSize, window);
-            } else if (plugin instanceof TunerPlugin tuner && element.hasAttribute("reference-pitch-hz")) {
-                double reference = Double.parseDouble(element.getAttribute("reference-pitch-hz"));
-                if (!Double.isFinite(reference)) throw new IllegalArgumentException("Reference pitch must be finite");
-                tuner.setReferencePitchHz(reference);
+                if (fftSize <= 0 || fftSize > MAX_PERSISTED_FFT_SIZE || (fftSize & (fftSize - 1)) != 0) {
+                    keepDefaults(insert, "fft-size", raw, "is not a power of two up to " + MAX_PERSISTED_FFT_SIZE);
+                    return;
+                }
             }
-        } catch (IllegalArgumentException error) {
-            LOGGER.log(System.Logger.Level.WARNING,
-                    "Invalid analyzer configuration for {0}; retaining defaults: {1}",
-                    plugin.getDescriptor().id(), error.getMessage());
+            WindowType window = spectrum.getAnalyzer().getWindowType();
+            if (element.hasAttribute("window-type")) {
+                String raw = element.getAttribute("window-type");
+                try {
+                    window = WindowType.valueOf(raw);
+                } catch (IllegalArgumentException e) {
+                    keepDefaults(insert, "window-type", raw, "is not a window type");
+                    return;
+                }
+            }
+            spectrum.reconfigure(fftSize, window);
+        } else if (plugin instanceof TunerPlugin tuner && element.hasAttribute("reference-pitch-hz")) {
+            String raw = element.getAttribute("reference-pitch-hz");
+            double reference;
+            try {
+                reference = Double.parseDouble(raw);
+            } catch (NumberFormatException e) {
+                keepDefaults(insert, "reference-pitch-hz", raw, "is not a number");
+                return;
+            }
+            // Also false for NaN, which the tuner's own range check lets through.
+            if (!(reference >= TunerPlugin.MIN_REFERENCE_PITCH_HZ && reference <= TunerPlugin.MAX_REFERENCE_PITCH_HZ)) {
+                keepDefaults(insert, "reference-pitch-hz", raw, "is not between " + TunerPlugin.MIN_REFERENCE_PITCH_HZ
+                        + " and " + TunerPlugin.MAX_REFERENCE_PITCH_HZ + " Hz");
+                return;
+            }
+            tuner.setReferencePitchHz(reference);
         }
+    }
+
+    /**
+     * Logs {@code <strip>: insert <k> analyzer <plugin-id> <attribute> '<raw>'
+     * <reason>; the analyzer's saved settings are not applied and its
+     * defaults are used}, the raw value quoted by
+     * {@link UnreadProjectItem#logText} — never a parse exception's message,
+     * which would carry the file's text as is. Logged only: an analyzer's
+     * settings are view preferences, not saved content the open reports.
+     */
+    private static void keepDefaults(String insert, String attribute, String raw, String reason) {
+        LOGGER.log(System.Logger.Level.WARNING, insert + " " + attribute + " '" + UnreadProjectItem.logText(raw)
+                + "' " + reason + "; the analyzer's saved settings are not applied and its defaults are used");
     }
 }

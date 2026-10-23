@@ -75,6 +75,17 @@ class MigrationHistoryViewTest {
     }
 
     @Test
+    void scanProjectDirectoryListsNoBackupOfADegradedOpen(@TempDir Path projectDir) throws Exception {
+        // Story 330: ProjectManager backs up the original of an open that
+        // could not honour everything its file saved as
+        // project.daw.degraded.<stamp>[-<n>].bak — it is no migration.
+        writeBackup(projectDir, "project.daw.degraded.20261021-120000.bak");
+        writeBackup(projectDir, "project.daw.degraded.20261021-120000-1.bak");
+
+        assertThat(MigrationHistoryView.scanProjectDirectory(projectDir)).isEmpty();
+    }
+
+    @Test
     void viewStoresEntriesAndFiresTypedActionEvents(@TempDir Path projectDir)
             throws Exception {
         Path backup = projectDir.resolve("project.daw.v1.20260620-010203.bak");

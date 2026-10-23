@@ -163,10 +163,18 @@ class DawProjectTest {
         DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
         Track first = project.createAudioTrack("First");
         Track second = project.createAudioTrack("Second");
+        Track third = project.createAudioTrack("Third");
 
         Track copy = project.duplicateTrack(first);
 
-        assertThat(project.getTracks()).containsExactly(first, copy, second);
+        assertThat(project.getTracks()).containsExactly(first, copy, second, third);
+        assertThat(project.getMixer().getChannels())
+                .as("the copy's channel sits right after the original's channel in the mixer")
+                .containsExactly(
+                        project.getMixerChannelForTrack(first),
+                        project.getMixerChannelForTrack(copy),
+                        project.getMixerChannelForTrack(second),
+                        project.getMixerChannelForTrack(third));
     }
 
     @Test

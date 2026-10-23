@@ -24,8 +24,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Tests for the migration registry framework.
  *
  * <p>Each migration the registry contains in production gets its own
- * golden-input/golden-output unit test (see the {@code Migration*Test}
- * neighbours of this class). The tests in this file exercise the
+ * golden-input/golden-output unit test in this package (the 1 → 2 step:
+ * {@code SchemaV1ToV2MigrationTest}). The tests in this file exercise the
  * <em>framework</em>: ordering, version stamping, error paths, and
  * end-to-end multi-step chaining.</p>
  */
@@ -277,10 +277,58 @@ class MigrationRegistryTest {
 
     @Test
     void defaultRegistryMatchesCurrentSerializerVersion() {
-        // Until the schema evolves past version 1 the default registry has no
-        // entries — but it must always exist and target the current version.
+        // The production registry targets the version the serializer writes
+        // and holds exactly one step per version: today the single
+        // format-only 1 → 2 step (golden test: SchemaV1ToV2MigrationTest).
         MigrationRegistry registry = MigrationRegistry.defaultRegistry();
         assertThat(registry.currentVersion()).isEqualTo(MigrationRegistry.CURRENT_VERSION);
+        assertThat(registry.migrations()).hasSize(1);
+        ProjectMigration step = registry.migrations().getFirst();
+        assertThat(step.fromVersion()).isEqualTo(1);
+        assertThat(step.toVersion()).isEqualTo(2);
+        assertThat(step.description()).isEqualTo("add per-track MIDI clips; key MIDI effects by id");
+        assertThat(step.changesAuthoredContent())
+                .as("the 1 → 2 step only re-expresses the format: no migration dialog")
+                .isFalse();
+    }
+
+    @Test
+    void stepsChangeAuthoredContentUnlessBuiltAsFormatOnly() {
+        UnaryOperator<Document> identity = UnaryOperator.identity();
+        assertThat(ProjectMigration.step(1, "s", identity).changesAuthoredContent()).isTrue();
+        assertThat(new ProjectMigration(1, 3, "batch", identity).changesAuthoredContent()).isTrue();
+        assertThat(new MigrationReport.AppliedMigration(1, 2, "row").changesAuthoredContent()).isTrue();
+
+        ProjectMigration formatOnly = ProjectMigration.formatOnly(4, "re-key", identity);
+        assertThat(formatOnly.fromVersion()).isEqualTo(4);
+        assertThat(formatOnly.toVersion()).isEqualTo(5);
+        assertThat(formatOnly.changesAuthoredContent()).isFalse();
+    }
+
+    @Test
+    void reportChangesAuthoredContentWhenAnyAppliedStepDoes() throws Exception {
+        MigrationRegistry formatOnlyChain = MigrationRegistry.builder(3)
+                .add(ProjectMigration.formatOnly(1, "re-key", UnaryOperator.identity()))
+                .add(ProjectMigration.formatOnly(2, "re-name", UnaryOperator.identity()))
+                .build();
+        MigrationReport formatOnlyReport = formatOnlyChain.migrate(docAtVersion(1)).report();
+        assertThat(formatOnlyReport.wasMigrated()).isTrue();
+        assertThat(formatOnlyReport.applied())
+                .extracting(MigrationReport.AppliedMigration::changesAuthoredContent)
+                .containsExactly(false, false);
+        assertThat(formatOnlyReport.changesAuthoredContent()).isFalse();
+
+        MigrationRegistry mixedChain = MigrationRegistry.builder(3)
+                .add(ProjectMigration.formatOnly(1, "re-key", UnaryOperator.identity()))
+                .add(ProjectMigration.step(2, "rewrite", UnaryOperator.identity()))
+                .build();
+        MigrationReport mixedReport = mixedChain.migrate(docAtVersion(1)).report();
+        assertThat(mixedReport.applied())
+                .extracting(MigrationReport.AppliedMigration::changesAuthoredContent)
+                .containsExactly(false, true);
+        assertThat(mixedReport.changesAuthoredContent()).isTrue();
+
+        assertThat(MigrationReport.noOp(3).changesAuthoredContent()).isFalse();
     }
 
     @Test

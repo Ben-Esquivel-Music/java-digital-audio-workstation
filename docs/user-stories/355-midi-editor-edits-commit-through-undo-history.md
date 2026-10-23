@@ -39,6 +39,7 @@ Story 330's own acceptance criterion ("piano-roll notes ... and CC lanes survive
    - any `ClipEditorFactory` editor still open on the abandoned generation's clip is closed or disposed, and a newly built editor records into the new manager;
    - the long-lived Editor view drops any clip it holds from the abandoned generation. It holds no `MidiClip` until a MIDI track of the new project becomes the focused track, and then loads that track's clip as criterion 1 requires.
 6. Together with story 330, note and CC edits survive save → close → reopen, and closing the project with unsaved MIDI edits prompts the user to save.
+7. Edits change `MidiClip` notes by identity; notes the editor cannot show (MIDI ≥ 96) and every note's channel are untouched by an edit to another note. The editor's `MidiNote` record (`note`, `startColumn`, `durationColumns`, `velocity`) has no channel, and `MidiEditorView.loadFromMidiClip` leaves out every note outside its `TOTAL_KEYS` = 96 rows, so rebuilding the clip from the editor's list would reset every channel to 0 and delete those notes.
 
 ## Goals — Tests
 
@@ -52,6 +53,7 @@ These tests are binding acceptance criteria. They run headless against `daw-core
 - **Long-lived Editor view follows selection**: make a MIDI track the focused track and assert the long-lived Editor view holds that track's `MidiClip`. Then make a non-MIDI track the focused track, and then clear the selection, and assert after each step that the view holds no `MidiClip`.
 - **Long-lived Editor view follows Open**: make a MIDI track the focused track and make a CC edit in the long-lived Editor view. Simulate Open, make a MIDI track of the new project the focused track, and make a CC edit. The second edit lands on the new manager and marks the new project dirty; the old manager is unchanged by it.
 - **Stale editor disposed**: after a simulated Open, the `ClipEditorFactory` editor open on the old clip is closed or disposed and cannot add entries to either manager.
+- **Notes the editor cannot show are kept**: a clip with a channel-9 note and a note at MIDI 100; edit the velocity of a third note in the editor; both are unchanged in the `MidiClip` and after save and reopen.
 
 ## Non-Goals
 

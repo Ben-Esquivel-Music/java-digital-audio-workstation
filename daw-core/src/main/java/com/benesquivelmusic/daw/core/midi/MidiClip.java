@@ -195,7 +195,9 @@ public final class MidiClip implements Clip {
     //
     // Lanes are the per-clip configuration that drives the piano-roll
     // editor's bottom pane: which CCs are visible, their stacking order,
-    // and the breakpoints inside each lane. Persisted by ProjectSerializer.
+    // and the breakpoints inside each lane. Saved with the project inside
+    // the owning track's <midi-clip> element (ProjectSerializer) and
+    // restored on open (ProjectDeserializer).
 
     /**
      * Adds a CC editing lane to this clip.

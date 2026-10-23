@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.audio.SlipClipAction;
 import com.benesquivelmusic.daw.core.clip.LockedClipException;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
+import com.benesquivelmusic.daw.core.midi.MidiRecorder;
 import com.benesquivelmusic.daw.core.midi.SlipMidiClipAction;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
@@ -160,10 +161,10 @@ public final class SlipEditService {
             return new SlipResult(null, 0.0, hitEdge);
         }
         LockedClipException.requireUnlocked("Slip", clip);
-        // 0.25 beats per column (1/16th at 4/4) — same constant used by the UI
-        // layer (see {@code EditorView.BEATS_PER_COLUMN}). Hard-coded here to
-        // avoid a reverse dependency from daw-core onto daw-app.
-        double appliedBeatDelta = clampedDelta * 0.25;
+        // The column unit schema 2 of project.daw stores (1/16th at 4/4),
+        // pinned by MidiColumnUnitContractTest; the UI layer's
+        // EditorView.BEATS_PER_COLUMN is the same unit.
+        double appliedBeatDelta = clampedDelta * MidiRecorder.BEATS_PER_COLUMN;
         return new SlipResult(new SlipMidiClipAction(clip, clampedDelta),
                 appliedBeatDelta, hitEdge);
     }

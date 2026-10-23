@@ -114,20 +114,27 @@ class ClipReferenceClassificationContractTest {
                         inMemoryRootRelative, ".");
 
         assertThat(warnings).extracting(LogRecord::getLevel).containsOnly(Level.WARNING);
+        // Each WARNING names the track and the clip, numbers the clip and a
+        // segment from 1, and quotes the reference through
+        // UnreadProjectItem.logText.
+        String takeSegment = "Track 1 'Mixed': clip 2 'Take' source segment ";
         List<String> expectedWarnings = new ArrayList<>();
         if (WINDOWS) {
-            expectedWarnings.add("'Take': <source-segment> 1 of 5 '" + driveRelative + "' " + ROOTED);
+            expectedWarnings.add(takeSegment + "2 of 5 not resolved — the path '" + driveRelative + "' " + ROOTED);
         }
-        expectedWarnings.add("'Take': <source-segment> 2 of 5 '../outside.wav' " + ESCAPES);
-        expectedWarnings.add("'Take': <source-segment> 3 of 5 'audio/..' " + ITSELF);
+        expectedWarnings.add(takeSegment + "3 of 5 not resolved — the path '../outside.wav' " + ESCAPES);
+        expectedWarnings.add(takeSegment + "4 of 5 not resolved — the path 'audio/..' " + ITSELF);
         if (WINDOWS) {
-            expectedWarnings.add("'Unparseable': source-file '" + unparseable + "' " + INVALID);
-            expectedWarnings.add("'Root relative': source-file '" + rootRelative + "' " + ROOTED);
+            expectedWarnings.add("Track 1 'Mixed': clip 3 'Unparseable' source file not resolved — the path '"
+                    + unparseable + "' " + INVALID);
+            expectedWarnings.add("Track 1 'Mixed': clip 4 'Root relative' source file not resolved — the path '"
+                    + rootRelative + "' " + ROOTED);
         }
-        expectedWarnings.add("'Directory itself': source-file '.' " + ITSELF);
+        expectedWarnings.add("Track 1 'Mixed': clip 6 'Directory itself' source file not resolved — the path '.' "
+                + ITSELF);
         assertThat(warnings).hasSameSizeAs(expectedWarnings);
         for (int i = 0; i < expectedWarnings.size(); i++) {
-            assertThat(warnings.get(i).getMessage()).as("WARNING %d", i).contains(expectedWarnings.get(i));
+            assertThat(warnings.get(i).getMessage()).as("WARNING %d", i).startsWith(expectedWarnings.get(i));
         }
 
         for (String reference : inMemoryReferences(loaded)) {

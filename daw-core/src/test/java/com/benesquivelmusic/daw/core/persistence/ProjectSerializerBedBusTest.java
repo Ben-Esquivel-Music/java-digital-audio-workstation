@@ -13,13 +13,18 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * The bed bus and its per-track routings round-trip. A routing names a track
+ * by id: the fixture routes a real track of the project — the only state the
+ * application produces.
+ */
 class ProjectSerializerBedBusTest {
 
     @Test
     void bedBusAndRoutingsRoundTrip() throws Exception {
         DawProject project = new DawProject(
                 "test", new AudioFormat(48000, 2, 24, 512));
-        UUID trackId = UUID.randomUUID();
+        UUID trackId = UUID.fromString(project.createAudioTrack("Choir").getId());
 
         // Configure a 5.1.4 bed bus with custom per-channel trim and an
         // LCR routing for one track. Use a bespoke gain array so we are
@@ -49,6 +54,9 @@ class ProjectSerializerBedBusTest {
         assertThat(loadedBus.channelGainsDb()[0]).isEqualTo(-1.5);
         assertThat(loadedBus.channelGainsDb()[1]).isEqualTo(-1.5);
 
+        assertThat(loaded.getTracks().getFirst().getId())
+                .as("the routing resolves to the reopened track")
+                .isEqualTo(trackId.toString());
         BedChannelRouting loadedRouting =
                 loaded.getBedBusManager().getRouting(trackId).orElseThrow();
         int lIdx = ImmersiveFormat.FORMAT_5_1_4.layout().indexOf(SpeakerLabel.L);
@@ -60,6 +68,8 @@ class ProjectSerializerBedBusTest {
         // LFE was not part of LCR — must be silent (-inf).
         int lfeIdx = ImmersiveFormat.FORMAT_5_1_4.layout().indexOf(SpeakerLabel.LFE);
         assertThat(loadedRouting.gainDb(lfeIdx)).isEqualTo(BedChannelRouting.SILENT_DB);
+        assertThat(loadedRouting.channelGainsDb()).containsExactly(routing.channelGainsDb());
+        assertThat(deserializer.getUnreadItems()).isEmpty();
     }
 
     @Test

@@ -117,13 +117,35 @@ public final class Track {
     private TrackFoldState foldState = TrackFoldState.UNFOLDED;
 
     /**
-     * Creates a new track with the given name and type.
+     * Creates a new track with the given name and type and a freshly minted
+     * id. Every creation path except the project deserializer — a new track,
+     * {@link #duplicate(String)}, a track template, an imported session —
+     * uses this constructor.
      *
      * @param name the display name for this track
      * @param type the track type
      */
     public Track(String name, TrackType type) {
-        this.id = UUID.randomUUID().toString();
+        this(UUID.randomUUID(), name, type);
+    }
+
+    /**
+     * Creates a track that carries the given id.
+     *
+     * <p>Only the project deserializer restores ids: a saved track reopens
+     * with the id it was saved with, so the id-keyed references to it (cue
+     * sends, VCA members, channel links, bed routings, and the take folders
+     * and manifests that name the track) still resolve. Every other creation
+     * path keeps minting a fresh id through {@link #Track(String, TrackType)}.
+     * The id is stored in its canonical {@link UUID#toString()} form, and the
+     * track's {@linkplain #getMidiClip() MIDI clip} is owned by it.</p>
+     *
+     * @param id   the track id
+     * @param name the display name for this track
+     * @param type the track type
+     */
+    public Track(UUID id, String name, TrackType type) {
+        this.id = Objects.requireNonNull(id, "id must not be null").toString();
         this.name = Objects.requireNonNull(name, "name must not be null");
         this.type = Objects.requireNonNull(type, "type must not be null");
         this.volume = 1.0;
@@ -136,7 +158,7 @@ public final class Track {
         // MidiClip-mutation actions can publish ClipEvent.Trimmed
         // carrying both clipId and trackId without needing a
         // project-side reverse lookup.
-        this.midiClip.setOwningTrackId(UUID.fromString(this.id));
+        this.midiClip.setOwningTrackId(id);
     }
 
     /** Returns the unique identifier for this track. */

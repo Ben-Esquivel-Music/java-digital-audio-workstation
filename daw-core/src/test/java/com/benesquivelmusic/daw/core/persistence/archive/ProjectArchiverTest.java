@@ -5,6 +5,8 @@ import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
+import com.benesquivelmusic.daw.core.persistence.UnreadProjectItem;
+import com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import org.junit.jupiter.api.Test;
@@ -253,6 +255,51 @@ class ProjectArchiverTest {
         assertThatThrownBy(() -> archiver.saveAsArchive(project, tmp.resolve("foo.zip")))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining(".dawz");
+    }
+
+    @Test
+    void openArchiveCarriesWhatItsReadOfTheProjectDocumentCouldNotHonourAsWritten() throws IOException {
+        // Story 330: the restore re-serializes the archived project into
+        // project.daw before it reopens it, so the reopen's read finds nothing
+        // the archive's read dropped; the archived project is where it is.
+        Path damaged = tmp.resolve("damaged.dawz");
+        try (var out = Files.newOutputStream(damaged);
+             var zip = new java.util.zip.ZipOutputStream(out)) {
+            zip.putNextEntry(new java.util.zip.ZipEntry(ArchiveHeader.FILE_NAME));
+            zip.write("projectName=Damaged\n".getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+            zip.putNextEntry(new java.util.zip.ZipEntry(ArchiveHeader.PROJECT_DOC_NAME));
+            zip.write("""
+                    <daw-project version="%d">
+                      <metadata><name>Damaged</name></metadata>
+                      <tracks>
+                        <track id="00000000-0000-0000-0000-0000000000a1" name="Keys" type="MIDI">
+                          <midi-clip locked="false">
+                            <notes>
+                              <note note-number="60" start-column="0" duration-columns="4" velocity="128" channel="0"/>
+                            </notes>
+                          </midi-clip>
+                        </track>
+                      </tracks>
+                    </daw-project>
+                    """.formatted(MigrationRegistry.CURRENT_VERSION).getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+        }
+        ProjectArchiver archiver = new ProjectArchiver();
+
+        ArchivedProject opened = archiver.openArchive(damaged, tmp.resolve("damaged-restored"), null);
+
+        assertThat(opened.unreadItems()).singleElement().satisfies(item -> {
+            assertThat(item.kind()).isEqualTo(UnreadProjectItem.Kind.MIDI_NOTE_SKIPPED);
+            assertThat(item.location()).isEqualTo(new UnreadProjectItem.OnTrack(0, "Keys"));
+        });
+
+        DawProject clean = new DawProject("Clean", AudioFormat.CD_QUALITY);
+        clean.createMidiTrack("Keys");
+        Path cleanArchive = tmp.resolve("clean.dawz");
+        archiver.saveAsArchive(clean, cleanArchive);
+        assertThat(archiver.openArchive(cleanArchive, tmp.resolve("clean-restored"), null).unreadItems())
+                .as("the next open's list, not the previous one's").isEmpty();
     }
 
     @Test

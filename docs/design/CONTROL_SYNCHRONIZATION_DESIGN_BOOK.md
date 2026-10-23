@@ -469,6 +469,7 @@ Undo capture is part of phase 2 so redo replays the identical cascade.
 | Toggle loop | not while Loop Rec is on and a take is in flight | `Transport.loop` (no undo); then PROJECT dirty — the loop is saved with the project | `TransportVM.loopRegion` | `LoopChanged` → canvas loop overlay, transport button pseudo‑class |
 | Set punch in / out, toggle punch | toggle: a region is installed | `Transport.punchRegion` (no undo); then PROJECT dirty when the region differs from the one installed before | `TransportVM.punchRegion` | `PunchChanged` (no consumer yet) |
 | Ruler loop / punch gesture (handle drag, Shift‑drag define) | loop: start stays before end; punch: at least `minPunchFrames`, handles never cross | `Transport` loop window / punch region (no undo), written as the pointer moves — an upper‑half Shift+press writes its loop on the press itself; PROJECT dirty once at the release (or, if the release never reached the ruler, at its next button release or primary press), when either differs from what the press found | `TransportVM.loopRegion`, `punchRegion` | none — no bus event |
+| Toggle pre/post‑roll, set pre/post bars | bar counts 0–`PreRollPostRoll.MAX_BARS` (the spinners' bounds; `PreRollPostRoll` rejects any other) | `Transport.setPreRollPostRoll` (no undo) through one commit helper for both toggles and both spinners (`TransportController.commitPreRollPostRoll`); then PROJECT dirty when the value differs from the stored one — pre/post‑roll is saved with the project (story 330) | controller sync (`TransportController.syncPreRollControls`; no VM) | none — no bus event |
 | Set tempo | in range | `Transport.tempo` + undo | `TransportVM.tempo` | `TempoChanged` → metronome reschedule, grid recompute, tempo label |
 | Seek / scrub | — | `Transport.position` | `TransportVM.playhead` | (continuous; no event) → canvas + time display via binding |
 
@@ -518,8 +519,9 @@ Every row ends, implicitly, with phases 3 (dirty) and the undo capture in phase 
 > `UndoManager` in phase 2 — except the transport intents that take no undo entry there:
 > §5.2's playback and seeks, which are not edits of the project; Record, whose recorded
 > clips and notes get their own undo entries once the take ends; the loop and punch edits,
-> which mark the project dirty instead; pre/post‑roll edits (dirty‑only once story 330
-> restores them; today they do not mark it); and the loop‑record mode, which is not
+> which mark the project dirty instead; pre/post‑roll edits, which also mark it dirty
+> instead (dirty‑only since story 330 restores them: marked only when the stored value
+> changes, with no undo entry and no bus event); and the loop‑record mode, which is not
 > saved — undo simply *replays the inverse cascade* and re‑emits the same events. There
 > is no separate "after undo, also refresh X" code — the contract guarantees parity (fixes
 > the stale‑Undo‑label class of bug, §1.2).

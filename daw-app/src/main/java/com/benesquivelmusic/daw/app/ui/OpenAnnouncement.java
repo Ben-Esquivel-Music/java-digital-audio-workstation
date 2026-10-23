@@ -2,13 +2,16 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.persistence.MissingAsset;
 import com.benesquivelmusic.daw.core.persistence.MissingAssetsReport;
+import com.benesquivelmusic.daw.core.persistence.UnreadProjectItem;
 
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -17,11 +20,17 @@ import java.util.Set;
  * The one notification an open shows (story 329; Persistence Integrity book
  * §5.3 step 8 ANNOUNCE, §9.11; decisions D8, D14 and D24): what the door did,
  * qualified by what the open could not load as saved. A plain SUCCESS only
- * when every referenced asset resolved and none is shorter than its clips;
- * otherwise a WARNING naming the distinct missing assets and the clips they
- * silence, then the assets shorter than their clips, with a {@code Review…}
- * action when the report has rows. The doors that report a failure keep
- * their ERROR level.
+ * when every referenced asset resolved, none is shorter than its clips and
+ * the open honoured every saved item as written; otherwise a WARNING naming
+ * the distinct missing assets and the clips they silence, then the assets
+ * shorter than their clips, with a {@code Review…} action when the report has
+ * rows, then — story 330, counts only, in a fixed order — the saved items the
+ * open could not honour ({@link UnreadProjectItem}): MIDI notes skipped, CC
+ * events skipped (a skipped lane counts as its events, at least 1),
+ * arpeggiator settings adjusted, MIDI effects not recognized and kept as
+ * saved, and mixer assignments removed (to a track the file does not
+ * contain, malformed, a self-link or a repeat). The doors that report a
+ * failure keep their ERROR level.
  *
  * <p>The announcement is made when the references are classified, not when
  * the decodes finish: rows the rehydration adds later get their own single
@@ -54,30 +63,52 @@ record OpenAnnouncement(NotificationLevel level, String message, boolean offersR
      * so an asset both lists name is counted once and a SoundFont only the
      * archive names is counted too.</p>
      *
+     * <p>The saved items the open could not honour follow the asset clauses
+     * — inside the archive door's parentheses — as one clause per kind of
+     * damage, each only when there is one. The archive restore and the
+     * journal replay announce the items their own read found
+     * ({@link OpenDoor.ArchiveRestore#archiveUnread()},
+     * {@link OpenDoor.JournalReplay#replayUnread()}) instead of
+     * {@code unreadItems}: they re-serialized {@code project.daw} before the
+     * load, so its read finds nothing they dropped, and finds again the
+     * placeholders they wrote back — counting both would count those twice.
+     * The items never offer {@code Review…}: the report it opens lists
+     * assets only.</p>
+     *
      * @param door             how the project was opened
      * @param projectDirectory the opened project's directory (the archive's
      *                         destination), or {@code null} when it has none
      * @param report           the open's missing-assets report
+     * @param unreadItems      the saved items the open's read could not honour
+     *                         as written
+     *                         ({@code ProjectManager.getLastUnreadItems()}, or
+     *                         for a snapshot its own read's)
      * @return the announcement
      */
-    static OpenAnnouncement of(OpenDoor door, Path projectDirectory, MissingAssetsReport report) {
+    static OpenAnnouncement of(OpenDoor door, Path projectDirectory, MissingAssetsReport report,
+                               List<UnreadProjectItem> unreadItems) {
         Objects.requireNonNull(door, "door must not be null");
         Objects.requireNonNull(report, "report must not be null");
+        Objects.requireNonNull(unreadItems, "unreadItems must not be null");
         String done = doorText(door, projectDirectory);
         NotificationLevel clean = cleanLevel(door);
         int missing = door instanceof OpenDoor.ArchiveRestore archive
                 ? distinctUnion(report, archive.archiveMissing(), projectDirectory)
                 : report.missingAssetCount();
         int shorter = report.shorterAssetCount();
-        if (missing + shorter == 0) {
+        List<String> unread = unreadClauses(unreadItemsOf(door, unreadItems));
+        if (missing + shorter == 0 && unread.isEmpty()) {
             return new OpenAnnouncement(clean, done, false);
         }
         NotificationLevel level = clean == NotificationLevel.ERROR ? NotificationLevel.ERROR : NotificationLevel.WARNING;
         int silent = report.silentClipCount();
+        List<String> clauses = new ArrayList<>(door instanceof OpenDoor.ArchiveRestore
+                ? archiveClauses(missing, silent, shorter)
+                : clauses(missing, silent, shorter));
+        clauses.addAll(unread);
         String message = door instanceof OpenDoor.ArchiveRestore archive
-                ? ProjectAudioText.text("projectOpen.archive.qualified", archive.projectName(),
-                        joined(archiveClauses(missing, silent, shorter)))
-                : ProjectAudioText.text("projectOpen.qualified", done, clauses(missing, silent, shorter));
+                ? ProjectAudioText.text("projectOpen.archive.qualified", archive.projectName(), joined(clauses))
+                : ProjectAudioText.text("projectOpen.qualified", done, joined(clauses));
         return new OpenAnnouncement(level, message, !report.isEmpty());
     }
 
@@ -92,7 +123,7 @@ record OpenAnnouncement(NotificationLevel level, String message, boolean offersR
      */
     static String summary(MissingAssetsReport report) {
         Objects.requireNonNull(report, "report must not be null");
-        return clauses(report.missingAssetCount(), report.silentClipCount(), report.shorterAssetCount());
+        return joined(clauses(report.missingAssetCount(), report.silentClipCount(), report.shorterAssetCount()));
     }
 
     /**
@@ -120,11 +151,11 @@ record OpenAnnouncement(NotificationLevel level, String message, boolean offersR
     }
 
     /**
-     * The clauses after the em dash: the missing assets, the clips they
+     * The asset clauses after the em dash: the missing assets, the clips they
      * silence in parentheses (left out when none is), then the shorter
      * assets; each only when there is one.
      */
-    private static String clauses(int missing, int silent, int shorter) {
+    private static List<String> clauses(int missing, int silent, int shorter) {
         List<String> clauses = new ArrayList<>(2);
         if (missing > 0) {
             String assets = ProjectAudioText.count("projectOpen.assets", missing);
@@ -136,7 +167,63 @@ record OpenAnnouncement(NotificationLevel level, String message, boolean offersR
         if (shorter > 0) {
             clauses.add(ProjectAudioText.count("projectOpen.shorterAssets", shorter));
         }
-        return joined(clauses);
+        return clauses;
+    }
+
+    /** The unread items an open through {@code door} announces: the door's own, or the open's read's. */
+    private static List<UnreadProjectItem> unreadItemsOf(OpenDoor door, List<UnreadProjectItem> unreadItems) {
+        return switch (door) {
+            case OpenDoor.ArchiveRestore archive -> archive.archiveUnread();
+            case OpenDoor.JournalReplay replay -> replay.replayUnread();
+            case OpenDoor.Plain _, OpenDoor.RecoveredWriteFailed _, OpenDoor.FailedReplayFallback _,
+                 OpenDoor.MigrationRollback _, OpenDoor.SnapshotRestore _ -> unreadItems;
+        };
+    }
+
+    /**
+     * One clause per {@link UnreadClause}, in its declaration order, each
+     * only when it counts something: the saved items {@code items} stand for
+     * ({@link UnreadProjectItem#count()} — a skipped lane counts as its
+     * events, at least 1, so a lane saved with none is one skipped CC
+     * event), summed per clause.
+     */
+    private static List<String> unreadClauses(List<UnreadProjectItem> items) {
+        Map<UnreadClause, Integer> counts = new EnumMap<>(UnreadClause.class);
+        for (UnreadProjectItem item : items) {
+            counts.merge(UnreadClause.of(item.kind()), Math.max(1, item.count()), Integer::sum);
+        }
+        List<String> clauses = new ArrayList<>(counts.size());
+        counts.forEach((clause, count) -> clauses.add(ProjectAudioText.count(clause.key, count)));
+        return clauses;
+    }
+
+    /**
+     * The clauses of the saved items an open could not honour as written, in
+     * the order the announcement gives them, each with its count key.
+     */
+    private enum UnreadClause {
+        MIDI_NOTES("projectOpen.unread.midiNotes"),
+        CC_EVENTS("projectOpen.unread.ccEvents"),
+        ARPEGGIATOR_SETTINGS("projectOpen.unread.arpeggiatorSettings"),
+        MIDI_EFFECTS("projectOpen.unread.midiEffects"),
+        MIXER_ASSIGNMENTS("projectOpen.unread.mixerAssignments");
+
+        private final String key;
+
+        UnreadClause(String key) {
+            this.key = key;
+        }
+
+        /** The clause an item of {@code kind} counts in; exhaustive, so a new kind does not compile without one. */
+        static UnreadClause of(UnreadProjectItem.Kind kind) {
+            return switch (kind) {
+                case MIDI_NOTE_SKIPPED -> MIDI_NOTES;
+                case CC_LANE_SKIPPED, CC_EVENT_SKIPPED -> CC_EVENTS;
+                case MIDI_EFFECT_SETTING_ADJUSTED -> ARPEGGIATOR_SETTINGS;
+                case MIDI_EFFECT_NOT_RECOGNIZED -> MIDI_EFFECTS;
+                case MIXER_REFERENCE_REMOVED -> MIXER_ASSIGNMENTS;
+            };
+        }
     }
 
     /** The archive door's clauses, every one inside its parentheses: missing, silent, shorter. */

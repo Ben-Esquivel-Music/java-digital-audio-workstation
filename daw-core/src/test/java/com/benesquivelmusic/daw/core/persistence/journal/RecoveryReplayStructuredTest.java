@@ -3,6 +3,8 @@ package com.benesquivelmusic.daw.core.persistence.journal;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
+import com.benesquivelmusic.daw.core.persistence.UnreadProjectItem;
+import com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry;
 import com.benesquivelmusic.daw.core.project.DawProject;
 
 import org.junit.jupiter.api.Test;
@@ -153,6 +155,43 @@ class RecoveryReplayStructuredTest {
                 .contains("source-file=\"" + relativeHead + "\"")
                 .doesNotContain(projectDir.toString())
                 .doesNotContain(projectDir.toString().replace('\\', '/'));
+    }
+
+    @Test
+    void theResultCarriesWhatTheCheckpointsReadCouldNotHonourAsWritten(@TempDir Path projectDir) throws Exception {
+        // Story 330: the recovery flow re-serializes the recovered project
+        // into project.daw before it reopens it, so the reopen's read finds
+        // nothing the checkpoint's read dropped; the result is where it is.
+        ProjectContext ctx = ProjectContext.forProject(projectDir);
+        Files.createDirectories(ctx.checkpointDirectory());
+        Path checkpoint = ctx.checkpointDirectory().resolve("checkpoint-001-20260101T000000.daw");
+        Files.writeString(checkpoint, """
+                <daw-project version="%d">
+                  <metadata><name>ProjectEpsilon</name></metadata>
+                  <tracks>
+                    <track id="00000000-0000-0000-0000-0000000000a1" name="Keys" type="MIDI">
+                      <midi-clip locked="false">
+                        <notes>
+                          <note note-number="60" start-column="0" duration-columns="4" velocity="128" channel="0"/>
+                          <note note-number="62" start-column="4" duration-columns="4" velocity="100" channel="0"/>
+                        </notes>
+                      </midi-clip>
+                    </track>
+                  </tracks>
+                </daw-project>
+                """.formatted(MigrationRegistry.CURRENT_VERSION));
+
+        RecoveryResult damaged = new JournalReplayer().recover(ctx, checkpoint, List.of());
+
+        assertThat(damaged.recoveredProject().getTracks().getFirst().getMidiClip().getNotes())
+                .as("the readable note is kept").hasSize(1);
+        assertThat(damaged.unreadItems()).singleElement().satisfies(item -> {
+            assertThat(item.kind()).isEqualTo(UnreadProjectItem.Kind.MIDI_NOTE_SKIPPED);
+            assertThat(item.location()).isEqualTo(new UnreadProjectItem.OnTrack(0, "Keys"));
+        });
+
+        RecoveryResult clean = new JournalReplayer().recover(ctx, writeValidCheckpoint(ctx, "ProjectZeta"), List.of());
+        assertThat(clean.unreadItems()).as("a clean checkpoint").isEmpty();
     }
 
     // ---- helpers ----------------------------------------------------------

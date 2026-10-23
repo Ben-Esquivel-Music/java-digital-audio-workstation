@@ -25,6 +25,8 @@ import com.benesquivelmusic.daw.core.mixer.snapshot.SendSnapshot;
 import com.benesquivelmusic.daw.core.mixer.spatial.BedBus;
 import com.benesquivelmusic.daw.core.mixer.spatial.BedBusManager;
 import com.benesquivelmusic.daw.core.mixer.spatial.BedChannelRouting;
+import com.benesquivelmusic.daw.core.plugin.MidiEffectPlugin;
+import com.benesquivelmusic.daw.core.plugin.builtin.midi.ArpeggiatorPlugin;
 import com.benesquivelmusic.daw.core.preset.ReflectivePresetSerializer;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.project.edit.NudgeSettings;
@@ -67,17 +69,15 @@ import javax.xml.transform.TransformerException;
 import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.dom.DOMSource;
 import javax.xml.transform.stream.StreamResult;
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.StringWriter;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import org.w3c.dom.Node;
-import org.w3c.dom.NodeList;
-import org.xml.sax.SAXException;
+import java.util.Set;
+import java.util.UUID;
 
 /**
  * Serializes a {@link DawProject} into XML for persistence.
@@ -223,15 +223,16 @@ public final class ProjectSerializer {
         buildMetadata(document, root, project);
         buildAudioFormat(document, root, project);
         buildTransport(document, root, project.getTransport());
+        Set<UUID> writtenTrackIds = writtenTrackIds(project);
         buildTracks(document, root, project, references);
-        buildMixer(document, root, project);
+        buildMixer(document, root, project, writtenTrackIds);
         buildMarkers(document, root, project.getMarkerManager());
         buildTrackGroups(document, root, project);
         buildMetronome(document, root, project.getMetronome());
         buildReferenceTrackManager(document, root, project.getReferenceTrackManager());
         buildRoomConfiguration(document, root, project.getRoomConfiguration());
         buildMixerSnapshots(document, root, project.getMixerSnapshotManager(), project.getMixer());
-        buildBedBus(document, root, project.getBedBusManager());
+        buildBedBus(document, root, project.getBedBusManager(), writtenTrackIds);
         buildRippleMode(document, root, project);
         buildNudgeSettings(document, root, project);
         buildLoudnessTarget(document, root, project);
@@ -427,36 +428,98 @@ public final class ProjectSerializer {
         }
 
         buildAutomationData(document, elem, track.getAutomationData());
+        buildMidiClip(document, elem, track.getMidiClip());
         buildMidiEffectChain(document, elem, track);
 
         return elem;
     }
 
     /**
-     * Writes the per-track {@code <midi-effect-chain>} element with one child
-     * per built-in MIDI effect plugin in declaration order. Each plugin's
-     * parameter values are persisted as attributes so the chain can be
-     * round-tripped without losing user-tweaked settings.
+     * Writes the track's {@code <midi-clip>} element — the clip's lock flag,
+     * its notes in clip order and its CC editing lanes with their breakpoints
+     * — or nothing when the clip has no notes, no lanes and is not locked.
+     * Every track owns a {@link MidiClip}, whatever its type; the element is
+     * written for any track that holds MIDI. Columns are stored as the model
+     * holds them (one column is a quarter of a transport beat). A lane's
+     * {@code cc-number} is written only for {@link MidiCcLaneType#ARBITRARY_CC}:
+     * every other lane type derives its CC number from the type. Read back by
+     * {@link ProjectDeserializer}.
+     */
+    private void buildMidiClip(Document document, Element trackElem, MidiClip clip) {
+        if (clip.isEmpty() && clip.getCcLanes().isEmpty() && !clip.isLocked()) {
+            return;
+        }
+        Element clipElem = document.createElement("midi-clip");
+        clipElem.setAttribute("locked", String.valueOf(clip.isLocked()));
+
+        Element notesElem = document.createElement("notes");
+        for (MidiNoteData note : clip.getNotes()) {
+            Element noteElem = document.createElement("note");
+            noteElem.setAttribute("note-number", String.valueOf(note.noteNumber()));
+            noteElem.setAttribute("start-column", String.valueOf(note.startColumn()));
+            noteElem.setAttribute("duration-columns", String.valueOf(note.durationColumns()));
+            noteElem.setAttribute("velocity", String.valueOf(note.velocity()));
+            noteElem.setAttribute("channel", String.valueOf(note.channel()));
+            notesElem.appendChild(noteElem);
+        }
+        clipElem.appendChild(notesElem);
+
+        Element lanesElem = document.createElement("cc-lanes");
+        for (MidiCcLane lane : clip.getCcLanes()) {
+            Element laneElem = document.createElement("cc-lane");
+            laneElem.setAttribute("type", lane.getType().name());
+            if (lane.getType() == MidiCcLaneType.ARBITRARY_CC) {
+                laneElem.setAttribute("cc-number", String.valueOf(lane.getCcNumber()));
+            }
+            laneElem.setAttribute("high-resolution", String.valueOf(lane.isHighResolution()));
+            laneElem.setAttribute("channel", String.valueOf(lane.getChannel()));
+            laneElem.setAttribute("height-ratio", String.valueOf(lane.getHeightRatio()));
+            for (MidiCcEvent event : lane.getEvents()) {
+                Element eventElem = document.createElement("event");
+                eventElem.setAttribute("column", String.valueOf(event.column()));
+                eventElem.setAttribute("value", String.valueOf(event.value()));
+                laneElem.appendChild(eventElem);
+            }
+            lanesElem.appendChild(laneElem);
+        }
+        clipElem.appendChild(lanesElem);
+
+        trackElem.appendChild(clipElem);
+    }
+
+    /**
+     * Writes the per-track {@code <midi-effect-chain>} element with one
+     * {@code <midi-effect>} child per plugin in chain order. Each entry is
+     * keyed by its plugin's stable descriptor id ({@code plugin-id}); an
+     * arpeggiator's parameter values follow as attributes. A placeholder for
+     * an effect the open did not recognise ({@link UnresolvedMidiEffect}) is
+     * written back with exactly the attributes it was read with, in the same
+     * order and the same chain position.
      *
-     * <p>Legacy projects without this element load with an empty chain
-     * because {@link Track#getMidiEffectChain()} is initialized empty.</p>
+     * <p>Projects without this element load with an empty chain because
+     * {@link Track#getMidiEffectChain()} is initialized empty.</p>
      */
     private void buildMidiEffectChain(Document document, Element trackElem, Track track) {
-        var chain = track.getMidiEffectChain();
-        if (chain == null || chain.isEmpty()) {
+        List<MidiEffectPlugin> chain = track.getMidiEffectChain();
+        if (chain.isEmpty()) {
             return;
         }
         Element chainElem = document.createElement("midi-effect-chain");
-        for (var plugin : chain) {
+        for (MidiEffectPlugin plugin : chain) {
             Element pluginElem = document.createElement("midi-effect");
-            pluginElem.setAttribute("class", plugin.getClass().getName());
-            if (plugin instanceof com.benesquivelmusic.daw.core.plugin.builtin.midi.ArpeggiatorPlugin arp) {
-                pluginElem.setAttribute("rate", arp.getRate().name());
-                pluginElem.setAttribute("pattern", arp.getPattern().name());
-                pluginElem.setAttribute("octave-range", String.valueOf(arp.getOctaveRange()));
-                pluginElem.setAttribute("gate", String.valueOf(arp.getGate()));
-                pluginElem.setAttribute("swing", String.valueOf(arp.getSwing()));
-                pluginElem.setAttribute("latch", String.valueOf(arp.isLatch()));
+            switch (plugin) {
+                case UnresolvedMidiEffect unresolved ->
+                        unresolved.attributes().forEach(pluginElem::setAttribute);
+                case ArpeggiatorPlugin arp -> {
+                    pluginElem.setAttribute("plugin-id", arp.getDescriptor().id());
+                    pluginElem.setAttribute("rate", arp.getRate().name());
+                    pluginElem.setAttribute("pattern", arp.getPattern().name());
+                    pluginElem.setAttribute("octave-range", String.valueOf(arp.getOctaveRange()));
+                    pluginElem.setAttribute("gate", String.valueOf(arp.getGate()));
+                    pluginElem.setAttribute("swing", String.valueOf(arp.getSwing()));
+                    pluginElem.setAttribute("latch", String.valueOf(arp.isLatch()));
+                }
+                default -> pluginElem.setAttribute("plugin-id", plugin.getDescriptor().id());
             }
             chainElem.appendChild(pluginElem);
         }
@@ -514,11 +577,33 @@ public final class ProjectSerializer {
         return elem;
     }
 
-    private void buildMixer(Document document, Element root, DawProject project) {
+    /**
+     * The ids of the tracks this document writes. An id-keyed mixer
+     * reference — a cue send, a VCA member, a channel link, a bed routing —
+     * is written only when it names one of them (a channel id equals its
+     * track's id): {@link DawProject#removeTrack} deliberately keeps a deleted
+     * track's references in the live model so undo can restore them, and a
+     * file that saved them would make every reopen report a reference to a
+     * missing track. The live model is not changed.
+     */
+    private static Set<UUID> writtenTrackIds(DawProject project) {
+        Set<UUID> ids = new HashSet<>();
+        for (Track track : project.getTracks()) {
+            ids.add(UUID.fromString(track.getId()));
+        }
+        return ids;
+    }
+
+    private void buildMixer(Document document, Element root, DawProject project,
+                            Set<UUID> writtenTrackIds) {
         Mixer mixer = project.getMixer();
         Element mixerElem = document.createElement("mixer");
         root.appendChild(mixerElem);
 
+        // The master and the track channels carry no name: the master is
+        // always "Master", and a track channel is rebuilt from its track
+        // (track@name is the single source — the channel's own name is the
+        // one the track had when the channel was created).
         mixerElem.appendChild(buildMixerChannelElement(document, "master", mixer.getMasterChannel(), mixer));
 
         Element channelsElem = document.createElement("channels");
@@ -527,10 +612,13 @@ public final class ProjectSerializer {
             channelsElem.appendChild(buildMixerChannelElement(document, "channel", channel, mixer));
         }
 
+        // A return bus beyond the mixer's default one is recreated with its name.
         Element returnBusesElem = document.createElement("return-buses");
         mixerElem.appendChild(returnBusesElem);
         for (MixerChannel returnBus : mixer.getReturnBuses()) {
-            returnBusesElem.appendChild(buildMixerChannelElement(document, "return-bus", returnBus, mixer));
+            Element busElem = buildMixerChannelElement(document, "return-bus", returnBus, mixer);
+            busElem.setAttribute("name", returnBus.getName());
+            returnBusesElem.appendChild(busElem);
         }
 
         Element cueBusesElem = document.createElement("cue-buses");
@@ -542,6 +630,9 @@ public final class ProjectSerializer {
             busElem.setAttribute("hardware-output-index", String.valueOf(bus.hardwareOutputIndex()));
             busElem.setAttribute("master-gain", String.valueOf(bus.masterGain()));
             for (CueSend send : bus.sends()) {
+                if (!writtenTrackIds.contains(send.trackId())) {
+                    continue;
+                }
                 Element sendElem = document.createElement("cue-send");
                 sendElem.setAttribute("track-id", send.trackId().toString());
                 sendElem.setAttribute("gain", String.valueOf(send.gain()));
@@ -552,10 +643,9 @@ public final class ProjectSerializer {
             cueBusesElem.appendChild(busElem);
         }
 
-        // VCA groups — write-only persistence, mirroring the cue-bus pattern.
-        // Legacy projects without this element simply load with no VCAs (the
-        // manager starts empty), satisfying the "legacy projects load with no
-        // VCAs" goal in the issue.
+        // VCA groups, mirroring the cue-bus pattern; read back by
+        // ProjectDeserializer. Legacy projects without this element simply
+        // load with no VCAs (the manager starts empty).
         Element vcaGroupsElem = document.createElement("vca-groups");
         mixerElem.appendChild(vcaGroupsElem);
         for (VcaGroup group : project.getVcaGroupManager().getVcaGroups()) {
@@ -566,7 +656,10 @@ public final class ProjectSerializer {
             if (group.color() != null) {
                 groupElem.setAttribute("color", group.color().getHexColor());
             }
-            for (java.util.UUID memberId : group.memberChannelIds()) {
+            for (UUID memberId : group.memberChannelIds()) {
+                if (!writtenTrackIds.contains(memberId)) {
+                    continue;
+                }
                 Element memberElem = document.createElement("vca-member");
                 memberElem.setAttribute("channel-id", memberId.toString());
                 groupElem.appendChild(memberElem);
@@ -580,6 +673,10 @@ public final class ProjectSerializer {
         Element channelLinksElem = document.createElement("channel-links");
         mixerElem.appendChild(channelLinksElem);
         for (ChannelLink link : project.getChannelLinkManager().getLinks()) {
+            if (!writtenTrackIds.contains(link.leftChannelId())
+                    || !writtenTrackIds.contains(link.rightChannelId())) {
+                continue;
+            }
             Element linkElem = document.createElement("channel-link");
             linkElem.setAttribute("left-channel-id", link.leftChannelId().toString());
             linkElem.setAttribute("right-channel-id", link.rightChannelId().toString());
@@ -595,7 +692,6 @@ public final class ProjectSerializer {
     private Element buildMixerChannelElement(Document document, String tagName,
                                              MixerChannel channel, Mixer mixer) {
         Element elem = document.createElement(tagName);
-        elem.setAttribute("name", channel.getName());
         elem.setAttribute("volume", String.valueOf(channel.getVolume()));
         elem.setAttribute("pan", String.valueOf(channel.getPan()));
         elem.setAttribute("muted", String.valueOf(channel.isMuted()));
@@ -686,7 +782,8 @@ public final class ProjectSerializer {
             for (Send send : sends) {
                 Element sendElem = document.createElement("send");
                 sendElem.setAttribute("level", String.valueOf(send.getLevel()));
-                sendElem.setAttribute("mode", send.getMode().name());
+                // The tap is the send's only stored fact; the legacy "mode"
+                // is a lossy view of it and is no longer written (schema v2).
                 sendElem.setAttribute("tap", send.getTap().name());
                 int targetIndex = returnBuses.indexOf(send.getTarget());
                 sendElem.setAttribute("target-index", String.valueOf(targetIndex));
@@ -1136,7 +1233,8 @@ public final class ProjectSerializer {
         return -1;
     }
 
-    private void buildBedBus(Document document, Element root, BedBusManager manager) {
+    private void buildBedBus(Document document, Element root, BedBusManager manager,
+                             Set<UUID> writtenTrackIds) {
         BedBus bus = manager.getBedBus();
         Element bedBusElem = document.createElement("bed-bus");
         bedBusElem.setAttribute("id", bus.id().toString());
@@ -1151,6 +1249,9 @@ public final class ProjectSerializer {
 
         Element routingsElem = document.createElement("bed-routings");
         for (BedChannelRouting routing : manager.getRoutings().values()) {
+            if (!writtenTrackIds.contains(routing.trackId())) {
+                continue;
+            }
             Element routingElem = document.createElement("bed-routing");
             routingElem.setAttribute("track-id", routing.trackId().toString());
             routingElem.setAttribute("format", routing.format().name());
@@ -1182,176 +1283,6 @@ public final class ProjectSerializer {
             return ImmersiveFormat.valueOf(name);
         } catch (IllegalArgumentException e) {
             return ImmersiveFormat.FORMAT_7_1_4;
-        }
-    }
-
-    // ── MIDI clip (notes + CC editing lanes) ───────────────────────────────
-    //
-    // Round-trips a MidiClip including its note list and any CC editing
-    // lane configuration (lane types, CC numbers, 14-bit flag, channel,
-    // height ratios, breakpoints). Used by the piano-roll editor to
-    // persist per-clip lane configuration.
-
-    /**
-     * Serializes a {@link MidiClip} (notes and CC editing lanes) to an
-     * XML string. Used by the piano-roll editor to persist per-clip
-     * lane configuration.
-     *
-     * @param clip the MIDI clip to serialize
-     * @return the XML representation
-     * @throws IOException if serialization fails
-     */
-    public String serializeMidiClip(MidiClip clip) throws IOException {
-        java.util.Objects.requireNonNull(clip, "clip must not be null");
-        try {
-            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-            factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
-            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-            DocumentBuilder builder = factory.newDocumentBuilder();
-            Document document = builder.newDocument();
-
-            Element root = document.createElement("midi-clip");
-            root.setAttribute("locked", String.valueOf(clip.isLocked()));
-            document.appendChild(root);
-
-            Element notesElem = document.createElement("notes");
-            for (MidiNoteData n : clip.getNotes()) {
-                Element ne = document.createElement("note");
-                ne.setAttribute("note-number", String.valueOf(n.noteNumber()));
-                ne.setAttribute("start-column", String.valueOf(n.startColumn()));
-                ne.setAttribute("duration-columns", String.valueOf(n.durationColumns()));
-                ne.setAttribute("velocity", String.valueOf(n.velocity()));
-                ne.setAttribute("channel", String.valueOf(n.channel()));
-                notesElem.appendChild(ne);
-            }
-            root.appendChild(notesElem);
-
-            Element lanesElem = document.createElement("cc-lanes");
-            for (MidiCcLane lane : clip.getCcLanes()) {
-                Element le = document.createElement("cc-lane");
-                le.setAttribute("type", lane.getType().name());
-                le.setAttribute("cc-number", String.valueOf(lane.getCcNumber()));
-                le.setAttribute("high-resolution", String.valueOf(lane.isHighResolution()));
-                le.setAttribute("channel", String.valueOf(lane.getChannel()));
-                le.setAttribute("height-ratio", String.valueOf(lane.getHeightRatio()));
-                for (MidiCcEvent ev : lane.getEvents()) {
-                    Element ee = document.createElement("event");
-                    ee.setAttribute("column", String.valueOf(ev.column()));
-                    ee.setAttribute("value", String.valueOf(ev.value()));
-                    le.appendChild(ee);
-                }
-                lanesElem.appendChild(le);
-            }
-            root.appendChild(lanesElem);
-
-            TransformerFactory transformerFactory = TransformerFactory.newInstance();
-            transformerFactory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
-            transformerFactory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
-            transformerFactory.setAttribute(XMLConstants.ACCESS_EXTERNAL_STYLESHEET, "");
-            Transformer transformer = transformerFactory.newTransformer();
-            transformer.setOutputProperty(OutputKeys.INDENT, "yes");
-            transformer.setOutputProperty(OutputKeys.ENCODING, "UTF-8");
-            transformer.setOutputProperty("{http://xml.apache.org/xslt}indent-amount", "2");
-
-            StringWriter writer = new StringWriter();
-            transformer.transform(new DOMSource(document), new StreamResult(writer));
-            return writer.toString();
-        } catch (ParserConfigurationException | TransformerException e) {
-            throw new IOException("Failed to serialize MIDI clip", e);
-        }
-    }
-
-    /**
-     * Deserializes a {@link MidiClip} from an XML string previously
-     * produced by {@link #serializeMidiClip(MidiClip)}.
-     *
-     * @param xml the XML string
-     * @return a new {@code MidiClip} populated with notes and CC lanes
-     * @throws IOException if parsing fails
-     */
-    public MidiClip deserializeMidiClip(String xml) throws IOException {
-        java.util.Objects.requireNonNull(xml, "xml must not be null");
-        try {
-            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-            factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
-            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-            factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
-            factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-            factory.setExpandEntityReferences(false);
-            DocumentBuilder builder = factory.newDocumentBuilder();
-            Document document = builder.parse(new ByteArrayInputStream(
-                    xml.getBytes(StandardCharsets.UTF_8)));
-
-            Element root = document.getDocumentElement();
-            if (root == null || !"midi-clip".equals(root.getTagName())) {
-                throw new IOException("Expected <midi-clip> root element");
-            }
-
-            MidiClip clip = new MidiClip();
-            clip.setLocked(Boolean.parseBoolean(root.getAttribute("locked")));
-
-            NodeList noteNodes = root.getElementsByTagName("note");
-            for (int i = 0; i < noteNodes.getLength(); i++) {
-                Node node = noteNodes.item(i);
-                if (!(node instanceof Element ne)) continue;
-                try {
-                    int noteNumber = Integer.parseInt(ne.getAttribute("note-number"));
-                    int start = Integer.parseInt(ne.getAttribute("start-column"));
-                    int dur = Integer.parseInt(ne.getAttribute("duration-columns"));
-                    int vel = Integer.parseInt(ne.getAttribute("velocity"));
-                    int ch = ne.hasAttribute("channel")
-                            ? Integer.parseInt(ne.getAttribute("channel"))
-                            : MidiNoteData.DEFAULT_CHANNEL;
-                    clip.addNote(new MidiNoteData(noteNumber, start, dur, vel, ch));
-                } catch (RuntimeException e) {
-                    throw new IOException("Failed to parse note element at index " + i, e);
-                }
-            }
-
-            NodeList laneNodes = root.getElementsByTagName("cc-lane");
-            for (int i = 0; i < laneNodes.getLength(); i++) {
-                Node node = laneNodes.item(i);
-                if (!(node instanceof Element le)) continue;
-                try {
-                    MidiCcLaneType type = MidiCcLaneType.valueOf(le.getAttribute("type"));
-                    int ccNumber;
-                    if (le.hasAttribute("cc-number")) {
-                        ccNumber = Integer.parseInt(le.getAttribute("cc-number"));
-                    } else if (type == MidiCcLaneType.ARBITRARY_CC) {
-                        throw new IOException(
-                                "cc-number attribute is required for ARBITRARY_CC lane at index " + i);
-                    } else {
-                        ccNumber = type.defaultCcNumber();
-                    }
-                    boolean hi = Boolean.parseBoolean(le.getAttribute("high-resolution"));
-                    int channel = le.hasAttribute("channel")
-                            ? Integer.parseInt(le.getAttribute("channel"))
-                            : 0;
-                    MidiCcLane lane = new MidiCcLane(type, ccNumber, hi, channel);
-                    if (le.hasAttribute("height-ratio")) {
-                        try {
-                            double hr = Double.parseDouble(le.getAttribute("height-ratio"));
-                            lane.setHeightRatio(hr);
-                        } catch (IllegalArgumentException ignore) {
-                            // keep default
-                        }
-                    }
-                    NodeList eventNodes = le.getElementsByTagName("event");
-                    for (int j = 0; j < eventNodes.getLength(); j++) {
-                        Node enode = eventNodes.item(j);
-                        if (!(enode instanceof Element ee)) continue;
-                        int col = Integer.parseInt(ee.getAttribute("column"));
-                        int val = Integer.parseInt(ee.getAttribute("value"));
-                        lane.addEvent(new MidiCcEvent(col, val));
-                    }
-                    clip.addCcLane(lane);
-                } catch (RuntimeException e) {
-                    throw new IOException("Failed to parse cc-lane element at index " + i, e);
-                }
-            }
-            return clip;
-        } catch (ParserConfigurationException | SAXException e) {
-            throw new IOException("Failed to deserialize MIDI clip", e);
         }
     }
 }

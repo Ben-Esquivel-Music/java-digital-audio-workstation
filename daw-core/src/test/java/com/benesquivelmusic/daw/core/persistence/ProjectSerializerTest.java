@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.FadeCurveType;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
+import com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -25,7 +26,7 @@ class ProjectSerializerTest {
 
         String xml = serializer.serialize(project);
 
-        assertThat(xml).contains("<daw-project version=\"1\">");
+        assertThat(xml).contains("<daw-project version=\"" + MigrationRegistry.CURRENT_VERSION + "\">");
         assertThat(xml).contains("<name>Empty</name>");
         assertThat(xml).contains("sample-rate=\"44100.0\"");
         assertThat(xml).contains("channels=\"2\"");

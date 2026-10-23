@@ -33,6 +33,26 @@ import java.util.function.Consumer;
  * <p>A project aggregates all tracks, the mixer, the transport,
  * the audio format configuration, and project metadata. When a track
  * is added, a corresponding mixer channel is automatically created.</p>
+ *
+ * <p><strong>Channel order equals track order</strong> as long as no track
+ * id is in the project twice. {@code getMixer().getChannels()} is
+ * {@link #getTracks()} mapped through
+ * {@link #getMixerChannelForTrack(Track)}, element for element and in the
+ * same order. The render path pairs track {@code t} with mixer channel
+ * {@code t} by position (track buffers, mix-down, automation), and the
+ * project file writes {@code <channels>} and {@code channel:<index>}
+ * sidechain sources in mixer order and applies them by position on reopen,
+ * so a channel out of place plays one track through another track's strip.
+ * The four mutators that change either order keep them equal:
+ * {@link #addTrack(Track)} appends to both for a track whose id is not
+ * already in the project (re-adding a track that is present, or a track
+ * that shares its id, appends to the track list only and breaks the
+ * invariant), {@link #removeTrack(Track)} removes from both,
+ * {@link #moveTrack(int, int)} moves both, and
+ * {@link #duplicateTrack(Track)} inserts the copy right after the original
+ * in both. Moving a track into or out of a folder
+ * ({@link #moveTrackToFolder(Track, Track)},
+ * {@link #removeTrackFromFolder(Track)}) reorders neither.</p>
  */
 public final class DawProject {
 
@@ -57,7 +77,8 @@ public final class DawProject {
      * Tracks the mixer channel associated with each track, keyed by track ID.
      * The channel is kept in this map even after a track is removed, so that
      * undoing a remove can re-add the same channel object without creating
-     * a duplicate.
+     * a duplicate. Mapping {@link #tracks} through this map gives the mixer's
+     * channel list in order (see the class Javadoc).
      */
     private final Map<String, MixerChannel> trackChannelMap = new LinkedHashMap<>();
     private final List<TrackGroup> trackGroups = new ArrayList<>();
@@ -156,20 +177,27 @@ public final class DawProject {
     /**
      * Adds a track to the project and ensures a corresponding mixer channel exists.
      *
+     * <p>Precondition for the channel-order invariant (see the class
+     * comment): the track's id is not already in the project. For such a
+     * track the track list and the mixer both grow by one, at the end.
+     * Re-adding a track that is present, or adding a track that shares its
+     * id, appends it to the track list only — its channel is already in
+     * the mixer — and leaves the two orders unequal.</p>
+     *
      * <p>If the track has been added and removed before (e.g. via undo/redo), the
      * original {@link MixerChannel} is reused rather than creating a new one, which
      * keeps the mixer channel count consistent across add/remove cycles.</p>
      *
-     * <p>Story 283 invariant: when the track's id is a valid UUID string
-     * (the production case — {@link Track#Track(String, TrackType)} always
-     * generates one with {@code UUID.randomUUID().toString()}), the
-     * lazily-created channel is constructed so that
+     * <p>Story 283 invariant: when the track's id is a valid UUID string,
+     * the lazily-created channel is constructed so that
      * {@code channel.getId().equals(UUID.fromString(track.getId()))} holds.
      * Subscribers to {@code MixerEvent.ChannelRemoved} can therefore treat
-     * {@code channelId()} as a {@code trackId} directly. A few test
-     * fixtures reflectively forge non-UUID track ids; for those the
-     * channel is built with a random id and the invariant simply does
-     * not apply.</p>
+     * {@code channelId()} as a {@code trackId} directly. Every track id is a
+     * UUID string: {@link Track#Track(String, TrackType)} mints one, and
+     * {@link Track#Track(UUID, String, TrackType)} — the constructor the
+     * project deserializer restores a saved id with — stores the
+     * {@link UUID} it is given. The random-id fallback covers only a
+     * hypothetical non-UUID id, for which the invariant would not apply.</p>
      *
      * @param track the track to add
      */
@@ -331,8 +359,10 @@ public final class DawProject {
      * Duplicates the given track and adds the copy to the project.
      *
      * <p>The duplicated track receives a new unique ID, a new mixer channel,
-     * and copies of all clips. The new track is inserted immediately after
-     * the original in the track list.</p>
+     * and copies of its audio clips. The new track is inserted immediately after
+     * the original in the track list, and its channel immediately after the
+     * original's channel in the mixer, so channel order keeps matching track
+     * order (see the class Javadoc).</p>
      *
      * @param track the track to duplicate
      * @return the new duplicated track
@@ -349,7 +379,12 @@ public final class DawProject {
         MixerChannel channel = new MixerChannel(copy.getName(), parseUuidOrRandom(copy.getId()));
         channel.setColor(copy.getColor());
         trackChannelMap.put(copy.getId(), channel);
-        mixer.addChannel(channel);
+        int originalChannelIndex = mixer.getChannels().indexOf(trackChannelMap.get(track.getId()));
+        if (originalChannelIndex < 0) {
+            mixer.addChannel(channel);
+        } else {
+            mixer.addChannel(originalChannelIndex + 1, channel);
+        }
         notifyChange(ChangeKind.TRACKS);
         return copy;
     }

@@ -18,6 +18,16 @@ public final class MidiFileExporter {
     /** MIDI ticks per quarter note (PPQ). */
     private static final int TICKS_PER_QUARTER = 480;
 
+    /**
+     * Grid columns per quarter note: one column is a sixteenth note, a
+     * quarter of a transport beat — the column unit schema 2 of
+     * {@code project.daw} stores, pinned by {@code MidiColumnUnitContractTest}.
+     */
+    public static final int COLUMNS_PER_QUARTER = 4;
+
+    /** MIDI ticks per grid column. */
+    private static final int TICKS_PER_COLUMN = TICKS_PER_QUARTER / COLUMNS_PER_QUARTER;
+
     private MidiFileExporter() {
         // utility class
     }
@@ -93,12 +103,9 @@ public final class MidiFileExporter {
             // Add tempo meta-event at tick 0
             addTempoEvent(track, tempo);
 
-            // Each grid column = 1 sixteenth note = TICKS_PER_QUARTER / 4 ticks
-            int ticksPerColumn = TICKS_PER_QUARTER / 4;
-
             for (NoteDescriptor note : notes) {
-                long startTick = (long) note.startColumn() * ticksPerColumn;
-                long endTick = startTick + (long) note.durationColumns() * ticksPerColumn;
+                long startTick = (long) note.startColumn() * TICKS_PER_COLUMN;
+                long endTick = startTick + (long) note.durationColumns() * TICKS_PER_COLUMN;
 
                 ShortMessage noteOn = new ShortMessage(
                         ShortMessage.NOTE_ON, note.channel(),

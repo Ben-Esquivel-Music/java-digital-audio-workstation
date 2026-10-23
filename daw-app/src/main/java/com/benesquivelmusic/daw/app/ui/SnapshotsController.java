@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
+import com.benesquivelmusic.daw.core.persistence.UnreadProjectItem;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.snapshot.SnapshotBrowserService;
 import com.benesquivelmusic.daw.core.snapshot.SnapshotDiff;
@@ -27,6 +28,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.BooleanSupplier;
@@ -103,8 +105,11 @@ final class SnapshotsController {
          * @param missingAssets the clip sources its deserialization found
          *                      missing or unresolvable (story 329), classified
          *                      without decoding anything
+         * @param unreadItems   the saved items its deserialization could not
+         *                      honour as written (story 330)
          */
-        void apply(DawProject restored, String label, MissingAssetsReport missingAssets);
+        void apply(DawProject restored, String label, MissingAssetsReport missingAssets,
+                   List<UnreadProjectItem> unreadItems);
     }
 
     private final SnapshotBrowserService service;
@@ -318,10 +323,12 @@ final class SnapshotsController {
         try {
             DawProject project = loadFromEntry(entry);
             // Story 329 — what this deserialization found missing, read right
-            // after it (the deserializer is reused: the next load clears it).
+            // after it (the deserializer is reused: the next load clears it);
+            // story 330 — and what it could not honour as written.
             MissingAssetsReport missingAssets = MissingAssetsReport.atOpen(
                     project, deserializer.getMissingFiles(), currentProjectDirectory());
-            deps.applyRestoredProject().apply(project, entry.label(), missingAssets);
+            List<UnreadProjectItem> unreadItems = deserializer.getUnreadItems();
+            deps.applyRestoredProject().apply(project, entry.label(), missingAssets, unreadItems);
             if (browserView != null) {
                 browserView.refresh();
             }

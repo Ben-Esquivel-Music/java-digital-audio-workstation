@@ -113,11 +113,14 @@ class ProjectDirectoryContainmentContractTest {
 
         assertThat(warnings).extracting(LogRecord::getLevel).containsOnly(Level.WARNING);
         assertThat(warnings).hasSize(3);
-        assertThat(warnings.get(0).getMessage()).contains("'Escaping single'").contains("source-file")
+        assertThat(warnings.get(0).getMessage())
+                .startsWith("Track 1 'Singles': clip 2 'Escaping single' source file not resolved — ")
                 .contains("'" + ESCAPING_SINGLE + "'");
-        assertThat(warnings.get(1).getMessage()).contains("'Escaping head take'").contains("<source-segment> 0 of 3")
+        assertThat(warnings.get(1).getMessage())
+                .startsWith("Track 2 'Takes': clip 1 'Escaping head take' source segment 1 of 3 not resolved — ")
                 .contains("'" + ESCAPING_HEAD + "'");
-        assertThat(warnings.get(2).getMessage()).contains("'Escaping last take'").contains("<source-segment> 1 of 2")
+        assertThat(warnings.get(2).getMessage())
+                .startsWith("Track 2 'Takes': clip 2 'Escaping last take' source segment 2 of 2 not resolved — ")
                 .contains("'" + ESCAPING_LAST + "'");
     }
 

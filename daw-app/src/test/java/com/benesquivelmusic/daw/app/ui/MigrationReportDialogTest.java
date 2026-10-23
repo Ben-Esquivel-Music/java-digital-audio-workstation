@@ -128,6 +128,22 @@ class MigrationReportDialogTest {
     }
 
     @Test
+    void showIfNeededReturnsFalseForAReportWhoseStepsAreAllFormatOnly(@TempDir Path projectDir) {
+        // Story 330 — a migration that only re-expresses the file format has
+        // nothing to review or roll back: no dialog, even though the report
+        // was migrated (its backup, history and badge follow wasMigrated()).
+        // Short-circuits before constructing a dialog, so no FX thread.
+        MigrationReport formatOnly = new MigrationReport(1, 3, List.of(
+                new MigrationReport.AppliedMigration(1, 2, "key MIDI effects by id", false),
+                new MigrationReport.AppliedMigration(2, 3, "add per-track MIDI clips", false)
+        ), Instant.now());
+        assertThat(formatOnly.wasMigrated()).as("fixture: it was migrated").isTrue();
+
+        assertThat(MigrationReportDialog.showIfNeeded(formatOnly, projectDir)).isFalse();
+        assertThat(MigrationReportDialog.showIfNeeded(formatOnly, projectDir, () -> { })).isFalse();
+    }
+
+    @Test
     void showIfNeededReturnsFalseWhenSuppressed(@TempDir Path projectDir) {
         com.benesquivelmusic.daw.core.persistence.migration.MigrationSuppression
                 .suppress(projectDir, 3);

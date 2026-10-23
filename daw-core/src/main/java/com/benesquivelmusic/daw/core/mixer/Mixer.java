@@ -168,8 +168,9 @@ public final class Mixer {
     /**
      * Installs a {@link PluginInvocationSupervisor} on every current channel
      * (regular, return bus, master) and remembers it so that channels added
-     * later via {@link #addChannel(MixerChannel)} or
-     * {@link #addReturnBus(String)} inherit it automatically. Passing
+     * later via either {@code addChannel} overload
+     * ({@link #addChannel(MixerChannel)}, {@link #addChannel(int, MixerChannel)})
+     * or {@link #addReturnBus(String)} inherit it automatically. Passing
      * {@code null} clears the supervisor from all current channels and stops
      * newly-added channels from inheriting one until another supervisor is set.
      *
@@ -200,18 +201,38 @@ public final class Mixer {
     }
 
     /**
-     * Adds a new channel to the mixer.
+     * Adds a new channel to the end of the mixer.
      *
      * @param channel the channel to add
      */
     public void addChannel(MixerChannel channel) {
+        addChannel(channels.size(), channel);
+    }
+
+    /**
+     * Adds a new channel to the mixer at the given position, shifting the
+     * channel at that position and every later one up by one.
+     *
+     * <p>The render path pairs {@code channelBuffers[i]} with the channel at
+     * position {@code i}, so the channel joins the list in a single
+     * insertion; it is never appended and then moved.</p>
+     *
+     * @param index   the position for the channel, from {@code 0} to
+     *                {@link #getChannelCount()} inclusive
+     * @param channel the channel to add
+     * @throws IndexOutOfBoundsException if {@code index} is out of range
+     */
+    public void addChannel(int index, MixerChannel channel) {
         Objects.requireNonNull(channel, "channel must not be null");
+        if (index < 0 || index > channels.size()) {
+            throw new IndexOutOfBoundsException("index out of range: " + index);
+        }
         prepareAddedChannel(channel);
         channel.setOnEffectsChainChanged(this::recalculateDelayCompensation);
         if (pluginSupervisor != null) {
             channel.setPluginSupervisor(pluginSupervisor);
         }
-        channels.add(channel);
+        channels.add(index, channel);
         ownedChannels.add(channel);
         recalculateDelayCompensation();
     }

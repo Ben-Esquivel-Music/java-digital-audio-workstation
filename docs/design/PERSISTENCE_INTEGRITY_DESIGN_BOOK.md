@@ -393,16 +393,38 @@ against permanently.
   Fact (authoritative home)                     │ Serialized today │ Restored today │ Round-trip verdict      │ Owner
   ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   Track properties (name/type/colour/volume/    │ yes              │ yes            │ OK — keep               │ —
-    pan/mute/solo/arm, groups, fold state)      │                  │                │                         │
+    pan/mute/solo/arm, track groups, lane fold  │                  │                │                         │
+    state; identity and folders: rows below)    │                  │                │                         │
+  Track identity (track@id) + id-keyed mixer    │ yes; a reference │ yes: saved id  │ OK — restored (330): a  │ 330
+    references (cue sends, VCA members,         │ only to a track  │ (canonical); a │ reference resolves by   │
+    channel links, bed routings):               │ being written    │ fresh id when  │ restored id; one that   │
+    ProjectSerializer.buildTrackElement,        │                  │ missing, bad   │ does not is dropped and │
+    ProjectSerializer.writtenTrackIds,          │                  │ or duplicate   │ reported, its container │
+    ProjectDeserializer.restoreTrackId;         │                  │ (logged)       │ kept                    │
+    TrackIdentityPersistenceTest,               │                  │                │                         │
+    MixerTrackReferencePersistenceTest          │                  │                │                         │
+  Folder-track membership (Track parent and     │ NO               │ NO             │ GAP: children lost on   │ 374
+    children, DawProject.moveTrackToFolder)     │                  │                │ reopen (no folder UI    │
+                                                │                  │                │ yet, story 012)         │
   Audio clip metadata (name, start, duration,   │ yes              │ yes            │ OK — keep               │ —
     source-file reference)                      │                  │                │                         │
   Audio clip SAMPLE DATA (AudioClip.audioData)  │ by reference     │ NO — never     │ BROKEN: silent clips,   │ 329
                                                 │ (source-file)    │ rehydrated     │ empty waveforms         │
   Missing-asset report (deserializer collects)  │ n/a              │ collected,     │ BROKEN: invisible       │ 329
                                                 │                  │ never shown    │                         │
-  MIDI notes + CC lanes (Track.midiClip)        │ NO               │ NO             │ BROKEN: all MIDI lost   │ 330
-  MIDI effect chains (arpeggiator settings)     │ yes              │ NO             │ BROKEN: write-only      │ 330
-  Pre-roll / post-roll configuration            │ yes              │ NO             │ BROKEN: write-only      │ 330
+  MIDI notes + CC lanes (Track.midiClip):       │ yes (<midi-clip> │ yes            │ OK — restored (330); a  │ 330
+    ProjectSerializer.buildMidiClip,            │ when it has      │                │ note, lane or event the │
+    ProjectDeserializer.parseMidiClip;          │ notes, CC lanes  │                │ model rejects is        │
+    ProjectSerializerMidiClipTest               │ or the lock)     │                │ skipped and reported    │
+  MIDI effect chains (arpeggiator settings):    │ yes (plugin-id)  │ yes            │ OK — restored (330); an │ 330
+    ProjectSerializer.buildMidiEffectChain,     │                  │                │ unknown entry is kept   │
+    ProjectDeserializer.parseMidiEffectChain;   │                  │                │ in place, as saved      │
+    MidiEffectChainPersistenceTest              │                  │                │                         │
+  Pre-roll / post-roll configuration:           │ yes              │ yes            │ OK — restored (330);    │ 330
+    ProjectSerializer.buildTransport,           │                  │                │ edits mark the project  │
+    ProjectDeserializer.parseTransport;         │                  │                │ dirty (Control Sync     │
+    PreRollPostRollPersistenceTest,             │                  │                │ book §5.2)              │
+    PreRollPostRollControlsTest                 │                  │                │                         │
   Loop region + punch region                    │ yes              │ yes            │ OK — keep               │ —
   Tempo + time signature (beat 0)               │ yes              │ yes            │ OK — keep               │ —
   TEMPO MAP (tempo/meter change lists)          │ NO — format      │ NO             │ BROKEN: inexpressible   │ 334
@@ -418,8 +440,17 @@ against permanently.
     takes)                                      │ only, temp path  │                │ owned by story 323      │ (323)
   Installed third-party plugin registry         │ NO (in-memory    │ NO             │ BROKEN: app-scoped,     │ 334
     (app-level, not per-project)                │ only)            │                │ forgets on restart      │
-  Mixer channel volume/pan/sends, VCA/return    │ yes              │ yes            │ OK — keep (control      │ —
-    structure                                   │                  │                │ truth: Book 1, 322)     │
+  Mixer channel volume/pan/sends, VCA groups,   │ yes              │ yes            │ OK for valid data —     │ 367
+    cue buses (id-keyed references: track       │                  │                │ keep (control truth:    │
+    identity row)                               │                  │                │ Book 1, 322); damaged   │
+                                                │                  │                │ containers dropped and  │
+                                                │                  │                │ values clamped          │
+                                                │                  │                │ unreported, NaN not     │
+                                                │                  │                │ rejected: 367           │
+  Return-bus structure and identity (count,     │ names; no ids;   │ PARTIAL: by    │ PARTIAL: default bus    │ 364
+    order, names, ids; sends and sidechain      │ sends, side-     │ position; the  │ always re-made, ids     │
+    keys that target a return bus)              │ chains by index  │ default bus    │ regenerated, keys to a  │
+                                                │                  │ always remains │ later bus lost          │
   Markers, metronome settings, soundfont        │ yes              │ yes            │ OK — keep               │ —
     assignments                                 │                  │                │                         │
   Dock/window layout JSON (story 282)           │ yes              │ yes            │ OK — keep               │ —
@@ -429,7 +460,10 @@ Rules the table encodes: sample data is persisted *by reference* and restored *b
 valid strategy only when the read side completes it (§4.3); a "write-only" verdict is worse than
 "not serialized" (it wastes bytes, implies safety, rots silently — §2.9's harness makes it
 unreachable); cross-book rows are labelled, not absorbed — the recorded-segment row is produced by
-`RECORDING_RELIABILITY_DESIGN_BOOK.md` (story 323) and consumed by this book's 329.
+`RECORDING_RELIABILITY_DESIGN_BOOK.md` (story 323) and consumed by this book's 329. A row a story
+has made round-trip keeps that story as its owner and names its writer, reader and pinning tests;
+the §4.4 harness then pins it with every other written item (`ProjectSchemaParityContractTest`,
+`ProjectRoundTripInventoryTest`).
 
 ### 3.2 The durability artifact model
 
@@ -780,6 +814,18 @@ registry with a pre-migration backup (existing, keep). Readers tolerate absent n
 Forward compatibility (new files in old builds) is out of scope; the registry's version check
 refusing with a clear message is the accepted behaviour.
 
+An open that could not honour everything its file saved gets the same protection (§2.4, rejection
+§9.4): a **degraded-open backup**, `project.daw.degraded.<UTC stamp>[-n].bak`, next to the
+pre-migration one. `ProjectManager.openProject` arms it once per load when
+`ProjectDeserializer.losesSavedContent()` says the next save would drop saved content — a skipped
+MIDI note, CC lane or CC event, an adjusted arpeggiator setting, a removed mixer assignment, a
+malformed or duplicate track id replaced by a fresh one, a placeholder MIDI effect's dropped child
+elements or text, or a skipped VCA group whose id repeats an earlier group's — and the first save
+writes it before `project.daw` is overwritten (story 330). An open that is also a migration writes
+one backup, the `v<from>` one. The degraded backup is never shown as a migration: the Migration
+History view, the hub's migrated badge and the roll-back match only `v<n>` names. The file-level
+rules are in `docs/project-migrations.md`, "The Degraded-Open Backup".
+
 ### 6.4 Test strategy
 
 - **Parity harness + round-trip family** (§4.4) — the permanent regression wall for §3.1.
@@ -1022,7 +1068,7 @@ Where each construct in this book attaches to today's tree.
 | Single-save collapse (§4.2) | `ProjectLifecycleController.java:358-359` double call; `ProjectManager.java:290-307`, `:317-332`; sync I/O per `CheckpointManager.java:256-262` | one canonical save entry, off-FX (331) |
 | Clip rehydrator (§4.3) | absent — `ProjectDeserializer.java:539` path-only clips; consumers `RenderPipeline.java:894-895`, `:1069`, `ClipOverlayRenderer.java:152`; `AudioClip.java:327` never load-called | new load-side service in the open pipeline (329) |
 | Missing-assets surface (§4.3) | collected at `ProjectDeserializer.java:532`, `:535`; accessor `:133` test-only; unconditional success `ProjectLifecycleController.java:866` | report + relink UI; qualified open outcome (329) |
-| Parity harness (§4.4) | asymmetries: `ProjectSerializer.java:341-343` vs no reader; `:252-254` vs no reader; `serializeMidiClip` `:1062` test-only | schema parity + round-trip test family in `daw-core` (330) |
+| Parity harness (§4.4) | landed in 330, all `daw-core` tests in `persistence`: `ProjectSchemaParityContractTest` (every written element path, attribute and text is read and every name the reader asks for is written; source-derived guards over the writer and reader files; `FaultInjection` hides one item per read idiom — `midi-effect-chain`, `midi-effect@plugin-id`, `transport@pre-roll-bars`, `@pre-roll-enabled`, `@punch-start-frames`, `midi-clip`, `midi-clip/notes/note`, `track@id`, `metadata/name#text` — and the report names it; `everyLegacyInputIsReadWhenPresentAndNeverWritten` pins the schema-1 names still read and never written: `send@mode` and `midi-effect@class`); `ProjectRoundTripInventoryTest` (the `full` inventory project saved and reopened through `ProjectSerializer`/`ProjectDeserializer` and through `ProjectManager`, compared fact by fact per §3.1 row; every family variant's audio format round-trips); helpers `XmlSchemaParity`, `DomReadRecorder`, `PersistenceSourceScan` | every later schema stage adds its items and assertions in the same PR (334) |
 | Plugin-slot descriptor (§4.5) | `InsertEffectFactory.java:86-107` null types; `ProjectSerializer.java:510-512` guard; `ProjectDeserializer.java:893-902` drop; `PluginRegistry.java:25-37` in-memory registry | descriptor + placeholder + persisted registry (334) |
 | Tempo-map / take schema (§4.6) | `Transport.java:74` map unserialized (`ProjectSerializer.java:235`); `Track.java:98-99` takes unserialized; ruler already map-driven `TimelineRulerModel.java:58` | schema additions under migration registry (334) |
 | Recovery gate (§4.7) | Welcome-only `ProjectLifecycleController.java:1248`; staleness gate `ProjectHealthScanner.java:173-178` + `ProjectLockManager.java:65`; rotation hazard `ProjectJournalCoordinator.java:358-372`; dark default `SettingsModel.java:78`, `ProjectJournalCoordinator.java:185-191` | gate inside `loadProjectFromPath` before journal open; seal-based detection; default ON (332) |

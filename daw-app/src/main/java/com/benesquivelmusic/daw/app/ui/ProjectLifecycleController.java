@@ -28,6 +28,7 @@ import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectPaths;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
 import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
+import com.benesquivelmusic.daw.core.persistence.UnreadProjectItem;
 import com.benesquivelmusic.daw.core.persistence.migration.MigrationException;
 import com.benesquivelmusic.daw.core.persistence.migration.MigrationReport;
 import com.benesquivelmusic.daw.core.persistence.archive.ArchivedProject;
@@ -842,43 +843,66 @@ final class ProjectLifecycleController {
 
         Thread.ofVirtual()
                 .name("daw-restore-worker")
-                .start(() -> {
-                    try {
-                        ArchivedProject archived = projectArchiver.openArchive(
-                                archivePath, destination, MissingAssetResolver.none());
-                        // openArchive resolves the project's relative
-                        // "assets/<sha>_*" references to absolute paths inside
-                        // the destination directory. We must write this
-                        // resolved project document back to
-                        // {destination}/project.daw so that
-                        // ProjectManager.openProject — which only reads the
-                        // file from disk — picks up the absolute asset paths
-                        // instead of the archive-internal relative ones.
-                        String xml = new ProjectSerializer().serialize(archived.project());
-                        Files.writeString(destination.resolve("project.daw"), xml);
+                .start(() -> restoreArchive(archivePath, destination, () -> {
+                    progress.removeOperation(restoreOp);
+                    restoreProgress.close();
+                }));
+    }
 
-                        List<String> archiveMissing = archived.missingAssets();
-                        String projectName = archived.header().projectName();
+    /**
+     * The worker half of {@link #onRestoreFromArchive()}, off the FX thread:
+     * extracts {@code archivePath} into {@code destination} and writes the
+     * resolved project document to {@code destination/project.daw}; then, on
+     * the FX thread, runs {@code finished} and opens it
+     * ({@link #openRestoredArchive}) with what the archive could not resolve
+     * and the saved items its read could not honour as written — or runs
+     * {@code finished} and shows the ERROR when the restore failed. The
+     * announcement counts the archive read's items instead of the load's
+     * own read's: the rewritten {@code project.daw} no longer holds what
+     * that read dropped or adjusted, but still holds the
+     * unrecognised-MIDI-effect placeholders it wrote back, which the load
+     * reads and reports again — counting both would count those twice.
+     * Package-private so a test can drive it without the choosers.
+     *
+     * @param archivePath the {@code .dawz} archive
+     * @param destination the folder to restore it into
+     * @param finished    run on the FX thread before the load or the ERROR
+     */
+    void restoreArchive(Path archivePath, Path destination, Runnable finished) {
+        try {
+            ArchivedProject archived = projectArchiver.openArchive(
+                    archivePath, destination, MissingAssetResolver.none());
+            // openArchive resolves the project's relative
+            // "assets/<sha>_*" references to absolute paths inside
+            // the destination directory. We must write this
+            // resolved project document back to
+            // {destination}/project.daw so that
+            // ProjectManager.openProject — which only reads the
+            // file from disk — picks up the absolute asset paths
+            // instead of the archive-internal relative ones.
+            String xml = new ProjectSerializer().serialize(archived.project());
+            Files.writeString(destination.resolve("project.daw"), xml);
 
-                        // Load the restored project on the FX thread; the
-                        // load announces the restore only if it succeeded.
-                        postFx(() -> {
-                            progress.removeOperation(restoreOp);
-                            restoreProgress.close();
-                            openRestoredArchive(destination, projectName, archiveMissing);
-                        });
-                        LOG.info(() -> "Restored archive " + archivePath
-                                + " into " + destination);
-                    } catch (IOException e) {
-                        postFx(() -> {
-                            progress.removeOperation(restoreOp);
-                            restoreProgress.close();
-                            notificationBar.show(NotificationLevel.ERROR,
-                                    "Restore failed: " + e.getMessage());
-                        });
-                        LOG.log(Level.WARNING, "Failed to restore archive", e);
-                    }
-                });
+            List<String> archiveMissing = archived.missingAssets();
+            List<UnreadProjectItem> archiveUnread = archived.unreadItems();
+            String projectName = archived.header().projectName();
+
+            // Load the restored project on the FX thread; the
+            // load announces the restore only if it succeeded.
+            postFx(() -> {
+                finished.run();
+                openRestoredArchive(destination, projectName, archiveMissing, archiveUnread);
+            });
+            LOG.info(() -> "Restored archive " + archivePath
+                    + " into " + destination);
+        } catch (IOException e) {
+            postFx(() -> {
+                finished.run();
+                notificationBar.show(NotificationLevel.ERROR,
+                        "Restore failed: " + e.getMessage());
+            });
+            LOG.log(Level.WARNING, "Failed to restore archive", e);
+        }
     }
 
     /**
@@ -887,7 +911,9 @@ final class ProjectLifecycleController {
      * through the {@link OpenDoor.ArchiveRestore} door, whose one
      * announcement — made only if the load succeeded — counts the distinct
      * union of the open's missing assets and the references the archive
-     * could not resolve itself ({@code archiveMissing}, story 329). While a
+     * could not resolve itself ({@code archiveMissing}, story 329), and the
+     * saved items the archive's read could not honour as written
+     * ({@code archiveUnread}, story 330) instead of the load's. While a
      * recording is in flight or a take is being written the load is refused
      * (story 323 review) and the one WARNING names {@code destination},
      * since the archive is already there. Package-private so a test can
@@ -896,12 +922,14 @@ final class ProjectLifecycleController {
      * @param destination    the folder the archive was extracted into
      * @param projectName    the archived project's name
      * @param archiveMissing the references the archive could not resolve, as stored
+     * @param archiveUnread  the saved items the archive's read could not honour as written
      */
-    void openRestoredArchive(Path destination, String projectName, List<String> archiveMissing) {
+    void openRestoredArchive(Path destination, String projectName, List<String> archiveMissing,
+                             List<UnreadProjectItem> archiveUnread) {
         if (refuseLateLoadWhileATakeIsRecordingOrBeingWritten("The archive was restored to " + destination)) {
             return;
         }
-        loadProjectFromPath(destination, new OpenDoor.ArchiveRestore(projectName, archiveMissing));
+        loadProjectFromPath(destination, new OpenDoor.ArchiveRestore(projectName, archiveMissing, archiveUnread));
     }
 
     /**
@@ -913,18 +941,23 @@ final class ProjectLifecycleController {
      * run is retired), the UI is rebuilt, the project is marked dirty — a
      * restored snapshot is unsaved relative to disk — and the
      * {@link OpenDoor.SnapshotRestore} door's one announcement, qualified
-     * by what the snapshot's clips could not find, replaces the old
-     * unconditional {@code Restored snapshot} INFO. The project manager's
+     * by what the snapshot's clips could not find and by the saved items its
+     * deserialization could not honour as written (story 330), replaces the
+     * old unconditional {@code Restored snapshot} INFO. The project manager's
      * project is not abandoned: a snapshot is a state of the open project.
      * FX thread.
      *
      * @param restored      the deserialized snapshot
      * @param label         the snapshot's label
      * @param missingAssets what the snapshot's deserialization found missing
+     * @param unreadItems   the saved items the snapshot's deserialization
+     *                      could not honour as written
      */
-    void installRestoredSnapshot(DawProject restored, String label, MissingAssetsReport missingAssets) {
+    void installRestoredSnapshot(DawProject restored, String label, MissingAssetsReport missingAssets,
+                                 List<UnreadProjectItem> unreadItems) {
         Objects.requireNonNull(restored, "restored must not be null");
         Objects.requireNonNull(missingAssets, "missingAssets must not be null");
+        Objects.requireNonNull(unreadItems, "unreadItems must not be null");
         deps.setProject().accept(restored);
         deps.setUndoManager().accept(new UndoManager());
         deps.rebuildHistoryPanel().run();
@@ -941,7 +974,7 @@ final class ProjectLifecycleController {
         // coincidence of ordering. A restored snapshot is unsaved relative to disk, so
         // it must be dirty.
         deps.project().get().markDirty();
-        openProjectAudio.announce(generation, new OpenDoor.SnapshotRestore(label), projectDir);
+        openProjectAudio.announce(generation, new OpenDoor.SnapshotRestore(label), projectDir, unreadItems);
     }
 
     /**
@@ -1223,7 +1256,8 @@ final class ProjectLifecycleController {
      *       the project (its clips carry references, no samples);</li>
      *   <li>ACCOUNT — the open's missing-assets report
      *       ({@link ProjectManager#getLastMissingAssets()}), classified
-     *       without decoding anything;</li>
+     *       without decoding anything, and the saved items the open could
+     *       not honour as written ({@link ProjectManager#getLastUnreadItems()});</li>
      *   <li>the project is installed as the live project, clean;</li>
      *   <li>REHYDRATE — {@link OpenProjectAudio#begin} retires the previous
      *       open's audio and queues the decode of every clip source the
@@ -1231,13 +1265,13 @@ final class ProjectLifecycleController {
      *       before here left the project on screen and its audio alone
      *       (decision D31);</li>
      *   <li>CASCADE — the UI is rebuilt and the project's layout applied;</li>
-     *   <li>the migration report dialog, when the load migrated the schema;
-     *       its Roll back, run once the dialog closed, may re-enter this
-     *       method (decisions D41, D42);</li>
+     *   <li>the migration report dialog, when the load ran a migration that
+     *       changes what the user authored; its Roll back, run once the
+     *       dialog closed, may re-enter this method (decisions D41, D42);</li>
      *   <li>ANNOUNCE — unless a Roll back re-entered this method, and only
      *       if this open is still the current one, the door's one
-     *       announcement, qualified by the missing assets, and the report,
-     *       presented once;</li>
+     *       announcement, qualified by the missing assets and the unread
+     *       items, and the report, presented once;</li>
      *   <li>the write-ahead journal opens, on the same two conditions as the
      *       announcement; a Roll back with no backup abandons the project
      *       without re-entering this method, so it opens none (decision
@@ -1285,6 +1319,10 @@ final class ProjectLifecycleController {
                         AudioFormat.STUDIO_QUALITY);
             }
             MissingAssetsReport missingAssets = projectManager.getLastMissingAssets();
+            // Story 330 — captured with the missing assets, before the
+            // migration dialog's Roll back can re-enter the load and replace
+            // the project manager's lists.
+            List<UnreadProjectItem> unreadItems = projectManager.getLastUnreadItems();
             deps.setProject().accept(dawProject);
             deps.setUndoManager().accept(new UndoManager());
             deps.rebuildHistoryPanel().run();
@@ -1300,9 +1338,10 @@ final class ProjectLifecycleController {
             deps.applyLayoutJson().accept(dawProject.getLayoutJson());
             LOG.info("Opened project from " + projectDir);
             // Story 247 — surface the migration report dialog when the
-            // load triggered any registry-driven schema migrations. The
-            // dialog itself short-circuits when the user has already
-            // chosen "Don't show again" for this project.
+            // load ran a registry-driven schema migration that changes what
+            // the user authored (story 330: a format-only step opens
+            // silently). The dialog itself short-circuits when the user has
+            // already chosen "Don't show again" for this project.
             maybeShowMigrationReport(projectDir);
             // Story 329 (D41) — a Roll back re-entered this method: the inner
             // load said what happened, announced or failed, and opened the
@@ -1314,7 +1353,7 @@ final class ProjectLifecycleController {
             // Story 329 — the one announcement, after the migration dialog,
             // and only if the open is still the current one.
             if (openProjectAudio.isCurrent(generation)) {
-                openProjectAudio.announce(generation, door, projectDir);
+                openProjectAudio.announce(generation, door, projectDir, unreadItems);
                 // Story 298 — open the write-ahead journal for the just-loaded
                 // project (no-op when journaled persistence is disabled). The hook
                 // is set by MainController, which owns the journal coordinator
@@ -1343,8 +1382,13 @@ final class ProjectLifecycleController {
 
     /**
      * Invokes {@link MigrationReportDialog#showIfNeeded} for the just-loaded
-     * project when the load triggered any schema migrations. Wired with
-     * a roll-back action that restores the most recent sibling
+     * project when the load ran a schema migration that changes what the
+     * user authored ({@link MigrationReport#changesAuthoredContent()}, the
+     * gate {@code showIfNeeded} applies too): a load whose migrations only
+     * re-express the file format opens without the dialog — it is still
+     * backed up on its first save, listed in the Migration History and
+     * badged on the hub, all of which follow {@link MigrationReport#wasMigrated()}.
+     * Wired with a roll-back action that restores the most recent sibling
      * {@code project.daw.v<n>.*.bak} (created by the first save after a
      * previous migrated load) and reloads the project. When no backup
      * exists yet, rolling back simply abandons the in-memory migrated
@@ -1355,7 +1399,7 @@ final class ProjectLifecycleController {
      */
     void maybeShowMigrationReport(Path projectDir) {
         MigrationReport report = projectManager.getLastMigrationReport();
-        if (report == null || !report.wasMigrated()) {
+        if (report == null || !report.changesAuthoredContent()) {
             return;
         }
         MigrationReportDialog.showIfNeeded(report, projectDir,
@@ -1807,34 +1851,53 @@ final class ProjectLifecycleController {
      * Replays the journal onto the newest checkpoint on a virtual thread, then —
      * on the FX thread — makes the recovered state the live opened project by
      * atomically rewriting {@code project.daw} (backing up the prior file first,
-     * mirroring {@code ProjectManager.writeMigrationBackup}'s {@code .bak}
+     * mirroring {@code ProjectManager.writeSiblingBackup}'s {@code .bak}
      * naming) and reusing the normal {@link #loadProjectFromPath(Path)} path. A
      * {@link JournalRecoveryException} surfaces a red notification and falls back
      * to opening the un-replayed project.
      */
     private void replayThenOpen(Path projectDir) {
+        Thread.ofVirtual().name("daw-recovery-replay").start(() -> replayJournal(projectDir));
+    }
+
+    /**
+     * The worker half of {@link #replayThenOpen}, off the FX thread: replays
+     * the journal onto the newest checkpoint, rewrites {@code project.daw}
+     * with the recovered project and deletes the journal; then, on the FX
+     * thread, opens it ({@link #openRecoveredProject}) with the saved items
+     * the replay's read of the checkpoint could not honour as written, which
+     * the announcement counts instead of the load's own read's: the
+     * rewritten {@code project.daw} no longer holds what that read dropped
+     * or adjusted, but still holds the unrecognised-MIDI-effect placeholders
+     * it wrote back, which the load reads and reports again — counting both
+     * would count those twice. A failed replay or write opens the last clean
+     * save instead. Package-private so a test can drive it without the
+     * recovery dialog.
+     *
+     * @param projectDir the project whose journal is replayed
+     */
+    void replayJournal(Path projectDir) {
         ProjectContext ctx = ProjectContext.forProject(projectDir);
-        Thread.ofVirtual().name("daw-recovery-replay").start(() -> {
-            try {
-                RecoveryResult result = new JournalReplayer().recover(ctx);
-                String xml = new ProjectSerializer().serialize(result.recoveredProject());
-                writeRecoveredProjectFile(ctx.projectFile(), xml);
-                // The replayed records are now folded into project.daw, so the
-                // journal that produced them is subsumed — clear it so the next
-                // launch does not re-offer (and re-replay) the same changes. A
-                // fresh journal opens when loadProjectFromPath reopens below.
-                deleteJournalDirectory(ctx.journalDirectory());
-                int applied = result.appliedRecordCount();
-                postFx(() -> openRecoveredProject(projectDir, ctx.projectFile(), applied));
-            } catch (JournalRecoveryException e) {
-                LOG.log(Level.WARNING, "Journal recovery rolled back for " + projectDir, e);
-                postFx(() -> openLastCleanSaveAfterFailedReplay(projectDir, e.getMessage()));
-            } catch (IOException e) {
-                LOG.log(Level.WARNING, "Failed to persist recovered project for " + projectDir, e);
-                String failure = e.getMessage();
-                postFx(() -> openLastCleanSaveAfterRecoveredWriteFailed(projectDir, failure));
-            }
-        });
+        try {
+            RecoveryResult result = new JournalReplayer().recover(ctx);
+            String xml = new ProjectSerializer().serialize(result.recoveredProject());
+            writeRecoveredProjectFile(ctx.projectFile(), xml);
+            // The replayed records are now folded into project.daw, so the
+            // journal that produced them is subsumed — clear it so the next
+            // launch does not re-offer (and re-replay) the same changes. A
+            // fresh journal opens when loadProjectFromPath reopens below.
+            deleteJournalDirectory(ctx.journalDirectory());
+            int applied = result.appliedRecordCount();
+            List<UnreadProjectItem> replayUnread = result.unreadItems();
+            postFx(() -> openRecoveredProject(projectDir, ctx.projectFile(), applied, replayUnread));
+        } catch (JournalRecoveryException e) {
+            LOG.log(Level.WARNING, "Journal recovery rolled back for " + projectDir, e);
+            postFx(() -> openLastCleanSaveAfterFailedReplay(projectDir, e.getMessage()));
+        } catch (IOException e) {
+            LOG.log(Level.WARNING, "Failed to persist recovered project for " + projectDir, e);
+            String failure = e.getMessage();
+            postFx(() -> openLastCleanSaveAfterRecoveredWriteFailed(projectDir, failure));
+        }
     }
 
     /**
@@ -1867,18 +1930,21 @@ final class ProjectLifecycleController {
      * The FX half of a journal replay whose recovered changes have been
      * written to {@code projectFile}: loads the project through the
      * {@link OpenDoor.JournalReplay} door, whose one announcement — made
-     * only if the load succeeded — says how many changes were recovered. While a
-     * recording is in flight or a take is being written the load is refused
-     * (story 323 review) and the one WARNING says that the changes are
-     * already in {@code projectFile}. Package-private so a test can drive it
-     * without a journal. FX thread.
+     * only if the load succeeded — says how many changes were recovered,
+     * qualified by the saved items the replay's read of its checkpoint could
+     * not honour as written ({@code replayUnread}, story 330) instead of the
+     * load's. While a recording is in flight or a take is being written the
+     * load is refused (story 323 review) and the one WARNING says that the
+     * changes are already in {@code projectFile}. Package-private so a test
+     * can drive it without a journal. FX thread.
      */
-    void openRecoveredProject(Path projectDir, Path projectFile, int applied) {
+    void openRecoveredProject(Path projectDir, Path projectFile, int applied,
+                              List<UnreadProjectItem> replayUnread) {
         if (refuseLateLoadWhileATakeIsRecordingOrBeingWritten(applied + " recovered change"
                 + (applied == 1 ? " was" : "s were") + " written to " + projectFile)) {
             return;
         }
-        loadProjectFromPath(projectDir, new OpenDoor.JournalReplay(applied));
+        loadProjectFromPath(projectDir, new OpenDoor.JournalReplay(applied, replayUnread));
     }
 
     /**
@@ -1906,7 +1972,7 @@ final class ProjectLifecycleController {
     /**
      * Atomically replaces {@code projectFile} with {@code xml}, backing up the
      * prior file first to a sibling {@code project.daw.recovered.<stamp>.bak}
-     * (mirroring the {@code ProjectManager.writeMigrationBackup} {@code .bak}
+     * (mirroring the {@code ProjectManager.writeSiblingBackup} {@code .bak}
      * naming) so the pre-recovery file is never lost. Runs off the FX thread.
      */
     private static void writeRecoveredProjectFile(Path projectFile, String xml) throws IOException {

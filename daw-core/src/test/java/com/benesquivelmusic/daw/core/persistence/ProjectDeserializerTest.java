@@ -775,7 +775,9 @@ class ProjectDeserializerTest {
                     .containsExactly("/takes/segment-000.wav", "/takes/segment-002.wav");
             assertThat(records).singleElement().satisfies(record -> {
                 assertThat(record.getLevel()).isEqualTo(Level.WARNING);
-                assertThat(record.getMessage()).contains("Verse take 3").contains("source-segment");
+                assertThat(record.getMessage())
+                        .isEqualTo("Track 1 'Vocal': clip 1 'Verse take 3' source segment 2 of 3 skipped — the"
+                                + " path is missing");
             });
         } finally {
             logger.removeHandler(handler);

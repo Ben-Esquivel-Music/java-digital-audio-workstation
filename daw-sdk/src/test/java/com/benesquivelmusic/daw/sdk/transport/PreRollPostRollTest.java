@@ -39,6 +39,27 @@ class PreRollPostRollTest {
     }
 
     @Test
+    void shouldAcceptTheLargestBarCountOnBothSides() {
+        PreRollPostRoll config = new PreRollPostRoll(PreRollPostRoll.MAX_BARS, PreRollPostRoll.MAX_BARS, true);
+
+        assertThat(config.preBars()).isEqualTo(8);
+        assertThat(config.postBars()).isEqualTo(8);
+    }
+
+    @Test
+    void shouldRejectABarCountAboveTheLargestOnEitherSide() {
+        assertThatThrownBy(() -> new PreRollPostRoll(9, 0, true))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("preBars must not exceed 8: 9");
+        assertThatThrownBy(() -> new PreRollPostRoll(0, 9, false))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("postBars must not exceed 8: 9");
+        assertThatThrownBy(() -> PreRollPostRoll.enabled(9, 0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("preBars must not exceed 8: 9");
+    }
+
+    @Test
     void disabledConstantShouldBeZeroAndDisabled() {
         assertThat(PreRollPostRoll.DISABLED.preBars()).isZero();
         assertThat(PreRollPostRoll.DISABLED.postBars()).isZero();

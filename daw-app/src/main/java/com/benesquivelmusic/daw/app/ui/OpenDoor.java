@@ -1,16 +1,28 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.core.persistence.UnreadProjectItem;
+
 import java.util.List;
 import java.util.Objects;
 
 /**
- * The way a project came to be opened (story 329, decision D14) — the one
- * thing an open's single announcement depends on besides the missing-assets
- * report. Every door that installs a deserialized project passes one to
+ * The way a project came to be opened (story 329, decision D14) — what an
+ * open's single announcement depends on besides the missing-assets report and
+ * the saved items the open could not honour as written (story 330). Every
+ * door that installs a deserialized project passes one to
  * {@code ProjectLifecycleController.loadProjectFromPath(Path, OpenDoor)} (or,
  * for a snapshot, to {@code installRestoredSnapshot}), and the load shows the
  * announcement {@link OpenAnnouncement#of} words for it; no caller shows a
  * notification of its own for a load that succeeded.
+ *
+ * <p>The two doors that read a document of their own and re-serialize it
+ * into {@code project.daw} before the load — the archive restore and the
+ * journal replay — carry what that read could not honour, and the load
+ * announces that list instead of its own read's. The re-serialized file no
+ * longer holds what the door's read dropped or adjusted, but it still holds
+ * the unrecognised-MIDI-effect placeholders that read wrote back, which the
+ * load's read finds and reports again: counting both lists would count those
+ * placeholders twice.</p>
  */
 sealed interface OpenDoor permits OpenDoor.Plain, OpenDoor.ArchiveRestore, OpenDoor.JournalReplay,
         OpenDoor.RecoveredWriteFailed, OpenDoor.FailedReplayFallback, OpenDoor.MigrationRollback,
@@ -30,11 +42,16 @@ sealed interface OpenDoor permits OpenDoor.Plain, OpenDoor.ArchiveRestore, OpenD
      * @param archiveMissing the asset references the archive itself could not
      *                       resolve, as stored (project-relative or absolute);
      *                       copied
+     * @param archiveUnread  the saved items the archive's read of its project
+     *                       document could not honour as written
+     *                       ({@code ArchivedProject.unreadItems()}); copied
      */
-    record ArchiveRestore(String projectName, List<String> archiveMissing) implements OpenDoor {
+    record ArchiveRestore(String projectName, List<String> archiveMissing, List<UnreadProjectItem> archiveUnread)
+            implements OpenDoor {
         public ArchiveRestore {
             Objects.requireNonNull(projectName, "projectName must not be null");
             archiveMissing = List.copyOf(Objects.requireNonNull(archiveMissing, "archiveMissing must not be null"));
+            archiveUnread = List.copyOf(Objects.requireNonNull(archiveUnread, "archiveUnread must not be null"));
         }
     }
 
@@ -42,8 +59,14 @@ sealed interface OpenDoor permits OpenDoor.Plain, OpenDoor.ArchiveRestore, OpenD
      * A journal replay whose recovered changes were written to {@code project.daw}.
      *
      * @param appliedChanges the number of recovered changes
+     * @param replayUnread   the saved items the replay's read of its checkpoint
+     *                       could not honour as written
+     *                       ({@code RecoveryResult.unreadItems()}); copied
      */
-    record JournalReplay(int appliedChanges) implements OpenDoor {
+    record JournalReplay(int appliedChanges, List<UnreadProjectItem> replayUnread) implements OpenDoor {
+        public JournalReplay {
+            replayUnread = List.copyOf(Objects.requireNonNull(replayUnread, "replayUnread must not be null"));
+        }
     }
 
     /**

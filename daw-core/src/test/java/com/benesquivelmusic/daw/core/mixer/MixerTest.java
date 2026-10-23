@@ -647,6 +647,65 @@ class MixerTest {
                 .isInstanceOf(IndexOutOfBoundsException.class);
     }
 
+    // ── Add channel at index tests ──────────────────────────────────────────
+
+    @Test
+    void shouldAddChannelBetweenTwoChannels() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch1 = new MixerChannel("Ch1");
+        MixerChannel ch2 = new MixerChannel("Ch2");
+        MixerChannel ch3 = new MixerChannel("Ch3");
+        mixer.addChannel(ch1);
+        mixer.addChannel(ch3);
+
+        mixer.addChannel(1, ch2);
+
+        assertThat(mixer.getChannels()).containsExactly(ch1, ch2, ch3);
+        assertThat(mixer.getOwnedChannels()).contains(ch2);
+    }
+
+    @Test
+    void shouldAddChannelAtFrontAndAtEnd() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch1 = new MixerChannel("Ch1");
+        MixerChannel ch2 = new MixerChannel("Ch2");
+        MixerChannel ch3 = new MixerChannel("Ch3");
+        mixer.addChannel(ch2);
+
+        mixer.addChannel(0, ch1);
+        mixer.addChannel(2, ch3);
+
+        assertThat(mixer.getChannels()).containsExactly(ch1, ch2, ch3);
+    }
+
+    @Test
+    void shouldRejectAddChannelWithNegativeIndex() {
+        Mixer mixer = new Mixer();
+        MixerChannel existing = new MixerChannel("Ch1");
+        MixerChannel rejected = new MixerChannel("Rejected");
+        mixer.addChannel(existing);
+
+        assertThatThrownBy(() -> mixer.addChannel(-1, rejected))
+                .isInstanceOf(IndexOutOfBoundsException.class)
+                .hasMessage("index out of range: -1");
+        assertThat(mixer.getChannels()).containsExactly(existing);
+        assertThat(mixer.getOwnedChannels()).doesNotContain(rejected);
+    }
+
+    @Test
+    void shouldRejectAddChannelWithIndexPastTheEnd() {
+        Mixer mixer = new Mixer();
+        MixerChannel existing = new MixerChannel("Ch1");
+        MixerChannel rejected = new MixerChannel("Rejected");
+        mixer.addChannel(existing);
+
+        assertThatThrownBy(() -> mixer.addChannel(2, rejected))
+                .isInstanceOf(IndexOutOfBoundsException.class)
+                .hasMessage("index out of range: 2");
+        assertThat(mixer.getChannels()).containsExactly(existing);
+        assertThat(mixer.getOwnedChannels()).doesNotContain(rejected);
+    }
+
     // ── Insert effects during live playback tests ──────────────────────────
 
     @Test

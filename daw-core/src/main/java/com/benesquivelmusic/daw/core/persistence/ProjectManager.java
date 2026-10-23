@@ -12,6 +12,7 @@ import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.*;
+import java.util.logging.Logger;
 
 /**
  * Manages the lifecycle of DAW projects on disk.
@@ -38,6 +39,8 @@ import java.util.*;
  * </pre>
  */
 public final class ProjectManager {
+
+    private static final Logger LOG = Logger.getLogger(ProjectManager.class.getName());
 
     private static final String PROJECT_FILE_NAME = "project.daw";
 
@@ -84,11 +87,16 @@ public final class ProjectManager {
             com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION);
 
     /**
-     * {@code true} when the currently open project was migrated and its
-     * pre-migration backup has not yet been written. Cleared by the
-     * first successful save (the backup happens exactly once per load).
+     * The sibling backup of {@code project.daw} the first write of the
+     * currently open project owes, decided when it was opened: the
+     * pre-migration original of a migrated open, the original of an open
+     * that could not honour everything its file saved
+     * ({@link ProjectDeserializer#losesSavedContent()}), or none. Cleared by
+     * that first write, whether or not there was a file to copy, so the
+     * backup is taken at most once per load and never holds this load's own
+     * output.
      */
-    private boolean migrationBackupPending;
+    private PendingBackup pendingBackup = PendingBackup.NONE;
 
     /**
      * Missing-assets report built when the currently open project was loaded
@@ -97,6 +105,14 @@ public final class ProjectManager {
      * no deserialized project is open.
      */
     private MissingAssetsReport lastMissingAssets = MissingAssetsReport.EMPTY;
+
+    /**
+     * Saved items the load of the currently open project could not honour as
+     * written (Persistence Integrity book §2.4) — see
+     * {@link #getLastUnreadItems()}. Empty when no deserialized project is
+     * open.
+     */
+    private List<UnreadProjectItem> lastUnreadItems = List.of();
 
     /**
      * Creates a project manager with the given checkpoint manager.
@@ -196,7 +212,9 @@ public final class ProjectManager {
         currentProject = metadata;
         currentDawProject = null;
         readOnly = false;
+        pendingBackup = PendingBackup.NONE;
         lastMissingAssets = MissingAssetsReport.EMPTY;
+        lastUnreadItems = List.of();
         recentProjects.put(projectDir.toString(), metadata);
         recordRecentProject(projectDir);
         // createUniqueProjectDirectory() atomically created a brand-new folder, so
@@ -247,7 +265,16 @@ public final class ProjectManager {
      * I/O, into {@link #getLastMissingAssets()} — next to
      * {@link #getLastMigrationReport()} — so the caller can announce the
      * open's outcome before any decode finishes. A legacy metadata-only file
-     * has no clips: its report is {@link MissingAssetsReport#EMPTY}.</p>
+     * has no clips: its report is {@link MissingAssetsReport#EMPTY}. The saved
+     * items the load could not honour as written are kept in
+     * {@link #getLastUnreadItems()}.</p>
+     *
+     * <p>The first save of a project this call migrated backs the original
+     * file up as {@code project.daw.v<fromVersion>.<stamp>.bak}; the first
+     * save of one whose next save would drop content its file saved
+     * ({@link ProjectDeserializer#losesSavedContent()}) backs it up as
+     * {@code project.daw.degraded.<stamp>.bak} — one backup per load, the
+     * migration one when both apply, its path logged at INFO.</p>
      *
      * @param projectDirectory the project directory
      * @return the project metadata
@@ -297,19 +324,21 @@ public final class ProjectManager {
             currentDawProject = dawProject;
             currentProject = metadata;
             lastMigrationReport = deserializer.getLastMigrationReport();
-            migrationBackupPending = lastMigrationReport.wasMigrated();
             lastMissingAssets = MissingAssetsReport.atOpen(
                     dawProject, deserializer.getMissingFiles(), projectDirectory);
+            lastUnreadItems = deserializer.getUnreadItems();
+            pendingBackup = PendingBackup.at(lastMigrationReport, deserializer.losesSavedContent());
         } else {
             ProjectMetadata metadata = parseProjectFile(content, projectDirectory);
             currentProject = metadata;
             currentDawProject = null;
             lastMigrationReport = MigrationReport.noOp(
                     com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION);
-            migrationBackupPending = false;
-            // The deserializer did not run: its missing-files list is the
-            // previous open's, and this file has no clips to report.
+            pendingBackup = PendingBackup.NONE;
+            // The deserializer did not run: its missing-files and unread-items
+            // lists are the previous open's, and this file has nothing to report.
             lastMissingAssets = MissingAssetsReport.EMPTY;
+            lastUnreadItems = List.of();
         }
 
         readOnly = openedReadOnly;
@@ -404,10 +433,11 @@ public final class ProjectManager {
         currentProject = null;
         currentDawProject = null;
         readOnly = false;
-        migrationBackupPending = false;
+        pendingBackup = PendingBackup.NONE;
         lastMigrationReport = MigrationReport.noOp(
                 com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION);
         lastMissingAssets = MissingAssetsReport.EMPTY;
+        lastUnreadItems = List.of();
     }
 
     /**
@@ -427,10 +457,11 @@ public final class ProjectManager {
         currentProject = null;
         currentDawProject = null;
         readOnly = false;
-        migrationBackupPending = false;
+        pendingBackup = PendingBackup.NONE;
         lastMigrationReport = MigrationReport.noOp(
                 com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION);
         lastMissingAssets = MissingAssetsReport.EMPTY;
+        lastUnreadItems = List.of();
     }
 
     /**
@@ -464,6 +495,26 @@ public final class ProjectManager {
      */
     public MissingAssetsReport getLastMissingAssets() {
         return lastMissingAssets;
+    }
+
+    /**
+     * Returns the saved items the load of the currently open project could
+     * not honour as written ({@link ProjectDeserializer#getUnreadItems()} of
+     * the {@link #openProject(Path)} that loaded it): skipped MIDI notes, CC
+     * lanes and CC events, adjusted arpeggiator settings, MIDI effects kept
+     * as placeholders, and removed mixer references to tracks the file does
+     * not contain. Always non-null; empty when the open honoured everything
+     * and when no deserialized project is open — after {@link #createProject},
+     * {@link #closeProject()}, {@link #abandonProject()}, and a legacy
+     * metadata-only open.
+     *
+     * <p>The UI layer consults it, next to {@link #getLastMissingAssets()},
+     * to qualify the open announcement.</p>
+     *
+     * @return an unmodifiable list of the open's unread items
+     */
+    public List<UnreadProjectItem> getLastUnreadItems() {
+        return lastUnreadItems;
     }
 
     /**
@@ -549,34 +600,75 @@ public final class ProjectManager {
         }
         Path projectFile = projectDir.resolve(PROJECT_FILE_NAME);
         // If the project was opened from a legacy schema and migrated in
-        // memory, the user's choice to save is the commit point — preserve
-        // the original file as a sibling backup before overwriting it. The
-        // backup is taken at most once per load (cleared once written) and
-        // never overwrites an existing backup so repeated saves remain
-        // idempotent.
-        if (migrationBackupPending && Files.exists(projectFile)) {
-            writeMigrationBackup(projectFile);
-            migrationBackupPending = false;
+        // memory, or its open could not honour everything the file saved,
+        // the user's choice to save is the commit point — preserve the
+        // original file as a sibling backup before overwriting it. The
+        // backup is taken at most once per load and never overwrites an
+        // existing backup so repeated saves remain idempotent. A copy that
+        // fails fails the save with project.daw untouched, and the next save
+        // tries again; a file that is gone owes no backup, so the first write
+        // settles it either way and no later save backs up this load's own
+        // output.
+        switch (pendingBackup) {
+            case PendingBackup.None _ -> { }
+            case PendingBackup.Migration migration -> backUpBeforeFirstWrite(projectFile,
+                    "v" + migration.fromVersion(), migration.losesSavedContent()
+                            ? "Wrote the migration backup, which also keeps content this save drops because"
+                                    + " the open could not read it as written (the open's WARNING lines name"
+                                    + " each item)"
+                            : "Wrote the migration backup");
+            case PendingBackup.Degraded _ -> backUpBeforeFirstWrite(projectFile,
+                    PendingBackup.DEGRADED_TAG, "Wrote a backup of the project file before this save, which"
+                            + " drops content the open could not read as written (the open's WARNING lines"
+                            + " name each item)");
         }
+        pendingBackup = PendingBackup.NONE;
         String xml = serializer.serialize(dawProject);
         Files.writeString(projectFile, xml);
     }
 
-    private void writeMigrationBackup(Path projectFile) throws IOException {
+    /**
+     * Backs {@code projectFile} up under {@code tag}, if there is a file to
+     * back up, and logs {@code written} followed by {@code ": <backup path>"}
+     * at INFO. The line counts nothing: every loss that arms a backup was
+     * logged at WARNING during the open, so it says why the backup exists and
+     * points to those lines.
+     */
+    private static void backUpBeforeFirstWrite(Path projectFile, String tag, String written) throws IOException {
+        if (Files.exists(projectFile)) {
+            Path backup = writeSiblingBackup(projectFile, tag);
+            LOG.info(() -> written + ": " + backup);
+        }
+    }
+
+    /**
+     * Copies {@code projectFile} to the sibling
+     * {@code project.daw.<tag>.<yyyyMMdd-HHmmss UTC>.bak}, or
+     * {@code ….<stamp>-<n>.bak} when that name is taken (two saves within a
+     * second), never overwriting an existing backup.
+     *
+     * @param projectFile the project file to back up
+     * @param tag         {@code v<fromVersion>} for a migrated open — the name
+     *                    the Migration History, the hub's health scan and the
+     *                    roll-back look for — or {@code degraded}, which none
+     *                    of them matches
+     * @return the backup written
+     */
+    private static Path writeSiblingBackup(Path projectFile, String tag) throws IOException {
         String stamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
                 .withZone(java.time.ZoneOffset.UTC)
                 .format(Instant.now());
-        int fromVersion = lastMigrationReport.fromVersion();
         Path backup = projectFile.resolveSibling(
-                projectFile.getFileName() + ".v" + fromVersion + "." + stamp + ".bak");
+                projectFile.getFileName() + "." + tag + "." + stamp + ".bak");
         // Never clobber an existing backup (e.g. two opens within a second).
         int n = 0;
         while (Files.exists(backup)) {
             n++;
             backup = projectFile.resolveSibling(
-                    projectFile.getFileName() + ".v" + fromVersion + "." + stamp + "-" + n + ".bak");
+                    projectFile.getFileName() + "." + tag + "." + stamp + "-" + n + ".bak");
         }
         Files.copy(projectFile, backup, StandardCopyOption.COPY_ATTRIBUTES);
+        return backup;
     }
 
     private void writeProjectFile(ProjectMetadata metadata) throws IOException {
@@ -627,5 +719,64 @@ public final class ProjectManager {
             throw new IllegalArgumentException("Project name results in an invalid directory name: " + name);
         }
         return sanitized;
+    }
+
+    /**
+     * The sibling backup the first write of an opened project owes
+     * ({@link #pendingBackup}), decided by {@link #at} when the project is
+     * opened.
+     */
+    private sealed interface PendingBackup {
+
+        /** No backup is owed. */
+        PendingBackup NONE = new None();
+
+        /**
+         * The tag of a degraded open's backup,
+         * {@code project.daw.degraded.<stamp>.bak}. It does not start with
+         * {@code v} and a digit, so the Migration History, the hub's health
+         * scan and the migration roll-back never take it for a pre-migration
+         * backup.
+         */
+        String DEGRADED_TAG = "degraded";
+
+        /**
+         * The backup an open owes: the pre-migration original when the schema
+         * was migrated — the one backup, which then also holds what the open
+         * could not honour, under the name the roll-back finds — else, when
+         * the next save would drop saved content
+         * ({@link ProjectDeserializer#losesSavedContent()}), the original
+         * under {@link #DEGRADED_TAG}; else none.
+         *
+         * @param migration          the open's migration report
+         * @param losesSavedContent  whether the next save would drop saved content
+         * @return the backup owed
+         */
+        static PendingBackup at(MigrationReport migration, boolean losesSavedContent) {
+            if (migration.wasMigrated()) {
+                return new Migration(migration.fromVersion(), losesSavedContent);
+            }
+            return losesSavedContent ? new Degraded() : NONE;
+        }
+
+        /** Nothing is owed. */
+        record None() implements PendingBackup {
+        }
+
+        /**
+         * The pre-migration original, {@code project.daw.v<fromVersion>.<stamp>.bak}.
+         *
+         * @param fromVersion       the schema version the file was saved with
+         * @param losesSavedContent whether it also holds content the next save drops
+         */
+        record Migration(int fromVersion, boolean losesSavedContent) implements PendingBackup {
+        }
+
+        /**
+         * The original of an open whose next save would drop saved content,
+         * {@code project.daw.degraded.<stamp>.bak}.
+         */
+        record Degraded() implements PendingBackup {
+        }
     }
 }

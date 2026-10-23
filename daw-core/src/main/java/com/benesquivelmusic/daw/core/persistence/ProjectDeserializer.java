@@ -10,6 +10,12 @@ import com.benesquivelmusic.daw.sdk.spatial.ObjectParameter;
 import com.benesquivelmusic.daw.core.marker.Marker;
 import com.benesquivelmusic.daw.core.marker.MarkerRange;
 import com.benesquivelmusic.daw.core.marker.MarkerType;
+import com.benesquivelmusic.daw.core.midi.MidiCcEvent;
+import com.benesquivelmusic.daw.core.midi.MidiCcLane;
+import com.benesquivelmusic.daw.core.midi.MidiCcLaneType;
+import com.benesquivelmusic.daw.core.midi.MidiClip;
+import com.benesquivelmusic.daw.core.midi.MidiNoteData;
+import com.benesquivelmusic.daw.core.midi.MidiRecorder;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.mixer.*;
 import com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry;
@@ -22,6 +28,8 @@ import com.benesquivelmusic.daw.core.mixer.snapshot.SendSnapshot;
 import com.benesquivelmusic.daw.core.mixer.spatial.BedBus;
 import com.benesquivelmusic.daw.core.mixer.spatial.BedBusManager;
 import com.benesquivelmusic.daw.core.mixer.spatial.BedChannelRouting;
+import com.benesquivelmusic.daw.core.plugin.MidiEffectPlugin;
+import com.benesquivelmusic.daw.core.plugin.builtin.midi.ArpeggiatorPlugin;
 import com.benesquivelmusic.daw.core.preset.ReflectivePresetSerializer;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.project.edit.NudgeSettings;
@@ -48,11 +56,15 @@ import com.benesquivelmusic.daw.sdk.edit.RippleMode;
 import com.benesquivelmusic.daw.sdk.spatial.ImmersiveFormat;
 import com.benesquivelmusic.daw.sdk.telemetry.*;
 import com.benesquivelmusic.daw.sdk.transport.ClickOutput;
+import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import com.benesquivelmusic.daw.sdk.visualization.LoudnessTarget;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
+import org.w3c.dom.NamedNodeMap;
+import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
+import org.w3c.dom.Text;
 import org.xml.sax.SAXException;
 
 import javax.xml.parsers.DocumentBuilder;
@@ -61,6 +73,7 @@ import javax.xml.parsers.ParserConfigurationException;
 import java.awt.geom.Rectangle2D;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -68,10 +81,14 @@ import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.SequencedMap;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.BiConsumer;
 import java.util.logging.Level;
@@ -91,7 +108,42 @@ public final class ProjectDeserializer {
     /** Maximum valid azimuth value — just below 360° (exclusive upper bound). */
     private static final double MAX_AZIMUTH_EXCLUSIVE = Math.nextDown(360.0);
 
+    /**
+     * How {@code ProjectSerializer.buildMidiClip} writes a note, a CC lane or
+     * a CC event: its tag and its attributes, in the writer's order — the
+     * order the snippet a skipped item's WARNING quotes ({@link #savedAs})
+     * lists them in, never the DOM's.
+     *
+     * @param tag        the element's tag
+     * @param attributes the attributes the writer emits, in its order
+     */
+    private record WrittenForm(String tag, List<String> attributes) {
+    }
+
+    private static final WrittenForm NOTE = new WrittenForm("note",
+            List.of("note-number", "start-column", "duration-columns", "velocity", "channel"));
+    private static final WrittenForm CC_LANE = new WrittenForm("cc-lane",
+            List.of("type", "cc-number", "high-resolution", "channel", "height-ratio"));
+    private static final WrittenForm CC_EVENT = new WrittenForm("event", List.of("column", "value"));
+
     private final List<String> missingFiles = new ArrayList<>();
+
+    /**
+     * The saved items the call in progress could not honour as written — see
+     * {@link #getUnreadItems()}. Per-call state, like {@link #missingFiles};
+     * filled only through {@link #reportUnread}.
+     */
+    private final List<UnreadProjectItem> unreadItems = new ArrayList<>();
+
+    /**
+     * Whether the call in progress dropped saved content it lists no
+     * {@linkplain #unreadItems item} for — a malformed or duplicate track id
+     * it replaced with a fresh one, the child elements or text of a MIDI
+     * effect it kept as a placeholder, or a VCA group whose id repeats an
+     * earlier group's, which it skipped with its members — see
+     * {@link #losesSavedContent()}. Per-call state, like {@link #unreadItems}.
+     */
+    private boolean droppedUnlistedContent;
     private final MigrationRegistry migrationRegistry;
     private MigrationReport lastMigrationReport = MigrationReport.noOp(MigrationRegistry.CURRENT_VERSION);
 
@@ -165,6 +217,70 @@ public final class ProjectDeserializer {
     }
 
     /**
+     * Returns the saved items the most recent deserialization could not
+     * honour as written (Persistence Integrity book §2.4, §9.4), in the
+     * order they were read: MIDI notes, CC lanes and CC events that could
+     * not be read and were skipped, arpeggiator settings that were adjusted
+     * to a valid value, MIDI effects this build does not recognise (kept as
+     * {@link UnresolvedMidiEffect} placeholders), and cue sends, VCA
+     * memberships, channel links and bed routings it could not honour —
+     * naming a track the file does not contain, a malformed id, a channel
+     * linked to itself, or a repeat of an earlier assignment (removed; their
+     * containers are kept). Each item was logged once at WARNING when it was
+     * found ({@link UnreadProjectItem#logLine()}). Problems with pre/post-roll
+     * values, with track ids and with VCA groups (an unreadable gain, a
+     * repeated id) are logged only and are not listed.
+     *
+     * <p>The list is cleared at the start of each deserialization call; the
+     * result is a copy, because one deserializer instance serves many loads
+     * ({@code ProjectManager}, {@code SnapshotsController},
+     * {@code JournalReplayer}, {@code ProjectArchiver}).</p>
+     *
+     * @return an unmodifiable copy of the unread items; empty for a file the
+     *         open honoured completely
+     */
+    public List<UnreadProjectItem> getUnreadItems() {
+        return List.copyOf(unreadItems);
+    }
+
+    /**
+     * Returns whether saving the project the most recent deserialization
+     * built would drop content its file saved (Persistence Integrity book
+     * §9.4): an {@linkplain #getUnreadItems() unread item} whose kind
+     * {@linkplain UnreadProjectItem.Kind#losesSavedContent() loses its saved
+     * content}, a malformed or duplicate track id replaced by a fresh one
+     * (logged only: the saved id is gone, and take folders and manifests on
+     * disk still carry it), child elements or non-blank text of a MIDI
+     * effect kept as a placeholder (logged and dropped), or a VCA group whose
+     * id repeats an earlier group's (logged and skipped with its label,
+     * gain, colour and members). {@code ProjectManager} backs the original
+     * file up before the first save of such an open.
+     *
+     * <p>Nothing else the open adjusts loses saved content: a track without
+     * an id gets a fresh one and a non-canonical spelling of a valid id is
+     * restored as the same UUID; a missing asset's reference is kept as
+     * written; a CC lane's unusable height ratio is view layout, and a
+     * malformed pre/post-roll value a transport preference; a VCA group's
+     * unreadable gain carries no level and opens at 0 dB, the attribute's
+     * default; a placeholder's attributes are written back as saved. Reset
+     * with the unread items at the start of each deserialization call.</p>
+     *
+     * @return {@code true} when the next save of the deserialized project
+     *         would not write back everything its file saved
+     */
+    public boolean losesSavedContent() {
+        if (droppedUnlistedContent) {
+            return true;
+        }
+        for (UnreadProjectItem item : unreadItems) {
+            if (item.kind().losesSavedContent()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Deserializes a project from an XML string with no project directory:
      * every persisted reference is kept verbatim — a project-relative
      * reference stays relative in memory and its existence is checked
@@ -203,7 +319,7 @@ public final class ProjectDeserializer {
      * {@code \x.wav}, {@code /x.wav}). The deserializer does not resolve such
      * a reference: it is kept as written, so the next save writes it back
      * unchanged and a segment list keeps its count, order and head; it is
-     * logged once at WARNING naming the clip and the reason; and it is
+     * logged once at WARNING naming the track, the clip and the reason; and it is
      * reported in {@link #getMissingFiles()} whether or not a file exists
      * anywhere it could name. With a directory, every clip reference is
      * therefore absolute or unresolvable after this call, and the code that
@@ -231,6 +347,15 @@ public final class ProjectDeserializer {
      * <p>The clips this call builds carry their references but no sample
      * data: the {@link ClipRehydrator} loads it after the open.</p>
      *
+     * <p>Tracks keep the ids they were saved with, so every id-keyed mixer
+     * reference that names a track of this file resolves to it. A saved
+     * item the open cannot honour as written — a MIDI note, CC lane or CC
+     * event that cannot be read, an invalid arpeggiator setting, a MIDI
+     * effect this build does not recognise, a mixer assignment it cannot
+     * honour — never fails the load: it is skipped, adjusted, kept as a
+     * placeholder or removed, logged, and listed in
+     * {@link #getUnreadItems()}.</p>
+     *
      * <p>Called on whichever thread opens the project (the caller of
      * {@code ProjectManager.openProject}, a recovery subtask of
      * {@code JournalReplayer}, the FX thread in
@@ -244,9 +369,43 @@ public final class ProjectDeserializer {
      * @throws IOException if the XML cannot be parsed
      */
     public DawProject deserialize(String xml, Path projectDirectory) throws IOException {
-        missingFiles.clear();
-        this.projectDirectory = projectDirectory;
-        lastMigrationReport = MigrationReport.noOp(migrationRegistry.currentVersion());
+        // Per-call state is reset before the parse, so a file that does not
+        // parse still leaves a fresh missing-files list, unread-items list
+        // and migration report behind; the document overload resets it again
+        // (idempotent) and does the rest.
+        resetForLoad(projectDirectory);
+        Document document = parseXml(xml);
+        return deserialize(document, projectDirectory);
+    }
+
+    /**
+     * Deserializes an already parsed project document: the per-call state
+     * is reset, the document is migrated, then parsed — the second half of
+     * every {@link #deserialize(String, Path)} call, which parses its text
+     * and hands the document here. Every read goes through
+     * {@code document}'s DOM, so a test can hand in a view that records what
+     * the reader asks for (the write/read parity harness) and exercise the
+     * very path a production open takes.
+     *
+     * @param document         a project document as {@link #parseXml} returns it
+     * @param projectDirectory the directory project-relative references
+     *                         resolve against, or {@code null}
+     * @return the reconstructed project
+     */
+    DawProject deserialize(Document document, Path projectDirectory) {
+        resetForLoad(projectDirectory);
+        return migrateAndParse(document);
+    }
+
+    /**
+     * Parses project XML into a normalized DOM document, with DOCTYPE
+     * declarations refused.
+     *
+     * @param xml the XML content produced by {@link ProjectSerializer}
+     * @return the parsed document
+     * @throws IOException if the XML cannot be parsed
+     */
+    static Document parseXml(String xml) throws IOException {
         try {
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
@@ -254,17 +413,32 @@ public final class ProjectDeserializer {
             Document document = builder.parse(
                     new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
             document.getDocumentElement().normalize();
-
-            // Apply any registered schema migrations before parsing so the
-            // rest of the deserializer always sees a current-version DOM.
-            MigrationRegistry.MigrationResult migrated = migrationRegistry.migrate(document);
-            document = migrated.document();
-            lastMigrationReport = migrated.report();
-
-            return parseDocument(document);
+            return document;
         } catch (ParserConfigurationException | SAXException e) {
             throw new IOException("Failed to deserialize project XML", e);
         }
+    }
+
+    private void resetForLoad(Path projectDirectory) {
+        missingFiles.clear();
+        unreadItems.clear();
+        droppedUnlistedContent = false;
+        this.projectDirectory = projectDirectory;
+        lastMigrationReport = MigrationReport.noOp(migrationRegistry.currentVersion());
+    }
+
+    private DawProject migrateAndParse(Document document) {
+        // Apply any registered schema migrations before parsing so the
+        // rest of the deserializer always sees a current-version DOM.
+        MigrationRegistry.MigrationResult migrated = migrationRegistry.migrate(document);
+        lastMigrationReport = migrated.report();
+        return parseDocument(migrated.document());
+    }
+
+    /** Logs {@code item} once at WARNING and adds it to {@link #unreadItems}: the only way in. */
+    private void reportUnread(UnreadProjectItem item) {
+        LOG.log(Level.WARNING, item.logLine());
+        unreadItems.add(item);
     }
 
     private DawProject parseDocument(Document document) {
@@ -318,12 +492,15 @@ public final class ProjectDeserializer {
             parseTransport(transportElements.getFirst(), project.getTransport());
         }
 
-        // Parse tracks
+        // Parse tracks. restoredTracks maps the ids restored from this file —
+        // the only ids an id-keyed mixer reference can resolve to — to the
+        // track each names, as the log names it.
+        Map<UUID, UnreadProjectItem.OnTrack> restoredTracks = new HashMap<>();
         List<Element> tracksContainers = getDirectChildElements(root, "tracks");
         if (!tracksContainers.isEmpty()) {
             List<Element> trackElements = getDirectChildElements(tracksContainers.getFirst(), "track");
-            for (Element trackElement : trackElements) {
-                Track track = parseTrack(trackElement);
+            for (int i = 0; i < trackElements.size(); i++) {
+                Track track = parseTrack(trackElements.get(i), i, restoredTracks);
                 project.addTrack(track);
             }
         }
@@ -331,7 +508,7 @@ public final class ProjectDeserializer {
         // Parse mixer settings
         List<Element> mixerElements = getDirectChildElements(root, "mixer");
         if (!mixerElements.isEmpty()) {
-            parseMixer(mixerElements.getFirst(), project);
+            parseMixer(mixerElements.getFirst(), project, restoredTracks);
         }
 
         // Parse markers
@@ -375,7 +552,7 @@ public final class ProjectDeserializer {
         // default of a unity-gain 7.1.4 bed bus and no routings).
         List<Element> bedBusElements = getDirectChildElements(root, "bed-bus");
         if (!bedBusElements.isEmpty()) {
-            parseBedBus(bedBusElements.getFirst(), project);
+            parseBedBus(bedBusElements.getFirst(), project, restoredTracks);
         }
 
         // Parse ripple mode (per-project UI preference, defaults to OFF for
@@ -495,18 +672,69 @@ public final class ProjectDeserializer {
                 transport.setPunchRegion(new PunchRegion(punchStart, punchEnd, punchEnabled));
             }
         }
+
+        // Pre/post-roll: three stored facts, each read on its own. The writer
+        // omits all three exactly when the value is DISABLED, the transport's
+        // default. The flag is never re-derived from the bar counts:
+        // (2, 0, false) and (0, 0, true) restore exactly as stored.
+        if (elem.hasAttribute("pre-roll-bars")
+                || elem.hasAttribute("post-roll-bars")
+                || elem.hasAttribute("pre-roll-enabled")) {
+            int preBars = parseRollBars(elem, "pre-roll-bars");
+            int postBars = parseRollBars(elem, "post-roll-bars");
+            boolean enabled = parseBooleanAttr(elem, "pre-roll-enabled");
+            transport.setPreRollPostRoll(new PreRollPostRoll(preBars, postBars, enabled));
+        }
     }
 
-    private Track parseTrack(Element elem) {
+    /**
+     * Reads one pre/post-roll bar count: missing is {@code 0}; a negative or
+     * unparseable count is {@code 0} and one above
+     * {@link PreRollPostRoll#MAX_BARS} is {@code MAX_BARS}, each with a
+     * WARNING — a transport preference, so a bad value is logged, not
+     * reported to the user.
+     */
+    private static int parseRollBars(Element elem, String attr) {
+        String raw = elem.getAttribute(attr);
+        if (raw.isEmpty()) {
+            return 0;
+        }
+        int bars;
+        try {
+            bars = Integer.parseInt(raw);
+        } catch (NumberFormatException e) {
+            LOG.log(Level.WARNING, "Transport " + attr + " '" + UnreadProjectItem.logText(raw)
+                    + "' is not a bar count; 0 is used");
+            return 0;
+        }
+        if (bars < 0) {
+            LOG.log(Level.WARNING, "Transport " + attr + " " + bars
+                    + " is negative; 0 is used");
+            return 0;
+        }
+        if (bars > PreRollPostRoll.MAX_BARS) {
+            LOG.log(Level.WARNING, "Transport " + attr + " " + bars + " is above "
+                    + PreRollPostRoll.MAX_BARS + "; " + PreRollPostRoll.MAX_BARS + " is used");
+            return PreRollPostRoll.MAX_BARS;
+        }
+        return bars;
+    }
+
+    /**
+     * Rebuilds the {@code trackIndex}-th track of the file, with the id it was
+     * saved with (see {@link #restoreTrackId}).
+     */
+    private Track parseTrack(Element elem, int trackIndex, Map<UUID, UnreadProjectItem.OnTrack> restoredTracks) {
         String name = elem.getAttribute("name");
         if (name.isEmpty()) {
             name = "Untitled Track";
         }
+        UnreadProjectItem.OnTrack location = new UnreadProjectItem.OnTrack(trackIndex, name);
 
         String typeStr = elem.getAttribute("type");
         TrackType type = parseTrackType(typeStr);
 
-        Track track = new Track(name, type);
+        Track track = new Track(restoreTrackId(elem, location, restoredTracks), name, type);
         track.setVolume(clampDouble(parseDoubleAttr(elem, "volume", 1.0), 0.0, 1.0));
         track.setPan(clampDouble(parseDoubleAttr(elem, "pan", 0.0), -1.0, 1.0));
         track.setMuted(parseBooleanAttr(elem, "muted"));
@@ -607,8 +835,8 @@ public final class ProjectDeserializer {
         List<Element> clipsContainers = getDirectChildElements(elem, "clips");
         if (!clipsContainers.isEmpty()) {
             List<Element> clipElements = getDirectChildElements(clipsContainers.getFirst(), "clip");
-            for (Element clipElement : clipElements) {
-                AudioClip clip = parseClip(clipElement);
+            for (int i = 0; i < clipElements.size(); i++) {
+                AudioClip clip = parseClip(clipElements.get(i), i, location);
                 track.addClip(clip);
             }
         }
@@ -628,14 +856,384 @@ public final class ProjectDeserializer {
             parseAutomationData(automationContainers.getFirst(), track);
         }
 
+        // MIDI notes and CC lanes, filled into the track's own clip (the
+        // clip is final and owned by the track's id). Absent for a track
+        // that holds no MIDI and for files written before schema version 2.
+        List<Element> midiClipElements = getDirectChildElements(elem, "midi-clip");
+        if (!midiClipElements.isEmpty()) {
+            parseMidiClip(midiClipElements.getFirst(), track.getMidiClip(), location);
+        }
+
+        // MIDI-effect chain, in chain order. Absent for an empty chain.
+        List<Element> chainElements = getDirectChildElements(elem, "midi-effect-chain");
+        if (!chainElements.isEmpty()) {
+            parseMidiEffectChain(chainElements.getFirst(), track.getMidiEffectChain(), location);
+        }
+
         return track;
     }
 
-    private AudioClip parseClip(Element elem) {
+    /**
+     * The id the track is rebuilt with: the saved {@code id} in canonical
+     * {@link UUID#toString()} form, so the track's mixer channel (built by
+     * {@code DawProject.addTrack} with {@code channelId == trackId}), its
+     * MIDI clip and every id-keyed reference in the file resolve to it.
+     * {@code restoredTracks} — the ids already restored from this document,
+     * each with the track it names — receives it with {@code track}. A
+     * missing, malformed or non-UUID id, and a duplicate of an earlier
+     * track's id (the first track in document order keeps it), gets a
+     * freshly minted id instead, with a WARNING naming the track; references
+     * that named it then resolve to nothing, or to the first track. Checked
+     * before the track is added, so two tracks never share one mixer
+     * channel. A malformed or duplicate id is saved content the next save
+     * drops ({@link #losesSavedContent()}); a missing one is not.
+     */
+    private UUID restoreTrackId(Element elem, UnreadProjectItem.OnTrack track,
+                                Map<UUID, UnreadProjectItem.OnTrack> restoredTracks) {
+        String raw = elem.getAttribute("id");
+        if (raw.isEmpty()) {
+            LOG.log(Level.WARNING, track.describe() + ": the id is missing; a new id is used");
+            return UUID.randomUUID();
+        }
+        UUID id;
+        try {
+            id = UUID.fromString(raw);
+        } catch (IllegalArgumentException e) {
+            LOG.log(Level.WARNING, track.describe() + ": id '" + UnreadProjectItem.logText(raw)
+                    + "' is not a UUID; a new id is used");
+            droppedUnlistedContent = true;
+            return UUID.randomUUID();
+        }
+        UnreadProjectItem.OnTrack earlier = restoredTracks.putIfAbsent(id, track);
+        if (earlier != null) {
+            LOG.log(Level.WARNING, track.describe() + ": id " + id + " is already used by "
+                    + earlier.describe() + "; a new id is used");
+            droppedUnlistedContent = true;
+            return UUID.randomUUID();
+        }
+        return id;
+    }
+
+    /**
+     * Fills {@code clip} in place from a {@code <midi-clip>} element: its lock
+     * flag, its notes in file order and its CC lanes with their breakpoints.
+     * Columns are read as stored (one column is a quarter of a transport
+     * beat). A note, lane or event the model rejects — or whose value is
+     * missing or not a number — is skipped and reported; nothing is clamped,
+     * because a clamped note is a note the user never wrote. Duplicate or
+     * overlapping notes are kept as saved.
+     */
+    private void parseMidiClip(Element clipElem, MidiClip clip, UnreadProjectItem.OnTrack location) {
+        clip.setLocked(parseBooleanAttr(clipElem, "locked"));
+
+        List<Element> notesContainers = getDirectChildElements(clipElem, "notes");
+        if (!notesContainers.isEmpty()) {
+            List<Element> noteElements = getDirectChildElements(notesContainers.getFirst(), "note");
+            for (int i = 0; i < noteElements.size(); i++) {
+                Element noteElem = noteElements.get(i);
+                try {
+                    clip.addNote(new MidiNoteData(
+                            requiredIntAttr(noteElem, "note-number"),
+                            requiredIntAttr(noteElem, "start-column"),
+                            requiredIntAttr(noteElem, "duration-columns"),
+                            requiredIntAttr(noteElem, "velocity"),
+                            noteElem.hasAttribute("channel")
+                                    ? requiredIntAttr(noteElem, "channel")
+                                    : MidiNoteData.DEFAULT_CHANNEL));
+                } catch (IllegalArgumentException e) {
+                    reportUnread(new UnreadProjectItem(UnreadProjectItem.Kind.MIDI_NOTE_SKIPPED,
+                            location, i, e.getMessage() + savedAs(noteElem, NOTE)
+                                    + atTransportBeat(noteElem, "start-column"), 1));
+                }
+            }
+        }
+
+        List<Element> lanesContainers = getDirectChildElements(clipElem, "cc-lanes");
+        if (!lanesContainers.isEmpty()) {
+            List<Element> laneElements = getDirectChildElements(lanesContainers.getFirst(), "cc-lane");
+            for (int i = 0; i < laneElements.size(); i++) {
+                MidiCcLane lane = parseCcLane(laneElements.get(i), i, location);
+                if (lane != null) {
+                    clip.addCcLane(lane);
+                }
+            }
+        }
+    }
+
+    /**
+     * Reads the {@code laneIndex}-th CC lane, or skips and reports it —
+     * counting as its saved events, none for a lane saved without events —
+     * when its type, CC number, resolution or channel cannot be read or is
+     * rejected by {@link MidiCcLane}: its values cannot be interpreted
+     * without them. A preset lane type's CC number comes from the type. An
+     * unusable {@code height-ratio} is view layout, not music: it is logged
+     * and the default is kept. Each breakpoint the model rejects is skipped
+     * and reported on its own.
+     */
+    private MidiCcLane parseCcLane(Element laneElem, int laneIndex, UnreadProjectItem.OnTrack location) {
+        List<Element> eventElements = getDirectChildElements(laneElem, "event");
+        MidiCcLane lane;
+        try {
+            String typeStr = laneElem.getAttribute("type");
+            MidiCcLaneType type;
+            try {
+                type = MidiCcLaneType.valueOf(typeStr);
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException(
+                        "type '" + UnreadProjectItem.logText(typeStr) + "' is not a CC lane type");
+            }
+            int ccNumber = type == MidiCcLaneType.ARBITRARY_CC
+                    ? requiredIntAttr(laneElem, "cc-number")
+                    : type.defaultCcNumber();
+            boolean highResolution = strictBooleanAttr(laneElem, "high-resolution");
+            int channel = laneElem.hasAttribute("channel") ? requiredIntAttr(laneElem, "channel") : 0;
+            lane = new MidiCcLane(type, ccNumber, highResolution, channel);
+        } catch (IllegalArgumentException e) {
+            reportUnread(new UnreadProjectItem(UnreadProjectItem.Kind.CC_LANE_SKIPPED, location,
+                    laneIndex, e.getMessage() + savedAs(laneElem, CC_LANE), eventElements.size()));
+            return null;
+        }
+
+        String heightRatio = laneElem.getAttribute("height-ratio");
+        if (!heightRatio.isEmpty()) {
+            try {
+                lane.setHeightRatio(Double.parseDouble(heightRatio));
+            } catch (IllegalArgumentException e) {
+                LOG.log(Level.WARNING, location.describe() + ": CC lane " + (laneIndex + 1)
+                        + " height-ratio '" + UnreadProjectItem.logText(heightRatio)
+                        + "' is not a positive number; " + MidiCcLane.DEFAULT_HEIGHT_RATIO + " is used");
+            }
+        }
+
+        UnreadProjectItem.EventLane eventLane =
+                new UnreadProjectItem.EventLane(laneIndex, lane.getType(), lane.getCcNumber());
+        for (int i = 0; i < eventElements.size(); i++) {
+            Element eventElem = eventElements.get(i);
+            try {
+                lane.addEvent(new MidiCcEvent(
+                        requiredIntAttr(eventElem, "column"),
+                        requiredIntAttr(eventElem, "value")));
+            } catch (IllegalArgumentException e) {
+                reportUnread(new UnreadProjectItem(UnreadProjectItem.Kind.CC_EVENT_SKIPPED, location, i,
+                        e.getMessage() + savedAs(eventElem, CC_EVENT)
+                                + atTransportBeat(eventElem, "column"), 1, eventLane));
+            }
+        }
+        return lane;
+    }
+
+    /**
+     * {@code "; saved as <tag a="v" …/>"}: {@code elem} as {@code form}
+     * writes it — its attributes in the writer's order, never the DOM's
+     * attribute order — each value as saved and quoted by
+     * {@link UnreadProjectItem#logText}; an attribute the element does not
+     * carry is left out. The locator of a skipped note, lane or event for
+     * whoever repairs the degraded backup by hand.
+     */
+    private static String savedAs(Element elem, WrittenForm form) {
+        StringBuilder snippet = new StringBuilder("; saved as <").append(form.tag());
+        for (String attribute : form.attributes()) {
+            if (elem.hasAttribute(attribute)) {
+                snippet.append(' ').append(attribute).append("=\"")
+                        .append(UnreadProjectItem.logText(elem.getAttribute(attribute))).append('"');
+            }
+        }
+        return snippet.append("/>").toString();
+    }
+
+    /**
+     * {@code ", at transport beat <b>"} for the saved column in
+     * {@code columnAttribute} when it is an integer &ge; 0 — the column in
+     * transport beats from the project start, without trailing zeros
+     * ({@code 17} gives {@code 4.25}) — else {@code ""}.
+     */
+    private static String atTransportBeat(Element elem, String columnAttribute) {
+        int column;
+        try {
+            column = Integer.parseInt(elem.getAttribute(columnAttribute));
+        } catch (NumberFormatException e) {
+            return "";
+        }
+        if (column < 0) {
+            return "";
+        }
+        BigDecimal beat = BigDecimal.valueOf(column * MidiRecorder.BEATS_PER_COLUMN).stripTrailingZeros();
+        return ", at transport beat " + beat.toPlainString();
+    }
+
+    /**
+     * Restores a track's MIDI-effect chain from its {@code <midi-effect>}
+     * children, in chain order. Each entry resolves through a closed switch on
+     * its stable {@code plugin-id} — never by loading a class named in the
+     * file. An entry this build does not recognise (unknown or missing
+     * {@code plugin-id}) is kept in its position as an
+     * {@link UnresolvedMidiEffect} carrying its attributes, so no entry is
+     * dropped and none shifts. Files written before schema version 2 keyed
+     * the entry by class name; the 1→2 migration rewrites the known one.
+     */
+    private void parseMidiEffectChain(Element chainElem, List<MidiEffectPlugin> chain,
+                                      UnreadProjectItem.OnTrack location) {
+        List<Element> effectElements = getDirectChildElements(chainElem, "midi-effect");
+        for (int i = 0; i < effectElements.size(); i++) {
+            Element effectElem = effectElements.get(i);
+            MidiEffectPlugin effect = switch (effectElem.getAttribute("plugin-id")) {
+                case ArpeggiatorPlugin.PLUGIN_ID -> parseArpeggiator(effectElem, i, location);
+                default -> unresolvedMidiEffect(effectElem, i, location);
+            };
+            chain.add(effect);
+        }
+    }
+
+    /**
+     * Builds an arpeggiator from its saved settings. An absent setting keeps
+     * the plugin's default. A setting that is present but invalid is adjusted
+     * and reported: a finite number outside the plugin's range is clamped to
+     * it; an unknown name, an unparseable or non-finite number takes the
+     * plugin's default.
+     */
+    private ArpeggiatorPlugin parseArpeggiator(Element elem, int chainIndex,
+                                               UnreadProjectItem.OnTrack location) {
+        ArpeggiatorPlugin arp = new ArpeggiatorPlugin();
+        if (elem.hasAttribute("rate")) {
+            String raw = elem.getAttribute("rate");
+            try {
+                arp.setRate(ArpeggiatorPlugin.Rate.valueOf(raw));
+            } catch (IllegalArgumentException e) {
+                reportArpeggiatorSetting(location, chainIndex, "rate '" + UnreadProjectItem.logText(raw)
+                        + "' is not a rate; " + arp.getRate() + " is used");
+            }
+        }
+        if (elem.hasAttribute("pattern")) {
+            String raw = elem.getAttribute("pattern");
+            try {
+                arp.setPattern(ArpeggiatorPlugin.Pattern.valueOf(raw));
+            } catch (IllegalArgumentException e) {
+                reportArpeggiatorSetting(location, chainIndex, "pattern '" + UnreadProjectItem.logText(raw)
+                        + "' is not a pattern; " + arp.getPattern() + " is used");
+            }
+        }
+        if (elem.hasAttribute("octave-range")) {
+            String raw = elem.getAttribute("octave-range");
+            try {
+                int octaves = Integer.parseInt(raw);
+                int clamped = Math.clamp(octaves, ArpeggiatorPlugin.MIN_OCTAVE, ArpeggiatorPlugin.MAX_OCTAVE);
+                arp.setOctaveRange(clamped);
+                if (clamped != octaves) {
+                    reportArpeggiatorSetting(location, chainIndex, "octave-range " + octaves
+                            + " is outside " + ArpeggiatorPlugin.MIN_OCTAVE + "–"
+                            + ArpeggiatorPlugin.MAX_OCTAVE + "; " + clamped + " is used");
+                }
+            } catch (NumberFormatException e) {
+                reportArpeggiatorSetting(location, chainIndex, "octave-range '"
+                        + UnreadProjectItem.logText(raw) + "' is not an integer; " + arp.getOctaveRange() + " is used");
+            }
+        }
+        if (elem.hasAttribute("gate")) {
+            arp.setGate(parseArpeggiatorPercent(elem, "gate", arp.getGate(),
+                    ArpeggiatorPlugin.MIN_GATE, ArpeggiatorPlugin.MAX_GATE, chainIndex, location));
+        }
+        if (elem.hasAttribute("swing")) {
+            arp.setSwing(parseArpeggiatorPercent(elem, "swing", arp.getSwing(),
+                    ArpeggiatorPlugin.MIN_SWING, ArpeggiatorPlugin.MAX_SWING, chainIndex, location));
+        }
+        if (elem.hasAttribute("latch")) {
+            arp.setLatch(Boolean.parseBoolean(elem.getAttribute("latch")));
+        }
+        return arp;
+    }
+
+    /**
+     * Reads a saved arpeggiator percentage: {@code defaultValue} for an
+     * unparseable or non-finite value ({@code Double.parseDouble} accepts
+     * {@code NaN} and {@code Infinity}, which the plugin's setters would let
+     * through), the nearest bound for a finite value outside
+     * {@code [min, max]} — each reported.
+     */
+    private double parseArpeggiatorPercent(Element elem, String attr, double defaultValue,
+                                           double min, double max, int chainIndex,
+                                           UnreadProjectItem.OnTrack location) {
+        String raw = elem.getAttribute(attr);
+        double value;
+        try {
+            value = Double.parseDouble(raw);
+        } catch (NumberFormatException e) {
+            value = Double.NaN;
+        }
+        if (!Double.isFinite(value)) {
+            reportArpeggiatorSetting(location, chainIndex, attr + " '" + UnreadProjectItem.logText(raw)
+                    + "' is not a finite number; " + defaultValue + " is used");
+            return defaultValue;
+        }
+        double clamped = Math.clamp(value, min, max);
+        if (clamped != value) {
+            reportArpeggiatorSetting(location, chainIndex, attr + " " + UnreadProjectItem.logText(raw)
+                    + " is outside " + min + "–" + max + "; " + clamped + " is used");
+        }
+        return clamped;
+    }
+
+    private void reportArpeggiatorSetting(UnreadProjectItem.OnTrack location, int chainIndex, String detail) {
+        reportUnread(new UnreadProjectItem(UnreadProjectItem.Kind.MIDI_EFFECT_SETTING_ADJUSTED,
+                location, chainIndex, "arpeggiator " + detail, 1));
+    }
+
+    /**
+     * Keeps a {@code <midi-effect>} this build does not recognise as a
+     * pass-through placeholder with an immutable copy of its attributes, and
+     * reports it. Child elements and non-blank text (or CDATA) of such an
+     * entry are logged and dropped: no writer produces them, and the next
+     * save cannot write them back ({@link #losesSavedContent()}).
+     */
+    private UnresolvedMidiEffect unresolvedMidiEffect(Element elem, int chainIndex,
+                                                      UnreadProjectItem.OnTrack location) {
+        SequencedMap<String, String> attributes = new LinkedHashMap<>();
+        NamedNodeMap attributeNodes = elem.getAttributes();
+        for (int i = 0; i < attributeNodes.getLength(); i++) {
+            Node attribute = attributeNodes.item(i);
+            attributes.put(attribute.getNodeName(), attribute.getNodeValue());
+        }
+        int childElements = 0;
+        boolean text = false;
+        NodeList children = elem.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            Node child = children.item(i);
+            if (child instanceof Element) {
+                childElements++;
+            } else if (child instanceof Text content && !content.getData().isBlank()) {
+                text = true;
+            }
+        }
+        if (childElements > 0 || text) {
+            String dropped = childElements == 0 ? "text"
+                    : childElements + (childElements == 1 ? " child element" : " child elements")
+                            + (text ? " and text" : "");
+            boolean several = childElements + (text ? 1 : 0) > 1;
+            LOG.log(Level.WARNING, location.describe() + ": MIDI effect " + (chainIndex + 1) + " has "
+                    + dropped + " no writer produces; " + (several ? "they are" : "it is") + " dropped");
+            droppedUnlistedContent = true;
+        }
+        UnresolvedMidiEffect placeholder = new UnresolvedMidiEffect(attributes);
+        String pluginId = placeholder.pluginId();
+        reportUnread(new UnreadProjectItem(UnreadProjectItem.Kind.MIDI_EFFECT_NOT_RECOGNIZED, location,
+                chainIndex, pluginId.isEmpty()
+                        ? "the entry has no plugin-id " + UnreadProjectItem.logText(attributes.toString())
+                        : "plugin-id '" + UnreadProjectItem.logText(pluginId)
+                                + "' is not a MIDI effect this build knows",
+                1));
+        return placeholder;
+    }
+
+    /**
+     * Rebuilds the {@code clipIndex}-th {@code <clip>} saved on the track at
+     * {@code location}; its WARNINGs name the track and the clip
+     * ({@link #describeClip}).
+     */
+    private AudioClip parseClip(Element elem, int clipIndex, UnreadProjectItem.OnTrack location) {
         String name = elem.getAttribute("name");
         if (name.isEmpty()) {
             name = "Untitled Clip";
         }
+        String clipInLog = describeClip(clipIndex, name);
 
         double startBeat = Math.max(0.0, parseDoubleAttr(elem, "start-beat", 0.0));
         double durationBeats = Math.max(0.001, parseDoubleAttr(elem, "duration-beats", 1.0));
@@ -644,14 +1242,14 @@ public final class ProjectDeserializer {
             sourceFile = null;
         }
         // Resolves and checks each segment once, in order.
-        List<String> segmentPaths = parseSourceSegments(elem);
+        List<String> segmentPaths = parseSourceSegments(elem, clipInLog, location);
 
         // The segment list is the authority (AudioClip head invariant): each
         // segment was checked once, and setSourceSegmentPaths below makes the
         // first segment the head, so a clip with segments never has its
         // source-file resolved, checked, warned about or reported.
         if (segmentPaths.isEmpty() && sourceFile != null) {
-            sourceFile = resolveAndCheck(elem, "source-file", sourceFile);
+            sourceFile = resolveAndCheck(location, clipInLog + " source file", sourceFile);
         }
 
         AudioClip clip = new AudioClip(name, startBeat, durationBeats, sourceFile);
@@ -697,32 +1295,40 @@ public final class ProjectDeserializer {
      * written before story 323. A child whose path is unresolvable against
      * the project directory stays in its place, as written, so the list
      * keeps its count, order and head. A child whose {@code path} is empty
-     * or missing is skipped with a WARNING that names the clip — the one
-     * element the list cannot carry ({@code AudioClip.setSourceSegmentPaths}
-     * refuses it).
+     * or missing is skipped with a WARNING that names the track, the clip
+     * ({@code clipInLog}) and the segment, numbered from 1 — the one element
+     * the list cannot carry ({@code AudioClip.setSourceSegmentPaths} refuses
+     * it).
      */
-    private List<String> parseSourceSegments(Element clipElem) {
+    private List<String> parseSourceSegments(Element clipElem, String clipInLog, UnreadProjectItem.OnTrack location) {
         List<Element> segmentElements = getDirectChildElements(clipElem, "source-segment");
         if (segmentElements.isEmpty()) {
             return List.of();
         }
         List<String> paths = new ArrayList<>(segmentElements.size());
-        int position = 0;
-        for (Element segmentElem : segmentElements) {
-            String path = segmentElem.getAttribute("path");
+        for (int i = 0; i < segmentElements.size(); i++) {
+            String segment = clipInLog + " source segment " + (i + 1) + " of " + segmentElements.size();
+            String path = segmentElements.get(i).getAttribute("path");
             if (!path.isEmpty()) {
-                paths.add(resolveAndCheck(clipElem,
-                        "<source-segment> " + position + " of " + segmentElements.size(), path));
+                paths.add(resolveAndCheck(location, segment, path));
             } else {
                 // A segment that cannot be named cannot be loaded; say so
                 // rather than shorten the take's segment order in silence.
-                LOG.log(Level.WARNING, "Clip '" + clipElem.getAttribute("name")
-                        + "': <source-segment> " + position + " of " + segmentElements.size()
-                        + " has no path; the segment is skipped");
+                LOG.log(Level.WARNING, location.describe() + ": " + segment + " skipped — the path is missing");
             }
-            position++;
         }
         return paths;
+    }
+
+    /**
+     * {@code clip <clipIndex + 1> '<name>'}: a clip as its WARNINGs name it —
+     * its position among the track's saved {@code <clip>} elements, counted
+     * from 1, since clip names repeat (a duplicate or a paste keeps the
+     * name), and its name as restored, which the timeline shows, quoted by
+     * {@link UnreadProjectItem#logText}.
+     */
+    private static String describeClip(int clipIndex, String name) {
+        return "clip " + (clipIndex + 1) + " '" + UnreadProjectItem.logText(name) + "'";
     }
 
     /**
@@ -732,7 +1338,8 @@ public final class ProjectDeserializer {
      * directory — it escapes the directory or is the directory itself, it is
      * not a valid path on this platform, or it is drive- or root-relative on
      * this platform — is not resolved: it is kept as written, logged once at
-     * WARNING naming the clip and the reason, and added to
+     * WARNING naming the track, the clip, the reference (quoted by
+     * {@link UnreadProjectItem#logText}) and the reason, and added to
      * {@link #missingFiles} unconditionally, never through
      * {@link #noteIfMissing}, whose existence check would judge a relative,
      * drive-relative or root-relative string from the JVM's working
@@ -740,18 +1347,19 @@ public final class ProjectDeserializer {
      * {@link ProjectPaths#resolve} and is added only when the result names no
      * existing file; with a directory that result is an absolute path.
      *
-     * @param clipElem  the {@code <clip>} element the warning names
-     * @param what      which reference of the clip this is, for the warning
+     * @param location  the track the clip is saved on, which the warning names
+     * @param what      which reference of which clip this is, as the warning
+     *                  names it ({@link #describeClip}, then the reference)
      * @param reference the persisted reference; not empty
      * @return the in-memory form
      */
-    private String resolveAndCheck(Element clipElem, String what, String reference) {
+    private String resolveAndCheck(UnreadProjectItem.OnTrack location, String what, String reference) {
         Optional<ProjectPaths.Unresolvable> unresolvable =
                 ProjectPaths.unresolvable(projectDirectory, reference);
         if (unresolvable.isPresent()) {
-            LOG.log(Level.WARNING, "Clip '" + clipElem.getAttribute("name") + "': " + what + " '"
-                    + reference + "' " + unresolvable.get().reason() + " (project directory "
-                    + projectDirectory + "); it is not resolved, is kept as written and is"
+            LOG.log(Level.WARNING, location.describe() + ": " + what + " not resolved — the path '"
+                    + UnreadProjectItem.logText(reference) + "' " + unresolvable.get().reason()
+                    + " (project directory " + projectDirectory + "); it is kept as written and"
                     + " reported missing");
             missingFiles.add(reference);
             return reference;
@@ -816,11 +1424,20 @@ public final class ProjectDeserializer {
         }
     }
 
-    private void parseMixer(Element mixerElem, DawProject project) {
+    /**
+     * Applies the {@code <mixer>} element. The id-keyed references in it — a
+     * cue send's {@code track-id}, a VCA member's {@code channel-id}, a
+     * channel link's two channel ids (a track's channel id equals its track
+     * id) — resolve only to a track restored from this file
+     * ({@code restoredTracks}); see {@link #resolveTrackReference}.
+     */
+    private void parseMixer(Element mixerElem, DawProject project,
+                            Map<UUID, UnreadProjectItem.OnTrack> restoredTracks) {
         // Parse master channel
         List<Element> masterElements = getDirectChildElements(mixerElem, "master");
         if (!masterElements.isEmpty()) {
-            applyMixerChannelAttrs(masterElements.getFirst(), project.getMixer().getMasterChannel(), project);
+            applyMixerChannelAttrs(masterElements.getFirst(), project.getMixer().getMasterChannel(),
+                    new UnreadProjectItem.InMixer("master"), project);
         }
 
         // Parse return buses — apply settings to existing return buses
@@ -841,7 +1458,10 @@ public final class ProjectDeserializer {
                     }
                     bus = project.getMixer().addReturnBus(busName);
                 }
-                applyMixerChannelAttrs(rbElem, bus, project);
+                // Numbered like a track: bus names repeat, and a bus the
+                // default mixer already holds keeps its own name, not the file's.
+                applyMixerChannelAttrs(rbElem, bus, new UnreadProjectItem.InMixer("return bus " + (i + 1)
+                        + " '" + UnreadProjectItem.logText(bus.getName()) + "'"), project);
             }
         }
 
@@ -853,7 +1473,9 @@ public final class ProjectDeserializer {
             List<MixerChannel> existingChannels = project.getMixer().getChannels();
             int count = Math.min(channelElements.size(), existingChannels.size());
             for (int i = 0; i < count; i++) {
-                applyMixerChannelAttrs(channelElements.get(i), existingChannels.get(i), project);
+                MixerChannel channel = existingChannels.get(i);
+                applyMixerChannelAttrs(channelElements.get(i), channel,
+                        trackChannelStrip(channel, i, project), project);
             }
         }
 
@@ -883,16 +1505,16 @@ public final class ProjectDeserializer {
                         parseIntAttr(busElem, "hardware-output-index", 0));
                 double masterGain = clampDouble(
                         parseDoubleAttr(busElem, "master-gain", 1.0), 0.0, 1.0);
+                UnreadProjectItem.InMixer busLocation =
+                        new UnreadProjectItem.InMixer("cue bus '" + UnreadProjectItem.logText(label) + "'");
                 List<CueSend> sends = new ArrayList<>();
-                for (Element sendElem : getDirectChildElements(busElem, "cue-send")) {
-                    String trackAttr = sendElem.getAttribute("track-id");
-                    if (trackAttr.isEmpty()) {
-                        continue;
-                    }
-                    java.util.UUID trackId;
-                    try {
-                        trackId = java.util.UUID.fromString(trackAttr);
-                    } catch (IllegalArgumentException e) {
+                Set<UUID> sentTracks = new HashSet<>();
+                List<Element> sendElements = getDirectChildElements(busElem, "cue-send");
+                for (int i = 0; i < sendElements.size(); i++) {
+                    Element sendElem = sendElements.get(i);
+                    UUID trackId = resolveTrackReference(sendElem, "cue-send", "track-id",
+                            restoredTracks, sentTracks, busLocation, i);
+                    if (trackId == null) {
                         continue;
                     }
                     double gain = clampDouble(parseDoubleAttr(sendElem, "gain", 0.0), 0.0, 1.0);
@@ -914,6 +1536,9 @@ public final class ProjectDeserializer {
         List<Element> vcaGroupsContainers = getDirectChildElements(mixerElem, "vca-groups");
         if (!vcaGroupsContainers.isEmpty()) {
             VcaGroupManager vcaManager = project.getVcaGroupManager();
+            // The label of each group read so far, by id: the first group in
+            // document order keeps a repeated id.
+            Map<UUID, String> groupLabels = new HashMap<>();
             for (Element groupElem : getDirectChildElements(vcaGroupsContainers.getFirst(), "vca-group")) {
                 String idAttr = groupElem.getAttribute("id");
                 if (idAttr.isEmpty()) {
@@ -929,7 +1554,35 @@ public final class ProjectDeserializer {
                 if (label.isEmpty()) {
                     label = "VCA";
                 }
-                double gainDb = parseDoubleAttr(groupElem, "master-gain-db", 0.0);
+                String logged = "Mixer VCA group '" + UnreadProjectItem.logText(label) + "'";
+                List<Element> memberElements = getDirectChildElements(groupElem, "vca-member");
+                // A repeated id is skipped before its members are read, so the
+                // open reports nothing for a group it does not keep. A
+                // re-id'd copy would double its gain on the shared members.
+                String firstLabel = groupLabels.putIfAbsent(id, label);
+                if (firstLabel != null) {
+                    int members = memberElements.size();
+                    LOG.log(Level.WARNING, logged + ": id " + id + " is already used by VCA group '"
+                            + UnreadProjectItem.logText(firstLabel) + "'; the group and its " + members
+                            + (members == 1 ? " saved member are" : " saved members are") + " skipped");
+                    droppedUnlistedContent = true;
+                    continue;
+                }
+                double gainDb = 0.0;
+                String rawGain = groupElem.getAttribute("master-gain-db");
+                if (!rawGain.isEmpty()) {
+                    try {
+                        gainDb = Double.parseDouble(rawGain);
+                    } catch (NumberFormatException e) {
+                        gainDb = Double.NaN;
+                    }
+                    if (Double.isNaN(gainDb)) {
+                        // No level information: unity, the attribute's default.
+                        LOG.log(Level.WARNING, logged + ": master-gain-db '" + UnreadProjectItem.logText(rawGain)
+                                + "' is not a number; 0 dB is used");
+                        gainDb = 0.0;
+                    }
+                }
                 gainDb = Math.max(VcaGroup.MIN_GAIN_DB, Math.min(VcaGroup.MAX_GAIN_DB, gainDb));
                 TrackColor color = null;
                 String colorHex = groupElem.getAttribute("color");
@@ -940,18 +1593,21 @@ public final class ProjectDeserializer {
                         // Unknown color — leave null.
                     }
                 }
-                List<java.util.UUID> members = new java.util.ArrayList<>();
-                for (Element memberElem : getDirectChildElements(groupElem, "vca-member")) {
-                    String channelIdAttr = memberElem.getAttribute("channel-id");
-                    if (channelIdAttr.isEmpty()) {
-                        continue;
-                    }
-                    try {
-                        members.add(java.util.UUID.fromString(channelIdAttr));
-                    } catch (IllegalArgumentException ignored) {
-                        // Skip malformed UUIDs rather than failing the whole load.
+                // The group, its label and its gain are kept whatever happens
+                // to its members.
+                UnreadProjectItem.InMixer groupLocation =
+                        new UnreadProjectItem.InMixer("VCA group '" + UnreadProjectItem.logText(label) + "'");
+                List<UUID> members = new ArrayList<>();
+                Set<UUID> memberSet = new HashSet<>();
+                for (int i = 0; i < memberElements.size(); i++) {
+                    UUID member = resolveTrackReference(memberElements.get(i), "vca-member", "channel-id",
+                            restoredTracks, memberSet, groupLocation, i);
+                    if (member != null) {
+                        members.add(member);
                     }
                 }
+                // Neither the id (checked above) nor the gain (finite or
+                // clamped) can make the group or the manager refuse it.
                 vcaManager.addVcaGroup(new VcaGroup(id, label, gainDb, color, members));
             }
         }
@@ -961,23 +1617,32 @@ public final class ProjectDeserializer {
         List<Element> channelLinksContainers = getDirectChildElements(mixerElem, "channel-links");
         if (!channelLinksContainers.isEmpty()) {
             ChannelLinkManager linkManager = project.getChannelLinkManager();
-            for (Element linkElem : getDirectChildElements(channelLinksContainers.getFirst(), "channel-link")) {
-                String leftAttr = linkElem.getAttribute("left-channel-id");
-                String rightAttr = linkElem.getAttribute("right-channel-id");
-                if (leftAttr.isEmpty() || rightAttr.isEmpty()) {
+            UnreadProjectItem.InMixer linksLocation = new UnreadProjectItem.InMixer("channel links");
+            // A channel belongs to at most one link: the first link that names
+            // it wins.
+            Set<UUID> linkedChannels = new HashSet<>();
+            List<Element> linkElements = getDirectChildElements(channelLinksContainers.getFirst(), "channel-link");
+            for (int i = 0; i < linkElements.size(); i++) {
+                Element linkElem = linkElements.get(i);
+                // A link with either side unresolved is dropped whole, and
+                // reported once.
+                TrackReference left = readTrackReference(linkElem, "channel-link", "left-channel-id",
+                        restoredTracks, linkedChannels, LINK_REPEAT);
+                TrackReference right = readTrackReference(linkElem, "channel-link", "right-channel-id",
+                        restoredTracks, linkedChannels, LINK_REPEAT);
+                String problem = left.resolved() && right.resolved() && left.id().equals(right.id())
+                        ? "channel-link links " + restoredTracks.get(left.id()).describe() + " (" + left.id()
+                                + ") to itself"
+                        : TrackReference.problemOf(left, right);
+                if (problem != null) {
+                    reportUnread(new UnreadProjectItem(UnreadProjectItem.Kind.MIXER_REFERENCE_REMOVED,
+                            linksLocation, i, problem, 1));
                     continue;
                 }
-                java.util.UUID leftId;
-                java.util.UUID rightId;
-                try {
-                    leftId = java.util.UUID.fromString(leftAttr);
-                    rightId = java.util.UUID.fromString(rightAttr);
-                } catch (IllegalArgumentException e) {
-                    continue;
-                }
-                if (leftId.equals(rightId)) {
-                    continue;
-                }
+                UUID leftId = left.id();
+                UUID rightId = right.id();
+                linkedChannels.add(leftId);
+                linkedChannels.add(rightId);
                 LinkMode mode = LinkMode.RELATIVE;
                 String modeAttr = linkElem.getAttribute("mode");
                 if (!modeAttr.isEmpty()) {
@@ -993,17 +1658,125 @@ public final class ProjectDeserializer {
                 // Story 322 removed "link-inserts"; a legacy attribute is
                 // tolerated by simply not being read.
                 boolean linkSends = parseBooleanAttr(linkElem, "link-sends", true);
-                try {
-                    linkManager.link(new ChannelLink(leftId, rightId, mode,
-                            linkFaders, linkPans, linkMuteSolo, linkSends));
-                } catch (IllegalStateException ignored) {
-                    // A duplicate link in the file is malformed — skip rather than fail the whole load.
-                }
+                // Neither channel is linked yet (linkedChannels above), so the
+                // manager accepts the link.
+                linkManager.link(new ChannelLink(leftId, rightId, mode,
+                        linkFaders, linkPans, linkMuteSolo, linkSends));
             }
         }
     }
 
-    private void applyMixerChannelAttrs(Element elem, MixerChannel channel, DawProject project) {
+    /** Why a cue send, VCA member or bed routing that repeats an earlier one is removed. */
+    private static final String ASSIGNMENT_REPEAT = "repeats an earlier assignment of the same track";
+
+    /** Why a channel-link side naming an already linked channel is removed. */
+    private static final String LINK_REPEAT = "is already in an earlier channel link";
+
+    /**
+     * One id-keyed mixer reference as read: the track id it resolves to, or
+     * why it does not resolve.
+     *
+     * @param id      the referenced track (and channel) id; {@code null} when unresolved
+     * @param problem why the reference cannot be honoured; {@code null} when resolved
+     */
+    private record TrackReference(UUID id, String problem) {
+
+        boolean resolved() {
+            return problem == null;
+        }
+
+        /** The problems of the unresolved references among {@code references}, or {@code null}. */
+        static String problemOf(TrackReference... references) {
+            StringBuilder problems = new StringBuilder();
+            for (TrackReference reference : references) {
+                if (!reference.resolved()) {
+                    problems.append(problems.isEmpty() ? "" : "; ").append(reference.problem());
+                }
+            }
+            return problems.isEmpty() ? null : problems.toString();
+        }
+    }
+
+    /**
+     * Reads the {@code attr} reference of an {@code element}: it resolves when
+     * it is a UUID naming a track restored from this file
+     * ({@code restoredTracks} — a master or return-bus id, which the file
+     * never carries, does not) that {@code alreadyReferenced} does not hold
+     * yet (the first of duplicated references wins). A missing or malformed
+     * value, an id the file holds no track for, or a repeat — said with
+     * {@code repeat}, naming the track — is unresolved.
+     */
+    private static TrackReference readTrackReference(Element refElem, String element, String attr,
+                                                     Map<UUID, UnreadProjectItem.OnTrack> restoredTracks,
+                                                     Set<UUID> alreadyReferenced, String repeat) {
+        String name = element + "@" + attr;
+        String raw = refElem.getAttribute(attr);
+        if (raw.isEmpty()) {
+            return new TrackReference(null, name + " is missing");
+        }
+        UUID id;
+        try {
+            id = UUID.fromString(raw);
+        } catch (IllegalArgumentException e) {
+            return new TrackReference(null, name + " '" + UnreadProjectItem.logText(raw) + "' is not a track id");
+        }
+        UnreadProjectItem.OnTrack track = restoredTracks.get(id);
+        if (track == null) {
+            return new TrackReference(null, name + " " + id + " names no track in this file");
+        }
+        if (alreadyReferenced.contains(id)) {
+            return new TrackReference(null, name + " " + id + " (" + track.describe() + ") " + repeat);
+        }
+        return new TrackReference(id, null);
+    }
+
+    /**
+     * Resolves the {@code index}-th reference of a mixer container (a cue
+     * send, a VCA member, a bed routing) through {@link #readTrackReference}.
+     * A resolved id is added to {@code alreadyReferenced} and returned; an
+     * unresolved reference is reported — the caller drops it and keeps the
+     * container — and {@code null} is returned.
+     */
+    private UUID resolveTrackReference(Element refElem, String element, String attr,
+                                       Map<UUID, UnreadProjectItem.OnTrack> restoredTracks,
+                                       Set<UUID> alreadyReferenced,
+                                       UnreadProjectItem.InMixer location, int index) {
+        TrackReference reference = readTrackReference(refElem, element, attr,
+                restoredTracks, alreadyReferenced, ASSIGNMENT_REPEAT);
+        if (!reference.resolved()) {
+            reportUnread(new UnreadProjectItem(UnreadProjectItem.Kind.MIXER_REFERENCE_REMOVED,
+                    location, index, reference.problem(), 1));
+            return null;
+        }
+        alreadyReferenced.add(reference.id());
+        return reference.id();
+    }
+
+    /**
+     * The track channel {@code channel} — the file's
+     * {@code channelIndex}-th {@code <channel>} — as the log names its strip:
+     * the track that owns it, as {@link #parseTrack} named it, a track
+     * restored under a new id ({@link #restoreTrackId}) included. Its number
+     * is its position in the project's tracks, which the reader added in file
+     * order to a project that had none, and its name is the one it was
+     * restored with. A channel no track owns is named
+     * {@code Mixer channel <channelIndex + 1>}.
+     */
+    private static UnreadProjectItem.Location trackChannelStrip(MixerChannel channel, int channelIndex,
+                                                                DawProject project) {
+        return project.getTrackForChannel(channel)
+                .<UnreadProjectItem.Location>map(owner -> new UnreadProjectItem.OnTrack(
+                        project.getTracks().indexOf(owner), owner.getName()))
+                .orElseGet(() -> new UnreadProjectItem.InMixer("channel " + (channelIndex + 1)));
+    }
+
+    /**
+     * Applies a {@code <master>}, {@code <return-bus>} or {@code <channel>}
+     * element to {@code channel}; {@code strip} names the channel in the
+     * WARNINGs of its analyzer inserts ({@link AnalyzerInsertPersistence#read}).
+     */
+    private void applyMixerChannelAttrs(Element elem, MixerChannel channel, UnreadProjectItem.Location strip,
+                                        DawProject project) {
         double volume = clampDouble(parseDoubleAttr(elem, "volume", 1.0), 0.0, 1.0);
         channel.setVolume(volume);
 
@@ -1044,8 +1817,8 @@ public final class ProjectDeserializer {
         List<Element> insertsContainers = getDirectChildElements(elem, "inserts");
         if (!insertsContainers.isEmpty()) {
             List<Element> insertElements = getDirectChildElements(insertsContainers.getFirst(), "insert");
-            for (Element insertElem : insertElements) {
-                parseInsertSlot(insertElem, channel, project);
+            for (int i = 0; i < insertElements.size(); i++) {
+                parseInsertSlot(insertElements.get(i), i, channel, strip, project);
             }
         }
 
@@ -1094,9 +1867,15 @@ public final class ProjectDeserializer {
         return new TrackCpuBudget(maxFraction, policy);
     }
 
-    private void parseInsertSlot(Element elem, MixerChannel channel, DawProject project) {
+    /**
+     * Restores the {@code insertIndex}-th saved {@code <insert>} of
+     * {@code channel} — counted over the elements, so one that is skipped
+     * still takes its position — whose strip the log names as {@code strip}.
+     */
+    private void parseInsertSlot(Element elem, int insertIndex, MixerChannel channel,
+                                 UnreadProjectItem.Location strip, DawProject project) {
         try {
-            InsertSlot slot = createInsertSlot(elem, project);
+            InsertSlot slot = createInsertSlot(elem, insertIndex, strip, project);
             if (slot == null) return;
             InsertEffectType effectType = slot.getEffectType();
             if (parseBooleanAttr(elem, "bypassed")) {
@@ -1165,9 +1944,10 @@ public final class ProjectDeserializer {
         }
     }
 
-    private InsertSlot createInsertSlot(Element elem, DawProject project) {
+    private InsertSlot createInsertSlot(Element elem, int insertIndex, UnreadProjectItem.Location strip,
+                                        DawProject project) {
         if (elem.hasAttribute("analyzer-plugin-id")) {
-            return AnalyzerInsertPersistence.read(elem, project.getFormat());
+            return AnalyzerInsertPersistence.read(elem, project.getFormat(), strip, insertIndex);
         }
         String effectTypeStr = elem.getAttribute("effect-type");
         if (effectTypeStr.isEmpty()) return null;
@@ -1209,12 +1989,7 @@ public final class ProjectDeserializer {
         }
         MixerChannel target = returnBuses.get(targetIndex);
         double level = clampDouble(parseDoubleAttr(sendElem, "level", 0.0), 0.0, 1.0);
-        SendMode mode = parseSendMode(sendElem.getAttribute("mode"));
-        // SendTap is the authoritative field; legacy projects without a "tap"
-        // attribute migrate by deriving the tap from the legacy mode (and
-        // ultimately default to POST_FADER per the migration spec).
-        SendTap tap = parseSendTap(sendElem.getAttribute("tap"), mode);
-        Send send = new Send(target, level, tap);
+        Send send = new Send(target, level, parseSendTap(sendElem));
         channel.addSend(send);
     }
 
@@ -1518,18 +2293,21 @@ public final class ProjectDeserializer {
     }
 
     /**
-     * Parses the {@code tap} attribute of a {@code <send>} element. Legacy
-     * projects (saved before per-send tap-point support) omit the attribute;
-     * we migrate them by deriving a tap from the legacy {@link SendMode}
-     * (and falling back to {@link SendTap#POST_FADER} as the spec mandates).
+     * Parses the tap point of a {@code <send>} element. The {@code tap}
+     * attribute is the send's only stored fact. Legacy projects (saved before
+     * per-send tap-point support) omit it and carry the lossy legacy
+     * {@code mode} instead: only then is {@code mode} read, and the tap is
+     * derived from it (falling back to {@link SendTap#POST_FADER} as the
+     * spec mandates). When both are present the tap wins.
      *
-     * @param value         the raw attribute value (may be {@code null}/empty)
-     * @param fallbackMode  the legacy mode to fall back to for migration
+     * @param sendElem the {@code <send>} element
      * @return the parsed or migrated tap point
      */
-    private SendTap parseSendTap(String value, SendMode fallbackMode) {
-        if (value == null || value.isEmpty()) {
-            return fallbackMode == SendMode.PRE_FADER ? SendTap.PRE_FADER : SendTap.POST_FADER;
+    private SendTap parseSendTap(Element sendElem) {
+        String value = sendElem.getAttribute("tap");
+        if (value.isEmpty()) {
+            SendMode legacyMode = parseSendMode(sendElem.getAttribute("mode"));
+            return legacyMode == SendMode.PRE_FADER ? SendTap.PRE_FADER : SendTap.POST_FADER;
         }
         try {
             return SendTap.valueOf(value);
@@ -1620,6 +2398,41 @@ public final class ProjectDeserializer {
         } catch (NumberFormatException e) {
             return defaultValue;
         }
+    }
+
+    /**
+     * Reads an integer attribute an item cannot be read without.
+     *
+     * @throws IllegalArgumentException naming the attribute when it is
+     *                                  missing or not an integer
+     */
+    private static int requiredIntAttr(Element element, String attr) {
+        String value = element.getAttribute(attr);
+        if (value.isEmpty()) {
+            throw new IllegalArgumentException(attr + " is missing");
+        }
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(attr + " '" + UnreadProjectItem.logText(value) + "' is not an integer");
+        }
+    }
+
+    /**
+     * Reads a boolean attribute that changes how an item's values are read:
+     * absent is {@code false}; {@code true} / {@code false} in any case.
+     *
+     * @throws IllegalArgumentException naming the attribute for any other value
+     */
+    private static boolean strictBooleanAttr(Element element, String attr) {
+        String value = element.getAttribute(attr);
+        if (value.isEmpty() || "false".equalsIgnoreCase(value)) {
+            return false;
+        }
+        if ("true".equalsIgnoreCase(value)) {
+            return true;
+        }
+        throw new IllegalArgumentException(attr + " '" + UnreadProjectItem.logText(value) + "' is not true or false");
     }
 
     private static boolean parseBooleanAttr(Element element, String attr) {
@@ -1962,9 +2775,7 @@ public final class ProjectDeserializer {
                         continue;
                     }
                     double level = clampDouble(parseDoubleAttr(se, "level", 0.0), 0.0, 1.0);
-                    SendMode mode = parseSendMode(se.getAttribute("mode"));
-                    SendTap tap = parseSendTap(se.getAttribute("tap"), mode);
-                    sends.add(new SendSnapshot(targetId, level, tap));
+                    sends.add(new SendSnapshot(targetId, level, parseSendTap(se)));
                 }
             }
 
@@ -2028,7 +2839,15 @@ public final class ProjectDeserializer {
         return new InsertSnapshot(effectType, bypassed, params);
     }
 
-    private void parseBedBus(Element elem, DawProject project) {
+    /**
+     * Applies the {@code <bed-bus>} element. A routing's {@code track-id}
+     * resolves only to a track restored from this file
+     * ({@code restoredTracks}; {@link #resolveTrackReference}): a routing
+     * that names no such track, or the same track as an earlier routing, is
+     * dropped and reported, and the bed bus is kept.
+     */
+    private void parseBedBus(Element elem, DawProject project,
+                             Map<UUID, UnreadProjectItem.OnTrack> restoredTracks) {
         BedBusManager manager = project.getBedBusManager();
         String formatName = elem.getAttribute("format");
         ImmersiveFormat format;
@@ -2058,11 +2877,14 @@ public final class ProjectDeserializer {
         if (routingsContainers.isEmpty()) {
             return;
         }
-        for (Element re : getDirectChildElements(routingsContainers.getFirst(), "bed-routing")) {
-            UUID trackId;
-            try {
-                trackId = UUID.fromString(re.getAttribute("track-id"));
-            } catch (IllegalArgumentException e) {
+        UnreadProjectItem.InMixer bedLocation = new UnreadProjectItem.InMixer("bed bus");
+        Set<UUID> routedTracks = new HashSet<>();
+        List<Element> routingElements = getDirectChildElements(routingsContainers.getFirst(), "bed-routing");
+        for (int i = 0; i < routingElements.size(); i++) {
+            Element re = routingElements.get(i);
+            UUID trackId = resolveTrackReference(re, "bed-routing", "track-id",
+                    restoredTracks, routedTracks, bedLocation, i);
+            if (trackId == null) {
                 continue;
             }
             // The routing element optionally carries its own format; if it

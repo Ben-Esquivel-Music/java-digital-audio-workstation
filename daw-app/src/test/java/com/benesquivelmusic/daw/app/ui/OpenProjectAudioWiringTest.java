@@ -56,7 +56,7 @@ class OpenProjectAudioWiringTest {
                 .contains("primaryStage.setOnHidden(_ -> runWindowTeardown(() -> { if (projectLifecycleController != null) { projectLifecycleController.dispose(); } }");
         assertThat(methodBody(code, "private void applySnapshotRestoredProject("))
                 .as("a snapshot restore installs, rehydrates and announces through the lifecycle controller")
-                .contains("projectLifecycleController.installRestoredSnapshot(restored, label, missingAssets);");
+                .contains("projectLifecycleController.installRestoredSnapshot(restored, label, missingAssets, unreadItems);");
     }
 
     /** The top-level arguments of the call whose opening parenthesis is at {@code open}, trimmed. */

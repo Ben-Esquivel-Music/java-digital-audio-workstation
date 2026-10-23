@@ -2130,12 +2130,14 @@ public final class MainController {
      * the install lives in {@link ProjectLifecycleController#installRestoredSnapshot},
      * the one owner of the open project's audio — it retires the previous
      * run, loads the restored clips' audio, and qualifies the restore's
-     * announcement by what they could not find.
+     * announcement by what they could not find and (story 330) by the saved
+     * items the snapshot's deserialization could not honour as written.
      */
     private void applySnapshotRestoredProject(DawProject restored, String label,
-                                              com.benesquivelmusic.daw.core.persistence.MissingAssetsReport missingAssets) {
+                                              com.benesquivelmusic.daw.core.persistence.MissingAssetsReport missingAssets,
+                                              List<com.benesquivelmusic.daw.core.persistence.UnreadProjectItem> unreadItems) {
         if (restored == null || projectLifecycleController == null) return;
-        projectLifecycleController.installRestoredSnapshot(restored, label, missingAssets);
+        projectLifecycleController.installRestoredSnapshot(restored, label, missingAssets, unreadItems);
     }
 
     /**

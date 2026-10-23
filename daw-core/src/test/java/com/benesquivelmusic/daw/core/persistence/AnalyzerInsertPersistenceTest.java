@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectType;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry;
 import com.benesquivelmusic.daw.core.plugin.LiveAnalyzerPlugin;
 import com.benesquivelmusic.daw.core.plugin.SoundWaveTelemetryPlugin;
 import com.benesquivelmusic.daw.core.plugin.SpectrumAnalyzerPlugin;
@@ -16,13 +17,22 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.IOException;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
 class AnalyzerInsertPersistenceTest {
     private static final AudioFormat FORMAT = new AudioFormat(96_000, 2, 24, 256);
+    /** The consequence every analyzer WARNING ends with: the whole saved configuration is not applied. */
+    private static final String NOT_APPLIED =
+            "; the analyzer's saved settings are not applied and its defaults are used";
 
     @ParameterizedTest
     @ValueSource(strings = {"track", "return", "master"})
@@ -117,6 +127,220 @@ class AnalyzerInsertPersistenceTest {
         assertThat(((SpectrumAnalyzerPlugin) restored.getFirst().getPlugin()).getAnalyzer().getFftSize()).isEqualTo(4096);
         assertThat(((TunerPlugin) restored.getLast().getPlugin()).getReferencePitchHz()).isEqualTo(440);
         assertThat(((LiveAnalyzerPlugin) restored.getFirst().getPlugin()).isActive()).isTrue();
+    }
+
+    @Test
+    void anUnusableSettingIsLoggedWithItsValueAsSavedQuotedAndTheDefaultsAreKept() throws Exception {
+        DawProject project = project();
+        MixerChannel channel = channel(project, "track");
+        SpectrumAnalyzerPlugin spectrum = new SpectrumAnalyzerPlugin();
+        TunerPlugin tuner = new TunerPlugin();
+        initialize(spectrum);
+        initialize(tuner);
+        channel.addInsert(slot("Spectrum", spectrum));
+        channel.addInsert(slot("Tuner", tuner));
+        String xml = new ProjectSerializer().serialize(project)
+                .replace("fft-size=\"4096\"", "fft-size=\"40&#10;96\"")
+                .replace("reference-pitch-hz=\"440.0\"", "reference-pitch-hz=\"4&#13;40\"");
+
+        Opened opened = openCollectingAnalyzerWarnings(xml);
+        List<InsertSlot> restored = channel(opened.project(), "track").getInsertSlots();
+
+        assertThat(opened.warnings()).containsExactly(
+                "Track 1 'Host': insert 1 analyzer " + SpectrumAnalyzerPlugin.PLUGIN_ID + " fft-size '40&#xA;96'"
+                        + " is not an integer" + NOT_APPLIED,
+                "Track 1 'Host': insert 2 analyzer " + TunerPlugin.PLUGIN_ID + " reference-pitch-hz '4&#xD;40'"
+                        + " is not a number" + NOT_APPLIED);
+        assertThat(((SpectrumAnalyzerPlugin) restored.getFirst().getPlugin()).getAnalyzer().getFftSize())
+                .isEqualTo(4096);
+        assertThat(((TunerPlugin) restored.getLast().getPlugin()).getReferencePitchHz()).isEqualTo(440);
+    }
+
+    @Test
+    void anUnusableSettingIsLoggedWithTheTrackOrMixerStripAndTheInsertNumberedFromOne() throws Exception {
+        // Track 2's first insert names no effect this build knows: it is
+        // skipped, and still takes position 1.
+        Opened opened = openCollectingAnalyzerWarnings("""
+                <daw-project version="%d">
+                  <tracks>
+                    <track id="00000000-0000-0000-0000-00000000000a" name="Drums" type="AUDIO"/>
+                    <track id="00000000-0000-0000-0000-00000000000b" name="Vox" type="AUDIO"/>
+                  </tracks>
+                  <mixer>
+                    <master>
+                      <inserts>
+                        <insert name="Master spectrum" analyzer-plugin-id="%s" fft-size="40&#10;96"/>
+                      </inserts>
+                    </master>
+                    <channels>
+                      <channel/>
+                      <channel>
+                        <inserts>
+                          <insert name="Unknown" effect-type="NOT_AN_EFFECT"/>
+                          <insert name="Vox spectrum" analyzer-plugin-id="%s" window-type="FLAT_TOP"/>
+                        </inserts>
+                      </channel>
+                    </channels>
+                  </mixer>
+                </daw-project>
+                """.formatted(MigrationRegistry.CURRENT_VERSION, SpectrumAnalyzerPlugin.PLUGIN_ID,
+                SpectrumAnalyzerPlugin.PLUGIN_ID));
+
+        assertThat(opened.warnings()).containsExactly(
+                "Mixer master: insert 1 analyzer " + SpectrumAnalyzerPlugin.PLUGIN_ID + " fft-size '40&#xA;96'"
+                        + " is not an integer" + NOT_APPLIED,
+                "Track 2 'Vox': insert 2 analyzer " + SpectrumAnalyzerPlugin.PLUGIN_ID + " window-type 'FLAT_TOP'"
+                        + " is not a window type" + NOT_APPLIED);
+        assertThat(opened.project().getMixer().getChannels().get(1).getInsertSlots())
+                .extracting(InsertSlot::getName).as("the unknown effect was skipped").containsExactly("Vox spectrum");
+    }
+
+    @Test
+    void anAnalyzerOnAReturnBusIsNamedByItsBusNumberAndOnTheChannelOfATrackWithNoIdByItsTrack() throws Exception {
+        // The default project already holds the first return bus, which keeps
+        // its name; the second is added under the name it was saved with.
+        // Track 1's id is missing, so it is restored under a new one.
+        Opened opened = openCollectingAnalyzerWarnings("""
+                <daw-project version="%d">
+                  <tracks>
+                    <track name="Bass" type="AUDIO"/>
+                  </tracks>
+                  <mixer>
+                    <return-buses>
+                      <return-bus name="Reverb Return"/>
+                      <return-bus name="Delay &amp; Echo">
+                        <inserts>
+                          <insert name="Tuner" analyzer-plugin-id="%s" reference-pitch-hz="abc"/>
+                        </inserts>
+                      </return-bus>
+                    </return-buses>
+                    <channels>
+                      <channel>
+                        <inserts>
+                          <insert name="Bass spectrum" analyzer-plugin-id="%s" fft-size="1000"/>
+                        </inserts>
+                      </channel>
+                    </channels>
+                  </mixer>
+                </daw-project>
+                """.formatted(MigrationRegistry.CURRENT_VERSION, TunerPlugin.PLUGIN_ID,
+                SpectrumAnalyzerPlugin.PLUGIN_ID));
+
+        assertThat(opened.warnings()).containsExactly(
+                "Mixer return bus 2 'Delay &amp; Echo': insert 1 analyzer " + TunerPlugin.PLUGIN_ID
+                        + " reference-pitch-hz 'abc' is not a number" + NOT_APPLIED,
+                "Track 1 'Bass': insert 1 analyzer " + SpectrumAnalyzerPlugin.PLUGIN_ID + " fft-size '1000'"
+                        + " is not a power of two up to 65536" + NOT_APPLIED);
+    }
+
+    @Test
+    void anAnalyzerOnTheChannelOfATrackWhoseIdIsARepeatOrMalformedIsNamedByThatTrack() throws Exception {
+        // Track 2 repeats track 1's id and track 3's id is not a UUID: both
+        // are restored under new ids, and their channels are still theirs.
+        Opened opened = openCollectingAnalyzerWarnings("""
+                <daw-project version="%d">
+                  <tracks>
+                    <track id="00000000-0000-0000-0000-00000000000a" name="Drums" type="AUDIO"/>
+                    <track id="00000000-0000-0000-0000-00000000000a" name="Vox" type="AUDIO"/>
+                    <track id="abc" name="Keys" type="AUDIO"/>
+                  </tracks>
+                  <mixer>
+                    <channels>
+                      <channel>
+                        <inserts>
+                          <insert name="Drums spectrum" analyzer-plugin-id="%s" fft-size="1000"/>
+                        </inserts>
+                      </channel>
+                      <channel>
+                        <inserts>
+                          <insert name="Vox spectrum" analyzer-plugin-id="%s" fft-size="1000"/>
+                        </inserts>
+                      </channel>
+                      <channel>
+                        <inserts>
+                          <insert name="Keys spectrum" analyzer-plugin-id="%s" fft-size="1000"/>
+                        </inserts>
+                      </channel>
+                    </channels>
+                  </mixer>
+                </daw-project>
+                """.formatted(MigrationRegistry.CURRENT_VERSION, SpectrumAnalyzerPlugin.PLUGIN_ID,
+                SpectrumAnalyzerPlugin.PLUGIN_ID, SpectrumAnalyzerPlugin.PLUGIN_ID));
+
+        String unusable = " fft-size '1000' is not a power of two up to 65536" + NOT_APPLIED;
+        assertThat(opened.warnings()).containsExactly(
+                "Track 1 'Drums': insert 1 analyzer " + SpectrumAnalyzerPlugin.PLUGIN_ID + unusable,
+                "Track 2 'Vox': insert 1 analyzer " + SpectrumAnalyzerPlugin.PLUGIN_ID + unusable,
+                "Track 3 'Keys': insert 1 analyzer " + SpectrumAnalyzerPlugin.PLUGIN_ID + unusable);
+    }
+
+    @Test
+    void aUsableSettingBesideAnUnusableOneIsNotAppliedEitherAndTheLineSaysSo() throws Exception {
+        Opened opened = openCollectingAnalyzerWarnings("""
+                <daw-project version="%d">
+                  <tracks>
+                    <track id="00000000-0000-0000-0000-00000000000a" name="Keys" type="AUDIO"/>
+                  </tracks>
+                  <mixer>
+                    <channels>
+                      <channel>
+                        <inserts>
+                          <insert name="Keys spectrum" analyzer-plugin-id="%s" fft-size="8192"
+                                  window-type="FLAT_TOP"/>
+                        </inserts>
+                      </channel>
+                    </channels>
+                  </mixer>
+                </daw-project>
+                """.formatted(MigrationRegistry.CURRENT_VERSION, SpectrumAnalyzerPlugin.PLUGIN_ID));
+
+        assertThat(opened.warnings()).containsExactly(
+                "Track 1 'Keys': insert 1 analyzer " + SpectrumAnalyzerPlugin.PLUGIN_ID + " window-type 'FLAT_TOP'"
+                        + " is not a window type; the analyzer's saved settings are not applied and its defaults"
+                        + " are used");
+        SpectrumAnalyzerPlugin spectrum = (SpectrumAnalyzerPlugin) opened.project().getMixer().getChannels()
+                .getFirst().getInsertSlots().getFirst().getPlugin();
+        assertThat(spectrum.getAnalyzer().getFftSize()).as("the saved 8192 is not applied").isEqualTo(4096);
+        assertThat(spectrum.getAnalyzer().getWindowType()).isEqualTo(WindowType.HANN);
+        // An analyzer's settings are view preferences: logged only, not
+        // counted as an unread item and arming no backup (studio ruling D1).
+        assertThat(opened.deserializer().getUnreadItems()).as("no unread item").isEmpty();
+        assertThat(opened.deserializer().losesSavedContent()).as("no backup is owed").isFalse();
+    }
+
+    /**
+     * A project opened from a file, the deserializer that opened it, and the
+     * WARNINGs its analyzer inserts logged.
+     */
+    private record Opened(DawProject project, ProjectDeserializer deserializer, List<String> warnings) {
+    }
+
+    private static Opened openCollectingAnalyzerWarnings(String xml) throws IOException {
+        List<String> warnings = new CopyOnWriteArrayList<>();
+        Logger log = Logger.getLogger(AnalyzerInsertPersistence.class.getName());
+        Handler handler = new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                if (record.getLevel() == Level.WARNING) {
+                    warnings.add(record.getMessage());
+                }
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        log.addHandler(handler);
+        try {
+            ProjectDeserializer deserializer = new ProjectDeserializer();
+            return new Opened(deserializer.deserialize(xml), deserializer, warnings);
+        } finally {
+            log.removeHandler(handler);
+        }
     }
 
     private static DawProject project() {

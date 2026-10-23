@@ -19,14 +19,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code ProjectSerializer}" goal. The section is always emitted (even
  * when empty) so future readers can rely on its presence; legacy projects
  * without the element load with no links because the manager starts empty.
+ * A link pairs two channel ids, and a track's channel id is its track id:
+ * every fixture links real tracks of the project — the only state the
+ * application produces.
  */
 class ProjectSerializerChannelLinkTest {
 
     @Test
     void shouldSerializeChannelLinksAndAttributes() throws IOException {
         DawProject project = new DawProject("Session", AudioFormat.CD_QUALITY);
-        UUID left = UUID.randomUUID();
-        UUID right = UUID.randomUUID();
+        UUID left = UUID.fromString(project.createAudioTrack("Piano L").getId());
+        UUID right = UUID.fromString(project.createAudioTrack("Piano R").getId());
         project.getChannelLinkManager().link(new ChannelLink(left, right,
                 LinkMode.ABSOLUTE, true, false, true, true));
 
@@ -48,8 +51,8 @@ class ProjectSerializerChannelLinkTest {
     @Test
     void shouldTolerateLegacyLinkInsertsAttributeOnRead() throws IOException {
         DawProject project = new DawProject("Session", AudioFormat.CD_QUALITY);
-        UUID left = UUID.randomUUID();
-        UUID right = UUID.randomUUID();
+        UUID left = UUID.fromString(project.createAudioTrack("Piano L").getId());
+        UUID right = UUID.fromString(project.createAudioTrack("Piano R").getId());
         project.getChannelLinkManager().link(new ChannelLink(left, right,
                 LinkMode.ABSOLUTE, true, false, true, true));
         String xml = new ProjectSerializer().serialize(project)
@@ -73,13 +76,14 @@ class ProjectSerializerChannelLinkTest {
     @Test
     void shouldRoundTripChannelLinks() throws IOException {
         DawProject project = new DawProject("Session", AudioFormat.CD_QUALITY);
-        UUID left = UUID.randomUUID();
-        UUID right = UUID.randomUUID();
+        UUID left = UUID.fromString(project.createAudioTrack("Piano L").getId());
+        UUID right = UUID.fromString(project.createAudioTrack("Piano R").getId());
         project.getChannelLinkManager().link(new ChannelLink(left, right,
                 LinkMode.RELATIVE, true, true, false, false));
 
         String xml = new ProjectSerializer().serialize(project);
-        DawProject restored = new ProjectDeserializer().deserialize(xml);
+        ProjectDeserializer deserializer = new ProjectDeserializer();
+        DawProject restored = deserializer.deserialize(xml);
 
         ChannelLinkManager restoredManager = restored.getChannelLinkManager();
         assertThat(restoredManager.getLinks()).hasSize(1);
@@ -91,5 +95,9 @@ class ProjectSerializerChannelLinkTest {
         assertThat(restoredLink.linkPans()).isTrue();
         assertThat(restoredLink.linkMuteSolo()).isFalse();
         assertThat(restoredLink.linkSends()).isFalse();
+        assertThat(restoredManager.partnerOf(restored.getMixer().getChannels().getFirst().getId()))
+                .as("the reopened left channel's partner is the reopened right channel")
+                .isEqualTo(restored.getMixer().getChannels().get(1).getId());
+        assertThat(deserializer.getUnreadItems()).isEmpty();
     }
 }

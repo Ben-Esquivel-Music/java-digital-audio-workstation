@@ -227,12 +227,14 @@ final class TransportController implements TransportIntentHandler {
     private volatile boolean retired;
 
     /**
-     * Story 134 — Pre-roll / Post-Roll transport controls. The toggle
-     * buttons reflect whether the feature is currently enabled, and the
-     * spinners hold the bar counts (range 0–8, default 2). They are
-     * created lazily by {@link #createPreRollPostRollControls()}; if the
-     * controls are never mounted, the transport's pre/post-roll
-     * configuration remains at {@link PreRollPostRoll#DISABLED}.
+     * Story 134 — Pre-roll / Post-Roll transport controls. Each toggle is
+     * selected while its side rolls (the transport's configuration is
+     * enabled and that side's bar count is above zero), and the spinners
+     * always show the stored bar counts (range 0–{@link PreRollPostRoll#MAX_BARS},
+     * default 2), enabled or not. They are created lazily by
+     * {@link #createPreRollPostRollControls()}; building them changes nothing
+     * the transport holds — the configuration the project was saved with
+     * (story 330) or {@link PreRollPostRoll#DISABLED}.
      */
     private ToggleButton preRollToggle;
     private ToggleButton postRollToggle;
@@ -241,10 +243,11 @@ final class TransportController implements TransportIntentHandler {
     /** Cached container returned by {@link #createPreRollPostRollControls()}. */
     private HBox preRollControlsBox;
 
-    /** Default bar count used by the pre/post-roll spinners (range 0–8). */
+    /**
+     * Bar count a pre/post-roll toggle turns a side on with when that side
+     * holds none, and the spinners' value before their first sync.
+     */
     static final int DEFAULT_BARS = 2;
-    /** Maximum bar count allowed by the pre/post-roll spinners. */
-    static final int MAX_BARS = 8;
 
     /**
      * Story 134 — Post-roll completion timer. Schedules
@@ -1411,50 +1414,116 @@ final class TransportController implements TransportIntentHandler {
     }
 
     /**
-     * Toggles the pre-roll feature independently of post-roll. When
-     * toggling on and {@code preBars} is zero, seeds with
-     * {@value #DEFAULT_BARS}. When toggling off, sets {@code preBars}
-     * to zero. The {@code enabled} flag is derived: {@code true} iff
-     * either side has a non-zero bar count.
+     * Toggles pre-roll — the Pre-Roll button, and the keyboard shortcut —
+     * without changing whether post-roll rolls. The stored
+     * {@code (preBars, postBars, enabled)} are three facts the project file
+     * keeps (story 330), so the click works from what the toggle shows, the
+     * transport's value (pre-roll rolls when {@code enabled && preBars > 0}),
+     * not from the bar count alone:
+     * <ul>
+     *   <li>turning it off while post-roll rolls keeps post-roll on and
+     *       zeroes the pre-roll bars, {@code (0, postBars, true)}; with
+     *       post-roll off it clears {@code enabled} and keeps the bar count,
+     *       {@code (preBars, 0, false)};</li>
+     *   <li>turning it on uses the stored bar count, or
+     *       {@value #DEFAULT_BARS} when there is none, and sets
+     *       {@code enabled}; post-roll keeps its bars when it rolls, and an
+     *       inert post-roll amount is dropped rather than armed by a click on
+     *       the other side.</li>
+     * </ul>
+     * A changed value marks the project dirty, with no undo entry
+     * ({@link #commitPreRollPostRoll}).
      */
     void onTogglePreRoll() {
-        Transport transport = project.getTransport();
-        PreRollPostRoll current = transport.getPreRollPostRoll();
-        boolean preActive = current.preBars() > 0;
-        int newPre = preActive ? 0 : Math.max(DEFAULT_BARS, current.preBars());
-        boolean newEnabled = newPre > 0 || current.postBars() > 0;
-        transport.setPreRollPostRoll(
-                new PreRollPostRoll(newPre, current.postBars(), newEnabled));
-        syncPreRollControls();
-        statusBarLabel.setText("Pre-roll: " + (!preActive ? "ON" : "OFF"));
+        PreRollPostRoll next = toggled(project.getTransport().getPreRollPostRoll(), true);
+        commitPreRollPostRoll(next);
+        statusBarLabel.setText("Pre-roll: " + (rolls(next, true) ? "ON" : "OFF"));
     }
 
     /**
-     * Toggles the post-roll feature independently of pre-roll. When
-     * toggling on and {@code postBars} is zero, seeds with
-     * {@value #DEFAULT_BARS}. When toggling off, sets {@code postBars}
-     * to zero. The {@code enabled} flag is derived: {@code true} iff
-     * either side has a non-zero bar count.
+     * Toggles post-roll without changing whether pre-roll rolls: the mirror
+     * of {@link #onTogglePreRoll()}, by the same rules with the sides
+     * swapped. A changed value marks the project dirty, with no undo entry
+     * ({@link #commitPreRollPostRoll}).
      */
     void onTogglePostRoll() {
+        PreRollPostRoll next = toggled(project.getTransport().getPreRollPostRoll(), false);
+        commitPreRollPostRoll(next);
+        statusBarLabel.setText("Post-roll: " + (rolls(next, false) ? "ON" : "OFF"));
+    }
+
+    /** Whether the pre-roll ({@code pre}) or the post-roll side of {@code prpr} rolls: what its toggle shows. */
+    private static boolean rolls(PreRollPostRoll prpr, boolean pre) {
+        return prpr.enabled() && (pre ? prpr.preBars() : prpr.postBars()) > 0;
+    }
+
+    /**
+     * The value a click on the pre-roll ({@code pre}) or the post-roll
+     * toggle commits over {@code current} ({@link #onTogglePreRoll()}). A
+     * click never changes whether the other side rolls; where the single
+     * {@code enabled} flag forces a choice, the other side's inert amount is
+     * dropped.
+     */
+    private static PreRollPostRoll toggled(PreRollPostRoll current, boolean pre) {
+        int bars = pre ? current.preBars() : current.postBars();
+        int otherBars = pre ? current.postBars() : current.preBars();
+        boolean otherRolls = rolls(current, !pre);
+        int nextBars;
+        int nextOtherBars;
+        boolean enabled;
+        if (rolls(current, pre)) {
+            // Off. With the other side off as well, enabled is all that
+            // stops this side, and the other side's bars are already 0.
+            nextBars = otherRolls ? 0 : bars;
+            nextOtherBars = otherRolls ? otherBars : 0;
+            enabled = otherRolls;
+        } else {
+            nextBars = bars > 0 ? bars : DEFAULT_BARS;
+            nextOtherBars = otherRolls ? otherBars : 0;
+            enabled = true;
+        }
+        return pre
+                ? new PreRollPostRoll(nextBars, nextOtherBars, enabled)
+                : new PreRollPostRoll(nextOtherBars, nextBars, enabled);
+    }
+
+    /**
+     * The one way a pre/post-roll control writes the transport — both
+     * toggles and both spinners (Control Synchronization Design Book §5.2):
+     * a value different from the stored one is set and marks the project
+     * dirty, since the project file stores it; the stored value itself is
+     * not written again and does not mark it. Either way the controls are
+     * synced. No undo entry: pre/post-roll is a dirty-only transport
+     * setting, like the loop and the punch region (Control Synchronization
+     * Design Book §5.2). No bus event either: no {@code TransportEvent}
+     * exists for pre/post-roll.
+     */
+    private void commitPreRollPostRoll(PreRollPostRoll next) {
         Transport transport = project.getTransport();
-        PreRollPostRoll current = transport.getPreRollPostRoll();
-        boolean postActive = current.postBars() > 0;
-        int newPost = postActive ? 0 : Math.max(DEFAULT_BARS, current.postBars());
-        boolean newEnabled = current.preBars() > 0 || newPost > 0;
-        transport.setPreRollPostRoll(
-                new PreRollPostRoll(current.preBars(), newPost, newEnabled));
+        if (!next.equals(transport.getPreRollPostRoll())) {
+            transport.setPreRollPostRoll(next);
+            project.markDirty();
+        }
         syncPreRollControls();
-        statusBarLabel.setText("Post-roll: " + (!postActive ? "ON" : "OFF"));
     }
 
     /**
      * Builds the toggle buttons and bar-count spinners for pre-roll and
      * post-roll, returning an {@link HBox} suitable for mounting on the
      * transport bar. The controls are wired bidirectionally with
-     * {@link Transport#setPreRollPostRoll}: changing a spinner updates
-     * the configuration; calling {@link #onTogglePreRoll()} updates the
-     * toggle state. Range 0–8, default {@value #DEFAULT_BARS}.
+     * {@link Transport#setPreRollPostRoll}: a toggle click
+     * ({@link #onTogglePreRoll()}, {@link #onTogglePostRoll()}) or a spinner
+     * edit changes the configuration, and {@link #syncPreRollControls()}
+     * shows it. Range 0–{@link PreRollPostRoll#MAX_BARS}, default
+     * {@value #DEFAULT_BARS}.
+     *
+     * <p>Building them writes nothing: the controls are rebuilt for every
+     * project load, after the project is marked clean, and the sync that
+     * shows the restored value — every stored value, an inert
+     * {@code (2, 0, false)} included — leaves the transport and the
+     * project's clean state as they were. Every count a stored value can
+     * hold is one the spinners show: {@link PreRollPostRoll} rejects a count
+     * above {@link PreRollPostRoll#MAX_BARS}, the spinners' bound.</p>
      *
      * <p>This method is package-private and idempotent: calling it more
      * than once returns the <em>same</em> cached {@link HBox} instance,
@@ -1472,23 +1541,25 @@ final class TransportController implements TransportIntentHandler {
         preRollToggle.getStyleClass().addAll("dawg-button", "size-transport", "pre-roll-button");
         preRollToggle.setGraphic(IconNode.of(DawIcon.REWIND, 12));
         preRollToggle.setTooltip(new Tooltip(
-                "Pre-Roll: seek back by N bars before playback (Story 134)"));
+                "Pre-Roll: seek back by N bars before playback"));
         preRollToggle.setOnAction(_ -> onTogglePreRoll());
 
         postRollToggle = new ToggleButton("Post-Roll");
         postRollToggle.getStyleClass().addAll("dawg-button", "size-transport", "post-roll-button");
         postRollToggle.setGraphic(IconNode.of(DawIcon.FAST_FORWARD, 12));
         postRollToggle.setTooltip(new Tooltip(
-                "Post-Roll: keep playing for N bars after stop (Story 134)"));
+                "Post-Roll: keep playing for N bars after stop"));
         postRollToggle.setOnAction(_ -> onTogglePostRoll());
 
+        // A listener, not a binding: the spinner is a two-way control. It
+        // reads the spinner's live value — a later listener of a nested
+        // change is handed stale values — and is a no-op for the stored bar
+        // count, which is every value the sync below sets.
         preRollSpinner = createBarSpinner();
-        preRollSpinner.valueProperty().addListener((_, _, newVal) ->
-                applySpinnerChange(newVal, /*pre=*/true));
+        preRollSpinner.valueProperty().addListener((_, _, _) -> applySpinnerChange(/*pre=*/true));
 
         postRollSpinner = createBarSpinner();
-        postRollSpinner.valueProperty().addListener((_, _, newVal) ->
-                applySpinnerChange(newVal, /*pre=*/false));
+        postRollSpinner.valueProperty().addListener((_, _, _) -> applySpinnerChange(/*pre=*/false));
 
         syncPreRollControls();
 
@@ -1501,7 +1572,7 @@ final class TransportController implements TransportIntentHandler {
 
     private static Spinner<Integer> createBarSpinner() {
         SpinnerValueFactory.IntegerSpinnerValueFactory factory =
-                new SpinnerValueFactory.IntegerSpinnerValueFactory(0, MAX_BARS, DEFAULT_BARS);
+                new SpinnerValueFactory.IntegerSpinnerValueFactory(0, PreRollPostRoll.MAX_BARS, DEFAULT_BARS);
         Spinner<Integer> spinner = new Spinner<>(factory);
         spinner.setEditable(true);
         spinner.setPrefWidth(64);
@@ -1509,35 +1580,48 @@ final class TransportController implements TransportIntentHandler {
         return spinner;
     }
 
-    private void applySpinnerChange(Integer newVal, boolean pre) {
-        int v = (newVal == null) ? 0 : Math.max(0, Math.min(MAX_BARS, newVal));
-        Transport transport = project.getTransport();
-        PreRollPostRoll current = transport.getPreRollPostRoll();
+    /**
+     * Applies an edit of the pre-roll ({@code pre}) or the post-roll
+     * spinner: only that side's bar count changes, and {@code enabled}
+     * stays as stored — so changing the amount of a side that is off does
+     * not arm it, and with {@code enabled} set a side moved off zero rolls.
+     * Both counts at zero is {@link PreRollPostRoll#DISABLED}. The spinner's
+     * live value is read, never the listener's new value (a later listener
+     * of a nested change sees stale values); a value equal to the stored
+     * bar count — every value {@link #syncPreRollControls()} sets — writes
+     * nothing.
+     */
+    private void applySpinnerChange(boolean pre) {
+        Integer live = (pre ? preRollSpinner : postRollSpinner).getValue();
+        int v = (live == null) ? 0 : Math.max(0, Math.min(PreRollPostRoll.MAX_BARS, live));
+        PreRollPostRoll current = project.getTransport().getPreRollPostRoll();
+        if (v == (pre ? current.preBars() : current.postBars())) {
+            return;
+        }
         int preBars = pre ? v : current.preBars();
         int postBars = pre ? current.postBars() : v;
-        // Derive the enabled flag: true iff either side has a non-zero
-        // bar count. This keeps enabled state consistent when the user
-        // zeroes out a spinner.
-        boolean enabled = preBars > 0 || postBars > 0;
-        transport.setPreRollPostRoll(
-                new PreRollPostRoll(preBars, postBars, enabled));
-        syncPreRollControls();
+        commitPreRollPostRoll(preBars == 0 && postBars == 0
+                ? PreRollPostRoll.DISABLED
+                : new PreRollPostRoll(preBars, postBars, current.enabled()));
     }
 
     /**
      * Pushes the current {@link Transport#getPreRollPostRoll()} state onto
-     * the toggle buttons and spinners, if mounted. Safe to call when
-     * controls have not been built — it is a no-op.
+     * the toggle buttons and spinners, if mounted: each toggle selected
+     * while its side rolls, each spinner showing its stored bar count. Safe
+     * to call when controls have not been built — it is a no-op. It never
+     * writes the transport: the spinner listener it fires finds the stored
+     * bar count and returns.
      */
     void syncPreRollControls() {
         if (preRollToggle == null) {
             return;
         }
         PreRollPostRoll prpr = project.getTransport().getPreRollPostRoll();
-        preRollToggle.setSelected(prpr.enabled() && prpr.preBars() > 0);
-        postRollToggle.setSelected(prpr.enabled() && prpr.postBars() > 0);
-        // setValue fires the spinner listener; skip if value already matches
-        // to avoid feedback loops between Transport ↔ spinner.
+        preRollToggle.setSelected(rolls(prpr, true));
+        postRollToggle.setSelected(rolls(prpr, false));
+        // setValue fires the spinner listener (a no-op for the stored bar
+        // count); skip it when the value already matches.
         if (preRollSpinner.getValue() == null
                 || preRollSpinner.getValue() != prpr.preBars()) {
             preRollSpinner.getValueFactory().setValue(prpr.preBars());
