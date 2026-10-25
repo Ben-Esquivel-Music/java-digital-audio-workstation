@@ -56,6 +56,7 @@ import com.benesquivelmusic.daw.sdk.telemetry.SurfaceMaterialMap;
 import com.benesquivelmusic.daw.sdk.telemetry.TreatmentKind;
 import com.benesquivelmusic.daw.sdk.telemetry.WallAttachment;
 import com.benesquivelmusic.daw.sdk.visualization.LoudnessTarget;
+import org.w3c.dom.Attr;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 
@@ -63,15 +64,9 @@ import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
-import javax.xml.transform.OutputKeys;
-import javax.xml.transform.Transformer;
-import javax.xml.transform.TransformerException;
-import javax.xml.transform.TransformerFactory;
-import javax.xml.transform.dom.DOMSource;
-import javax.xml.transform.stream.StreamResult;
 import java.io.IOException;
-import java.io.StringWriter;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -103,7 +98,7 @@ public final class ProjectSerializer {
      * @throws IOException if serialization fails
      */
     public String serialize(DawProject project) throws IOException {
-        return serialize(project, AssetReferenceRemap.NONE);
+        return capture(project).toXml();
     }
 
     /**
@@ -135,7 +130,27 @@ public final class ProjectSerializer {
      */
     public String serialize(DawProject project, AssetReferenceRemap remap) throws IOException {
         Objects.requireNonNull(remap, "remap must not be null");
-        ReferenceWriter references = new ReferenceWriter(projectRootOf(project), remap);
+        return capture(project).toXml(remap);
+    }
+
+    /**
+     * Captures the project as a document without rendering it (story 331;
+     * Persistence Integrity book §2.3): the whole model walk runs here, on
+     * the calling thread — the thread that owns the model, so no edit can
+     * interleave with it — and the returned {@link ProjectDocument} renders
+     * the XML later, on whatever thread it is handed to, without reading the
+     * model again. {@code capture(project).toXml()} is
+     * {@link #serialize(DawProject)} and
+     * {@code capture(project).toXml(remap)} is
+     * {@link #serialize(DawProject, AssetReferenceRemap)}, byte for byte.
+     *
+     * @param project the project to capture
+     * @return the captured document, confined to one thread at a time
+     * @throws IOException if no XML document can be created
+     */
+    public ProjectDocument capture(DawProject project) throws IOException {
+        Path projectRoot = projectRootOf(project);
+        ReferenceRecorder references = new ReferenceRecorder(projectRoot);
         try {
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
             factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
@@ -144,20 +159,8 @@ public final class ProjectSerializer {
             Document document = builder.newDocument();
 
             buildDocument(document, project, references);
-
-            TransformerFactory transformerFactory = TransformerFactory.newInstance();
-            transformerFactory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
-            transformerFactory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
-            transformerFactory.setAttribute(XMLConstants.ACCESS_EXTERNAL_STYLESHEET, "");
-            Transformer transformer = transformerFactory.newTransformer();
-            transformer.setOutputProperty(OutputKeys.INDENT, "yes");
-            transformer.setOutputProperty(OutputKeys.ENCODING, "UTF-8");
-            transformer.setOutputProperty("{http://xml.apache.org/xslt}indent-amount", "2");
-
-            StringWriter writer = new StringWriter();
-            transformer.transform(new DOMSource(document), new StreamResult(writer));
-            return writer.toString();
-        } catch (ParserConfigurationException | TransformerException e) {
+            return new ProjectDocument(document, projectRoot, references.sites());
+        } catch (ParserConfigurationException e) {
             throw new IOException("Failed to serialize project", e);
         }
     }
@@ -197,24 +200,55 @@ public final class ProjectSerializer {
     }
 
     /**
-     * Writes asset references: the remap first, then — for an audio-clip
-     * reference — the project-relative rule ({@link ProjectPaths#relativize}).
+     * How an audio-clip reference is written: the remap first, then the
+     * project-relative rule ({@link ProjectPaths#relativize}).
      */
-    private record ReferenceWriter(Path projectRoot, AssetReferenceRemap remap) {
+    static String clipReference(Path projectRoot, AssetReferenceRemap remap, String reference) {
+        String written = reference == null
+                ? null : remap.clipReferences().getOrDefault(reference, reference);
+        return ProjectPaths.relativize(projectRoot, written);
+    }
+
+    /** How a SoundFont path, in its {@link Path#toString()} form, is written: the remap, then forward slashes. */
+    static String soundFontPath(AssetReferenceRemap remap, String stored) {
+        return remap.soundFontPaths().getOrDefault(stored, stored).replace('\\', '/');
+    }
+
+    /**
+     * Writes asset references as {@link #serialize(DawProject)} does — no
+     * remap — and records each site, with the reference as the live project
+     * holds it, so the {@link ProjectDocument} can rewrite it through a remap
+     * without reading the model again.
+     */
+    private static final class ReferenceRecorder {
+
+        private final Path projectRoot;
+        private final List<ProjectDocument.ReferenceSite> sites = new ArrayList<>();
+
+        ReferenceRecorder(Path projectRoot) {
+            this.projectRoot = projectRoot;
+        }
 
         String clipReference(String reference) {
-            String written = reference == null
-                    ? null : remap.clipReferences().getOrDefault(reference, reference);
-            return ProjectPaths.relativize(projectRoot, written);
+            return ProjectSerializer.clipReference(projectRoot, AssetReferenceRemap.NONE, reference);
         }
 
         String soundFontPath(Path path) {
-            String stored = path.toString();
-            return remap.soundFontPaths().getOrDefault(stored, stored).replace('\\', '/');
+            return ProjectSerializer.soundFontPath(AssetReferenceRemap.NONE, path.toString());
+        }
+
+        /** Records the attribute just written for {@code liveReference}. */
+        void record(Attr attribute, ProjectDocument.ReferenceKind kind, String liveReference) {
+            sites.add(new ProjectDocument.ReferenceSite(Objects.requireNonNull(attribute, "attribute"),
+                    new ProjectDocument.AssetReference(kind, liveReference)));
+        }
+
+        List<ProjectDocument.ReferenceSite> sites() {
+            return sites;
         }
     }
 
-    private void buildDocument(Document document, DawProject project, ReferenceWriter references) {
+    private void buildDocument(Document document, DawProject project, ReferenceRecorder references) {
         Element root = document.createElement("daw-project");
         root.setAttribute("version", Integer.toString(
                 com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION));
@@ -350,7 +384,7 @@ public final class ProjectSerializer {
         root.appendChild(elem);
     }
 
-    private void buildTracks(Document document, Element root, DawProject project, ReferenceWriter references) {
+    private void buildTracks(Document document, Element root, DawProject project, ReferenceRecorder references) {
         Element tracksElem = document.createElement("tracks");
         root.appendChild(tracksElem);
 
@@ -359,7 +393,7 @@ public final class ProjectSerializer {
         }
     }
 
-    private Element buildTrackElement(Document document, Track track, ReferenceWriter references) {
+    private Element buildTrackElement(Document document, Track track, ReferenceRecorder references) {
         Element elem = document.createElement("track");
         elem.setAttribute("id", track.getId());
         elem.setAttribute("name", track.getName());
@@ -421,6 +455,8 @@ public final class ProjectSerializer {
         if (sfAssignment != null) {
             Element sfElem = document.createElement("soundfont-assignment");
             sfElem.setAttribute("path", references.soundFontPath(sfAssignment.soundFontPath()));
+            references.record(sfElem.getAttributeNode("path"), ProjectDocument.ReferenceKind.SOUND_FONT,
+                    sfAssignment.soundFontPath().toString());
             sfElem.setAttribute("bank", String.valueOf(sfAssignment.bank()));
             sfElem.setAttribute("program", String.valueOf(sfAssignment.program()));
             sfElem.setAttribute("preset-name", sfAssignment.presetName());
@@ -536,7 +572,7 @@ public final class ProjectSerializer {
      * Reliability book §3.3, §5.3, §9.5), every other reference verbatim.
      * Children are omitted for a single-file clip.
      */
-    private Element buildClipElement(Document document, AudioClip clip, ReferenceWriter references) {
+    private Element buildClipElement(Document document, AudioClip clip, ReferenceRecorder references) {
         Element elem = document.createElement("clip");
         elem.setAttribute("name", clip.getName());
         elem.setAttribute("start-beat", String.valueOf(clip.getStartBeat()));
@@ -556,10 +592,14 @@ public final class ProjectSerializer {
         elem.setAttribute("stretch-quality", clip.getStretchQuality().name());
         if (clip.getSourceFilePath() != null) {
             elem.setAttribute("source-file", references.clipReference(clip.getSourceFilePath()));
+            references.record(elem.getAttributeNode("source-file"), ProjectDocument.ReferenceKind.CLIP_SOURCE_FILE,
+                    clip.getSourceFilePath());
         }
         for (String segmentPath : clip.getSourceSegmentPaths()) {
             Element segmentElem = document.createElement("source-segment");
             segmentElem.setAttribute("path", references.clipReference(segmentPath));
+            references.record(segmentElem.getAttributeNode("path"), ProjectDocument.ReferenceKind.CLIP_SOURCE_SEGMENT,
+                    segmentPath);
             elem.appendChild(segmentElem);
         }
         clip.gainEnvelope().ifPresent(env -> {

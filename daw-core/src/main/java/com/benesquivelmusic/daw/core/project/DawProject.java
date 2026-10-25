@@ -25,6 +25,7 @@ import com.benesquivelmusic.daw.sdk.edit.RippleMode;
 import com.benesquivelmusic.daw.sdk.visualization.LoudnessTarget;
 
 import java.util.*;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 /**
@@ -72,6 +73,21 @@ public final class DawProject {
     private RoomConfiguration roomConfiguration;
     private ProjectMetadata metadata;
     private volatile boolean dirty;
+
+    /**
+     * The source of every {@link #editRevision}: one counter for the whole
+     * JVM, so two projects never share a revision and a model that replaced
+     * another can never be mistaken for the one a save or checkpoint captured.
+     */
+    private static final AtomicLong EDIT_REVISIONS = new AtomicLong();
+
+    /**
+     * The project's edit revision (story 331, ruling F1): drawn from
+     * {@link #EDIT_REVISIONS} when the project is created and again by every
+     * {@link #markDirty()}, under {@link #dirtyLock}. {@code volatile} so
+     * {@link #getEditRevision()} reads it without the lock.
+     */
+    private volatile long editRevision = EDIT_REVISIONS.incrementAndGet();
 
     /**
      * Tracks the mixer channel associated with each track, keyed by track ID.
@@ -553,15 +569,67 @@ public final class DawProject {
      * dirty). The check-and-set runs under {@link #dirtyLock} so a concurrent
      * {@link #markClean()} cannot interleave and drop the transition; the signal is
      * fired outside the lock (a listener callback is never run while holding it).
+     *
+     * <p>Every call, also while already dirty, advances the
+     * {@linkplain #getEditRevision() edit revision}: an edit made after a save or
+     * a checkpoint captured the project is always told apart from the captured
+     * state.</p>
      */
     public void markDirty() {
         synchronized (dirtyLock) {
+            editRevision = EDIT_REVISIONS.incrementAndGet();
             if (dirty) {
                 return;
             }
             dirty = true;
         }
         notifyChange(ChangeKind.DIRTY);
+    }
+
+    /**
+     * Returns the project's edit revision (story 331, ruling F1): a number
+     * taken when the project was created and replaced by a larger one on every
+     * {@link #markDirty()} call, also while the project is already dirty. It
+     * is unique across every project of the JVM, so a revision read from one
+     * model never equals one read from another.
+     *
+     * <p>A save or a checkpoint reads it before it captures the project; the
+     * capture holds the project as of that revision until the revision
+     * moves on. {@link #markClean()} does not change it.</p>
+     *
+     * @return the current edit revision; any thread may read it
+     */
+    public long getEditRevision() {
+        return editRevision;
+    }
+
+    /**
+     * Marks the project clean if it has not been edited since
+     * {@code revision} was read (story 331, ruling F1): a save written from a
+     * capture taken at {@code revision} clears the unsaved-changes flag only
+     * when no {@link #markDirty()} ran after that capture, so an edit made
+     * while the save was writing keeps the project dirty. Fires
+     * {@link ChangeKind#DIRTY} once on the dirty&rarr;clean transition, under
+     * the same {@link #dirtyLock} guard as {@link #markDirty()} and outside it.
+     *
+     * @param revision the {@linkplain #getEditRevision() edit revision} the
+     *                 written capture was taken at
+     * @return {@code true} when the project is still at {@code revision} and
+     *         is now clean (also when it already was); {@code false} when it
+     *         was edited since and stays as it is
+     */
+    public boolean markCleanIfUnchanged(long revision) {
+        synchronized (dirtyLock) {
+            if (editRevision != revision) {
+                return false;
+            }
+            if (!dirty) {
+                return true;
+            }
+            dirty = false;
+        }
+        notifyChange(ChangeKind.DIRTY);
+        return true;
     }
 
     /**

@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.persistence.snapshot;
 
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
+import com.benesquivelmusic.daw.core.persistence.CheckpointOrigin;
 import com.benesquivelmusic.daw.core.snapshot.SnapshotBrowserService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -47,11 +48,11 @@ class SnapshotNeverAutoDeletesTest {
 
         CheckpointManager checkpointManager = new CheckpointManager(
                 new AutoSaveConfig(Duration.ofHours(1), 2, true));
-        checkpointManager.setProjectDataSupplier(() -> "<project>checkpoint</project>");
-        checkpointManager.start(projectDir);
+        checkpointManager.start(projectDir).join();
         try {
-            for (int i = 0; i < 6; i++) {
-                checkpointManager.performCheckpoint();
+            for (long revision = 1; revision <= 6; revision++) {
+                checkpointManager.writeCheckpoint("<project>checkpoint</project>", revision,
+                        CheckpointOrigin.AFTER_SAVE).join();
             }
         } finally {
             checkpointManager.stop();

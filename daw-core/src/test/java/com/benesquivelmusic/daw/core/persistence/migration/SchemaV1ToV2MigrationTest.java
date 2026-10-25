@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Stream;
 
+import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.saved;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -203,14 +204,14 @@ class SchemaV1ToV2MigrationTest {
         assertThat(report.changesAuthoredContent()).isFalse();
 
         DawProject project = manager.getCurrentDawProject();
-        manager.saveDawProject(project);
+        saved(manager, project);
         List<Path> backups = backupsIn(metadata.projectPath());
         assertThat(backups).hasSize(1);
         assertThat(backups.getFirst().getFileName().toString()).startsWith("project.daw.v1.");
         assertThat(Files.readAllBytes(backups.getFirst())).isEqualTo(original);
         assertThat(Files.readString(projectFile)).contains("<daw-project version=\"2\">");
 
-        manager.saveDawProject(project);
+        saved(manager, project);
         assertThat(backupsIn(metadata.projectPath())).as("a second save writes no new backup").hasSize(1);
         manager.abandonProject();
 

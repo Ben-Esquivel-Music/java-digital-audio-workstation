@@ -13,6 +13,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.zip.ZipFile;
 
+import static com.benesquivelmusic.daw.core.persistence.archive.ArchiveTestSupport.archive;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class PerAssetDecisionArchiveTest {
@@ -38,7 +39,7 @@ class PerAssetDecisionArchiveTest {
         project.createAudioTrack("Stub").addClip(stubClip);
 
         Path archive = tmp.resolve("per-asset.dawz");
-        ProjectArchiveSummary summary = new ProjectArchiver().saveAsArchive(
+        ProjectArchiveSummary summary = archive(new ProjectArchiver(),
                 project,
                 archive,
                 ArchiveOptions.defaults(),

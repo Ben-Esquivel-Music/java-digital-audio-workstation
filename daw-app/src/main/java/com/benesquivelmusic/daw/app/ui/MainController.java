@@ -302,6 +302,10 @@ public final class MainController {
     private com.benesquivelmusic.daw.app.ui.status.SessionStatusStrip sessionStatusStrip;
     /** The §1.8 disk-space scan (30 s, virtual thread) feeding the model. */
     private com.benesquivelmusic.daw.app.ui.status.SessionStatusDiskScanner diskScanner;
+    /** Story 331 — turns checkpoint outcomes and re-arms into the strip's checkpoint state. */
+    private com.benesquivelmusic.daw.app.ui.status.CheckpointStatusListener checkpointStatus;
+    /** Story 331 — detaches {@link #checkpointStatus} from the checkpoint manager; run on hide. */
+    private Runnable checkpointStatusRemoval;
     /** Start of the current working session (since project open/new); §3.3, drives the Session cell elapsed. */
     private java.time.Instant sessionStartInstant;
     /** Disposers for the current VM generation (binders + VM unregistration); run on rebuild + hide. */
@@ -672,7 +676,7 @@ public final class MainController {
         // The mirror updates synchronously for FX-thread edits (ProjectVM's inline
         // fast-path), so an explicit syncMenuStateIfPresent() right after markDirty()
         // already reads the new value, and a Save read stays consistent with the
-        // confirmDiscardUnsavedChanges() authority read within the same pulse.
+        // project-close gate's dirty read within the same pulse.
         javafx.beans.value.ChangeListener<Boolean> projectDirtyListener =
                 (obs, was, now) -> syncMenuStateIfPresent();
         projectVM.dirtyProperty().addListener(projectDirtyListener);
@@ -811,6 +815,48 @@ public final class MainController {
     // ── Story 295: Session Status Strip wiring ───────────────────────────────
 
     /**
+     * Story 331 — wires the autosave (Persistence Integrity book §2.3, §4.2;
+     * rulings F4, F6, G3, G13 #2): {@code checkpoints} captures the live
+     * project — read through {@code project} each time — on {@code fxOwner},
+     * the FX thread's un-keyed dispatcher post, and renders and writes the
+     * capture on its own writer, never reading the model there: the
+     * capture source's revision is the project's edit revision, its clean
+     * flag the project's, and its capture {@code serializer.capture(project)}
+     * handing over the document's renderer. {@code status} receives every
+     * checkpoint outcome and re-arm. Package-private so a test wires a real
+     * checkpoint manager exactly as {@code createSessionStatusStrip} does.
+     *
+     * @param checkpoints the checkpoint manager
+     * @param fxOwner     runs each capture on the FX thread
+     * @param project     the live project, read on the FX thread
+     * @param status      the strip's checkpoint-status listener
+     * @return removes {@code status} again (run when the window is torn down)
+     */
+    static Runnable wireAutosave(CheckpointManager checkpoints, java.util.concurrent.Executor fxOwner,
+                                 java.util.function.Supplier<DawProject> project,
+                                 com.benesquivelmusic.daw.app.ui.status.CheckpointStatusListener status) {
+        com.benesquivelmusic.daw.core.persistence.ProjectSerializer serializer =
+                new com.benesquivelmusic.daw.core.persistence.ProjectSerializer();
+        checkpoints.setCaptureSource(fxOwner, new com.benesquivelmusic.daw.core.persistence.CheckpointSource() {
+            @Override
+            public long revision() {
+                return project.get().getEditRevision();
+            }
+
+            @Override
+            public boolean isClean() {
+                return !project.get().isDirty();
+            }
+
+            @Override
+            public Renderer capture() throws java.io.IOException {
+                return serializer.capture(project.get())::toXml;
+            }
+        });
+        return checkpoints.addEventListener(status);
+    }
+
+    /**
      * Builds the {@link com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress}
      * model, the {@link com.benesquivelmusic.daw.app.ui.status.SessionStatusStrip}
      * (mounted into {@link #bottomBar}), the §1.8 disk scan, and the checkpoint
@@ -861,29 +907,18 @@ public final class MainController {
                 });
         diskScanner.start();
 
-        // §1.2 checkpoint visibility — every autosave updates the Saved cell and
-        // re-arms the countdown. The listener fires on the checkpoint virtual
-        // thread; the model marshals each write onto the FX thread (story 289).
-        projectManager.getCheckpointManager().addListener(
-                new com.benesquivelmusic.daw.sdk.event.AutoSaveListener() {
-                    @Override public void onBeforeCheckpoint(String checkpointId) {
-                        // no-op: a fast checkpoint shows only the Saved-cell flash
-                    }
-
-                    @Override public void onAfterCheckpoint(String checkpointId) {
-                        java.time.Duration interval = projectManager.getCheckpointManager()
-                                .getConfig().autoSaveInterval();
-                        projectOperationProgress.recordSaveSucceeded(java.time.Instant.now(),
-                                com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress
-                                        .SaveScope.FULL);
-                        projectOperationProgress.setNextCheckpoint(
-                                java.time.Instant.now().plus(interval), interval);
-                    }
-
-                    @Override public void onCheckpointFailed(String checkpointId, Throwable cause) {
-                        projectOperationProgress.recordSaveFailed();
-                    }
-                });
+        // §1.2 checkpoint visibility (story 331) — the checkpoints capture the
+        // live project on the FX thread, and every checkpoint outcome and
+        // countdown re-arm reaches the strip through the status listener; a
+        // checkpoint never changes the Saved cell's head state (ruling G4).
+        checkpointStatus = new com.benesquivelmusic.daw.app.ui.status.CheckpointStatusListener(
+                projectOperationProgress, projectManager.getCheckpointManager(), notificationBar,
+                dispatcher(), java.time.InstantSource.system(), java.time.ZoneId.systemDefault());
+        checkpointStatusRemoval = wireAutosave(projectManager.getCheckpointManager(), this::postFx,
+                () -> project, checkpointStatus);
+        if (snapshotsController != null) {
+            snapshotsController.setCheckpointStatus(checkpointStatus);
+        }
 
         // Story 298 — the write-ahead-journal coordinator. Reads the "Use
         // journaled persistence" preference at open time (default OFF), the live
@@ -916,8 +951,11 @@ public final class MainController {
      * Publishes the project-status facts the strip binds to after a project
      * load / new (called from {@link #rebuildViewModels()}): binds the model's
      * dirty bit to the live {@link ProjectVM}, seeds the schema versions from the
-     * last migration report, arms the next-checkpoint countdown, and refreshes
-     * the session / lock facts.
+     * last migration report, and refreshes the session / lock facts. It writes
+     * no checkpoint countdown (story 331, ruling M4): only the checkpoints'
+     * re-arms do ({@code CheckpointStatusListener}, ruling G13 #2) — an open
+     * or a new project shows none until its checkpoints armed their first
+     * tick, and a snapshot restore keeps the running one.
      */
     private void publishProjectStatusToModel() {
         if (projectOperationProgress == null) {
@@ -937,22 +975,17 @@ public final class MainController {
             }
         }
         projectOperationProgress.setSchema(current, backup);
-        // Next checkpoint (§6): arm the countdown when autosave is running.
-        if (projectManager != null) {
-            java.time.Duration interval = projectManager.getCheckpointManager()
-                    .getConfig().autoSaveInterval();
-            projectOperationProgress.setNextCheckpoint(
-                    projectManager.getCheckpointManager().isRunning()
-                            ? java.time.Instant.now().plus(interval) : null,
-                    interval);
-        }
         refreshStripDynamicState();
     }
 
     /**
-     * Refreshes the time-varying strip facts (session elapsed, lock freshness)
-     * that have no push source. Called from {@link #publishProjectStatusToModel()}
-     * and the 5 s lock timeline.
+     * Refreshes the time-varying strip facts (session elapsed, lock freshness,
+     * today's date) that have no push source. Called from
+     * {@link #publishProjectStatusToModel()} and the 5 s lock timeline. Story
+     * 331 (ruling L1): today's date is the system clock's in the JVM's
+     * default time zone, sent on every tick — the model posts it only when
+     * the day changed — so a time of the day before carries its date within
+     * a tick of midnight, a wake from sleep or a clock step.
      */
     private void refreshStripDynamicState() {
         if (projectOperationProgress == null) {
@@ -963,6 +996,7 @@ public final class MainController {
                 ? java.time.Duration.between(sessionStartInstant, java.time.Instant.now())
                 : java.time.Duration.ZERO;
         projectOperationProgress.setSession(name, elapsed);
+        projectOperationProgress.setToday(java.time.LocalDate.now(java.time.ZoneId.systemDefault()));
         publishLockToModel();
     }
 
@@ -1089,24 +1123,17 @@ public final class MainController {
         // honoured on restart rather than silently reverting to the default.
         project.getMixer().setMixPrecision(startupSettings.getMixPrecision());
 
+        // Story 331 — the checkpoints capture the live project on the FX thread
+        // and write on their own writer; the capture source and the strip's
+        // status listener are wired in createSessionStatusStrip() (wireAutosave).
         CheckpointManager checkpointManager = new CheckpointManager(AutoSaveConfig.DEFAULT);
-        // Story 190: wire a project data supplier so on-disk checkpoint
-        // files contain the full serialized project XML (not a text
-        // summary). This allows SnapshotsController.loadFromEntry() to
-        // deserialize checkpoint files via ProjectDeserializer.
-        com.benesquivelmusic.daw.core.persistence.ProjectSerializer checkpointSerializer =
-                new com.benesquivelmusic.daw.core.persistence.ProjectSerializer();
-        checkpointManager.setProjectDataSupplier(() -> {
-            try {
-                return checkpointSerializer.serialize(project);
-            } catch (java.io.IOException e) {
-                LOG.log(Level.WARNING, "Failed to serialize project for on-disk checkpoint", e);
-                return null;
-            }
-        });
         Preferences prefs = Preferences.userNodeForPackage(MainController.class);
         RecentProjectsStore recentProjectsStore = new RecentProjectsStore(prefs);
         projectManager = new ProjectManager(checkpointManager, recentProjectsStore);
+        // Story 331 (ruling M1) — the save writer and the checkpoint writer are
+        // daemon virtual threads, which the JVM ends mid-write at exit: the one
+        // shutdown hook waits for them, off the FX thread and at most 30 s.
+        registerExitWriteWait(projectManager);
         // Story 187 — install the JavaFX lock-conflict dialog so opening a
         // project that is already locked by another session prompts the
         // user with Open Read-Only / Take Over / Cancel rather than
@@ -1125,8 +1152,7 @@ public final class MainController {
                         () -> rootPane.getScene() != null
                                 ? (Stage) rootPane.getScene().getWindow() : null,
                         () -> project,
-                        () -> projectLifecycleController == null
-                                || projectLifecycleController.confirmProjectMayClose(),
+                        this::whenProjectMayCloseForSnapshotRestore,
                         this::applySnapshotRestoredProject),
                 dispatcher());
         toolbarStateStore = new ToolbarStateStore(prefs);
@@ -1380,6 +1406,12 @@ public final class MainController {
                             diskScanner.stop();
                         }
                     }, () -> {
+                        // Story 331 — detach the strip's checkpoint-status listener.
+                        if (checkpointStatusRemoval != null) {
+                            checkpointStatusRemoval.run();
+                            checkpointStatusRemoval = null;
+                        }
+                    }, () -> {
                         if (dockManifestModel != null) {
                             dockManifestModel.dispose();
                         }
@@ -1409,10 +1441,11 @@ public final class MainController {
                         }
                         // Project Manager Design Book §3.3 — seal the active
                         // working session on clean shutdown. The write is I/O,
-                        // so it runs on a virtual thread; fire-and-forget is
-                        // acceptable because JVM shutdown will wait for daemon
-                        // threads that are already running (the Platform exits
-                        // immediately after this handler returns). When the
+                        // so it runs on a virtual thread. These are daemon
+                        // virtual threads: the JVM does not wait for them, and
+                        // an exit can end them mid-write (story 333's SEAL step
+                        // owns them). Only the save writer and the checkpoint
+                        // writer are waited for at exit (ruling M1). When the
                         // journal coordinator is sealing (above) it already folds
                         // the segments in and closes the session, so this plain
                         // seal only runs when no journal was open.
@@ -1453,6 +1486,38 @@ public final class MainController {
         // standard event dispatch chain in response.
         if (inspectorDrawer != null && rootPane != null) {
             inspectorDrawer.installSourceEventForwarding(rootPane);
+        }
+    }
+
+    /**
+     * Story 331 (ruling M1) — registers the one JVM shutdown hook of the
+     * application: a platform thread, {@code daw-exit-write-wait}, that only
+     * calls {@link ProjectManager#awaitWritesBeforeExit()}, which waits at
+     * most 30 s for the saves and every checkpoint job already handed to the
+     * writers — not only those the user asked for. It runs on every orderly
+     * exit — the last window closed, {@code System.exit}, Ctrl+C, SIGTERM —
+     * whether or not the JavaFX toolkit is still running: after the last
+     * window closed it has gone, while on Ctrl+C, SIGTERM and a
+     * {@code System.exit} called from another thread the window is still up
+     * and the FX thread runs on; a {@code System.exit} called on the FX
+     * thread blocks that thread until this hook returns. So it never waits
+     * on, or posts to, the FX thread: a post is dropped, without an error,
+     * where the toolkit has gone, never runs where the FX thread is blocked
+     * in {@code System.exit}, and races the JVM's end where that thread runs
+     * on; and a wait for one would stall the exit in the first case and
+     * deadlock it in the second. Called once, from {@link #initialize()},
+     * right after the project manager is built; a JVM already shutting down
+     * refuses it, which is logged at FINE.
+     *
+     * @param manager the project manager whose writers the hook waits for
+     */
+    static void registerExitWriteWait(ProjectManager manager) {
+        Thread hook = Thread.ofPlatform().name("daw-exit-write-wait").unstarted(manager::awaitWritesBeforeExit);
+        try {
+            Runtime.getRuntime().addShutdownHook(hook);
+        } catch (IllegalStateException shuttingDown) {
+            LOG.log(Level.FINE, "The JVM is already shutting down; no wait for the writes before the exit was"
+                    + " registered", shuttingDown);
         }
     }
 
@@ -2138,6 +2203,23 @@ public final class MainController {
                                               List<com.benesquivelmusic.daw.core.persistence.UnreadProjectItem> unreadItems) {
         if (restored == null || projectLifecycleController == null) return;
         projectLifecycleController.installRestoredSnapshot(restored, label, missingAssets, unreadItems);
+    }
+
+    /**
+     * The gate a snapshot restore passes before it replaces the open project
+     * (the {@code SnapshotsController.Deps} gate): the lifecycle
+     * controller's project-close gate, which refuses while a recording is in
+     * flight or a take is being written, waits for a save still being
+     * written and asks about unsaved changes (story 331, ruling G1), and runs
+     * {@code restore} only if the project may close. With no lifecycle
+     * controller (before it is built) the restore proceeds.
+     */
+    private void whenProjectMayCloseForSnapshotRestore(Runnable restore) {
+        if (projectLifecycleController == null) {
+            restore.run();
+            return;
+        }
+        projectLifecycleController.whenProjectMayClose(ProjectLifecycleController.RESTORE_SNAPSHOT_DOOR, restore);
     }
 
     /**

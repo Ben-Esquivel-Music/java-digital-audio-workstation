@@ -3,10 +3,8 @@ package com.benesquivelmusic.daw.core.persistence;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.time.Instant;
@@ -68,6 +66,8 @@ public final class ProjectLockManager implements AutoCloseable {
     private final String user;
     private final String hostname;
     private final long pid;
+    private final AtomicFileWriter fileWriter;
+    private final LockFileReader lockFileReader;
 
     private final AtomicReference<ProjectLock> heldLock = new AtomicReference<>();
     private final AtomicReference<Path> projectDirectory = new AtomicReference<>();
@@ -87,10 +87,41 @@ public final class ProjectLockManager implements AutoCloseable {
      * for advancing a fake clock to exercise stale-lock detection.
      */
     public ProjectLockManager(InstantSource clock, String user, String hostname, long pid) {
+        this(clock, user, hostname, pid, new AtomicFileWriter());
+    }
+
+    /**
+     * As {@link #ProjectLockManager(InstantSource, String, String, long)},
+     * with the writer that replaces the lock file on a takeover and on each
+     * heartbeat — for tests that fail or observe those writes (story 331).
+     * The acquisition's {@code CREATE_NEW} write does not go through it.
+     */
+    ProjectLockManager(InstantSource clock, String user, String hostname, long pid,
+                       AtomicFileWriter fileWriter) {
+        this(clock, user, hostname, pid, fileWriter, Files::readString);
+    }
+
+    /**
+     * As above, with the reader of every lock-file read this manager makes
+     * — for tests that record the thread of each read, such as
+     * {@link #verifyOurs()}'s re-read before a save (story 331).
+     */
+    ProjectLockManager(InstantSource clock, String user, String hostname, long pid,
+                       AtomicFileWriter fileWriter, LockFileReader lockFileReader) {
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.user = Objects.requireNonNull(user, "user must not be null");
         this.hostname = Objects.requireNonNull(hostname, "hostname must not be null");
         this.pid = pid;
+        this.fileWriter = Objects.requireNonNull(fileWriter, "fileWriter must not be null");
+        this.lockFileReader = Objects.requireNonNull(lockFileReader, "lockFileReader must not be null");
+    }
+
+    /** Reads the lock file's text (test seam); production reads it with {@link Files#readString(Path)}. */
+    @FunctionalInterface
+    interface LockFileReader {
+
+        /** @throws IOException if {@code lockFile} cannot be read */
+        String read(Path lockFile) throws IOException;
     }
 
     /** Result of a {@link #tryAcquire(Path) tryAcquire} call. */
@@ -117,7 +148,7 @@ public final class ProjectLockManager implements AutoCloseable {
         Instant now = clock.instant();
 
         if (Files.exists(lockFile)) {
-            ProjectLock existing = readLock(lockFile);
+            ProjectLock existing = readLock(lockFile, lockFileReader);
             boolean stale = existing != null && isStale(existing, now);
             return new AcquisitionResult(null, existing, stale);
         }
@@ -127,7 +158,7 @@ public final class ProjectLockManager implements AutoCloseable {
             writeLockAtomically(lockFile, lock, true);
         } catch (java.nio.file.FileAlreadyExistsException race) {
             // Another session created the lock between our exists() check and our write.
-            ProjectLock existing = readLock(lockFile);
+            ProjectLock existing = readLock(lockFile, lockFileReader);
             boolean stale = existing != null && isStale(existing, now);
             return new AcquisitionResult(null, existing, stale);
         }
@@ -144,7 +175,7 @@ public final class ProjectLockManager implements AutoCloseable {
         Path lockFile = projectDir.resolve(LOCK_FILE_NAME);
         Instant now = clock.instant();
 
-        ProjectLock previous = Files.exists(lockFile) ? readLock(lockFile) : null;
+        ProjectLock previous = Files.exists(lockFile) ? readLock(lockFile, lockFileReader) : null;
         ProjectLock lock = ProjectLock.create(user, hostname, pid, now);
         writeLockAtomically(lockFile, lock, false);
         bind(projectDir, lock, LockStatus.HELD);
@@ -180,7 +211,8 @@ public final class ProjectLockManager implements AutoCloseable {
      * and throws {@link LockStolenException}.
      *
      * <p>{@link ProjectManager} calls this from every save path before writing
-     * the project file.</p>
+     * the project file. It passes when nothing is held — a read-only open, or
+     * no project open; {@link #verifyHeld()} refuses then.</p>
      */
     public void verifyOurs() throws LockStolenException, IOException {
         ProjectLock ours = heldLock.get();
@@ -188,13 +220,38 @@ public final class ProjectLockManager implements AutoCloseable {
         if (ours == null || dir == null) {
             return; // nothing held — read-only or no project open
         }
+        verify(ours, dir);
+    }
+
+    /**
+     * Verifies that this session holds the lock and that it is still ours:
+     * {@link #verifyOurs()}, except that holding nothing — no project open, a
+     * read-only open, a released lock — fails too. {@link ProjectManager}
+     * installs it as the checkpoints' write guard (story 331), so a session
+     * that does not own the project folder never writes, prunes or cleans up
+     * its checkpoints.
+     *
+     * @throws LockStolenException if the lock was taken over or its file deleted
+     * @throws IOException         if this session holds no lock, or the lock file cannot be read
+     */
+    public void verifyHeld() throws LockStolenException, IOException {
+        ProjectLock ours = heldLock.get();
+        Path dir = projectDirectory.get();
+        if (ours == null || dir == null) {
+            throw new IOException("This session holds no project lock (" + status.get()
+                    + "); it does not write the project folder");
+        }
+        verify(ours, dir);
+    }
+
+    private void verify(ProjectLock ours, Path dir) throws LockStolenException, IOException {
         Path lockFile = dir.resolve(LOCK_FILE_NAME);
         if (!Files.exists(lockFile)) {
             status.set(LockStatus.STOLEN);
             throw new LockStolenException(
                     "Lock file has been deleted; another session may be writing", null);
         }
-        ProjectLock onDisk = readLock(lockFile);
+        ProjectLock onDisk = readLock(lockFile, lockFileReader);
         if (onDisk == null || !onDisk.lockId().equals(ours.lockId())) {
             status.set(LockStatus.STOLEN);
             throw new LockStolenException(
@@ -220,7 +277,7 @@ public final class ProjectLockManager implements AutoCloseable {
                 status.set(LockStatus.STOLEN);
                 return false;
             }
-            ProjectLock onDisk = readLock(lockFile);
+            ProjectLock onDisk = readLock(lockFile, lockFileReader);
             if (onDisk == null || !onDisk.lockId().equals(ours.lockId())) {
                 status.set(LockStatus.STOLEN);
                 return false;
@@ -275,7 +332,7 @@ public final class ProjectLockManager implements AutoCloseable {
         if (ours != null && dir != null) {
             Path lockFile = dir.resolve(LOCK_FILE_NAME);
             if (Files.exists(lockFile)) {
-                ProjectLock onDisk = readLock(lockFile);
+                ProjectLock onDisk = readLock(lockFile, lockFileReader);
                 if (onDisk != null && onDisk.lockId().equals(ours.lockId())) {
                     Files.deleteIfExists(lockFile);
                 }
@@ -339,10 +396,14 @@ public final class ProjectLockManager implements AutoCloseable {
 
     /** Reads and parses a lock file, returning {@code null} if it cannot be parsed. */
     static ProjectLock readLock(Path lockFile) throws IOException {
+        return readLock(lockFile, Files::readString);
+    }
+
+    private static ProjectLock readLock(Path lockFile, LockFileReader reader) throws IOException {
         if (!Files.exists(lockFile)) {
             return null;
         }
-        String json = Files.readString(lockFile);
+        String json = reader.read(lockFile);
         try {
             return parseJson(json);
         } catch (RuntimeException e) {
@@ -356,8 +417,15 @@ public final class ProjectLockManager implements AutoCloseable {
         status.set(newStatus);
     }
 
-    /** Atomic write: write to a temp file alongside, then rename into place. */
-    private static void writeLockAtomically(Path lockFile, ProjectLock lock, boolean createNew) throws IOException {
+    /**
+     * Writes the lock file: a create-or-fail write when acquiring, else an
+     * atomic replace through the {@link AtomicFileWriter} (a temp sibling,
+     * forced, then moved into place; story 331). The replace asks only for
+     * the directory's permission, as the rename before it did: a stale lock
+     * another user's crashed session left in a group-shared project folder
+     * is not writable to this user, and is still taken over.
+     */
+    private void writeLockAtomically(Path lockFile, ProjectLock lock, boolean createNew) throws IOException {
         String json = toJson(lock);
         if (createNew) {
             // Direct CREATE_NEW write — gives us the cross-FS atomic "create-or-fail" we need.
@@ -366,19 +434,7 @@ public final class ProjectLockManager implements AutoCloseable {
                     StandardOpenOption.WRITE);
             return;
         }
-        Path tmp = lockFile.resolveSibling(lockFile.getFileName().toString() + ".tmp");
-        Files.writeString(tmp, json,
-                StandardOpenOption.CREATE,
-                StandardOpenOption.TRUNCATE_EXISTING,
-                StandardOpenOption.WRITE);
-        try {
-            Files.move(tmp, lockFile,
-                    StandardCopyOption.REPLACE_EXISTING,
-                    StandardCopyOption.ATOMIC_MOVE);
-        } catch (AtomicMoveNotSupportedException ignored) {
-            // Some network filesystems don't support atomic moves; fall back to plain replace.
-            Files.move(tmp, lockFile, StandardCopyOption.REPLACE_EXISTING);
-        }
+        fileWriter.writeString(lockFile, json, AtomicFileWriter.ReplacePermission.DIRECTORY);
     }
 
     // ---- minimal JSON serialization (no external dependency) -----------------

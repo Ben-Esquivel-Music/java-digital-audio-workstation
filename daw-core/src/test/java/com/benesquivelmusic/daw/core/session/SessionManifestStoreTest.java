@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.session;
 
+import com.benesquivelmusic.daw.core.persistence.AtomicFileWriter;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -10,8 +11,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SessionManifestStoreTest {
 
@@ -78,6 +81,27 @@ class SessionManifestStoreTest {
     @Test
     void listSessionsEmptyWhenNoDirectory() throws IOException {
         assertThat(store.listSessions(projectDir)).isEmpty();
+    }
+
+    @Test
+    void aManifestWhosePublishFailsKeepsThePreviousManifestAndLeavesNoTemp() throws IOException {
+        WorkingSession session = WorkingSession
+                .start(Instant.parse("2026-03-21T09:00:00Z"), ZoneOffset.UTC)
+                .withName("Tracking day 2");
+        Path manifest = store.write(projectDir, session);
+        byte[] previous = Files.readAllBytes(manifest);
+        IOException crash = new IOException("injected failure before the manifest's publish");
+        SessionManifestStore failing = new SessionManifestStore(ZoneOffset.UTC, new AtomicFileWriter(
+                AtomicFileWriter.TEMP_CHANNEL_OPENER, (temp, target, options) -> {
+                    throw crash;
+                }));
+
+        assertThatThrownBy(() -> failing.write(projectDir, session.withTake("take-1"))).isSameAs(crash);
+
+        assertThat(Files.readAllBytes(manifest)).isEqualTo(previous);
+        try (Stream<Path> entries = Files.list(store.sessionsDirectory(projectDir))) {
+            assertThat(entries).as("no temp beside the manifest").containsExactly(manifest);
+        }
     }
 
     @Test

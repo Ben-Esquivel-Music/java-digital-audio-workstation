@@ -22,8 +22,11 @@ class RollBackUsesExistingControllerTest {
 
         assertThat(showHistory)
                 .contains("rollbackMigration(projectDir, reportFor(event.getEntry()), event.getBackupPath())");
-        assertThat(selectedRollback)
-                .contains("Files.copy(selectedBackup, projectFile")
+        // Story 331: the selected backup replaces project.daw through the atomic writer, following a
+        // project.daw that is a symbolic link to its .daw file (ruling M3).
+        assertThat(selectedRollback.replaceAll("\\s+", " "))
+                .contains("fileWriter.copy(selectedBackup, projectFile, AtomicFileWriter.Overwrite.REPLACE,"
+                        + " AtomicFileWriter.ReplaceOption.FOLLOW_LINK_TO_DAW_FILE)")
                 .doesNotContain("delete")
                 .doesNotContain("deleteIfExists");
     }

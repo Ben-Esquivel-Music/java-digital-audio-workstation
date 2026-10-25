@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.persistence.backup;
 
+import com.benesquivelmusic.daw.core.persistence.AtomicFileWriter;
 import com.benesquivelmusic.daw.sdk.persistence.BackupRetentionPolicy;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -8,8 +9,10 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class BackupRetentionPolicyStoreTest {
 
@@ -102,6 +105,26 @@ class BackupRetentionPolicyStoreTest {
 
         BackupRetentionPolicyStore store = new BackupRetentionPolicyStore(globalFile);
         assertThat(store.resolveForProject(projectDir).keepRecent()).isEqualTo(5);
+    }
+
+    @Test
+    void aSaveWhosePublishFailsKeepsThePreviousPolicyAndLeavesNoTemp(@TempDir Path tempDir) throws IOException {
+        Path globalFile = tempDir.resolve("backup-retention.json");
+        BackupRetentionPolicyStore.save(globalFile, BackupRetentionPolicy.DEFAULT.withKeepRecent(5));
+        byte[] previous = Files.readAllBytes(globalFile);
+        IOException crash = new IOException("injected failure before the policy's publish");
+        BackupRetentionPolicyStore store = new BackupRetentionPolicyStore(globalFile, new AtomicFileWriter(
+                AtomicFileWriter.TEMP_CHANNEL_OPENER, (temp, target, options) -> {
+                    throw crash;
+                }));
+
+        assertThatThrownBy(() -> store.saveGlobal(BackupRetentionPolicy.DEFAULT.withKeepRecent(9)))
+                .isSameAs(crash);
+
+        assertThat(Files.readAllBytes(globalFile)).isEqualTo(previous);
+        try (Stream<Path> entries = Files.list(tempDir)) {
+            assertThat(entries).as("no temp beside the policy").containsExactly(globalFile);
+        }
     }
 
     @Test

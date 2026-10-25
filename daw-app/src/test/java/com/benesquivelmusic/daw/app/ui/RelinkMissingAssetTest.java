@@ -162,6 +162,7 @@ class RelinkMissingAssetTest {
         assertThat(onFx(() -> fixture.undoManager.get().canUndo())).as("not an undo-stack entry").isFalse();
 
         runOnFx(() -> fixture.lifecycle().onSaveProject());
+        SaveOutcomes.awaitIdle(fixture.projectManager); // the save is written off the FX thread (story 331)
         assertThat(Files.readString(saved.directory().resolve("project.daw")))
                 .contains("source-file=\"audio/found/tone.wav\"")
                 .doesNotContain(copy.toString())
@@ -186,6 +187,7 @@ class RelinkMissingAssetTest {
         AudioClip clip = fixture.liveClips().getFirst();
         assertThat(clip.getAudioData()).isNotNull();
         runOnFx(() -> fixture.lifecycle().onSaveProject());
+        SaveOutcomes.awaitIdle(fixture.projectManager); // the save is written off the FX thread (story 331)
         assertThat(Files.readString(saved.directory().resolve("project.daw")))
                 .contains("source-file=\"" + copy + "\"");
     }
@@ -223,6 +225,7 @@ class RelinkMissingAssetTest {
         assertThat(clip.getSourceRateMetadata()).isEqualTo(new SourceRateMetadata(44_100, 2, onDisk[0].length));
         assertThat(onFx(dialog::rowNodes)).isEmpty();
         runOnFx(() -> fixture.lifecycle().onSaveProject());
+        SaveOutcomes.awaitIdle(fixture.projectManager); // the save is written off the FX thread (story 331)
         String relative = "audio/moved/" + take + "/" + trackId + "/";
         assertThat(Files.readString(directory.resolve("project.daw")))
                 .contains("<source-segment path=\"" + relative + "segment-000.wav\"/>")
@@ -442,6 +445,7 @@ class RelinkMissingAssetTest {
         assertThat(workers.started()).as("nothing ran").isZero();
 
         runOnFx(() -> fixture.lifecycle().onSaveProject());
+        SaveOutcomes.awaitIdle(fixture.projectManager); // the save is written off the FX thread (story 331)
         assertThat(Files.readString(saved.directory().resolve("project.daw")))
                 .as("the reference is kept: a returning drive or a later relink still works")
                 .contains("source-file=\"" + source + "\"");
@@ -503,7 +507,7 @@ class RelinkMissingAssetTest {
         AudioClip take = new AudioClip("Take 1", 0.0, 0.04, null);
         take.setSourceSegmentPaths(recorded);
         track.addClip(take);
-        other.saveDawProject(project);
+        SaveOutcomes.saved(other, project);
         other.abandonProject();
         return directory;
     }
@@ -521,7 +525,7 @@ class RelinkMissingAssetTest {
             Track track = project.createAudioTrack("Object " + object);
             track.addClip(new AudioClip("Object " + object, 0.0, 1.0, master.toString()));
         }
-        other.saveDawProject(project);
+        SaveOutcomes.saved(other, project);
         other.abandonProject();
         return directory;
     }

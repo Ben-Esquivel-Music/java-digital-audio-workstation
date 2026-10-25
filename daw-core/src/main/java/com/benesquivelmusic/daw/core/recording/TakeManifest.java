@@ -96,7 +96,14 @@ import java.util.regex.Pattern;
  * {@code ATOMIC_MOVE + REPLACE_EXISTING}, falling back to
  * {@code REPLACE_EXISTING} alone where the filesystem refuses atomic moves
  * — the Persistence Integrity book §4.1 idiom (same-directory sibling →
- * fsync → atomic move), implemented locally here; story 331 centralises it.
+ * fsync → atomic move), implemented locally here. It keeps this fixed-name
+ * staging rather than the persistence package's {@code AtomicFileWriter},
+ * whose temp name changes with every write: {@code take.manifest.tmp} is the
+ * name the Recording Reliability book specifies, the one a failed take's
+ * rollback deletes ({@code CaptureFlushService}) and the one the
+ * {@code NOFOLLOW_LINKS} opener below refuses as a link on the live flush
+ * path and the recovery scan alike. A future story evaluates moving it onto
+ * that helper.
  * A write that fails leaves the previous manifest untouched (and possibly a
  * stale {@code .tmp}, which the next write truncates). The staging file is
  * opened {@code NOFOLLOW_LINKS} ({@link #STAGING_CHANNEL}): a

@@ -1,14 +1,13 @@
 package com.benesquivelmusic.daw.core.persistence.journal;
 
+import com.benesquivelmusic.daw.core.persistence.CheckpointFileName;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
@@ -26,20 +25,15 @@ import java.util.stream.Stream;
  * daw-app dialog can render.
  *
  * <p>The scanner is read-only: it parses the newest checkpoint's index and
- * timestamp from its file name ({@code checkpoint-%03d-%s.daw} where the
- * stamp is {@code yyyyMMdd'T'HHmmss}, mirroring {@code CheckpointManager}),
+ * timestamp from its file name (the {@link CheckpointFileName} grammar the
+ * {@code CheckpointManager} writes; newest by {@link CheckpointFileName#ORDER},
+ * the stamp in the name and then the index),
  * reads every {@code segment-*.bin} via
  * {@link JournalSegment#readAll(Path)} (which stops cleanly at a torn tail),
  * sorts the records by sequence, and derives the last-event facts, count,
  * span, distinct types, and total journal byte size.</p>
  */
 public final class RecoveryScanner {
-
-    private static final DateTimeFormatter CHECKPOINT_STAMP =
-            DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss");
-
-    private static final Pattern CHECKPOINT_NAME =
-            Pattern.compile("checkpoint-(\\d+)-(\\d{8}T\\d{6})\\.daw");
 
     private static final Pattern SEGMENT_NAME =
             Pattern.compile("segment-(\\d+)\\.bin");
@@ -102,7 +96,7 @@ public final class RecoveryScanner {
             span = d.isNegative() ? Duration.ZERO : d;
         }
 
-        int cpIndex = checkpoint.map(Checkpoint::index).orElse(-1);
+        long cpIndex = checkpoint.map(Checkpoint::index).orElse(-1L);
         Instant cpTime = checkpoint.map(Checkpoint::time).orElse(null);
         String cpName = checkpoint.map(Checkpoint::fileName).orElse("");
 
@@ -122,8 +116,10 @@ public final class RecoveryScanner {
     // ---- checkpoint discovery ---------------------------------------------
 
     /**
-     * Finds the newest checkpoint in {@code checkpointDir} by (index, time)
-     * ordering.
+     * Finds the newest checkpoint in {@code checkpointDir} by
+     * {@link CheckpointFileName#ORDER}: the stamp in the name, then the index
+     * (story 331, ruling F5), so an earlier session's higher index never
+     * outranks a later checkpoint.
      *
      * @param checkpointDir the {@code checkpoints/} directory
      * @return the newest checkpoint, or empty if the directory is missing or
@@ -135,28 +131,17 @@ public final class RecoveryScanner {
         }
         try (Stream<Path> files = Files.list(checkpointDir)) {
             return files
-                    .map(this::parseCheckpoint)
-                    .filter(Optional::isPresent)
-                    .map(Optional::get)
-                    .max(Comparator.comparingInt(Checkpoint::index)
-                            .thenComparing(Checkpoint::time));
+                    .flatMap(file -> CheckpointFileName.parse(file.getFileName().toString())
+                            .map(name -> new NamedFile(name, file))
+                            .stream())
+                    .max(Comparator.comparing(NamedFile::name, CheckpointFileName.ORDER))
+                    .map(newest -> new Checkpoint(newest.name().index(), newest.name().instantIn(zone),
+                            newest.name().fileName(), newest.file()));
         }
     }
 
-    private Optional<Checkpoint> parseCheckpoint(Path file) {
-        Matcher m = CHECKPOINT_NAME.matcher(file.getFileName().toString());
-        if (!m.matches()) {
-            return Optional.empty();
-        }
-        int index = Integer.parseInt(m.group(1));
-        Instant time;
-        try {
-            LocalDateTime ldt = LocalDateTime.parse(m.group(2), CHECKPOINT_STAMP);
-            time = ldt.atZone(zone).toInstant();
-        } catch (DateTimeParseException e) {
-            return Optional.empty();
-        }
-        return Optional.of(new Checkpoint(index, time, file.getFileName().toString(), file));
+    /** A file whose name the checkpoint grammar accepts, with that name. */
+    private record NamedFile(CheckpointFileName name, Path file) {
     }
 
     // ---- journal segment discovery ----------------------------------------
@@ -209,7 +194,7 @@ public final class RecoveryScanner {
     }
 
     /** A discovered checkpoint file with its parsed index and time. */
-    record Checkpoint(int index, Instant time, String fileName, Path path) {
+    record Checkpoint(long index, Instant time, String fileName, Path path) {
         Checkpoint {
             Objects.requireNonNull(time, "time must not be null");
             Objects.requireNonNull(fileName, "fileName must not be null");

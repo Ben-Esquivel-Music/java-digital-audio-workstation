@@ -6,12 +6,19 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class ProjectLockManagerTest {
 
@@ -113,6 +120,29 @@ class ProjectLockManagerTest {
     }
 
     @Test
+    void aStaleLockTheUserCannotWriteIsStillTakenOverAndKeptFresh() throws IOException {
+        assumeTrue(Files.getFileStore(projectDir).supportsFileAttributeView(PosixFileAttributeView.class),
+                "the file system has POSIX permission bits (Linux CI)");
+        FakeClock clock = new FakeClock(Instant.parse("2026-01-01T00:00:00Z"));
+        ProjectLockManager crashed = new ProjectLockManager(clock, "alice", "studio-mac", 1L);
+        ProjectLockManager taker = new ProjectLockManager(clock, "bob", "edit-suite", 2L);
+        crashed.tryAcquire(projectDir);
+        Path lockFile = projectDir.resolve(ProjectLockManager.LOCK_FILE_NAME);
+        // Another user's lock in a group-shared folder: this user may rename over it, not write it.
+        Files.setPosixFilePermissions(lockFile, PosixFilePermissions.fromString("r--r--r--"));
+        assumeFalse(Files.isWritable(lockFile), "a superuser may write a read-only file");
+        clock.advance(ProjectLockManager.STALE_THRESHOLD.plusMinutes(1));
+
+        taker.forceAcquire(projectDir);
+        clock.advance(ProjectLockManager.HEARTBEAT_INTERVAL);
+
+        assertThat(ProjectLockManager.readLock(lockFile).user()).isEqualTo("bob");
+        assertThat(taker.heartbeat()).as("the taken-over lock carries the read-only bits").isTrue();
+        taker.release();
+        assertThat(lockFile).doesNotExist();
+    }
+
+    @Test
     void verifyOursShouldDetectDeletedLock() throws IOException {
         FakeClock clock = new FakeClock(Instant.parse("2026-01-01T00:00:00Z"));
         ProjectLockManager mgr = new ProjectLockManager(clock, "alice", "h", 1L);
@@ -159,6 +189,38 @@ class ProjectLockManagerTest {
 
         assertThat(projectDir.resolve(ProjectLockManager.LOCK_FILE_NAME)).doesNotExist();
         assertThat(mgr.status()).isEqualTo(LockStatus.READ_ONLY);
+    }
+
+    @Test
+    void aHeartbeatWhoseReplaceFailsKeepsTheLockFileAndLeavesNoTemp() throws IOException {
+        FakeClock clock = new FakeClock(Instant.parse("2026-01-01T00:00:00Z"));
+        IOException crash = new IOException("injected failure before the lock's publish");
+        List<Path> published = new CopyOnWriteArrayList<>();
+        AtomicBoolean failing = new AtomicBoolean();
+        ProjectLockManager mgr = new ProjectLockManager(clock, "alice", "h", 1L, new AtomicFileWriter(
+                AtomicFileWriter.TEMP_CHANNEL_OPENER, (temp, target, options) -> {
+                    if (failing.get()) {
+                        throw crash;
+                    }
+                    AtomicFileWriter.FILE_SYSTEM_MOVER.move(temp, target, options);
+                    published.add(target);
+                }));
+        Path lockFile = projectDir.resolve(ProjectLockManager.LOCK_FILE_NAME);
+        mgr.tryAcquire(projectDir);
+        clock.advance(Duration.ofSeconds(30));
+        assertThat(mgr.heartbeat()).as("a heartbeat replaces the lock through the writer").isTrue();
+        assertThat(published).containsExactly(lockFile);
+        byte[] before = Files.readAllBytes(lockFile);
+
+        failing.set(true);
+        clock.advance(Duration.ofSeconds(30));
+
+        assertThat(mgr.heartbeat()).isFalse();
+        assertThat(Files.readAllBytes(lockFile)).as("the lock as the last heartbeat wrote it").isEqualTo(before);
+        try (Stream<Path> entries = Files.list(projectDir)) {
+            assertThat(entries).as("no temp beside the lock").containsExactly(lockFile);
+        }
+        mgr.release();
     }
 
     @Test

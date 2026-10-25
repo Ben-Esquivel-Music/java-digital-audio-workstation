@@ -78,7 +78,12 @@ class ProjectSchemaParityContractTest {
             "ProjectMetadataReader.java",
             "reads <metadata> of project.daw for the project hub's cards — a separate consumer, out of scope",
             "migration/ProjectMigration.java",
-            "carries the Document type of a migration step's function; reads and writes nothing itself");
+            "carries the Document type of a migration step's function; reads and writes nothing itself",
+            "ProjectDocument.java",
+            "renders the document ProjectSerializer.capture built and rewrites the values of the asset-reference"
+            + " attributes the serializer wrote and recorded (Attr.setValue through a remap); it creates no"
+            + " element and names no attribute, so every name the document holds is the serializer's, which"
+            + " the writer guard scans");
 
     /** Writes whose names the source guard cannot read, each with why the contract still covers them. */
     static final List<PersistenceSourceScan.DynamicWriteSite> DYNAMIC_WRITE_SITES = List.of(

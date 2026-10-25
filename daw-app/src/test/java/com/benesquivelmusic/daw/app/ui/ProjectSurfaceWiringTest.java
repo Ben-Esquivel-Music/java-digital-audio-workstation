@@ -79,7 +79,7 @@ class ProjectSurfaceWiringTest {
     @Test
     void saveFlowClearsProjectVmDirtyThroughTheSharedDirtyApi() throws Exception {
         ProjectManager pm = dummyProjectManager();
-        // A current project on disk so trySaveProject takes the save path (no temp-dir creation).
+        // A current project on disk so the save request takes the save path (no temp-dir creation).
         pm.createProject("SaveTest", tempDir);
 
         DawProject project = new DawProject("SaveTest", AudioFormat.CD_QUALITY);
@@ -101,6 +101,9 @@ class ProjectSurfaceWiringTest {
                 controller.onSaveProject();
                 return null;
             });
+            // Story 331 — the save is written on the project manager's save writer: wait,
+            // bounded, for it to end, then for the FX turn its DIRTY change posted.
+            SaveOutcomes.awaitIdle(pm);
             flushFx();
 
             assertThat(callOnFx(vm::isDirty))

@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.persistence;
 
+import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.project.DawProject;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -9,6 +11,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.*;
@@ -105,10 +108,14 @@ class ProjectManagerLockingTest {
         assertThat(session2.isReadOnly()).isTrue();
         assertThat(session2.getLockManager().status()).isEqualTo(LockStatus.READ_ONLY);
 
-        // Save is forbidden in read-only mode — this is the "use Save As" hint.
-        assertThatThrownBy(session2::saveProject)
-                .isInstanceOf(IOException.class)
-                .hasMessageContaining("read-only");
+        // Save is forbidden in read-only mode — this is the "use Save As" hint —
+        // refused at the call, with no safety copy (story 331, ruling G9).
+        CompletableFuture<SaveOutcome> refused = session2.save(new DawProject("Song", AudioFormat.CD_QUALITY));
+        assertThat(refused).isDone();
+        assertThat(SaveTestSupport.await(refused)).isInstanceOfSatisfying(SaveOutcome.Failed.class, failed -> {
+            assertThat(failed.cause()).isInstanceOf(IOException.class).hasMessageContaining("read-only");
+            assertThat(failed.safetyCheckpoint()).isEmpty();
+        });
 
         // Original holder's lock is still on disk and untouched.
         ProjectLock onDisk = ProjectLockManager.readLock(
@@ -117,7 +124,7 @@ class ProjectManagerLockingTest {
     }
 
     @Test
-    void saveAfterStolenLockThrowsLockStolenException() throws IOException {
+    void saveAfterStolenLockFailsWithLockStolenException() throws IOException {
         FakeClock clock = new FakeClock(Instant.parse("2026-01-01T00:00:00Z"));
         ProjectManager session1 = newManager(new ProjectLockManager(clock, "alice", "studio", 1L));
         ProjectLockManager thief = new ProjectLockManager(clock, "bob", "edit-suite", 2L);
@@ -125,7 +132,9 @@ class ProjectManagerLockingTest {
         ProjectMetadata md = session1.createProject("Song", tempDir);
         thief.forceAcquire(md.projectPath());
 
-        assertThatThrownBy(session1::saveProject).isInstanceOf(LockStolenException.class);
+        SaveOutcome.Failed failed = SaveTestSupport.failed(session1, new DawProject("Song", AudioFormat.CD_QUALITY));
+        assertThat(failed.cause()).isInstanceOf(LockStolenException.class);
+        assertThat(failed.safetyCheckpoint()).isEmpty();
     }
 
     @Test

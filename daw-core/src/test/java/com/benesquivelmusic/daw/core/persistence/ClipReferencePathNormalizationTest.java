@@ -13,6 +13,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
 
+import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.saved;
 import static com.benesquivelmusic.daw.core.persistence.AudioFileFixtures.wav;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -41,7 +42,7 @@ class ClipReferencePathNormalizationTest {
         Path inside = wav(projectDir.resolve("audio").resolve("imports").resolve("tone.wav"), 44_100, 22_050, 2);
         DawProject project = new DawProject("Legacy Paths", FORMAT);
         float[][] beforeSave = new AudioFileImporter(project).importFile(inside, 0.0).clip().getAudioData();
-        manager.saveDawProject(project);
+        saved(manager, project);
         manager.abandonProject();
         // An old build wrote the absolute path verbatim: reproduce that file.
         Path projectFile = projectDir.resolve("project.daw");
@@ -62,7 +63,7 @@ class ClipReferencePathNormalizationTest {
         rehydrate(loaded, reopened);
         assertThat(Arrays.deepEquals(clip.getAudioData(), beforeSave)).as("it loads and plays").isTrue();
 
-        reopened.saveProject();
+        saved(reopened, reopened.getCurrentDawProject());
         assertThat(Files.readString(projectFile))
                 .contains(relative)
                 .doesNotContain(inside.toString())
@@ -78,7 +79,7 @@ class ClipReferencePathNormalizationTest {
         assertThat(outside.startsWith(projectDir)).as("fixture: the file is outside the project").isFalse();
         DawProject project = new DawProject("Library Paths", FORMAT);
         float[][] beforeSave = new AudioFileImporter(project).importFile(outside, 0.0).clip().getAudioData();
-        manager.saveDawProject(project);
+        saved(manager, project);
         manager.abandonProject();
         Path projectFile = projectDir.resolve("project.daw");
         String absolute = "source-file=\"" + outside + "\"";
@@ -92,7 +93,7 @@ class ClipReferencePathNormalizationTest {
         rehydrate(loaded, reopened);
         assertThat(Arrays.deepEquals(clip.getAudioData(), beforeSave)).isTrue();
 
-        reopened.saveProject();
+        saved(reopened, reopened.getCurrentDawProject());
         assertThat(Files.readString(projectFile)).contains(absolute);
         reopened.abandonProject();
     }

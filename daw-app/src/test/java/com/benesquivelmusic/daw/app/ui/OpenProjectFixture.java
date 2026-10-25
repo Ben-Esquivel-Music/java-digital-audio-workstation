@@ -174,6 +174,8 @@ final class OpenProjectFixture implements AutoCloseable {
             runOnFx(() -> lifecycle.dispose());
             decodes.release();
             decodes.awaitEveryTaskEnded();
+            // Story 331 — a save the controller asked for is written off the FX thread.
+            SaveOutcomes.awaitIdle(projectManager);
         } finally {
             projectManager.abandonProject();
         }
@@ -210,7 +212,7 @@ final class OpenProjectFixture implements AutoCloseable {
         for (Path source : sources) {
             importer.importFile(source, 0.0);
         }
-        other.saveDawProject(saved);
+        SaveOutcomes.saved(other, saved);
         other.abandonProject();
         return new SavedProject(directory, saved);
     }

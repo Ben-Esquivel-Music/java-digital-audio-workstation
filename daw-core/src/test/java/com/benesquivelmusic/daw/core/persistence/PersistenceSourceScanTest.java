@@ -5,6 +5,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -440,6 +441,38 @@ class PersistenceSourceScanTest {
                         + "  if (nodes.item(i) instanceof Element child && child.getTagName().equals(tagName)) {");
         assertThat(lookups.elements()).extracting(PersistenceSourceScan.Literal::name)
                 .as("the second helper's tag is invisible to the scan").doesNotContain("take-folders");
+    }
+
+    @Test
+    void theCoreLocatorFindsEachPackagesMainSourcesAndFailsClosedOnAMissingOne() {
+        for (String corePackage : List.of("persistence", "session", "snapshot")) {
+            Path root = PersistenceSourceScan.locateCoreSource(corePackage);
+            assertThat(root).as("core/%s", corePackage).isDirectory()
+                    .endsWith(Path.of("com", "benesquivelmusic", "daw", "core", corePackage));
+        }
+        assertThat(PersistenceSourceScan.locatePersistenceSource())
+                .isEqualTo(PersistenceSourceScan.locateCoreSource("persistence"));
+        assertThat(PersistenceSourceScan.locateCoreSource("no-such-package"))
+                .as("a missing package is returned as is, for its caller's walk to fail").doesNotExist();
+    }
+
+    @Test
+    void blankingLiteralsKeepsOffsetsAndLinesAndHidesCodeInsideThem() {
+        String code = """
+                Files.move(a, b);
+                String s = "Files.writeString(x, y) {";
+                char c = '{';
+                String t = \"""
+                    new FileWriter(f)
+                    \""";
+                """;
+
+        String bare = PersistenceSourceScan.withoutLiterals(code);
+
+        assertThat(bare).hasSameSizeAs(code);
+        assertThat(bare.lines().count()).isEqualTo(code.lines().count());
+        assertThat(bare).contains("Files.move(a, b);")
+                .doesNotContain("writeString").doesNotContain("FileWriter").doesNotContain("{");
     }
 
     private static PersistenceSourceScan.WriterLiterals scanWriter(

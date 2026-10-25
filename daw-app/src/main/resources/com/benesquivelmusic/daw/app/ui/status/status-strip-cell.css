@@ -15,3 +15,15 @@
 .status-strip-cell.status-cell-critical .status-strip-cell-text {
     -fx-text-fill: -ssc-critical;
 }
+/* Story 331 — the flash's fallback, Palette A's -accent-soft, so the flash
+   paints in a scene without styles.css (javafx-application-design §8);
+   styles.css forwards the theme's -accent-soft at author origin, which wins. */
+.status-strip-cell {
+    -ssc-flash: rgba(124, 140, 255, 0.14);
+}
+/* Story 331 — the Saved cell's one 600 ms flash on a head save (PM book §4.5);
+   the strip sets and clears :flash, never under Reduce Motion. */
+.status-strip-cell:flash {
+    -fx-background-color: -ssc-flash;
+    -fx-background-radius: 4;
+}

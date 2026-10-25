@@ -16,8 +16,12 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -137,38 +141,48 @@ class AuditionSaveRoundTripTest {
     }
 
     @Test
-    void anAutosaveCheckpointOnAVirtualThreadDuringAnAuditionHoldsTheSelection() throws Exception {
+    void aScheduledCheckpointDuringAnAuditionHoldsTheSelection() throws Exception {
         audition(1);
         Path projectDir = Files.createDirectories(tmp.resolve("Song"));
-        CheckpointManager checkpoints = new CheckpointManager(AutoSaveConfig.DEFAULT);
-        // The supplier MainController installs: the real ProjectSerializer.
+        CheckpointManager checkpoints = new CheckpointManager(
+                new AutoSaveConfig(Duration.ofMillis(50), 10, true));
+        // The capture source the application installs: the real serializer's
+        // capture, taken on the model's owner thread and rendered on the
+        // checkpoint writer.
         ProjectSerializer checkpointSerializer = new ProjectSerializer();
-        checkpoints.setProjectDataSupplier(() -> {
-            try {
-                return checkpointSerializer.serialize(project);
-            } catch (IOException e) {
-                return null;
+        CompletableFuture<CheckpointEvent> outcome = new CompletableFuture<>();
+        checkpoints.addEventListener(event -> {
+            if (event instanceof CheckpointEvent.Written || event instanceof CheckpointEvent.Failed) {
+                outcome.complete(event);
             }
         });
-        checkpoints.start(projectDir);
-        AtomicReference<Throwable> failure = new AtomicReference<>();
-        try {
-            Thread checkpoint = Thread.ofVirtual().start(() -> {
-                try {
-                    checkpoints.performCheckpoint();
-                } catch (Throwable t) {
-                    failure.set(t);
+        try (ExecutorService owner = Executors.newSingleThreadExecutor()) {
+            checkpoints.setCaptureSource(owner, new CheckpointSource() {
+                @Override
+                public long revision() {
+                    return project.getEditRevision();
+                }
+
+                @Override
+                public boolean isClean() {
+                    return !project.isDirty();
+                }
+
+                @Override
+                public Renderer capture() throws IOException {
+                    return checkpointSerializer.capture(project)::toXml;
                 }
             });
-            checkpoint.join();
-        } finally {
-            checkpoints.stop();
+            checkpoints.start(projectDir);
+            try {
+                assertThat(outcome.get(10, TimeUnit.SECONDS)).isInstanceOf(CheckpointEvent.Written.class);
+            } finally {
+                checkpoints.stop();
+            }
         }
-        assertThat(failure.get()).isNull();
-        assertThat(checkpoints.getCheckpointFiles()).hasSize(1);
+        Path written = ((CheckpointEvent.Written) outcome.join()).file();
 
-        DawProject restored = deserializer.deserialize(
-                Files.readString(checkpoints.getCheckpointFiles().getFirst()));
+        DawProject restored = deserializer.deserialize(Files.readString(written));
 
         List<AudioClip> saved = restored.getTracks().get(0).getClips();
         assertThat(saved).hasSize(2);

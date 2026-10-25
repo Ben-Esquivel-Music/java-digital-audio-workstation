@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.persistence.AtomicFileWriter;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
@@ -34,6 +35,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -71,10 +73,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code RecoveryDialog} opens, and the test answers it. A take starts being
  * written while the dialog is open — after the recovery's own up-front
  * refusal has let it through — so the refusal that follows is the late one.
- * A replay's project-file write is made to fail by a directory standing where
- * its temporary file goes ({@code Files.writeString} on a directory throws an
- * IOException: AccessDeniedException on Windows, "Is a directory" on Linux);
- * a replay is made to fail by a checkpoint that is not a project.</p>
+ * A replay's project-file write is made to fail through the controller's
+ * {@link AtomicFileWriter} seam (story 331): its mover refuses the atomic
+ * move of {@code project.daw} and fails the fallback with
+ * {@link #PUBLISH_FAILURE}, which the WARNING carries; the prior file was
+ * backed up before the replace failed. A replay is made to fail by a
+ * checkpoint that is not a project.</p>
  *
  * <p>The same four late refusals are made while a recording is in flight
  * (story 323 review, the user's decision "Refuse while recording"): a real
@@ -107,6 +111,8 @@ class LateLoadOutcomeReportingTest {
     private static final int JOURNALED_CHANGES = 3;
     /** How long the flow's outcome is polled for, on the test thread. */
     private static final Duration OUTCOME_BUDGET = Duration.ofSeconds(10);
+    /** The message of the failure the replay's replace of {@code project.daw} ends with, when it is made to fail. */
+    private static final String PUBLISH_FAILURE = "injected failure of the recovered project file's publish";
 
     @TempDir
     Path workspace;
@@ -230,9 +236,7 @@ class LateLoadOutcomeReportingTest {
     void aReplayWhoseProjectFileCouldNotBeWrittenIsRefusedWithOneWarningThatCarriesTheFailure()
             throws Exception {
         Path songB = aProjectWithACheckpointAndAJournal("Song B", aCheckpointOf("Song B"));
-        // A directory where the replay writes its temporary project file.
-        Path occupied = Files.createDirectories(songB.resolve("project.daw.recovering.tmp"));
-        Files.writeString(occupied.resolve("occupied"), "not a project file");
+        theReplaceOfTheProjectFileFails();
         DawProject songAModel = project.get();
         recoveryAnswer.set(RECOVER_EVERYTHING);
 
@@ -242,8 +246,10 @@ class LateLoadOutcomeReportingTest {
         assertThat(warning.level()).isEqualTo(NotificationLevel.WARNING);
         assertThat(warning.message())
                 .as("the failure, then the late refusal's own words, in one WARNING")
-                .startsWith("Could not write recovered project: ")
+                .startsWith("Could not write recovered project: " + PUBLISH_FAILURE)
                 .endsWith(ProjectLifecycleController.lateLoadRefusalMessage(""));
+        assertThat(recoveredBackupsIn(songB))
+                .as("fixture: the replay backed up the prior file before its replace failed").hasSize(1);
         assertThat(ProjectContext.forProject(songB).journalDirectory())
                 .as("fixture: the write failed before the journal was cleared").isDirectory();
         assertSongAIsStillOpen(songAModel);
@@ -309,9 +315,7 @@ class LateLoadOutcomeReportingTest {
     void aReplayWhoseProjectFileCouldNotBeWrittenIsRefusedWhileRecordingWithOneWarningThatCarriesTheFailure()
             throws Exception {
         Path songB = aProjectWithACheckpointAndAJournal("Song B", aCheckpointOf("Song B"));
-        // A directory where the replay writes its temporary project file.
-        Path occupied = Files.createDirectories(songB.resolve("project.daw.recovering.tmp"));
-        Files.writeString(occupied.resolve("occupied"), "not a project file");
+        theReplaceOfTheProjectFileFails();
         DawProject songAModel = project.get();
         recoveryAnswer.set(RECOVER_EVERYTHING);
         aRecordingStartsWhileTheDialogIsOpen();
@@ -322,8 +326,10 @@ class LateLoadOutcomeReportingTest {
         assertThat(warning.level()).isEqualTo(NotificationLevel.WARNING);
         assertThat(warning.message())
                 .as("the failure, then the recording refusal's own words, in one WARNING")
-                .startsWith("Could not write recovered project: ")
+                .startsWith("Could not write recovered project: " + PUBLISH_FAILURE)
                 .endsWith(ProjectLifecycleController.lateLoadRefusalWhileRecordingMessage(""));
+        assertThat(recoveredBackupsIn(songB))
+                .as("fixture: the replay backed up the prior file before its replace failed").hasSize(1);
         assertThat(ProjectContext.forProject(songB).journalDirectory())
                 .as("fixture: the write failed before the journal was cleared").isDirectory();
         assertSongAIsStillOpen(songAModel);
@@ -504,6 +510,20 @@ class LateLoadOutcomeReportingTest {
         DawProject checkpointed = new DawProject(name, AudioFormat.CD_QUALITY);
         checkpointed.createAudioTrack("Vocals");
         return new ProjectSerializer().serialize(checkpointed);
+    }
+
+    /**
+     * Makes the replay's replace of {@code project.daw} fail through the
+     * controller's writer seam: the mover refuses the atomic move and fails
+     * the fallback with {@link #PUBLISH_FAILURE}, the exception the writer
+     * throws. The backup copy before it publishes for real.
+     */
+    private void theReplaceOfTheProjectFileFails() {
+        SaveFlowFixture.Publishes publishes = new SaveFlowFixture.Publishes();
+        publishes.failNext(SaveFlowFixture::isHead,
+                new AtomicMoveNotSupportedException(null, null, "injected: no atomic move"));
+        publishes.failNext(SaveFlowFixture::isHead, new IOException(PUBLISH_FAILURE));
+        lifecycle.setFileWriter(new AtomicFileWriter(AtomicFileWriter.TEMP_CHANNEL_OPENER, publishes));
     }
 
     private static List<Path> recoveredBackupsIn(Path directory) throws IOException {

@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.session;
 
+import com.benesquivelmusic.daw.core.persistence.CheckpointFileName;
+
 import java.io.IOException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
@@ -7,9 +9,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -17,8 +17,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * Manages the lifecycle of first-class {@link WorkingSession} objects for a
@@ -41,10 +39,6 @@ public final class SessionManager {
     public static final Duration DEFAULT_SESSION_GAP = Duration.ofHours(4);
 
     private static final String CHECKPOINT_DIR_NAME = "checkpoints";
-    private static final Pattern CHECKPOINT_FILE = Pattern.compile(
-            "checkpoint-(\\d+)-(\\d{8}T\\d{6})\\.daw");
-    private static final DateTimeFormatter CHECKPOINT_TS =
-            DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss");
 
     private final SessionManifestStore store;
     private final ZoneId zone;
@@ -164,33 +158,33 @@ public final class SessionManager {
             return List.of();
         }
         // Preserve insertion order keyed by date; values accumulate per day.
+        // Only names the checkpoint grammar accepts count (story 331): a
+        // helper's temp sibling or a near miss is no checkpoint.
         Map<LocalDate, List<CheckpointRef>> byDate = new LinkedHashMap<>();
-        try (DirectoryStream<Path> stream = Files.newDirectoryStream(checkpointDir, "checkpoint-*.daw")) {
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(checkpointDir)) {
             for (Path file : stream) {
-                Matcher m = CHECKPOINT_FILE.matcher(file.getFileName().toString());
-                if (!m.matches()) {
+                Optional<CheckpointFileName> name = CheckpointFileName.parse(file.getFileName().toString());
+                if (name.isEmpty()) {
                     continue;
                 }
-                Instant ts;
-                try {
-                    LocalDateTime ldt = LocalDateTime.parse(m.group(2), CHECKPOINT_TS);
-                    ts = ldt.atZone(zone).toInstant();
-                } catch (RuntimeException e) {
-                    continue;
-                }
+                Instant ts = name.get().instantIn(zone);
                 LocalDate date = LocalDate.ofInstant(ts, zone);
                 byDate.computeIfAbsent(date, d -> new ArrayList<>())
-                        .add(new CheckpointRef(file.getFileName().toString(), ts));
+                        .add(new CheckpointRef(name.get(), ts));
             }
         }
 
         List<WorkingSession> sessions = new ArrayList<>(byDate.size());
         for (Map.Entry<LocalDate, List<CheckpointRef>> entry : byDate.entrySet()) {
             List<CheckpointRef> refs = entry.getValue();
-            refs.sort(Comparator.comparing(CheckpointRef::timestamp));
-            Instant start = refs.getFirst().timestamp();
-            Instant end = refs.getLast().timestamp();
-            List<String> checkpointIds = refs.stream().map(CheckpointRef::fileName).toList();
+            refs.sort(Comparator.comparing(CheckpointRef::name, CheckpointFileName.ORDER));
+            // Bounds from the instants, not first/last: a stamp in a
+            // daylight-saving gap reads later than a stamp named after it.
+            Instant start = refs.stream().map(CheckpointRef::timestamp)
+                    .min(Comparator.naturalOrder()).orElseThrow();
+            Instant end = refs.stream().map(CheckpointRef::timestamp)
+                    .max(Comparator.naturalOrder()).orElseThrow();
+            List<String> checkpointIds = refs.stream().map(ref -> ref.name().fileName()).toList();
             WorkingSession synthesised = new WorkingSession(
                     "checkpoints-" + entry.getKey(),
                     WorkingSession.defaultName(entry.getKey()),
@@ -207,7 +201,7 @@ public final class SessionManager {
         return List.copyOf(sessions);
     }
 
-    private record CheckpointRef(String fileName, Instant timestamp) {
+    private record CheckpointRef(CheckpointFileName name, Instant timestamp) {
     }
 
     /**

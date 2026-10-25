@@ -20,6 +20,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
+import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.saved;
 import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.startRecording;
 import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.stopRecording;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.MONO_16;
@@ -49,7 +50,7 @@ class TakeRecordedAfterAReopenCarriesTheSavedTrackIdTest {
         Track vox = saved.createAudioTrack("Vox");
         vox.setArmed(true);
         vox.setInputRouting(new InputRouting(0, 1));
-        manager.saveDawProject(saved);
+        saved(manager, saved);
         manager.abandonProject();
         Path projectFile = projectDir.resolve("project.daw");
         byte[] savedBytes = Files.readAllBytes(projectFile);

@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Story 323 review (the user's decision "Refuse while recording"): the
  * Project Hub's Open and the Welcome screen's Continue replace the open
- * project, so each passes {@code ProjectLifecycleController.confirmProjectMayClose()},
+ * project, so each passes {@code ProjectLifecycleController.whenProjectMayClose},
  * which refuses while a recording is in flight — first, with one WARNING
  * ({@link ProjectLifecycleController#PROJECT_CHANGE_WHILE_RECORDING_MESSAGE})
  * and no unsaved-changes prompt, the recording going on untouched — and,

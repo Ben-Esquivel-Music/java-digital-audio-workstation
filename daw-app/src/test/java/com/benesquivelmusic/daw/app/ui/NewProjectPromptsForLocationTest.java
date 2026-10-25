@@ -75,7 +75,12 @@ class NewProjectPromptsForLocationTest {
                     .as("the new project lives under the chosen workspace")
                     .startsWith(chosenParent);
         } finally {
-            pm.abandonProject(); // release lock + stop heartbeat/checkpoints
+            try {
+                // Story 331 — the new project's first save is written off the FX thread.
+                SaveOutcomes.awaitIdle(pm);
+            } finally {
+                pm.abandonProject(); // release lock + stop heartbeat/checkpoints
+            }
         }
     }
 
@@ -100,7 +105,7 @@ class NewProjectPromptsForLocationTest {
         AtomicReference<ProjectLifecycleController> ref = new AtomicReference<>();
         runOnFxThread(() -> {
             DawProject project = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
-            project.markClean(); // clean → confirmDiscardUnsavedChanges() won't block
+            project.markClean(); // clean → the project-close gate does not prompt
             AtomicReference<DawProject> p = new AtomicReference<>(project);
             AtomicReference<UndoManager> um = new AtomicReference<>(new UndoManager());
             var deps = new ProjectLifecycleController.Deps(

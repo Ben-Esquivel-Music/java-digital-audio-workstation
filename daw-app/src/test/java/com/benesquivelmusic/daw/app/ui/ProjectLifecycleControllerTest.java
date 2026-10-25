@@ -321,7 +321,7 @@ class ProjectLifecycleControllerTest {
         var report = pm.getLastMigrationReport();
         assertThat(report.wasMigrated()).isTrue();
         // Trigger the .bak by saving the migrated project.
-        pm.saveDawProject(pm.getCurrentDawProject());
+        SaveOutcomes.saved(pm, pm.getCurrentDawProject());
         // Suppress so the post-rollback reload doesn't open another dialog.
         com.benesquivelmusic.daw.core.persistence.migration.MigrationSuppression
                 .suppress(metadata.projectPath(), report.toVersion());

@@ -1,9 +1,13 @@
 package com.benesquivelmusic.daw.core.persistence.migration;
 
+import com.benesquivelmusic.daw.core.persistence.AtomicFileWriter;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -57,6 +61,27 @@ class MigrationSuppressionTest {
     @Test
     void nullProjectDirectoryIsNeverSuppressed() {
         assertThat(MigrationSuppression.isSuppressed(null, 1)).isFalse();
+    }
+
+    @Test
+    void aSuppressionWhosePublishFailsKeepsThePreviousMarkerAndLeavesNoTemp(
+            @org.junit.jupiter.api.io.TempDir Path projectDir) throws IOException {
+        MigrationSuppression.suppress(projectDir, 3);
+        Path marker = projectDir.resolve(MigrationSuppression.MARKER_FILENAME);
+        IOException crash = new IOException("injected failure before the marker's publish");
+        AtomicFileWriter failing = new AtomicFileWriter(AtomicFileWriter.TEMP_CHANNEL_OPENER,
+                (temp, target, options) -> {
+                    throw crash;
+                });
+
+        assertThatThrownBy(() -> MigrationSuppression.suppress(projectDir, 8, failing))
+                .isInstanceOf(UncheckedIOException.class)
+                .hasCauseReference(crash);
+
+        assertThat(marker).hasContent("3");
+        try (Stream<Path> entries = Files.list(projectDir)) {
+            assertThat(entries).as("no temp beside the marker").containsExactly(marker);
+        }
     }
 
     @Test

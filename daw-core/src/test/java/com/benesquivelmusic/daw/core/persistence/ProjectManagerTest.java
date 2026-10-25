@@ -17,6 +17,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.prefs.Preferences;
 
+import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.saved;
 import static org.assertj.core.api.Assertions.*;
 
 class ProjectManagerTest {
@@ -91,7 +92,7 @@ class ProjectManagerTest {
         clip.setSourceSegmentPaths(List.of(sealed.toString()));
         track.addClip(clip);
 
-        manager.saveDawProject(project);
+        saved(manager, project);
 
         String relative = "audio/takes/" + takeDir.getFileName() + "/" + track.getId()
                 + "/segment-000.wav";
@@ -156,20 +157,40 @@ class ProjectManagerTest {
     }
 
     @Test
-    void shouldSaveProject() throws IOException {
+    void closingAProjectWithNoDocumentRewritesItsMetadataFileAndWritesNoCheckpoint() throws IOException {
         ProjectManager manager = createProjectManager();
-        manager.createProject("Test", tempDir);
+        ProjectMetadata created = manager.createProject("Test", tempDir);
+        Path projectFile = created.projectPath().resolve("project.daw");
+        Files.delete(projectFile);
 
-        manager.saveProject();
+        manager.closeProject();
 
-        assertThat(manager.getCheckpointManager().getCheckpointCount()).isEqualTo(1);
+        assertThat(Files.readString(projectFile)).as("the final save wrote the metadata file").contains("name=Test");
+        assertThat(manager.getCheckpointManager().getCheckpointCount())
+                .as("a metadata-only file is no project document: no checkpoint holds it (story 331)")
+                .isZero();
+    }
+
+    @Test
+    void aFullSaveWritesOneCheckpointHoldingTheBytesItWroteToTheProjectFile() throws IOException {
+        ProjectManager manager = createProjectManager();
+        ProjectMetadata created = manager.createProject("Test", tempDir);
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+
+        saved(manager, project);
+
+        CheckpointManager checkpoints = manager.getCheckpointManager();
+        assertThat(checkpoints.getCheckpointFiles()).hasSize(1);
+        assertThat(Files.readString(checkpoints.getCheckpointFiles().getFirst()))
+                .isEqualTo(Files.readString(created.projectPath().resolve("project.daw")));
     }
 
     @Test
     void shouldRejectSaveWithoutOpenProject() {
         ProjectManager manager = createProjectManager();
 
-        assertThatThrownBy(manager::saveProject)
+        assertThatThrownBy(() -> manager.save(new DawProject("Test", AudioFormat.CD_QUALITY)))
+                .as("refused at the call, synchronously")
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("No project is currently open");
     }
@@ -200,7 +221,7 @@ class ProjectManagerTest {
 
         DawProject dawProject = new DawProject("Abandon Test", AudioFormat.CD_QUALITY);
         dawProject.setMetadata(manager.getCurrentProject());
-        manager.saveDawProject(dawProject);
+        saved(manager, dawProject);
 
         // Mark dirty, then abandon — should NOT persist the dirty state
         dawProject.markDirty();
@@ -372,7 +393,7 @@ class ProjectManagerTest {
         dawProject.getTransport().setTempo(140.0);
         dawProject.setMetadata(manager.getCurrentProject());
 
-        manager.saveDawProject(dawProject);
+        saved(manager, dawProject);
 
         Path projectFile = manager.getCurrentProject().projectPath().resolve("project.daw");
         String content = Files.readString(projectFile);
@@ -398,7 +419,7 @@ class ProjectManagerTest {
         original.getMixer().getMasterChannel().setVolume(0.85);
         original.setMetadata(manager.getCurrentProject());
 
-        manager.saveDawProject(original);
+        saved(manager, original);
         Path projectDir = manager.getCurrentProject().projectPath();
         manager.closeProject();
 
@@ -439,14 +460,14 @@ class ProjectManagerTest {
 
         DawProject dawProject = new DawProject("Dirty Test", AudioFormat.CD_QUALITY);
         dawProject.setMetadata(manager.getCurrentProject());
-        manager.saveDawProject(dawProject);
+        saved(manager, dawProject);
 
         assertThat(manager.hasUnsavedChanges()).isFalse();
 
         dawProject.markDirty();
         assertThat(manager.hasUnsavedChanges()).isTrue();
 
-        manager.saveProject();
+        saved(manager, dawProject);
         assertThat(manager.hasUnsavedChanges()).isFalse();
         manager.closeProject();
     }
@@ -458,7 +479,7 @@ class ProjectManagerTest {
 
         DawProject dawProject = new DawProject("Close Test", AudioFormat.CD_QUALITY);
         dawProject.setMetadata(manager.getCurrentProject());
-        manager.saveDawProject(dawProject);
+        saved(manager, dawProject);
 
         manager.closeProject();
 
@@ -467,12 +488,13 @@ class ProjectManagerTest {
     }
 
     @Test
-    void shouldRejectSaveDawProjectWithoutOpenProject() {
+    void aNullProjectIsRefusedAtTheCall() throws IOException {
         ProjectManager manager = createProjectManager();
-        DawProject dawProject = new DawProject("Test", AudioFormat.CD_QUALITY);
+        manager.createProject("Test", tempDir);
 
-        assertThatThrownBy(() -> manager.saveDawProject(dawProject))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("No project is currently open");
+        assertThatThrownBy(() -> manager.save(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("project must not be null");
+        manager.abandonProject();
     }
 }

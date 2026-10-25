@@ -26,6 +26,9 @@ For a studio engineer the impact is that failure is indistinguishable from absen
 - A **rotating file log sink**: `java.util.logging` configured programmatically at launch — a rotating `FileHandler` under the per-user settings directory (the root the launcher already writes its GC profile into), bounded size and file count, INFO and above, compact single-line format with thread and logger names (book §4.2). Programmatic, not a bundled properties file the jlink image build could drop.
 - A **Help ▸ "Open log folder"** menu item makes the sink discoverable (book §2.8).
 - Startup ordering per book §6.4: log sink before handlers can fire; handlers before launch; the funnel logs immediately and upgrades to toasts once the dispatcher exists; the first-run wizard shows only after the spine is live.
+- **The log sink outlives the JDK's shutdown reset until story 331's exit wait has returned** (story 331, ruling N1).
+  - `LogManager`'s own shutdown hook resets (removes and closes) every handler as the exit begins, so a line that another shutdown hook logs reaches no handler today. That covers `ProjectManager.awaitWritesBeforeExit`'s INFO "Waiting up to 30 s for the saves and checkpoints still being written before the application exits" and its WARNING "Saves or checkpoints were still being written 30 s after the application began to exit; the application exits without them, and project.daw holds the last save that finished" (story 331, rulings M1 and N1).
+  - The sink holds off that reset while the `daw-exit-write-wait` hook is registered, until its method returns, and then flushes and closes. The hold is bounded at the exit wait's limit plus 5 s. An exit with no exit wait registered resets at once.
 
 ## Goals — Tests
 
@@ -36,6 +39,7 @@ For a studio engineer the impact is that failure is indistinguishable from absen
 - A reentrancy test: an exception thrown from inside the funnel (e.g. a throwing notification consumer) does not recurse or deadlock — the last-resort print path runs and the app continues.
 - A palette regression test: the rethrow at `CommandPaletteView.java:302-306` now lands visibly as an ERROR toast (the *named-command* copy is story 339's refinement; this stage guarantees visibility).
 - Help ▸ "Open log folder" resolves to the directory the `FileHandler` writes into.
+- The exit wait's lines (story 331, ruling N1), binding: a child JVM sets up logging exactly as the packaged launcher does. With a save held past a shortened exit-wait bound, it exits, and its log file holds both lines verbatim.
 
 ## Non-Goals
 
@@ -53,5 +57,6 @@ For a studio engineer the impact is that failure is indistinguishable from absen
 - Builds on story **044**'s landed `NotificationBar` surface (levels, history service — `NotificationBar.java:114`, `:138`) and story **273**'s history: this stage adds the missing *producers*, not a new surface (book §1.8).
 - All UI marshalling rides `FxDispatcher` (the one marshalling seam, `CONTROL_SYNCHRONIZATION_DESIGN_BOOK.md`) — no ad-hoc `Platform.runLater` in the funnel (book Appendix B).
 - Proof obligation for the packaged app: the jlink/jpackage runtime ships only the JDK console default, so the sink must be configured in code at launch — verify against the shaded/jlinked artifact path, not only `mvn test`.
+- Proof obligation for story 331's exit lines (Failure Surfacing book §4.2; story 331, ruling N1): verify against the jlinked image. If the mechanism is a `java.util.logging.manager` class, every launch path names it, jpackage's `--java-options` included, and its package is exported to `java.logging`. Otherwise `LogManager` falls back to the default and reports that only on stderr.
 - Unblocks: every later stage's "surface" half has somewhere to land; hundreds of existing catch-and-log sites become diagnosable retroactively (§2.8's asymmetry — one wiring change, every site upgraded); stories 337/338/339/340 escalate into this funnel.
 - Cross-refs: story **313** (Stage 1 — the wizard is the proof of what happens without a spine; wizard shows only after the spine is live), **337/338/339/340** (later stages of this book), **192** (command palette origin).

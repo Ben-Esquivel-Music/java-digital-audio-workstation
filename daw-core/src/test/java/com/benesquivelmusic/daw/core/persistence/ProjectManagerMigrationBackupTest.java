@@ -15,6 +15,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.stream.Stream;
 
+import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.saved;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -51,7 +52,7 @@ class ProjectManagerMigrationBackupTest {
         assertThat(manager.getLastMigrationReport().wasMigrated()).isFalse();
 
         DawProject loaded = manager.getCurrentDawProject();
-        manager.saveDawProject(loaded);
+        saved(manager, loaded);
 
         // No .bak files should exist because nothing was migrated.
         try (Stream<Path> entries = Files.list(metadata.projectPath())) {
@@ -117,7 +118,7 @@ class ProjectManagerMigrationBackupTest {
         // Save: the manager must back up the pre-migration file before
         // overwriting it.
         DawProject loaded = manager.getCurrentDawProject();
-        manager.saveDawProject(loaded);
+        saved(manager, loaded);
 
         try (Stream<Path> entries = Files.list(metadata.projectPath())) {
             List<Path> backups = entries
@@ -133,7 +134,7 @@ class ProjectManagerMigrationBackupTest {
 
         // A second save must not write another backup — the rollback
         // snapshot is taken exactly once per load.
-        manager.saveDawProject(loaded);
+        saved(manager, loaded);
         try (Stream<Path> entries = Files.list(metadata.projectPath())) {
             long backupCount = entries
                     .filter(p -> p.getFileName().toString().endsWith(".bak"))

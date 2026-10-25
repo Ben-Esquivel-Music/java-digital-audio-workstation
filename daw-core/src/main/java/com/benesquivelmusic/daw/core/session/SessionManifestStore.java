@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.session;
 
+import com.benesquivelmusic.daw.core.persistence.AtomicFileWriter;
+
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
@@ -62,6 +64,7 @@ public final class SessionManifestStore {
     private static final String ATTR_RECORDED_MS = "recordedMillis";
 
     private final ZoneId zone;
+    private final AtomicFileWriter fileWriter;
 
     /** Creates a store using the system default time zone for manifest names. */
     public SessionManifestStore() {
@@ -75,7 +78,17 @@ public final class SessionManifestStore {
      * @param zone the zone used for {@code <date>} in manifest names
      */
     public SessionManifestStore(ZoneId zone) {
+        this(zone, new AtomicFileWriter());
+    }
+
+    /**
+     * Creates a store with an explicit zone and the writer each manifest is
+     * replaced through — for tests that fail or observe the writes
+     * (story 331).
+     */
+    SessionManifestStore(ZoneId zone, AtomicFileWriter fileWriter) {
         this.zone = Objects.requireNonNull(zone, "zone must not be null");
+        this.fileWriter = Objects.requireNonNull(fileWriter, "fileWriter must not be null");
     }
 
     /** {@return the {@code sessions/} directory inside {@code projectDir}} */
@@ -126,7 +139,13 @@ public final class SessionManifestStore {
 
     /**
      * Writes a session manifest into {@code projectDir/sessions/}, creating the
-     * directory if needed.
+     * directory if needed. The manifest is replaced atomically
+     * ({@link AtomicFileWriter}, story 331): a failed write leaves the
+     * previous manifest as it was and no temp beside it. As the rename did
+     * before story 331, only the folder's write permission is asked
+     * ({@link AtomicFileWriter.ReplacePermission#DIRECTORY}): a manifest is
+     * app-written, derivable metadata, so another user's stale session in a
+     * group-shared folder is still sealed when this user opens the project.
      *
      * @param projectDir the project directory
      * @param session    the session to persist
@@ -152,17 +171,7 @@ public Path write(Path projectDir, WorkingSession session) throws IOException {
         }
     }
 
-    Path tmp = target.resolveSibling(target.getFileName().toString() + ".tmp");
-    try (OutputStream out = Files.newOutputStream(tmp)) {
-        serialize(session, out);
-    }
-    try {
-        Files.move(tmp, target,
-                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                java.nio.file.StandardCopyOption.ATOMIC_MOVE);
-    } catch (java.nio.file.AtomicMoveNotSupportedException e) {
-        Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-    }
+    fileWriter.write(target, out -> serialize(session, out), AtomicFileWriter.ReplacePermission.DIRECTORY);
 
     for (Path stale : staleForId) {
         Files.deleteIfExists(stale);

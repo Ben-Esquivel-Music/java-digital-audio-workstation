@@ -152,7 +152,7 @@ class ProjectChangeWhileTakeIsWrittenTest {
             throws Exception {
         project.get().markDirty();
 
-        assertThat(onFx(lifecycle::confirmProjectMayClose))
+        assertThat(onFx(() -> DoorGate.proceedsAtOnce(lifecycle)))
                 .as("a door that would replace the open project is refused while a take is being written")
                 .isFalse();
         assertThat(unsavedChangesPrompts)
@@ -161,32 +161,14 @@ class ProjectChangeWhileTakeIsWrittenTest {
         assertRefusedOnce();
 
         takeBeingWritten.set(false);
-        assertThat(onFx(lifecycle::confirmProjectMayClose))
+        assertThat(onFx(() -> DoorGate.proceedsAtOnce(lifecycle)))
                 .as("fixture: the prompt, dismissed, cancels the change").isFalse();
         assertThat(unsavedChangesPrompts).as("once the take is written, a dirty project prompts again").hasValue(1);
         project.get().markClean();
-        assertThat(onFx(lifecycle::confirmProjectMayClose))
+        assertThat(onFx(() -> DoorGate.proceedsAtOnce(lifecycle)))
                 .as("and a clean project proceeds").isTrue();
         assertThat(unsavedChangesPrompts).hasValue(1);
         assertRefusedOnce();
-    }
-
-    /**
-     * The unsaved-changes prompt is only that prompt: the refusal of a take
-     * being written belongs to the gate that asks it
-     * ({@code confirmProjectMayClose}), so a caller that wants the prompt
-     * alone does not inherit a refusal its name does not announce.
-     */
-    @Test
-    void theUnsavedChangesPromptAloneRefusesNothingWhileATakeIsBeingWritten() throws Exception {
-        assertThat(onFx(lifecycle::confirmDiscardUnsavedChanges))
-                .as("a clean project has nothing to ask about, take or no take").isTrue();
-
-        project.get().markDirty();
-        assertThat(onFx(lifecycle::confirmDiscardUnsavedChanges))
-                .as("fixture: the prompt, dismissed, cancels the change").isFalse();
-        assertThat(unsavedChangesPrompts).as("a dirty project is asked about").hasValue(1);
-        assertThat(shown.getEntries()).as("and nothing is refused").isEmpty();
     }
 
     @Test
@@ -371,7 +353,13 @@ class ProjectChangeWhileTakeIsWrittenTest {
                 new SnapshotsController.Deps(
                         () -> null,
                         project::get,
-                        () -> lifecycle == null || lifecycle.confirmProjectMayClose(),
+                        proceed -> {
+                            if (lifecycle == null) {
+                                proceed.run();
+                            } else {
+                                lifecycle.whenProjectMayClose(ProjectLifecycleController.RESTORE_SNAPSHOT_DOOR, proceed);
+                            }
+                        },
                         (restored, label, missingAssets, unreadItems) -> restores.incrementAndGet()));
         SnapshotEntry entry = snapshots.createCheckpointWithLabel("Before the take");
 
@@ -435,8 +423,12 @@ class ProjectChangeWhileTakeIsWrittenTest {
         assertThat(arguments).as("ownerStage, currentProject, the gate, applyRestoredProject").hasSize(4);
         assertThat(arguments.get(2))
                 .as("a snapshot restore passes the project-close gate, which refuses while a take is being written")
-                .isEqualTo("() -> projectLifecycleController == null"
-                        + " || projectLifecycleController.confirmProjectMayClose()");
+                .isEqualTo("this::whenProjectMayCloseForSnapshotRestore");
+        assertThat(methodBody(code, "private void whenProjectMayCloseForSnapshotRestore(Runnable restore)"))
+                .as("that gate is the lifecycle controller's, with the restore as its continuation")
+                .isEqualTo("{ if (projectLifecycleController == null) { restore.run(); return; }"
+                        + " projectLifecycleController.whenProjectMayClose("
+                        + "ProjectLifecycleController.RESTORE_SNAPSHOT_DOOR, restore); }");
     }
 
     /** The top-level arguments of the call whose opening parenthesis is at {@code open}, trimmed. */
