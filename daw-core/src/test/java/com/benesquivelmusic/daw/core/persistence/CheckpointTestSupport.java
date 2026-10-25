@@ -39,14 +39,18 @@ final class CheckpointTestSupport {
         return "<daw-project revision=\"" + revision + "\"/>\n";
     }
 
-    /** The checkpoint files in {@code projectDir/checkpoints}, by name; empty when there is no directory. */
+    /**
+     * Checkpoint-directory contents except its durable ordering fact. Unexpected
+     * files and temps remain visible so exact-content assertions still detect leaks.
+     */
     static List<String> checkpointNames(Path projectDir) throws IOException {
         Path directory = projectDir.resolve("checkpoints");
         if (!Files.isDirectory(directory)) {
             return List.of();
         }
         try (Stream<Path> entries = Files.list(directory)) {
-            return entries.map(entry -> entry.getFileName().toString()).sorted().toList();
+            return entries.map(entry -> entry.getFileName().toString())
+                    .filter(name -> !CheckpointOrder.FILE_NAME.equals(name)).sorted().toList();
         }
     }
 

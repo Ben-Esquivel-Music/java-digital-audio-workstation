@@ -114,6 +114,15 @@ public interface EventBus {
     EventBusMetrics metrics();
 
     /**
+     * Observes publication before it returns. Handlers must only enqueue immutable
+     * data and must never do I/O. Persistence uses this fence so a later model
+     * capture cannot overtake an event waiting on a delivery worker.
+     */
+    default <E extends BusEvent> Subscription onPublication(Class<E> type, Consumer<? super E> handler) {
+        throw new UnsupportedOperationException("Synchronous publication observation is unavailable");
+    }
+
+    /**
      * Closes the bus, cancelling every active subscription and
      * releasing any backing executors. After {@code close()}, calls to
      * {@link #publish} are silently dropped and new subscriptions via

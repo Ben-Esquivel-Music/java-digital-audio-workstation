@@ -136,6 +136,11 @@ public final class ProjectLockManager implements AutoCloseable {
         }
     }
 
+    /** Independent target lease with the same injected identity, clock and I/O seams. */
+    public ProjectLockManager fork() {
+        return new ProjectLockManager(clock, user, hostname, pid, fileWriter, lockFileReader);
+    }
+
     /**
      * Attempts to acquire the lock for {@code projectDir}. If the lock is
      * already held by another session, returns an {@link AcquisitionResult}

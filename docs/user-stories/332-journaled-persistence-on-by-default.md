@@ -67,3 +67,145 @@ For a studio engineer this means a crash still costs everything since the last c
 - Cross-refs: **story 298** (landed dark — this story executes its deliberately deferred default promotion), **story 331** (Stage 3 — replay commits via the §4.1 writer), **story 333** (Stage 5 — writes the seal at app exit; its clean exits also stop feeding the health scanner phantom stale locks), **story 313 / 339** (Book 4 — dialog dismissibility for every prompt this path shows).
 - Rejections bound here: book §9.6 (timing heuristics as crash detection), §9.7 (safety features shipped default-off indefinitely).
 - Threading per book §6.1/§4.7: the gate runs on a virtual thread; the FX thread never scans; outcome surfaces publish through the established dispatcher seam.
+
+## Implementation and acceptance evidence — 2026-10-25
+
+The application enables journaling for a fresh settings node. Every disk-open
+door, including explicit Recover and archive extraction's follow-up open, uses
+`ProjectManager.PreparedOpen`: an independent target lock lease negotiates
+conflicts and runs `OpenRecoveryGate` before the outgoing project is retired.
+Cancel and Inspect release only that target lease, preserve the outgoing model,
+lock and live recorder, and re-present Welcome. The main controls are disabled
+while the asynchronous handover is pending. Refused requests do not invalidate
+the active open attempt, and an older migration/reload continuation cannot clear
+a newer attempt's installation guard.
+
+The worker then seals the outgoing journal, parses the accepted head, starts
+rehydration and accounting through the FX dispatcher, opens the new journal on
+the worker, and performs the UI cascade. A direct request to reopen the active
+folder is refused without scanning its live journal. Migration rollback has an
+explicit close/discard/reload transition. App disposal uses an **unsealed**
+drain; story 333 still owns an app-exit protocol that can safely certify a final
+save or discard.
+
+The journal records a checksummed, fsynced `$session-seal` only after all accepted
+records drain successfully. Missing seals, torn bytes after a seal, or mutations
+after the last captured checkpoint boundary remain recovery evidence. A seal
+alone cannot conceal uncheckpointed edits. A new writer refuses nonempty prior
+segments until the recovery decision has been applied. A failed replay or atomic
+head commit preserves the evidence and opens the last saved head **read-only**,
+with the existing qualified failure announcement; it starts neither a writable
+journal nor a session manifest.
+
+### Capture points, replay bases and ordering
+
+`EventBus.onPublication` gives the recorder a synchronous, non-I/O publication
+fence. It avoids the ordinary bus subscription's asynchronous delivery and
+overflow window. Scheduled captures, save captures and Create Checkpoint captures
+report their revision on the model owner. A successful checkpoint's journal
+marker records the sequence observed at that capture, its filename and its
+SHA-256 digest. The journal's count reset excludes only records represented by
+that capture; later edits survive even when the checkpoint's atomic write was
+held. Replay uses a matching, hash-verified checkpoint marker and dispatches only
+records after its boundary.
+
+Each new journal also keeps an immutable `journal/session-base.daw`, verified by
+the `$session-start` record. This is the replay base when the session did not
+start from a matching checkpoint, including recovery-written, archive-restored
+and legacy heads. With autosave disabled, ordinary saves create no checkpoint
+marker and do not rotate: the immutable session-start base remains authoritative
+until a successful explicit Create Checkpoint (or safety-copy checkpoint) supplies
+a verified capture point. The underlying story-298 replay fidelity is unchanged:
+current notification-only event families are dispatched and counted but do not
+reconstruct missing state deltas. The new tests distinguish exactly-once dispatch
+from state already present in a verified checkpoint or head.
+
+`checkpoints/.checkpoint-order` explicitly lists the filenames certified by
+complete directory enumeration followed by new writes. Certified files sort
+after all uncertified files and by monotonic index; uncertified files retain
+stamp order, including pre-331 folders whose indices happen never to repeat.
+Files from a partially enumerated run are never certified. Before such a run
+publishes a name previously certified (or a name certified before a crashed
+publish), it atomically revokes that certification. Malformed or unreadable facts
+fall back to stamp order. A failed fact publication prevents the new checkpoint
+from being published.
+
+### Atomic-writer temps and read-only sessions
+
+The writable, locked gate inspects every exact `AtomicFileWriter` temp in the
+project folder, snapshots and checkpoints. For a linked `project.daw`, it also
+checks the final `.daw` target's siblings, restricted to that target's name.
+Complete project XML newer than the head is recovery evidence. Temp-only Replay
+promotes that document atomically. When both a newer complete temp and an
+unsealed journal exist, their capture order cannot be inferred: the gate keeps
+the temp byte-for-byte in `snapshots/recovered-head-<request-id>.daw`, logs its
+path, and replays the journal from its verified base. It cleans exact temps only
+after the decision succeeds and emits one INFO count; near-miss names remain.
+
+Read-only opens perform no recovery mutation, temp cleanup, journal creation or
+session-manifest write. `MainController.refreshSessionManager` captures that
+policy before scheduling its worker and fences both work and FX publication by
+the current session generation, so a delayed writable refresh cannot reattach
+its session after a read-only open.
+
+### Regression suites
+
+| Contract | Behavioral evidence |
+|---|---|
+| Every real open door; unchanged evidence inside the dialog; no premature journal open/rotation | `EveryOpenDoorRunsRecoveryFirstTest` (File, Hub, Welcome Continue, actual archive extraction, Recover) |
+| Enabled-gate Cancel/Inspect, same-folder refusal, refused second load, replay/commit failure fallback | `EveryOpenDoorRunsRecoveryFirstTest` |
+| Absent/clean/replay/discard/foreign-lock rows; fresh leftover lock; degraded logs | `OpenRecoveryGateTest` |
+| All temp names, complete newer head, symlink target, mixed temp/journal preservation, INFO count | `OpenRecoveryGateTest` |
+| Fresh settings activate a real bus recorder; opt-out suppresses it | `JournalCaptureIntegrationTest` |
+| Real save with held checkpoint write; autosave-off save → Create Checkpoint → save → crash | `JournalCaptureIntegrationTest` |
+| Project-switch seal and app-disposal unsealed drain | `JournalCaptureIntegrationTest` |
+| Capture-boundary dispatch, immutable base, changed checkpoint/base digest, stalled asynchronous subscriber, seal/drain fsync failures, torn tail, locales | `JournalSessionRecoveryTest` |
+| Legacy repeated and unique indices, repeated DST hour, backward clock, restart, partial enumeration, ghost/overwritten certification, malformed/unreadable/failed fact | `CheckpointOrderingProvenanceTest` |
+| Actual MainController read-only refresh with a >4-hour active manifest; stale callback after read-only open | `ReadOnlySessionRefreshTest` |
+
+The implementation uses the repository's `research`, `research-daw` and
+`javafx-application-design` skills: persistence and provenance stay in `daw-core`,
+application dialogs and FX publication stay in `daw-app`, immutable captures stay
+on the model owner, and file work uses final virtual-thread APIs (JEP 444).
+The studio-engineer review drove the publication fence, seal/failure ordering,
+independent target lease, mixed-temp preservation and read-only session checks.
+No external persistence library or preview/incubator API was added.
+
+The focused reactor run on JDK 27 and Maven 3.10.0 passed **124 tests** (31
+`daw-core`, 93 `daw-app`), including **50 new acceptance cases**, with no failures,
+errors or skips. It ran the suites in the table plus
+`JournalAppendFsyncRotationTest`, `RecoveryReplayStructuredTest`,
+`JournaledPersistencePreferenceGateTest`, `ProjectJournalCoordinatorTest` and
+`SettingsModelTest`. Reports are under each module's `target/surefire-reports/`.
+
+The final related regression completed **563 cases: 562 passed and one skipped**,
+with no remaining failures or errors: 296 core cases (one POSIX-permission case
+skipped on Windows) and 267 application cases. All 50 new acceptance cases are
+included. The skipped existing case is
+`SessionManagerTest.aStaleSessionTheUserCannotWriteIsStillSealedAndANewSessionStarts`.
+Production sources were unchanged between the green core run and the final green
+application run; the intervening changes only updated fixture checkpoint filters
+and explicit replay-base provenance while preserving their original assertions.
+The core results are retained in `target/story332-regression.log` (whose earlier
+application failures were subsequently corrected); the final application-only
+run is `target/story332-app-regression.log` and ends in `BUILD SUCCESS`.
+
+The broad reactor command was:
+
+```powershell
+mvn -B -pl daw-app -am test '-Dtest=*Journal*,*Recovery*,*Checkpoint*,*ProjectLifecycle*,*SessionManager*,SettingsModelTest,*ProjectHealth*,*EventBus*,*ProjectManager*,*ReadOnly*,EveryOpenDoorRunsRecoveryFirstTest,*PendingSwitch*,*LateLoad*,*Migration*,*SaveFlow*,*Welcome*,*Hub*' '-Dsurefire.failIfNoSpecifiedTests=false' '-DskipNativeBuild=true'
+```
+
+After the core phase passed, the final application phase selected the 41
+application suites reported that day and used their fully qualified names. This
+compiled reactor dependencies without needlessly rerunning the green core tests:
+
+```powershell
+$appTestSuites = Get-ChildItem daw-app/target/surefire-reports -File -Filter 'TEST-*.xml' |
+    Where-Object LastWriteTime -GT (Get-Date).Date |
+    ForEach-Object {
+        [xml]$report = Get-Content -LiteralPath $_.FullName
+        [string]$report.testsuite.name
+    } | Sort-Object -Unique
+mvn -B -pl daw-app -am test "-Dtest=$($appTestSuites -join ',')" '-Dsurefire.failIfNoSpecifiedTests=false' '-DskipNativeBuild=true'
+```

@@ -352,6 +352,7 @@ final class SnapshotsController {
         String content;
         try {
             revision = project.getEditRevision();
+            checkpointManager.captureStarted(revision);
             content = serializer.capture(project).toXml();
         } catch (Throwable notCaptured) {
             // Anything the capture throws, an Error included, is a checkpoint that wrote nothing: never silent.

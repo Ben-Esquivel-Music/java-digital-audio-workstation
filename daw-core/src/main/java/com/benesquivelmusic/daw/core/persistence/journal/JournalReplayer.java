@@ -82,11 +82,12 @@ public final class JournalReplayer {
      */
     public RecoveryResult recover(ProjectContext ctx) {
         Objects.requireNonNull(ctx, "ctx must not be null");
-        Path checkpointPath = newestCheckpointPath(ctx)
-                .orElseThrow(() -> new JournalRecoveryException(
-                        "no checkpoint to recover from in " + ctx.checkpointDirectory(), null));
-        List<Path> segments = listSegments(ctx);
-        return recover(ctx, checkpointPath, segments);
+        try {
+            JournalState.ReplayBase base = JournalState.replayBase(ctx);
+            return recover(ctx, base.file(), listSegments(ctx), base.sequence());
+        } catch (IOException failure) {
+            throw new JournalRecoveryException("Cannot establish the session replay base", failure);
+        }
     }
 
     /**
@@ -99,6 +100,10 @@ public final class JournalReplayer {
      * @throws JournalRecoveryException if any subtask fails (rolled back)
      */
     public RecoveryResult recover(ProjectContext ctx, Path checkpointPath, List<Path> segmentPaths) {
+        return recover(ctx, checkpointPath, segmentPaths, -1L);
+    }
+
+    private RecoveryResult recover(ProjectContext ctx, Path checkpointPath, List<Path> segmentPaths, long captureSequence) {
         Objects.requireNonNull(ctx, "ctx must not be null");
         Objects.requireNonNull(checkpointPath, "checkpointPath must not be null");
         Objects.requireNonNull(segmentPaths, "segmentPaths must not be null");
@@ -118,7 +123,8 @@ public final class JournalReplayer {
             // All three inputs are valid — merge onto the FRESH project only now.
             LoadedCheckpoint loaded = base.resultNow();
             DawProject recovered = loaded.project();
-            List<JournalRecord> records = recs.resultNow();
+            List<JournalRecord> records = recs.resultNow().stream()
+                    .filter(record -> record.sequence() > captureSequence).toList();
             int applied = applyRecords(recovered, records);
 
             RecoverySummary summary = buildSummary(ctx, checkpointPath, segments, records);
@@ -221,7 +227,7 @@ public final class JournalReplayer {
         Objects.requireNonNull(project, "project must not be null");
         int applied = 0;
         for (JournalRecord record : records) {
-            if (record.isCheckpointMarker()) {
+            if (record.isControl()) {
                 continue;
             }
             applyOne(project, record);

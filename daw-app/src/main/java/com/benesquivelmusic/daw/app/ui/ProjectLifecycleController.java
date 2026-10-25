@@ -417,6 +417,144 @@ final class ProjectLifecycleController {
      * default) skips journal wiring.
      */
     private Consumer<Path> journalOpenHook;
+    private OpenRecoveryGate openRecoveryGate;
+    private Supplier<Runnable> prepareJournalClose = () -> () -> { };
+    private Consumer<Path> prepareJournalOpen = _ -> { };
+    private OpenRecoveryGate.Result recoveryResult = OpenRecoveryGate.Result.PLAIN;
+    private boolean journalClosedForCreation;
+    private boolean projectInstallationPending;
+    boolean isProjectInstallationPending() { return projectInstallationPending; }
+
+    /** Production wiring: all disk-open doors use the same worker gate and FX installation. */
+    void enableRecoveryGate(Supplier<Boolean> enabled, Supplier<Runnable> closeJournal, Consumer<Path> openJournal) {
+        prepareJournalClose = Objects.requireNonNull(closeJournal);
+        prepareJournalOpen = Objects.requireNonNull(openJournal);
+        openRecoveryGate = new OpenRecoveryGate(projectManager, enabled, this::chooseRecoveryOnFx,
+                this::writeRecoveredProjectFile);
+        projectManager.setRecoveryGate((folder, readOnly, lock) -> {
+            beforeRecoveryWork.accept(RECOVERY_SCAN_WORKER);
+            recoveryResult = openRecoveryGate.run(folder, readOnly, lock);
+        });
+    }
+
+    private RecoveryChoice chooseRecoveryOnFx(RecoverySummary summary) {
+        CompletableFuture<RecoveryChoice> answer = new CompletableFuture<>();
+        postFx(() -> {
+            try {
+                RecoveryChoice choice = recoveryDialogs.apply(summary).showAndWait().orElse(RecoveryChoice.CANCEL);
+                if (choice == RecoveryChoice.INSPECT_EVENTS) showInspectEvents(summary);
+                answer.complete(choice);
+            } catch (RuntimeException | Error failure) { answer.completeExceptionally(failure); }
+        });
+        return answer.join();
+    }
+
+    private void beginGatedLoad(Path folder, OpenDoor door, long attempt) {
+        projectInstallationPending = true;
+        rootPane.setDisable(true);
+        startRecoveryWorker(RECOVERY_SCAN_WORKER, () -> {
+            ProjectManager.PreparedOpen prepared = null;
+            boolean installed = false;
+            boolean retiredOutgoing = false;
+            try {
+                if (sameOpenFolder(folder) && door instanceof OpenDoor.MigrationRollback) {
+                    Runnable close = callOnFx(prepareJournalClose);
+                    close.run();
+                    projectManager.getLockManager().verifyHeld();
+                    com.benesquivelmusic.daw.core.persistence.journal.JournalState.clear(ProjectContext.forProject(folder));
+                    projectManager.abandonProject();
+                }
+                OpenDoor selectedDoor = door;
+                try {
+                    prepared = projectManager.prepareOpen(folder); // target lease leaves outgoing project intact
+                } catch (OpenRecoveryGate.ReplayFailed failed) {
+                    LOG.log(Level.WARNING, "Recovery failed; preserving evidence and opening the last saved head read-only", failed);
+                    prepared = projectManager.prepareReadOnlyOpen(folder);
+                    recoveryResult = OpenRecoveryGate.Result.PLAIN;
+                    String reason = failureReason(failed) + "; recovery evidence was preserved; fallback is read-only";
+                    selectedDoor = failed.writing() ? new OpenDoor.RecoveredWriteFailed(reason)
+                            : new OpenDoor.FailedReplayFallback(reason);
+                }
+                Runnable closeJournal = callOnFx(() -> {
+                    String applied = "The recovery decision for " + folder + " was applied";
+                    if (refuseLateLoadWhileATakeIsRecordingOrBeingWritten(applied)) return null;
+                    return prepareJournalClose.get();
+                });
+                if (closeJournal == null) return;
+                closeJournal.run();
+                projectManager.abandonProject();
+                retiredOutgoing = true;
+                projectManager.openProject(folder, prepared); // PARSE only; target lock and recovery already resolved
+                OpenRecoveryGate.Result result = recoveryResult;
+                OpenDoor actualDoor = result.applied() >= 0
+                        ? new OpenDoor.JournalReplay(result.applied(), result.unread()) : selectedDoor;
+                PreparedLoad loaded = callOnFx(() -> {
+                    if (refuseLateLoadWhileATakeIsRecordingOrBeingWritten(
+                            "The recovery decision for " + folder + " was applied")) return null;
+                    projectInstallationPending = true;
+                    rootPane.setDisable(true);
+                    headSavedAt = null;
+                    progress.checkpointsEnded();
+                    return prepareLoadedProject(folder); // REHYDRATE and ACCOUNT before JOURNAL
+                });
+                if (loaded == null) return;
+                if (!projectManager.isReadOnly()) prepareJournalOpen.accept(folder);
+                installed = true;
+                postFx(() -> {
+                    if (attempt != loadAttempts) return;
+                    recovering = false;
+                    try { lastLoadResult = finishPreparedLoad(folder, actualDoor, attempt, true, loaded); }
+                    finally { finishOpenAttempt(attempt); }
+                });
+            } catch (OpenRecoveryGate.Cancelled cancelled) {
+                postFx(() -> {
+                    if (attempt != loadAttempts) return;
+                    finishOpenAttempt(attempt); lastLoadResult = false; reshowWelcomeAfterRecovery();
+                });
+            } catch (Throwable failure) {
+                LOG.log(Level.WARNING, "Project open/recovery failed for " + folder, failure);
+                postFx(() -> {
+                    if (attempt != loadAttempts) return;
+                    finishOpenAttempt(attempt);
+                    lastLoadResult = false;
+                    notificationBar.show(NotificationLevel.ERROR, "Open failed: " + failureReason(failure));
+                });
+            } finally {
+                if (!installed) {
+                    if (retiredOutgoing && prepared != null && projectManager.getLockManager() == prepared.lock()) {
+                        projectManager.abandonProject();
+                    }
+                    if (prepared != null) {
+                        try { prepared.close(); }
+                        catch (IOException failure) { LOG.log(Level.WARNING, "Could not release cancelled target lease", failure); }
+                    }
+                    postFx(() -> finishOpenAttempt(attempt));
+                }
+            }
+        });
+    }
+
+    private void finishOpenAttempt(long attempt) {
+        if (attempt != loadAttempts) return;
+        recovering = false;
+        projectInstallationPending = false;
+        rootPane.setDisable(false);
+    }
+
+    private <T> T callOnFx(Supplier<T> work) {
+        CompletableFuture<T> answer = new CompletableFuture<>();
+        postFx(() -> {
+            try { answer.complete(work.get()); }
+            catch (RuntimeException | Error failure) { answer.completeExceptionally(failure); }
+        });
+        return answer.join();
+    }
+
+    private boolean sameOpenFolder(Path folder) {
+        ProjectMetadata current = projectManager.getCurrentProject();
+        return current != null && current.projectPath() != null
+                && current.projectPath().toAbsolutePath().normalize().equals(folder.toAbsolutePath().normalize());
+    }
 
     /**
      * Story 323 review — whether a take is still being written, in the sense
@@ -1189,6 +1327,26 @@ final class ProjectLifecycleController {
 
     /** Replaces the open project with a new one created in {@code parentDirectory}. FX thread. */
     private void createNewProjectIn(Path parentDirectory) {
+        if (openRecoveryGate != null && !journalClosedForCreation) {
+            Runnable closeJournal = prepareJournalClose.get();
+            startRecoveryWorker("daw-new-project-seal", () -> {
+                try {
+                    closeJournal.run();
+                    postFx(() -> {
+                        recovering = false;
+                        journalClosedForCreation = true;
+                        try { createNewProjectIn(parentDirectory); }
+                        finally { journalClosedForCreation = false; }
+                    });
+                } catch (Throwable failure) {
+                    postFx(() -> {
+                        recovering = false;
+                        notificationBar.show(NotificationLevel.ERROR, "Project close failed: " + failureReason(failure));
+                    });
+                }
+            });
+            return;
+        }
         resetProjectState();
         DawProject newProject = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
         deps.setProject().accept(newProject);
@@ -2516,6 +2674,14 @@ final class ProjectLifecycleController {
      */
     boolean loadProjectFromPath(Path projectDir, OpenDoor door) {
         Objects.requireNonNull(door, "door must not be null");
+        if (openRecoveryGate != null) {
+            if (recovering) { refuseWhileASwitchIsPending(); return false; }
+            if (refuseWhileATakeIsRecordingOrBeingWritten()) return false;
+            if (sameOpenFolder(projectDir) && !(door instanceof OpenDoor.MigrationRollback)) {
+                notificationBar.show(NotificationLevel.INFO, "Project is already open: " + projectDir);
+                return false;
+            }
+        }
         long attempt = ++loadAttempts;
         boolean loaded = loadAttempt(projectDir, door, attempt);
         lastLoadResult = loaded;
@@ -2524,6 +2690,10 @@ final class ProjectLifecycleController {
 
     /** One {@link #loadProjectFromPath(Path, OpenDoor)} call, numbered {@code attempt}. */
     private boolean loadAttempt(Path projectDir, OpenDoor door, long attempt) {
+        if (openRecoveryGate != null) {
+            beginGatedLoad(projectDir, door, attempt);
+            return true;
+        }
         if (refuseWhileATakeIsRecordingOrBeingWritten()) {
             return false;
         }
@@ -2533,6 +2703,27 @@ final class ProjectLifecycleController {
             // still on screen loading, reported and relinkable.
             abandonOpenProject();
             projectManager.openProject(projectDir);
+            return finishLoad(projectDir, door, attempt, false);
+        } catch (MigrationException e) {
+            // Unmapped or broken migration chain — surface as an error
+            // notification rather than letting the runtime exception
+            // bubble out of the menu/action handler.
+            notificationBar.show(NotificationLevel.ERROR,
+                    "Migration failed: " + e.getMessage());
+            LOG.log(Level.WARNING, "Failed to migrate project on open", e);
+            return false;
+        } catch (IOException e) {
+            notificationBar.show(NotificationLevel.ERROR,
+                    "Open failed: " + e.getMessage());
+            LOG.log(Level.WARNING, "Failed to open project", e);
+            return false;
+        }
+    }
+
+    private record PreparedLoad(DawProject project, List<UnreadProjectItem> unread,
+                                OpenProjectAudio.Generation generation) { }
+
+    private PreparedLoad prepareLoadedProject(Path projectDir) {
             // Story 331 (G13 #4) — the strip starts over, its time the opened file's.
             projectReplaced(openedFileLastSaved());
             DawProject dawProject = projectManager.getCurrentDawProject();
@@ -2553,6 +2744,18 @@ final class ProjectLifecycleController {
             deps.project().get().markClean();
             OpenProjectAudio.Generation generation = openProjectAudio.begin(dawProject, projectDir,
                     missingAssets, dawProject.getTransport().getPositionInBeats());
+        return new PreparedLoad(dawProject, unreadItems, generation);
+    }
+
+    private boolean finishLoad(Path projectDir, OpenDoor door, long attempt, boolean journalPrepared) {
+        return finishPreparedLoad(projectDir, door, attempt, journalPrepared, prepareLoadedProject(projectDir));
+    }
+
+    private boolean finishPreparedLoad(Path projectDir, OpenDoor door, long attempt, boolean journalPrepared,
+                                       PreparedLoad loaded) {
+        DawProject dawProject = loaded.project();
+        List<UnreadProjectItem> unreadItems = loaded.unread();
+        OpenProjectAudio.Generation generation = loaded.generation();
             rebuildUI();
             // Story 282 — Mission Control. Apply the layout JSON blob
             // embedded in the project file (may be {@code null} for
@@ -2584,23 +2787,9 @@ final class ProjectLifecycleController {
                 // Story 329 (D48) — only for the open still current: a Roll back
                 // with no .bak abandoned this project for an Untitled one without
                 // re-entering the load, so its folder gets no journal.
-                notifyJournalOpen(projectDir);
+                if (!journalPrepared && !projectManager.isReadOnly()) notifyJournalOpen(projectDir);
             }
             return true;
-        } catch (MigrationException e) {
-            // Unmapped or broken migration chain — surface as an error
-            // notification rather than letting the runtime exception
-            // bubble out of the menu/action handler.
-            notificationBar.show(NotificationLevel.ERROR,
-                    "Migration failed: " + e.getMessage());
-            LOG.log(Level.WARNING, "Failed to migrate project on open", e);
-            return false;
-        } catch (IOException e) {
-            notificationBar.show(NotificationLevel.ERROR,
-                    "Open failed: " + e.getMessage());
-            LOG.log(Level.WARNING, "Failed to open project", e);
-            return false;
-        }
     }
 
     /**
@@ -2850,6 +3039,16 @@ final class ProjectLifecycleController {
      * project parsed.
      */
     void resetProjectState() {
+        if (openRecoveryGate != null && !journalClosedForCreation) {
+            Runnable close = prepareJournalClose.get();
+            Thread.ofVirtual().name("daw-project-reset-seal").start(() -> {
+                try { close.run(); }
+                catch (RuntimeException failure) {
+                    postFx(() -> notificationBar.show(NotificationLevel.ERROR,
+                            "Project close failed: " + failureReason(failure)));
+                }
+            });
+        }
         openProjectAudio.retire();
         abandonOpenProject();
     }
@@ -3066,6 +3265,12 @@ final class ProjectLifecycleController {
         // scan; its later loads are refused again if a recording has started,
         // or a take has started being written, meanwhile.
         if (refuseWhileATakeIsRecordingOrBeingWritten()) {
+            return;
+        }
+        if (openRecoveryGate != null) {
+            proceeding.run();
+            whenNoAppWriteIsPending(RECOVER_SESSION_DOOR, this::refuseWhileATakeIsRecordingOrBeingWritten,
+                    () -> loadProjectFromPath(projectDir));
             return;
         }
         proceeding.run();

@@ -30,8 +30,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Verifies the story-296 §4.1 ordering: with one stale-lock ("did not exit
  * cleanly") project present, {@link WelcomeView} renders the Recover region
  * <em>above</em> the Continue region and places the stale project in Recover —
- * never in Continue. Classification is synchronous (a single lock-file read per
- * recent path), so placement is asserted with no dispatcher pump.
+ * never in Continue. Classification runs on a worker, then publishes both groups
+ * through the FX dispatcher before placement is asserted.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class WelcomeRecoverBeforeRecentTest {
@@ -93,6 +93,7 @@ class WelcomeRecoverBeforeRecentTest {
                 () -> {})));       // onImportDawproject
 
         WelcomeView view = viewRef.get();
+        WelcomeTestSupport.awaitClassification(view);
         assertThat(view).isNotNull();
 
         // §4.1: Recover renders above Continue.

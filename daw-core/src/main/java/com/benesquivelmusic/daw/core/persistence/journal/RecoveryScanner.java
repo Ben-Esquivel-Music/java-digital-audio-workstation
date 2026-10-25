@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.persistence.journal;
 
 import com.benesquivelmusic.daw.core.persistence.CheckpointFileName;
+import com.benesquivelmusic.daw.core.persistence.CheckpointOrder;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -26,8 +27,8 @@ import java.util.stream.Stream;
  *
  * <p>The scanner is read-only: it parses the newest checkpoint's index and
  * timestamp from its file name (the {@link CheckpointFileName} grammar the
- * {@code CheckpointManager} writes; newest by {@link CheckpointFileName#ORDER},
- * the stamp in the name and then the index),
+ * {@code CheckpointManager} writes; explicit {@link CheckpointOrder} provenance
+ * orders certified checkpoints by index, after the legacy stamp-ordered files),
  * reads every {@code segment-*.bin} via
  * {@link JournalSegment#readAll(Path)} (which stops cleanly at a torn tail),
  * sorts the records by sequence, and derives the last-event facts, count,
@@ -116,10 +117,9 @@ public final class RecoveryScanner {
     // ---- checkpoint discovery ---------------------------------------------
 
     /**
-     * Finds the newest checkpoint in {@code checkpointDir} by
-     * {@link CheckpointFileName#ORDER}: the stamp in the name, then the index
-     * (story 331, ruling F5), so an earlier session's higher index never
-     * outranks a later checkpoint.
+     * Finds the newest checkpoint using explicit monotonic-index provenance.
+     * Files predating that fact retain the legacy stamp order, including files
+     * whose old per-launch indices happened never to repeat.
      *
      * @param checkpointDir the {@code checkpoints/} directory
      * @return the newest checkpoint, or empty if the directory is missing or
@@ -129,12 +129,20 @@ public final class RecoveryScanner {
         if (!Files.isDirectory(checkpointDir)) {
             return Optional.empty();
         }
+        Set<String> covered;
+        try { covered = CheckpointOrder.read(checkpointDir); }
+        catch (IOException invalidFact) {
+            java.util.logging.Logger.getLogger(RecoveryScanner.class.getName()).log(java.util.logging.Level.WARNING,
+                    "Checkpoint ordering fact unavailable; using legacy stamp order", invalidFact);
+            covered = Set.of();
+        }
+        Comparator<CheckpointFileName> order = CheckpointOrder.comparator(covered);
         try (Stream<Path> files = Files.list(checkpointDir)) {
             return files
                     .flatMap(file -> CheckpointFileName.parse(file.getFileName().toString())
                             .map(name -> new NamedFile(name, file))
                             .stream())
-                    .max(Comparator.comparing(NamedFile::name, CheckpointFileName.ORDER))
+                    .max(Comparator.comparing(NamedFile::name, order))
                     .map(newest -> new Checkpoint(newest.name().index(), newest.name().instantIn(zone),
                             newest.name().fileName(), newest.file()));
         }

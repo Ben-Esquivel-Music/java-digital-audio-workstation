@@ -192,7 +192,9 @@ class CheckpointTickIsolationTest {
         AtomicFileWriter observed = new AtomicFileWriter(AtomicFileWriter.TEMP_CHANNEL_OPENER,
                 (temp, target, options) -> {
                     AtomicFileWriter.FILE_SYSTEM_MOVER.move(temp, target, options);
-                    publishers.add(Thread.currentThread());
+                    if (CheckpointFileName.parse(target.getFileName().toString()).isPresent()) {
+                        publishers.add(Thread.currentThread());
+                    }
                 });
         TestSource source = new TestSource();
         Recorder recorder = startTicking(source, observed);

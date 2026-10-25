@@ -59,6 +59,11 @@ public record JournalRecord(
 
     /** The {@code type} tag of a checkpoint-boundary marker record. */
     public static final String CHECKPOINT_TYPE = "$checkpoint";
+    public static final String SESSION_SEAL_TYPE = "$session-seal";
+    public static final String SESSION_START_TYPE = "$session-start";
+
+    public boolean isSessionSeal() { return SESSION_SEAL_TYPE.equals(type); }
+    public boolean isControl() { return isCheckpointMarker() || isSessionSeal() || SESSION_START_TYPE.equals(type); }
 
     private static final byte[] EMPTY = new byte[0];
 

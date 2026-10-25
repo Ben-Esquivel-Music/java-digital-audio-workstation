@@ -12,7 +12,6 @@ import com.benesquivelmusic.daw.core.persistence.journal.JournalWriter;
 import com.benesquivelmusic.daw.core.persistence.journal.ProjectContext;
 import com.benesquivelmusic.daw.core.session.SessionManager;
 import com.benesquivelmusic.daw.core.session.WorkingSession;
-import com.benesquivelmusic.daw.sdk.event.AutoSaveListener;
 import com.benesquivelmusic.daw.sdk.event.EventBus;
 
 import java.io.IOException;
@@ -35,8 +34,8 @@ import java.util.logging.Logger;
  * preference, §7 Stage&nbsp;4 "ships behind a preference for one release"), an
  * {@link #openFor(Path) open} starts a {@link JournalWriter} for the project's
  * {@code journal/} directory and a {@link JournalEventRecorder} that feeds it
- * from the application {@link EventBus}, and registers an {@link AutoSaveListener}
- * that rotates the journal on every successful checkpoint. Journal telemetry —
+ * from the application {@link EventBus}, and registers capture and checkpoint listeners
+ * that rotate at the successful checkpoint's capture boundary. Journal telemetry —
  * the queued-since-checkpoint count and the back-pressure level — is published
  * onto the {@link ProjectOperationProgress} model, which the Session Status
  * Strip's Journal cell binds to.</p>
@@ -45,8 +44,7 @@ import java.util.logging.Logger;
  *
  * <p>{@link JournalWriter#offer(String, java.util.UUID, byte[], Instant) offer}
  * is non-blocking and never drops, so the {@link JournalEventRecorder} can feed
- * it straight from the bus callback (the recorder runs
- * {@code ON_CALLER_THREAD}). The {@link JournalListener} callbacks fire on the
+ * it from the synchronous publication observer. The {@link JournalListener} callbacks fire on the
  * writer's virtual thread; the {@link ProjectOperationProgress} mutators
  * self-marshal onto the FX thread (story 289), so they are called directly, and
  * the one user-facing {@link NotificationBar} alert (on
@@ -84,8 +82,9 @@ public final class ProjectJournalCoordinator {
     // open/close/reopen *sequences* so they can never interleave.
     private volatile JournalWriter writer;
     private volatile JournalEventRecorder recorder;
-    private AutoSaveListener rotationListener;
-    private Path openProjectDir;
+    private Runnable rotationListener;
+    private Runnable captureListener;
+    private volatile Path openProjectDir;
 
     /**
      * Serialises {@link #openFor(Path)}, {@link #closeCurrent(WorkingSession)}
@@ -158,6 +157,14 @@ public final class ProjectJournalCoordinator {
     public boolean isOpen() {
         return writer != null;
     }
+    public Path currentProjectDirectory() { return openProjectDir; }
+
+    public void closeCurrentFor(Path expectedDirectory, WorkingSession session) {
+        lifecycleLock.lock();
+        try {
+            if (Objects.equals(expectedDirectory, openProjectDir)) closeCurrent(session);
+        } finally { lifecycleLock.unlock(); }
+    }
 
     /**
      * Synchronously detaches the journal's {@link JournalEventRecorder} from the
@@ -210,14 +217,33 @@ public final class ProjectJournalCoordinator {
                 LOG.log(Level.WARNING, "Failed to start journal writer for " + projectDir, e);
                 return;
             }
-            JournalEventRecorder newRecorder =
-                    new JournalEventRecorder(bus, newWriter, clock).start();
-            AutoSaveListener listener = new RotationListener(newWriter);
-            checkpointManager.addListener(listener);
+            JournalEventRecorder newRecorder;
+            try { newRecorder = new JournalEventRecorder(bus, newWriter, clock).start(); }
+            catch (RuntimeException failure) {
+                newWriter.close();
+                LOG.log(Level.WARNING, "Journal publication observation is unavailable", failure);
+                FxDispatcher.runOnFx(dispatcher, () -> notifications.show(NotificationLevel.ERROR,
+                        "Journaled persistence could not start: " + failure.getMessage()));
+                return;
+            }
+            java.util.concurrent.ConcurrentHashMap<Long, Long> captures = new java.util.concurrent.ConcurrentHashMap<>();
+            Runnable captureRemoval = checkpointManager.addCaptureListener(revision ->
+                    captures.putIfAbsent(revision, newWriter.captureSequence()));
+            Runnable listener = checkpointManager.addEventListener(event -> {
+                if (event instanceof com.benesquivelmusic.daw.core.persistence.CheckpointEvent.Written written
+                        && written.file().getParent().equals(projectDir.resolve("checkpoints"))) {
+                    Long boundary = captures.get(written.revision());
+                    if (boundary != null) {
+                        try { newWriter.onCheckpointSucceeded(boundary, written.file(), clock.instant()); }
+                        catch (IOException failure) { LOG.log(Level.WARNING, "Could not record checkpoint capture boundary", failure); }
+                    }
+                }
+            });
 
             this.writer = newWriter;
             this.recorder = newRecorder;
             this.rotationListener = listener;
+            this.captureListener = captureRemoval;
             this.openProjectDir = projectDir;
             // Seed the Journal cell to a clean state for the freshly-opened project.
             progress.setJournalEventsQueued(0);
@@ -265,29 +291,47 @@ public final class ProjectJournalCoordinator {
      *                      be {@code null} when there is nothing to seal.
      */
     public void closeCurrent(WorkingSession sessionToSeal) {
+        closeCurrent(sessionToSeal, true);
+    }
+
+    /** Disposal has no ordered final-save protocol until story 333: never certify it clean. */
+    public void drainWithoutSeal(WorkingSession sessionToSeal) {
+        closeCurrent(sessionToSeal, false);
+    }
+
+    private void closeCurrent(WorkingSession sessionToSeal, boolean seal) {
         lifecycleLock.lock();
         try {
             JournalWriter w = this.writer;
             JournalEventRecorder r = this.recorder;
-            AutoSaveListener listener = this.rotationListener;
+            Runnable listener = this.rotationListener;
+            Runnable captured = this.captureListener;
             Path dir = this.openProjectDir;
 
             // Clear live state first so a concurrent isOpen() sees "closed".
             this.writer = null;
             this.recorder = null;
             this.rotationListener = null;
+            this.captureListener = null;
             this.openProjectDir = null;
 
             if (listener != null) {
-                checkpointManager.removeListener(listener);
+                listener.run();
             }
+            if (captured != null) captured.run();
             if (r != null) {
                 r.close();
             }
             List<String> segments = List.of();
             if (w != null) {
                 segments = w.segmentFileNames();
-                w.close();
+                try {
+                    if (seal) w.sealAndClose(clock.instant());
+                    else w.close();
+                }
+                catch (IOException failure) {
+                    throw new java.io.UncheckedIOException("Project journal could not be sealed; recovery evidence was preserved", failure);
+                }
             }
             sealSession(dir, segments, sessionToSeal);
             // Reset the strip's Journal cell now that no journal is feeding it.
@@ -354,27 +398,4 @@ public final class ProjectJournalCoordinator {
         };
     }
 
-    /** Rotates the journal on every successful checkpoint (the new checkpoint subsumes the segment). */
-    private static final class RotationListener implements AutoSaveListener {
-        private final JournalWriter writer;
-
-        RotationListener(JournalWriter writer) {
-            this.writer = writer;
-        }
-
-        @Override
-        public void onBeforeCheckpoint(String checkpointId) {
-            // no-op
-        }
-
-        @Override
-        public void onAfterCheckpoint(String checkpointId) {
-            writer.onCheckpointSucceeded();
-        }
-
-        @Override
-        public void onCheckpointFailed(String checkpointId, Throwable cause) {
-            // no-op — a failed checkpoint must not rotate the journal away.
-        }
-    }
 }

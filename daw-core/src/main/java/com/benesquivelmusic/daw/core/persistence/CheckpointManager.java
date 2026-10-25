@@ -237,6 +237,20 @@ public final class CheckpointManager {
 
     private final List<AutoSaveListener> listeners = new CopyOnWriteArrayList<>();
     private final List<Consumer<CheckpointEvent>> eventListeners = new CopyOnWriteArrayList<>();
+    @FunctionalInterface interface DirectoryReader { DirectoryStream<Path> open(Path directory) throws IOException; }
+    private DirectoryReader directoryReader = Files::newDirectoryStream;
+    void setDirectoryReader(DirectoryReader reader) { directoryReader = Objects.requireNonNull(reader); }
+    private final List<java.util.function.LongConsumer> captureListeners = new CopyOnWriteArrayList<>();
+
+    /** Called on the model owner immediately before its immutable capture. */
+    public void captureStarted(long revision) {
+        for (java.util.function.LongConsumer listener : captureListeners) listener.accept(revision);
+    }
+
+    public Runnable addCaptureListener(java.util.function.LongConsumer listener) {
+        captureListeners.add(Objects.requireNonNull(listener));
+        return () -> captureListeners.remove(listener);
+    }
     private volatile BackupRetentionPolicy retentionPolicy;
     private volatile CaptureSource captureSource;
     private volatile WriteGuard writeGuard = () -> { };
@@ -504,6 +518,7 @@ public final class CheckpointManager {
      * @throws IllegalArgumentException if {@code origin} is {@link CheckpointOrigin#SCHEDULED}
      */
     public CompletableFuture<Path> writeCheckpoint(String xml, long revision, CheckpointOrigin origin) {
+        captureStarted(revision);
         Objects.requireNonNull(xml, "xml must not be null");
         requireARequestOrigin(origin);
         Session current = session;
@@ -845,6 +860,7 @@ public final class CheckpointManager {
                 handedToWriter = true;
                 return;
             }
+            captureStarted(revision);
             CheckpointSource.Renderer renderer = Objects.requireNonNull(source.capture(),
                     "the capture returned no renderer");
             submit(new WriteJob(ticking, CheckpointOrigin.SCHEDULED, revision, renderer, new CompletableFuture<>()));
@@ -1175,8 +1191,16 @@ public final class CheckpointManager {
     private void seed(Session seeding) {
         try {
             List<Path> strayTemps = new ArrayList<>();
-            if (Files.isDirectory(seeding.checkpointDirectory)) {
-                try (DirectoryStream<Path> entries = Files.newDirectoryStream(seeding.checkpointDirectory)) {
+            try {
+                seeding.certified.addAll(CheckpointOrder.read(seeding.checkpointDirectory));
+            } catch (IOException invalidFact) {
+                LOG.log(Level.WARNING, "Checkpoint ordering fact is unavailable; using legacy stamp order", invalidFact);
+            }
+            if (!Files.notExists(seeding.checkpointDirectory)) {
+                if (!Files.readAttributes(seeding.checkpointDirectory, java.nio.file.attribute.BasicFileAttributes.class).isDirectory()) {
+                    throw new IOException("Checkpoints path is not a directory: " + seeding.checkpointDirectory);
+                }
+                try (DirectoryStream<Path> entries = directoryReader.open(seeding.checkpointDirectory)) {
                     for (Path entry : entries) {
                         String name = entry.getFileName().toString();
                         Optional<CheckpointFileName> checkpoint = CheckpointFileName.parse(name);
@@ -1189,6 +1213,7 @@ public final class CheckpointManager {
                     }
                 }
             }
+            seeding.certificationEligible = true;
             seeding.publishView();
             seeding.firstTick.compareAndSet(SeedMatch.UNSEEDED, seedMatchOf(seeding));
             deleteStrayTemps(seeding, strayTemps);
@@ -1366,6 +1391,17 @@ public final class CheckpointManager {
         }
         try {
             Files.createDirectories(target.checkpointDirectory);
+            Set<String> covered = new HashSet<>(target.certified);
+            if (target.certificationEligible) covered.add(published.name().fileName());
+            else covered.remove(published.name().fileName());
+            if (!covered.equals(target.certified)) {
+                CheckpointOrder.record(target.checkpointDirectory, covered, fileWriter);
+                List<Map.Entry<CheckpointFileName, Path>> existing = new ArrayList<>(target.index.entrySet());
+                target.index.clear();
+                target.certified.clear();
+                target.certified.addAll(covered);
+                existing.forEach(entry -> target.index.put(entry.getKey(), entry.getValue()));
+            }
             fileWriter.writeString(published.file(), content);
         } finally {
             target.publishing = null;
@@ -1673,7 +1709,9 @@ public final class CheckpointManager {
         volatile IndexView view = IndexView.EMPTY;
 
         /** Writer-confined: the checkpoint files of the directory by {@link CheckpointFileName#ORDER}. */
-        final TreeMap<CheckpointFileName, Path> index = new TreeMap<>(CheckpointFileName.ORDER);
+        final Set<String> certified = new HashSet<>();
+        boolean certificationEligible;
+        final TreeMap<CheckpointFileName, Path> index = new TreeMap<>(CheckpointOrder.comparator(certified));
 
         /** Writer-confined: the highest index seeded or written. */
         long highestIndex;

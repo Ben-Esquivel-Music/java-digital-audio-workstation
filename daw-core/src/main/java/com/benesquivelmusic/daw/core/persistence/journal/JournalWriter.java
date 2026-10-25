@@ -6,6 +6,7 @@ import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -84,6 +85,9 @@ public final class JournalWriter implements AutoCloseable {
 
     // ---- counters / flags -------------------------------------------------
     private final AtomicLong sequence = new AtomicLong(0L);
+    private final java.util.concurrent.ConcurrentSkipListSet<Long> durableMutations = new java.util.concurrent.ConcurrentSkipListSet<>();
+    private volatile long checkpointBoundary = -1L;
+    private volatile IOException closeFailure;
     private final AtomicInteger queuedSinceCheckpoint = new AtomicInteger(0);
     private final AtomicBoolean bufferingSignalled = new AtomicBoolean(false);
     private final AtomicBoolean escalatedSignalled = new AtomicBoolean(false);
@@ -163,12 +167,21 @@ public final class JournalWriter implements AutoCloseable {
             return;
         }
         Files.createDirectories(ctx.journalDirectory());
+        for (java.nio.file.Path prior : RecoveryScanner.listSegments(ctx.journalDirectory())) {
+            if (Files.size(prior) > 0L) throw new IOException("Prior journal must pass recovery before a new session starts: " + prior);
+        }
+        JournalState.saveBase(ctx);
         openSegment(0);
         running = true;
         writerThread = Thread.ofVirtual()
                 .name("daw-journal-writer")
                 .unstarted(this::writerLoop);
         writerThread.start();
+        if (Files.exists(ctx.projectFile())) {
+            offer(JournalRecord.SESSION_START_TYPE, null,
+                    JournalState.hash(ctx.journalDirectory().resolve(JournalState.BASE_FILE)).getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    ctx.requestedAt());
+        }
     }
 
     /** {@return {@code true} if journaling is enabled for this writer} */
@@ -234,11 +247,13 @@ public final class JournalWriter implements AutoCloseable {
      *               stamps a fresh sequence)
      * @return the outcome (never a drop)
      */
-    public OfferResult offer(JournalRecord record) {
+    public synchronized OfferResult offer(JournalRecord record) {
         Objects.requireNonNull(record, "record must not be null");
+        if (stopping || closed) throw new IllegalStateException("Journal no longer accepts records");
         if (!enabled) {
             return OfferResult.DISABLED;
         }
+        sequence.accumulateAndGet(record.sequence() + 1L, Math::max);
         if (queue.offer(record)) {
             signalWork();
             return OfferResult.QUEUED;
@@ -287,10 +302,34 @@ public final class JournalWriter implements AutoCloseable {
         if (!enabled) {
             return;
         }
+        checkpointBoundary = captureSequence();
+        durableMutations.headSet(checkpointBoundary, true).clear();
+        publishQueuedCount();
+        offer(JournalRecord.checkpointMarker(sequence.getAndIncrement(), Instant.now()));
         rotateRequested.set(true);
-        queuedSinceCheckpoint.set(0);
-        safeQueuedCount(0);
-        signalWork();
+    }
+
+    /** The publication fence at a model capture; no disk access. */
+    public long captureSequence() { return sequence.get() - 1L; }
+
+    /** A successful checkpoint retires only mutations represented by its capture. */
+    public void onCheckpointSucceeded(long capturedSequence, java.nio.file.Path checkpoint, Instant time) throws IOException {
+        if (!enabled) return;
+        appendLock.lock();
+        try {
+            checkpointBoundary = Math.max(checkpointBoundary, capturedSequence);
+            durableMutations.headSet(checkpointBoundary, true).clear();
+            publishQueuedCount();
+            offer(new JournalRecord(sequence.getAndIncrement(), time, JournalRecord.CHECKPOINT_TYPE, null,
+                    JournalState.capture(capturedSequence, checkpoint)));
+            rotateRequested.set(true);
+        } finally { appendLock.unlock(); }
+    }
+
+    private void publishQueuedCount() {
+        int count = durableMutations.size();
+        queuedSinceCheckpoint.set(count);
+        safeQueuedCount(count);
     }
 
     // ---- force flush escape hatch -----------------------------------------
@@ -407,6 +446,7 @@ public final class JournalWriter implements AutoCloseable {
                 // has begun (stopping), give up so the writer thread can exit
                 // and close()'s join() does not hang on a dead disk.
                 if (stopping) {
+                    closeFailure = e;
                     return;
                 }
                 sleepQuietly(backoffMillis);
@@ -425,8 +465,10 @@ public final class JournalWriter implements AutoCloseable {
         appendLock.lock();
         try {
             segment.appendGroup(batch);
-            int total = queuedSinceCheckpoint.addAndGet(batch.size());
-            safeQueuedCount(total);
+            for (JournalRecord record : batch) {
+                if (!record.isControl() && record.sequence() > checkpointBoundary) durableMutations.add(record.sequence());
+            }
+            publishQueuedCount();
             maybeClearBackpressure();
 
             boolean sizeRotate = segment.sizeBytes() >= config.segmentMaxBytes();
@@ -512,7 +554,7 @@ public final class JournalWriter implements AutoCloseable {
     // ---- segment helpers --------------------------------------------------
 
     private void openSegment(int index) throws IOException {
-        String name = String.format("segment-%03d.bin", index);
+        String name = String.format(Locale.ROOT, "segment-%03d.bin", index);
         // Open first; only publish the new segment + index once the open
         // succeeds, so a failed open leaves the writer pointing at the still-open
         // current segment rather than a half-rotated/closed one.
@@ -555,6 +597,30 @@ public final class JournalWriter implements AutoCloseable {
 
     // ---- close ------------------------------------------------------------
 
+    /** Drains and fsyncs all edits before the final fsynced seal; any failure leaves an unsealed session. */
+    public void sealAndClose(Instant time) throws IOException {
+        if (!enabled || closed) return;
+        synchronized (this) { stopping = true; }
+        running = false;
+        signalWork();
+        try {
+            if (writerThread != null) writerThread.join();
+            drainUntilEmpty();
+            if (closeFailure != null) throw closeFailure;
+            appendLock.lock();
+            try {
+                segment.appendGroup(List.of(new JournalRecord(sequence.getAndIncrement(), time,
+                        JournalRecord.SESSION_SEAL_TYPE, null, null)));
+            } finally { appendLock.unlock(); }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted before journal session could be sealed", interrupted);
+        } finally {
+            if (segment != null) segment.close();
+            closed = true;
+        }
+    }
+
     /**
      * Flushes and fsyncs every remaining record and closes the current
      * segment <strong>before</strong> stopping the writer thread and flipping
@@ -574,7 +640,7 @@ public final class JournalWriter implements AutoCloseable {
         // final drain can publish its side effects first. `stopping` is set
         // before the join so a writer thread wedged in appendWithRetry on a
         // failing disk gives up rather than hanging the join.
-        stopping = true;
+        synchronized (this) { stopping = true; }
         running = false;
         signalWork();
 

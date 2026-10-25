@@ -78,7 +78,7 @@ public final class SettingsModel {
      * release (§7 Stage&nbsp;4) before becoming the default. When off, no
      * {@code journal/} directory is created and no events are journaled.
      */
-    static final boolean DEFAULT_USE_JOURNALED_PERSISTENCE = false;
+    static final boolean DEFAULT_USE_JOURNALED_PERSISTENCE = true;
     static final double DEFAULT_UI_SCALE = 1.0;
     /**
      * Default active theme id. Matches

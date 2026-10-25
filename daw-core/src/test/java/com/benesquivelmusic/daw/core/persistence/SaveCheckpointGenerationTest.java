@@ -132,7 +132,8 @@ class SaveCheckpointGenerationTest {
         manager.abandonProject();
         manager.openProject(first);
         Map<String, String> before = checkpointsIn(first);
-        assertThat(before).as("fixture: the first save's checkpoint, seeded by the new generation").hasSize(1);
+        assertThat(before).as("fixture: the first save's checkpoint and ordering fact, seeded by the new generation")
+                .hasSize(2).containsKey(CheckpointOrder.FILE_NAME);
         int writtenBefore = recorder.events(CheckpointEvent.Written.class).size();
         head.release();
 

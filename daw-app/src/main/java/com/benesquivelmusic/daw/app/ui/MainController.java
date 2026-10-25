@@ -797,6 +797,8 @@ public final class MainController {
      * always reaches the CURRENT epoch's handler.
      */
     private void dispatchTransportCommand(TransportCommand command) {
+        if ((command instanceof ToggleRecordCommand || command instanceof ToggleLoopRecordCommand)
+                && projectLifecycleController != null && projectLifecycleController.isProjectInstallationPending()) return;
         command.execute(transportController);
     }
 
@@ -921,7 +923,7 @@ public final class MainController {
         }
 
         // Story 298 — the write-ahead-journal coordinator. Reads the "Use
-        // journaled persistence" preference at open time (default OFF), the live
+        // journaled persistence" preference at open time (default ON), the live
         // EventBus as the change source, registers its checkpoint-rotation
         // listener, and seals the journal segments into the manifest on close
         // (the session to seal is captured on the FX thread and handed to the
@@ -1437,7 +1439,7 @@ public final class MainController {
                             // coordinator folds the journal segments into it.
                             com.benesquivelmusic.daw.core.session.WorkingSession journalSession = activeSession;
                             Thread.ofVirtual().name("daw-journal-close")
-                                    .start(() -> projectJournalCoordinator.closeCurrent(journalSession));
+                                    .start(() -> projectJournalCoordinator.drainWithoutSeal(journalSession));
                         }
                         // Project Manager Design Book §3.3 — seal the active
                         // working session on clean shutdown. The write is I/O,
@@ -1892,6 +1894,15 @@ public final class MainController {
         // project; passing the captured value avoids reading activeSession from
         // a background thread. A no-op when journaled persistence is disabled.
         if (projectJournalCoordinator != null && projectLifecycleController != null) {
+            projectLifecycleController.enableRecoveryGate(
+                    () -> settingsModel != null && settingsModel.isUseJournaledPersistence(),
+                    () -> {
+                        Path journalDirectory = projectJournalCoordinator.currentProjectDirectory();
+                        com.benesquivelmusic.daw.core.session.WorkingSession outgoing =
+                                Objects.equals(journalDirectory, activeSessionProjectDir) ? activeSession : null;
+                        projectJournalCoordinator.detachFromBus();
+                        return () -> projectJournalCoordinator.closeCurrentFor(journalDirectory, outgoing);
+                    }, projectJournalCoordinator::openFor);
             projectLifecycleController.setJournalOpenHook(projectDir -> {
                 com.benesquivelmusic.daw.core.session.WorkingSession outgoing = activeSession;
                 Thread.ofVirtual().name("daw-journal-reopen")
@@ -2132,7 +2143,10 @@ public final class MainController {
      *                    for display-only refreshes (e.g. toggling the dock)
      *                    that must not mutate session state.
      */
+    private volatile long sessionRefreshGeneration;
+
     private void refreshSessionManager(boolean openSession) {
+        long sessionGeneration = openSession ? ++sessionRefreshGeneration : sessionRefreshGeneration;
         if (sessionManagerDock == null) {
             return;
         }
@@ -2146,12 +2160,20 @@ public final class MainController {
             return;
         }
         java.nio.file.Path projectDir = current.projectPath();
+        boolean writableSession = openSession && !projectManager.isReadOnly();
+        if (openSession && !writableSession) {
+            activeSession = null;
+            activeSessionProjectDir = null;
+        }
         Thread.ofVirtual().name("daw-session-manager").start(() -> {
             com.benesquivelmusic.daw.core.session.WorkingSession opened = null;
             java.util.List<com.benesquivelmusic.daw.core.session.WorkingSession> history;
             java.util.List<com.benesquivelmusic.daw.core.snapshot.SnapshotEntry> snapshots;
             try {
-                if (openSession) {
+                if (writableSession && sessionGeneration == sessionRefreshGeneration
+                        && projectManager.getCurrentProject() != null
+                        && projectDir.equals(projectManager.getCurrentProject().projectPath())
+                        && !projectManager.isReadOnly()) {
                     com.benesquivelmusic.daw.core.session.SessionManager.SessionOpenResult result =
                             sessionManager.openSession(projectDir, java.time.Instant.now());
                     opened = result.current();
@@ -2176,6 +2198,8 @@ public final class MainController {
             java.util.List<com.benesquivelmusic.daw.core.session.WorkingSession> result = history;
             java.util.List<com.benesquivelmusic.daw.core.snapshot.SnapshotEntry> snapshotResult = snapshots;
             postFx(() -> {
+                if (sessionGeneration != sessionRefreshGeneration || projectManager.getCurrentProject() == null
+                        || !projectDir.equals(projectManager.getCurrentProject().projectPath())) return;
                 if (newActiveSession != null) {
                     activeSession = newActiveSession;
                     activeSessionProjectDir = projectDir;

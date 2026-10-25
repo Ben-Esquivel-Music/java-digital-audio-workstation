@@ -376,7 +376,8 @@ final class SaveFlowFixture implements AutoCloseable {
     /** Whether a publish is a checkpoint. */
     static boolean isCheckpoint(Path target) {
         Path parent = target.getParent();
-        return parent != null && parent.getFileName().toString().equals("checkpoints");
+        return parent != null && parent.getFileName().toString().equals("checkpoints")
+                && com.benesquivelmusic.daw.core.persistence.CheckpointFileName.parse(target.getFileName().toString()).isPresent();
     }
 
     /** One file published, and the thread that published it. */

@@ -64,6 +64,10 @@ class CheckpointCrashWindowTest {
         IOException crash = new IOException("the process died after the temp was forced");
         AtomicFileWriter crashing = new AtomicFileWriter(AtomicFileWriter.TEMP_CHANNEL_OPENER,
                 (temp, target, options) -> {
+                    if (CheckpointFileName.parse(target.getFileName().toString()).isEmpty()) {
+                        AtomicFileWriter.FILE_SYSTEM_MOVER.move(temp, target, options);
+                        return;
+                    }
                     assertThat(temp).as("the forced temp is complete when the crash comes").hasContent(document(3));
                     throw crash;
                 });
@@ -96,6 +100,10 @@ class CheckpointCrashWindowTest {
         List<List<CopyOption>> attempts = new CopyOnWriteArrayList<>();
         AtomicFileWriter refusing = new AtomicFileWriter(AtomicFileWriter.TEMP_CHANNEL_OPENER,
                 (temp, target, options) -> {
+                    if (CheckpointFileName.parse(target.getFileName().toString()).isEmpty()) {
+                        AtomicFileWriter.FILE_SYSTEM_MOVER.move(temp, target, options);
+                        return;
+                    }
                     attempts.add(List.of(options));
                     throw Arrays.asList(options).contains(StandardCopyOption.ATOMIC_MOVE) ? notAtomic
                             : fallbackFailure;
