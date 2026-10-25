@@ -237,7 +237,7 @@ class RecordedAudioLoadsOffTheFxThreadContractTest {
                 .contains("read back");
         assertThat(fixture.statusText()).isEqualTo(TransportController.TAKE_STILL_WRITING_MESSAGE);
 
-        assertThat(SteppedTakeFixture.get(() -> door.get().confirmProjectMayClose()))
+        assertThat(SteppedTakeFixture.get(() -> DoorGate.proceedsAtOnce(door.get())))
                 .as("a door that replaces the open project is refused during the read").isFalse();
         assertThat(doorShown.getEntries()).hasSize(1);
         assertThat(doorShown.getEntries().getFirst().message())

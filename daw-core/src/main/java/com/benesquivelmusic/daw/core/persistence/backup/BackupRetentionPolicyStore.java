@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.persistence.backup;
 
+import com.benesquivelmusic.daw.core.persistence.AtomicFileWriter;
 import com.benesquivelmusic.daw.sdk.persistence.BackupRetentionPolicy;
 
 import java.io.IOException;
@@ -47,6 +48,7 @@ public final class BackupRetentionPolicyStore {
     public static final String FILE_NAME = "backup-retention.json";
 
     private final Path globalPath;
+    private final AtomicFileWriter fileWriter;
 
     /** Creates a store that uses {@code ~/.daw/backup-retention.json}. */
     public BackupRetentionPolicyStore() {
@@ -55,7 +57,16 @@ public final class BackupRetentionPolicyStore {
 
     /** Creates a store with an explicit global path (for tests). */
     public BackupRetentionPolicyStore(Path globalPath) {
+        this(globalPath, new AtomicFileWriter());
+    }
+
+    /**
+     * Creates a store with an explicit global path and the writer its saves
+     * go through — for tests that fail or observe the writes (story 331).
+     */
+    BackupRetentionPolicyStore(Path globalPath, AtomicFileWriter fileWriter) {
         this.globalPath = Objects.requireNonNull(globalPath, "globalPath must not be null");
+        this.fileWriter = Objects.requireNonNull(fileWriter, "fileWriter must not be null");
     }
 
     /** Returns {@code <user.home>/.daw/backup-retention.json}. */
@@ -82,7 +93,7 @@ public final class BackupRetentionPolicyStore {
 
     /** Writes the given policy to the global path, creating parent directories. */
     public void saveGlobal(BackupRetentionPolicy policy) throws IOException {
-        save(globalPath, policy);
+        save(globalPath, policy, fileWriter);
     }
 
     /**
@@ -107,7 +118,7 @@ public final class BackupRetentionPolicyStore {
     /** Writes a per-project override file. */
     public void saveForProject(Path projectDirectory, BackupRetentionPolicy policy) throws IOException {
         Objects.requireNonNull(projectDirectory, "projectDirectory must not be null");
-        save(projectDirectory.resolve(FILE_NAME), policy);
+        save(projectDirectory.resolve(FILE_NAME), policy, fileWriter);
     }
 
     /** Loads a policy from an explicit path; empty if the file does not exist. */
@@ -120,14 +131,23 @@ public final class BackupRetentionPolicyStore {
         return Optional.of(parse(json));
     }
 
-    /** Writes a policy to an explicit path, creating parent directories. */
+    /**
+     * Writes a policy to an explicit path, creating parent directories. The
+     * file is replaced atomically ({@link AtomicFileWriter}, story 331): a
+     * failed write leaves the previous policy file as it was.
+     */
     public static void save(Path file, BackupRetentionPolicy policy) throws IOException {
+        save(file, policy, new AtomicFileWriter());
+    }
+
+    private static void save(Path file, BackupRetentionPolicy policy, AtomicFileWriter fileWriter)
+            throws IOException {
         Objects.requireNonNull(file, "file must not be null");
         Objects.requireNonNull(policy, "policy must not be null");
         if (file.getParent() != null) {
             Files.createDirectories(file.getParent());
         }
-        Files.writeString(file, toJson(policy));
+        fileWriter.writeString(file, toJson(policy));
     }
 
     /** Serializes a policy to JSON. Visible for testing. */

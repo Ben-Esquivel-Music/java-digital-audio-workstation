@@ -39,8 +39,8 @@ import java.util.Objects;
  * collapse. A trailing {@code ⋯} overflow button reveals the hidden cells in a
  * popover ({@code javafx-application-design} §10). All layout/overflow logic
  * lives in {@link SessionStatusStripSkin}; this control only holds the model,
- * the {@link MotionManager} (for the §279 reduce-motion countdown gate), and
- * the public API.</p>
+ * the {@link MotionManager} (the §279 reduce-motion gate of the countdown and
+ * of the Saved cell's flash), and the public API.</p>
  *
  * <p>Control/Skin split per {@code javafx-application-design} §3: the skin
  * builds and binds the cells. The cell accessors below delegate to the
@@ -67,6 +67,13 @@ public final class SessionStatusStrip extends Control {
      * sole way to reach the collapsed cells, as the spec requires.
      */
     public static final double SINGLE_ROW_OVERFLOW_WIDTH = 900.0;
+
+    /**
+     * How long the Saved cell flashes when a head save succeeds (PM book
+     * §4.5, story 331 ruling G4 (c)): once per success, skipped under Reduce
+     * Motion and while the strip's window is not showing.
+     */
+    public static final javafx.util.Duration SAVED_FLASH_DURATION = javafx.util.Duration.millis(600);
 
     private final ProjectOperationProgress progress;
     private final MotionManager motionManager;
@@ -104,7 +111,7 @@ public final class SessionStatusStrip extends Control {
         return progress;
     }
 
-    /** @return the reduce-motion source (read by the skin to gate the countdown). */
+    /** @return the reduce-motion source (read by the skin to gate the countdown and the Saved cell's flash). */
     public MotionManager motionManager() {
         return motionManager;
     }
@@ -143,7 +150,7 @@ public final class SessionStatusStrip extends Control {
 
     /** @return the Session cell (name + elapsed). */
     public StatusStripCell sessionCell() { return skin().sessionCell(); }
-    /** @return the Saved cell (last-save time / scope / error). */
+    /** @return the Saved cell (a slow save or another operation, a head or checkpoint failure, the last save). */
     public StatusStripCell savedCell() { return skin().savedCell(); }
     /** @return the live checkpoint-countdown cell. */
     public CheckpointCountdownCanvas checkpointCountdown() { return skin().checkpointCountdown(); }

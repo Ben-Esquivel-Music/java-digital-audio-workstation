@@ -466,7 +466,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
 
         try {
             assertThat(onFx(controller::isPreparingTake)).as("fixture: the take is being prepared").isTrue();
-            assertThat(onFx(lifecycle.get()::confirmProjectMayClose)).as("the door is refused").isFalse();
+            assertThat(onFx(() -> DoorGate.proceedsAtOnce(lifecycle.get()))).as("the door is refused").isFalse();
         } finally {
             hold.release();
         }

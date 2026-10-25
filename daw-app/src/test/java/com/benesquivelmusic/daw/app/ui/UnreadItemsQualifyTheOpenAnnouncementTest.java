@@ -108,7 +108,7 @@ class UnreadItemsQualifyTheOpenAnnouncementTest {
                 .doesNotContain("velocity=\"128\"").contains("velocity=\"100\"");
         assertThat(fixture.projectManager.getLastUnreadItems()).as("the reopen found nothing to count").isEmpty();
 
-        runOnFx(this::save);
+        saveTheOpenProject();
         assertThat(backupsIn(destination)).as("the archive keeps the original: no backup in the destination")
                 .isEmpty();
     }
@@ -127,7 +127,7 @@ class UnreadItemsQualifyTheOpenAnnouncementTest {
         assertAnnouncedOnce("Recovered 0 changes from the journal — 1 MIDI note skipped");
         assertThat(fixture.projectManager.getLastUnreadItems()).as("the reopen found nothing to count").isEmpty();
 
-        runOnFx(this::save);
+        saveTheOpenProject();
         assertThat(backupsIn(directory)).as("only the pre-recovery backup the replay itself wrote")
                 .singleElement().satisfies(backup ->
                         assertThat(backup.getFileName().toString()).startsWith("project.daw.recovered."));
@@ -140,7 +140,7 @@ class UnreadItemsQualifyTheOpenAnnouncementTest {
         SnapshotsController snapshots = new SnapshotsController(new SnapshotBrowserService(),
                 new CheckpointManager(AutoSaveConfig.DEFAULT), fixture.projectManager,
                 new SnapshotsController.Deps(() -> null, fixture.projectManager::getCurrentDawProject,
-                        () -> true, (restored, label, missingAssets, unreadItems) ->
+                        Runnable::run, (restored, label, missingAssets, unreadItems) ->
                         fixture.lifecycle().installRestoredSnapshot(restored, label, missingAssets, unreadItems)));
         SnapshotEntry entry = new SnapshotEntry("edited", Instant.parse("2026-10-21T12:00:00Z"),
                 SnapshotKind.NAMED_SNAPSHOT, "Before the edit", null, () -> ONE_BAD_NOTE);
@@ -159,13 +159,13 @@ class UnreadItemsQualifyTheOpenAnnouncementTest {
                 });
     }
 
-    /** Saves the open project; FX thread. */
-    private void save() {
-        try {
-            fixture.projectManager.saveProject();
-        } catch (IOException e) {
-            throw new AssertionError("the save failed", e);
-        }
+    /**
+     * Saves the open project through the project manager's one save, as the
+     * application does: the call on the FX thread, which only captures, and
+     * the wait for its outcome off it, bounded (story 331).
+     */
+    private void saveTheOpenProject() throws Exception {
+        SaveOutcomes.saved(onFx(() -> fixture.projectManager.save(fixture.projectManager.getCurrentDawProject())));
     }
 
     /** A project folder whose {@code project.daw} holds {@code xml}, made by a manager of its own. */

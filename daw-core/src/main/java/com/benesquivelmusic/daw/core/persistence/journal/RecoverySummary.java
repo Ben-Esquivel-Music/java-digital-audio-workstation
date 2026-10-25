@@ -33,7 +33,7 @@ import java.util.Objects;
  *                             journal, in first-seen order
  */
 public record RecoverySummary(
-        int checkpointIndex,
+        long checkpointIndex,
         Instant checkpointTime,
         String checkpointFileName,
         String lastEventType,

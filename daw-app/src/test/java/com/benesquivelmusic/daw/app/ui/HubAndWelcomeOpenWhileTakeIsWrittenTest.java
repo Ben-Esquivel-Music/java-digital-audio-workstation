@@ -46,7 +46,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Story 323 review probe (verification round 3): the Project Hub's Open and
  * the Welcome screen's Continue replace the open project, so each passes
- * {@code ProjectLifecycleController.confirmProjectMayClose()} — the take
+ * {@code ProjectLifecycleController.whenProjectMayClose} — the take
  * being written is refused first, with one WARNING and no unsaved-changes
  * prompt, and once the take is written a dirty project is asked about before
  * it is replaced. {@code ProjectChangeWhileTakeIsWrittenTest} drives

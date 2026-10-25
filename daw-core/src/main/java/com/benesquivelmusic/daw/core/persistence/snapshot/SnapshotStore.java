@@ -1,13 +1,12 @@
 package com.benesquivelmusic.daw.core.persistence.snapshot;
 
+import com.benesquivelmusic.daw.core.persistence.AtomicFileWriter;
+
 import java.io.IOException;
-import java.nio.channels.FileChannel;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryStream;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Clock;
 import java.time.Instant;
@@ -41,6 +40,7 @@ public final class SnapshotStore {
     private static final String EXTENSION = ".daw";
 
     private final Clock clock;
+    private final AtomicFileWriter fileWriter;
 
     /** Creates a store using the system clock. */
     public SnapshotStore() {
@@ -49,7 +49,16 @@ public final class SnapshotStore {
 
     /** Creates a store using an explicit clock, primarily for tests. */
     public SnapshotStore(Clock clock) {
+        this(clock, new AtomicFileWriter());
+    }
+
+    /**
+     * Creates a store with an explicit clock and the writer that publishes
+     * each snapshot — for tests that fail or observe the copy (story 331).
+     */
+    SnapshotStore(Clock clock, AtomicFileWriter fileWriter) {
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        this.fileWriter = Objects.requireNonNull(fileWriter, "fileWriter must not be null");
     }
 
     /**
@@ -73,8 +82,11 @@ public final class SnapshotStore {
 
     /**
      * Copies {@code projectDir/project.daw} into {@code projectDir/snapshots}
-     * using temp-file + fsync + atomic move where the host filesystem supports
-     * it.
+     * through the {@link AtomicFileWriter}: a forced temp sibling, published
+     * only under a name no file holds ({@link AtomicFileWriter.Overwrite#NEVER}),
+     * so a snapshot never replaces another and a failed copy leaves neither a
+     * partial snapshot nor its temp (story 331). The snapshot carries the
+     * project file's last-modified time.
      *
      * @param projectDir project directory containing {@code project.daw}
      * @param name       user-supplied snapshot name
@@ -104,13 +116,7 @@ public final class SnapshotStore {
         String displayName = normalizeName(name);
         Files.createDirectories(snapshotDirectory);
 
-        Path target = uniqueTarget(snapshotDirectory, displayName, Instant.now(clock));
-        Path tmp = target.resolveSibling(target.getFileName() + ".tmp");
-        Files.copy(projectFile, tmp, StandardCopyOption.REPLACE_EXISTING,
-                StandardCopyOption.COPY_ATTRIBUTES);
-        forceFile(tmp);
-        moveAtomically(tmp, target);
-        forceDirectory(snapshotDirectory);
+        Path target = publish(projectFile, snapshotDirectory, displayName, Instant.now(clock));
 
         BasicFileAttributes attrs = Files.readAttributes(target, BasicFileAttributes.class);
         return new Snapshot(target, displayName,
@@ -145,6 +151,25 @@ public final class SnapshotStore {
         return List.copyOf(snapshots);
     }
 
+    /**
+     * Copies the project file to the first free snapshot name; a name taken
+     * between the choice and the publish moves the copy on to the next one.
+     */
+    private Path publish(Path projectFile, Path dir, String displayName, Instant timestamp) throws IOException {
+        while (true) {
+            Path target = uniqueTarget(dir, displayName, timestamp);
+            try {
+                return fileWriter.copy(projectFile, target, AtomicFileWriter.Overwrite.NEVER);
+            } catch (FileAlreadyExistsException taken) {
+                // A refusal for a name the next choice would pick again is
+                // not a taken name: rethrow it rather than loop on it.
+                if (!Files.exists(target)) {
+                    throw taken;
+                }
+            }
+        }
+    }
+
     private Path uniqueTarget(Path dir, String displayName, Instant timestamp) {
         String base = STAMP_FORMAT.format(timestamp) + "-" + slug(displayName);
         Path target = dir.resolve(base + EXTENSION);
@@ -177,29 +202,5 @@ public final class SnapshotStore {
             name = name.substring("yyyyMMdd-HHmmss-".length());
         }
         return name.replace('-', ' ');
-    }
-
-    private static void forceFile(Path file) throws IOException {
-        try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ)) {
-            channel.force(true);
-        }
-    }
-
-    private static void forceDirectory(Path directory) {
-        try (FileChannel channel = FileChannel.open(directory, StandardOpenOption.READ)) {
-            channel.force(true);
-        } catch (IOException ignored) {
-            // Some platforms/filesystems do not permit opening directories.
-            // The file itself has already been forced; directory fsync is best effort.
-        }
-    }
-
-    private static void moveAtomically(Path tmp, Path target) throws IOException {
-        try {
-            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING,
-                    StandardCopyOption.ATOMIC_MOVE);
-        } catch (AtomicMoveNotSupportedException e) {
-            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
-        }
     }
 }

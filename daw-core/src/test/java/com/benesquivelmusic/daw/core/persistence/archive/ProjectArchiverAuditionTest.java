@@ -31,17 +31,19 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
+import static com.benesquivelmusic.daw.core.persistence.archive.ArchiveTestSupport.archive;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * An archive taken while a take lane is auditioned packages the take files
  * the SAVED comp references — the selection, which may be drawn from a lane
  * other than the soloed one — and points the archived document at them
- * (PR #984 review), without ever rewriting a live clip: the archive runs
- * off the FX thread while the session stays editable, so a recompile (the
- * main-lane click that ends the audition, an Alt-click) can run while it is
- * being written, and must never copy an archive-relative {@code assets/…}
- * path into the live comp or compare against one.
+ * (PR #984 review), without ever rewriting a live clip: the archive is
+ * captured on the thread that owns the project and written off it while the
+ * session stays editable (story 331), so a recompile (the main-lane click
+ * that ends the audition, an Alt-click) can run while it is being written,
+ * and must never copy an archive-relative {@code assets/…} path into the
+ * live comp or compare against one.
  */
 class ProjectArchiverAuditionTest {
 
@@ -58,7 +60,7 @@ class ProjectArchiverAuditionTest {
 
         ProjectArchiver archiver = new ProjectArchiver();
         Path archive = tmp.resolve("audition.dawz");
-        ProjectArchiveSummary summary = archiver.saveAsArchive(f.project, archive);
+        ProjectArchiveSummary summary = archive(archiver, f.project, archive);
 
         // The selection's two segment files are packaged; the soloed lane's is not.
         assertThat(summary.uniqueAssetCount()).isEqualTo(2);
@@ -84,9 +86,11 @@ class ProjectArchiverAuditionTest {
         Path archive = tmp.resolve("held.dawz");
 
         ProjectArchiveSummary summary;
+        // The capture on the thread that owns the project; only the capture reaches the worker.
+        ArchiveCapture capture = archiver.capture(f.project, ArchiveOptions.defaults(), List.of());
         try (ExecutorService archiveWorker = Executors.newVirtualThreadPerTaskExecutor()) {
             Future<ProjectArchiveSummary> archiving =
-                    archiveWorker.submit(() -> archiver.saveAsArchive(f.project, archive));
+                    archiveWorker.submit(() -> archiver.write(capture, archive));
             try {
                 assertThat(hold.reached.await(HOLD_TIMEOUT_SECONDS, TimeUnit.SECONDS))
                         .as("the archive reached its asset write").isTrue();
@@ -137,9 +141,10 @@ class ProjectArchiverAuditionTest {
                 new ProjectSerializer(), new ProjectDeserializer(), "test", hold);
         Path archive = tmp.resolve("held.dawz");
 
+        ArchiveCapture capture = archiver.capture(f.project, ArchiveOptions.defaults(), List.of());
         try (ExecutorService archiveWorker = Executors.newVirtualThreadPerTaskExecutor()) {
             Future<ProjectArchiveSummary> archiving =
-                    archiveWorker.submit(() -> archiver.saveAsArchive(f.project, archive));
+                    archiveWorker.submit(() -> archiver.write(capture, archive));
             try {
                 assertThat(hold.reached.await(HOLD_TIMEOUT_SECONDS, TimeUnit.SECONDS))
                         .as("the archive reached its asset write").isTrue();

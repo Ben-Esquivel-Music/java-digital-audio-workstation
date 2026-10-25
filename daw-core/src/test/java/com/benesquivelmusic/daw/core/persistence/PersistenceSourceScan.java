@@ -23,7 +23,10 @@ import java.util.stream.Stream;
  * literals kept) and extracts, at name level, what the project-document
  * writers can emit and which elements the readers look up — so the contract
  * can prove its fixture family exercises every name the writer source holds,
- * and that no writer or reader hides a name from that proof.
+ * and that no writer or reader hides a name from that proof. Its locator and
+ * its comment and literal stripping also serve the single-writer sentinel
+ * ({@code DurableWritesGoThroughTheAtomicWriterTest}), which reads the
+ * {@code session} and {@code snapshot} packages too ({@link #locateCoreSource}).
  */
 final class PersistenceSourceScan {
 
@@ -230,7 +233,20 @@ final class PersistenceSourceScan {
      * {@code ProjectContextNoThreadLocalTest#locateJournalPackageSource}.
      */
     static Path locatePersistenceSource() {
-        String rel = "src/main/java/com/benesquivelmusic/daw/core/persistence";
+        return locateCoreSource("persistence");
+    }
+
+    /**
+     * Locates the {@code src/main/java} directory of the daw-core package
+     * {@code com.benesquivelmusic.daw.core.<corePackage>} ({@code "session"},
+     * {@code "snapshot"}), the way {@link #locatePersistenceSource()} does.
+     * Returns the module-relative path even when it is missing, so a caller
+     * that walks it fails rather than scanning nothing.
+     *
+     * @param corePackage the package below {@code com.benesquivelmusic.daw.core}, dot-free
+     */
+    static Path locateCoreSource(String corePackage) {
+        String rel = "src/main/java/com/benesquivelmusic/daw/core/" + corePackage;
         Path cwd = Paths.get("").toAbsolutePath();
         Path direct = cwd.resolve(rel);
         if (Files.isDirectory(direct)) {
@@ -612,9 +628,10 @@ final class PersistenceSourceScan {
      * {@code code} with every string, text-block and char literal blanked —
      * each of its characters but a line break turned into a space — so that
      * offsets and lines hold and no brace, parenthesis or keyword inside a
-     * literal is read as code.
+     * literal is read as code. A source scan that matches code, not names,
+     * reads it after {@link #stripComments}.
      */
-    private static String withoutLiterals(String code) {
+    static String withoutLiterals(String code) {
         StringBuilder bare = new StringBuilder(code);
         int i = 0;
         while (i < code.length()) {

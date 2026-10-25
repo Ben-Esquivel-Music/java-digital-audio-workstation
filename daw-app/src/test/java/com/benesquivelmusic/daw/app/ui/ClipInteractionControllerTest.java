@@ -328,7 +328,7 @@ class ClipInteractionControllerTest {
         // swipe on another lane changes the comp. The swipe is an undo entry
         // executed by the canvas, which calls no markDirty of its own; the
         // per-generation UndoHistoryDirtyBinder must still flip the bit that
-        // ProjectLifecycleController.confirmDiscardUnsavedChanges gates on.
+        // ProjectLifecycleController.whenProjectMayClose gates on.
         UndoHistoryDirtyBinder binder = new UndoHistoryDirtyBinder(undoManager, project);
         Track track = compedTrack();
         track.getTakeComping().addCompRegion(new com.benesquivelmusic.daw.core.comping.CompRegion(0, 0.0, 8.0));

@@ -26,6 +26,7 @@ import java.util.Set;
 import java.util.stream.Stream;
 import java.util.zip.ZipFile;
 
+import static com.benesquivelmusic.daw.core.persistence.archive.ArchiveTestSupport.archive;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.entry;
@@ -81,7 +82,7 @@ class ProjectArchiverTest {
         ProjectArchiver archiver = new ProjectArchiver();
 
         // Save as archive.
-        ProjectArchiveSummary summary = archiver.saveAsArchive(project, archiveOut);
+        ProjectArchiveSummary summary = archive(archiver, project, archiveOut);
         assertThat(archiveOut).exists();
         // 10 distinct audio files + 1 SoundFont == 11 unique assets (the duplicate dedupes).
         assertThat(summary.uniqueAssetCount()).isEqualTo(11);
@@ -115,7 +116,7 @@ class ProjectArchiverTest {
 
         // Re-archive the restored project; the asset payload (sorted hashes) must
         // be byte-identical to what came out of the original archive.
-        ProjectArchiveSummary summary2 = archiver.saveAsArchive(opened.project(), archiveOut2);
+        ProjectArchiveSummary summary2 = archive(archiver, opened.project(), archiveOut2);
         assertThat(summary2.uniqueAssetCount()).isEqualTo(11);
         Set<String> originalHashes = new HashSet<>();
         for (Path p : originals) originalHashes.add(sha256(Files.readAllBytes(p)));
@@ -145,7 +146,7 @@ class ProjectArchiverTest {
         project.createAudioTrack("B").addClip(new AudioClip("B", 0, 4, b.toString()));
 
         ProjectArchiver archiver = new ProjectArchiver();
-        ProjectArchiveSummary summary = archiver.saveAsArchive(project, tmp.resolve("dedupe.dawz"));
+        ProjectArchiveSummary summary = archive(archiver, project, tmp.resolve("dedupe.dawz"));
 
         assertThat(summary.uniqueAssetCount()).isEqualTo(1);
         assertThat(summary.totalAssetBytes()).isEqualTo(data.length);
@@ -187,7 +188,7 @@ class ProjectArchiverTest {
 
         ProjectArchiver archiver = new ProjectArchiver();
         Path archive = tmp.resolve("missing.dawz");
-        archiver.saveAsArchive(project, archive);
+        archive(archiver, project, archive);
 
         // Extract, then delete the asset file from the extracted dir to
         // simulate a partial copy / lost media.
@@ -228,7 +229,7 @@ class ProjectArchiverTest {
 
         ProjectArchiver archiver = new ProjectArchiver();
         Path archive = tmp.resolve("a.dawz");
-        archiver.saveAsArchive(project, archive);
+        archive(archiver, project, archive);
 
         // Hand-build an archive missing the assets folder entry.
         Path bare = tmp.resolve("bare.dawz");
@@ -252,7 +253,7 @@ class ProjectArchiverTest {
     void shouldRejectNonDawzExtension() {
         ProjectArchiver archiver = new ProjectArchiver();
         DawProject project = new DawProject("Bad", AudioFormat.CD_QUALITY);
-        assertThatThrownBy(() -> archiver.saveAsArchive(project, tmp.resolve("foo.zip")))
+        assertThatThrownBy(() -> archive(archiver, project, tmp.resolve("foo.zip")))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining(".dawz");
     }
@@ -297,7 +298,7 @@ class ProjectArchiverTest {
         DawProject clean = new DawProject("Clean", AudioFormat.CD_QUALITY);
         clean.createMidiTrack("Keys");
         Path cleanArchive = tmp.resolve("clean.dawz");
-        archiver.saveAsArchive(clean, cleanArchive);
+        archive(archiver, clean, cleanArchive);
         assertThat(archiver.openArchive(cleanArchive, tmp.resolve("clean-restored"), null).unreadItems())
                 .as("the next open's list, not the previous one's").isEmpty();
     }
@@ -330,7 +331,7 @@ class ProjectArchiverTest {
         project.createAudioTrack("T").addClip(new AudioClip("A", 0, 4, src.toString()));
         ProjectArchiver archiver = new ProjectArchiver();
         Path archive = tmp.resolve("rel.dawz");
-        archiver.saveAsArchive(project, archive);
+        archive(archiver, project, archive);
 
         // Build a relative path to a directory under the working dir.
         Path cwd = Path.of(".").toAbsolutePath().normalize();
@@ -358,7 +359,7 @@ class ProjectArchiverTest {
         project.createAudioTrack("K").addClip(new AudioClip("K", 0, 4, src.toString()));
         ProjectArchiver archiver = new ProjectArchiver();
         Path archive = tmp.resolve("e.dawz");
-        archiver.saveAsArchive(project, archive);
+        archive(archiver, project, archive);
 
         // Hand-build a tampered archive: keep header (so SHA matches the
         // legitimate doc we copy in), but rewrite project.daw so the asset
@@ -406,7 +407,7 @@ class ProjectArchiverTest {
         project.createAudioTrack("K").addClip(new AudioClip("K", 0, 4, src.toString()));
         ProjectArchiver archiver = new ProjectArchiver();
         Path archive = tmp.resolve("t.dawz");
-        archiver.saveAsArchive(project, archive);
+        archive(archiver, project, archive);
         Path extracted = tmp.resolve("ex");
         archiver.openArchive(archive, extracted, null);
 
@@ -445,7 +446,7 @@ class ProjectArchiverTest {
 
         ProjectArchiver archiver = new ProjectArchiver();
         Path archive = tmp.resolve("rotated.dawz");
-        ProjectArchiveSummary summary = archiver.saveAsArchive(project, archive);
+        ProjectArchiveSummary summary = archive(archiver, project, archive);
 
         // Both segments are in the archive, as two distinct assets/ entries.
         assertThat(summary.uniqueAssetCount()).isEqualTo(2);
@@ -494,7 +495,7 @@ class ProjectArchiverTest {
         project.createAudioTrack("Vox").addClip(recorded);          // later track
 
         Throwable failure = org.assertj.core.api.Assertions.catchThrowable(
-                () -> new ProjectArchiver().saveAsArchive(project, tmp.resolve("mixed.dawz")));
+                () -> archive(new ProjectArchiver(), project, tmp.resolve("mixed.dawz")));
 
         // Whatever happened to the archive, the in-memory project is never
         // left half-rewritten to archive-relative assets/… references.
@@ -524,7 +525,7 @@ class ProjectArchiverTest {
 
         ProjectArchiver archiver = new ProjectArchiver();
         Path archive = tmp.resolve("short.dawz");
-        ProjectArchiveSummary summary = archiver.saveAsArchive(project, archive);
+        ProjectArchiveSummary summary = archive(archiver, project, archive);
 
         assertThat(summary.uniqueAssetCount()).isEqualTo(1);
         assertThat(clip.getSourceSegmentPaths()).containsExactly(only.toString());
@@ -550,7 +551,7 @@ class ProjectArchiverTest {
 
         ProjectArchiver archiver = new ProjectArchiver();
         Path archive = tmp.resolve("lost.dawz");
-        archiver.saveAsArchive(project, archive);
+        archive(archiver, project, archive);
 
         // Rebuild the archive without its assets/ entries: both segments are
         // now unresolvable, and each must be reported exactly once.
@@ -577,7 +578,7 @@ class ProjectArchiverTest {
     // ── Story 323 — a clip reference that is not an absolute path names no file ──
 
     @Test
-    void saveAsArchivePacksNoFileForAClipReferenceThatIsNotAnAbsolutePath() throws IOException {
+    void anArchivePacksNoFileForAClipReferenceThatIsNotAnAbsolutePath() throws IOException {
         Path mediaDir = Files.createDirectories(tmp.resolve("media"));
         byte[] foundBytes = {6, 6, 6, 6, 6, 6};
         Path found = Files.write(mediaDir.resolve("found.wav"), foundBytes);
@@ -592,7 +593,7 @@ class ProjectArchiverTest {
         ProjectArchiver archiver = new ProjectArchiver();
 
         Path plain = tmp.resolve("plain.dawz");
-        ProjectArchiveSummary summary = archiver.saveAsArchive(project, plain);
+        ProjectArchiveSummary summary = archive(archiver, project, plain);
 
         assertThat(summary.uniqueAssetCount()).as("only the absolute segment is packed").isEqualTo(1);
         List<String> packed = assetEntryNames(plain);
@@ -607,7 +608,7 @@ class ProjectArchiverTest {
         // The reference takes the missing-asset path: a stub decision for it
         // is honoured, and the file the working directory would name is not.
         Path stubbed = tmp.resolve("stubbed.dawz");
-        archiver.saveAsArchive(project, stubbed, ArchiveOptions.defaults(),
+        archive(archiver, project, stubbed, ArchiveOptions.defaults(),
                 List.of(ArchiveAssetDecision.useStub(relative)));
         try (ZipFile zip = new ZipFile(stubbed.toFile())) {
             List<String> stubs = zip.stream().map(java.util.zip.ZipEntry::getName)

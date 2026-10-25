@@ -42,7 +42,7 @@ class SnapshotsControllerTest {
                 new SnapshotsController.Deps(
                         () -> null,
                         projectRef::get,
-                        () -> true,
+                        Runnable::run,
                         (project, label, missingAssets, unreadItems) -> projectRef.set(project)));
     }
 
@@ -131,7 +131,7 @@ class SnapshotsControllerTest {
                     new SnapshotsController.Deps(
                             () -> null,
                             projectRef::get,
-                            () -> true,
+                            Runnable::run,
                             (project, label, missingAssets, unreadItems) -> projectRef.set(project)));
             String relativeHead = "audio/takes/2026-09-29T10-00-00_take-0001/track-a/segment-000.wav";
             String snapshotXml = new ProjectSerializer().serialize(live);

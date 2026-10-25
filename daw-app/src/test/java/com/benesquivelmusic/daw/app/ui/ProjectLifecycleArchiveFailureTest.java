@@ -45,12 +45,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The archive worker of {@link ProjectLifecycleController} clears its strip
  * operation and reports the failure whatever the archiver throws: an
  * unchecked exception from the real {@link ProjectArchiver} (here an
- * {@link IllegalStateException} with no message, raised while the archiver
- * serializes the live model) must not leave a spinner behind or an
+ * {@link IllegalStateException} with no message, raised while the archive
+ * captures the live model, on the FX thread since story 331) must not leave
+ * a spinner behind or an
  * "Archive failed: null" notification, and must leave the target untouched.
  *
- * <p>The injected failure fires while the archiver serializes the project,
- * before it has written any file, so these tests do not pin the cleanup of a
+ * <p>The injected failure fires while the archive captures the project,
+ * before any worker starts or any file is written, so these tests do not pin the cleanup of a
  * temporary archive: that is pinned in daw-core by
  * {@code ProjectArchiverAssetWriteFailureTest}, whose failure fires part-way
  * through the asset pack. What they pin here is the user-facing contract: no

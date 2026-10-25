@@ -24,6 +24,7 @@ import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 import java.util.stream.Stream;
 
+import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.saved;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -122,7 +123,7 @@ class DegradedOpenBackupTest {
         manager.openProject(directory);
         assertThat(manager.getLastUnreadItems()).as("fixture: the open skipped the note").hasSize(1);
         assertThat(backupsIn(directory)).as("opening alone writes nothing").isEmpty();
-        manager.saveProject();
+        saved(manager, manager.getCurrentDawProject());
 
         List<Path> backups = backupsIn(directory);
         assertThat(backups).singleElement().satisfies(backup ->
@@ -136,13 +137,13 @@ class DegradedOpenBackupTest {
         assertThat(infoLines).as("the backup is logged at INFO with its path")
                 .containsExactly(DEGRADED_INFO + ": " + backups.getFirst());
 
-        manager.saveProject();
+        saved(manager, manager.getCurrentDawProject());
         assertThat(backupsIn(directory)).as("a second save writes no new backup").hasSize(1);
         manager.abandonProject();
 
         manager.openProject(directory);
         assertThat(manager.getLastUnreadItems()).as("the saved file reopens clean").isEmpty();
-        manager.saveProject();
+        saved(manager, manager.getCurrentDawProject());
         assertThat(backupsIn(directory)).as("saving the clean reopen writes no backup").hasSize(1);
     }
 
@@ -280,7 +281,7 @@ class DegradedOpenBackupTest {
                 .isEqualTo(losesSavedContent);
 
         manager.openProject(directory);
-        manager.saveProject();
+        saved(manager, manager.getCurrentDawProject());
 
         List<String> backups = backupsIn(directory).stream().map(p -> p.getFileName().toString()).toList();
         if (losesSavedContent) {
@@ -329,7 +330,7 @@ class DegradedOpenBackupTest {
         manager.openProject(directory);
         assertThat(manager.getLastMigrationReport().wasMigrated()).as("fixture: a schema 1 file").isTrue();
         assertThat(manager.getLastUnreadItems()).as("fixture: the open skipped the note").hasSize(1);
-        manager.saveProject();
+        saved(manager, manager.getCurrentDawProject());
 
         List<Path> backups = backupsIn(directory);
         assertThat(backups).singleElement().satisfies(backup -> {
@@ -367,7 +368,7 @@ class DegradedOpenBackupTest {
         Path directory = projectHolding(xml);
 
         manager.openProject(directory);
-        manager.saveProject();
+        saved(manager, manager.getCurrentDawProject());
 
         List<Path> backups = backupsIn(directory);
         assertThat(backups).as("%s: one degraded backup", holding).hasSize(1);
@@ -380,7 +381,7 @@ class DegradedOpenBackupTest {
 
         manager.openProject(directory);
         assertThat(manager.getLastMigrationReport().wasMigrated()).as("fixture: a schema 1 file").isTrue();
-        manager.saveProject();
+        saved(manager, manager.getCurrentDawProject());
 
         List<Path> backups = backupsIn(directory);
         assertThat(backups).hasSize(1);
@@ -397,7 +398,7 @@ class DegradedOpenBackupTest {
 
         manager.openProject(directory);
         assertThat(manager.getLastUnreadItems()).as("fixture: the effect is reported").hasSize(1);
-        manager.saveProject();
+        saved(manager, manager.getCurrentDawProject());
 
         assertThat(backupsIn(directory)).isEmpty();
         assertThat(infoLines).isEmpty();
@@ -410,8 +411,8 @@ class DegradedOpenBackupTest {
         Path directory = projectHolding(new ProjectSerializer().serialize(clean));
 
         manager.openProject(directory);
-        manager.saveProject();
-        manager.saveProject();
+        saved(manager, manager.getCurrentDawProject());
+        saved(manager, manager.getCurrentDawProject());
 
         assertThat(backupsIn(directory)).isEmpty();
     }
@@ -422,9 +423,9 @@ class DegradedOpenBackupTest {
         manager.openProject(directory);
         Files.delete(directory.resolve("project.daw"));
 
-        manager.saveProject();
+        saved(manager, manager.getCurrentDawProject());
         assertThat(directory.resolve("project.daw")).as("the first save wrote the file").isRegularFile();
-        manager.saveProject();
+        saved(manager, manager.getCurrentDawProject());
 
         assertThat(backupsIn(directory)).as("the second save does not back up the first save's output").isEmpty();
     }
@@ -434,7 +435,7 @@ class DegradedOpenBackupTest {
         manager.openProject(projectHolding(file(ONE_BAD_NOTE_TRACK)));
 
         Path fresh = manager.createProject("Fresh", tempDir).projectPath();
-        manager.saveDawProject(new DawProject("Fresh", AudioFormat.CD_QUALITY));
+        saved(manager, new DawProject("Fresh", AudioFormat.CD_QUALITY));
 
         assertThat(backupsIn(fresh)).as("the new project's first save owes nothing").isEmpty();
     }

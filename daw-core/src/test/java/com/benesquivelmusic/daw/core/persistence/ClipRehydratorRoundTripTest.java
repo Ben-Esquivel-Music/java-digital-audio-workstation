@@ -30,6 +30,7 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
 
+import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.saved;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -56,7 +57,7 @@ class ClipRehydratorRoundTripTest {
         DawProject project = new DawProject("Round Trip", PROJECT_FORMAT);
         AudioClip imported = new AudioFileImporter(project).importFile(source, 0.0).clip();
         float[][] beforeSave = imported.getAudioData();
-        manager.saveDawProject(project);
+        saved(manager, project);
         manager.abandonProject();
 
         ProjectManager reopened = newManager();
@@ -97,7 +98,7 @@ class ClipRehydratorRoundTripTest {
         Track track = project.getTracks().getFirst();
         track.addClip(first.splitAt(first.getStartBeat() + first.getDurationBeats() / 2));
         project.getReferenceTrackManager().addReferenceTrack(new ReferenceTrack("Ref", referenceFile.toString()));
-        manager.saveDawProject(project);
+        saved(manager, project);
         manager.abandonProject();
         Files.delete(source);
 
@@ -145,7 +146,7 @@ class ClipRehydratorRoundTripTest {
         AudioClip take = new AudioClip("Take 1", 0.0, 0.04, null);
         take.setSourceSegmentPaths(segments.stream().map(Path::toString).toList());
         track.addClip(take);
-        manager.saveDawProject(project);
+        saved(manager, project);
         manager.abandonProject();
         float[][] onDisk = SegmentFile.readFrames(segments);
 
@@ -180,7 +181,7 @@ class ClipRehydratorRoundTripTest {
         AudioClip take = new AudioClip("Take 1", 0.0, 0.04, null);
         take.setSourceSegmentPaths(segments.stream().map(Path::toString).toList());
         track.addClip(take);
-        manager.saveDawProject(project);
+        saved(manager, project);
         manager.abandonProject();
         Files.delete(segments.get(1));
 
@@ -214,7 +215,7 @@ class ClipRehydratorRoundTripTest {
         DawProject project = new DawProject("Has Missing", PROJECT_FORMAT);
         Track track = project.createAudioTrack("Bass");
         track.addClip(new AudioClip("ghost", 0.0, 1.0, tempDir.resolve("ghost.wav").toString()));
-        manager.saveDawProject(project);
+        saved(manager, project);
         manager.abandonProject();
         Path legacyDir = Files.createDirectories(tempDir.resolve("Legacy"));
         Files.writeString(legacyDir.resolve("project.daw"), """

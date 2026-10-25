@@ -53,6 +53,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Stream;
 
+import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.saved;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -106,7 +107,7 @@ class ProjectRoundTripInventoryTest {
                 new CheckpointManager(new AutoSaveConfig(Duration.ofHours(1), 10, true)));
         ProjectMetadata metadata = manager.createProject("Inventory Session", tempDir);
         DawProject saved = RoundTripInventoryProjects.full(metadata.projectPath());
-        manager.saveDawProject(saved);
+        saved(manager, saved);
         manager.abandonProject();
         manager.openProject(metadata.projectPath());
         Reopened viaManager = new Reopened("ProjectManager save → open",

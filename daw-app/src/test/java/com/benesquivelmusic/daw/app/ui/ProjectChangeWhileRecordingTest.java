@@ -65,7 +65,7 @@ import static org.assertj.core.api.Assertions.tuple;
  * ({@link ProjectLifecycleController#lateLoadRefusalWhileRecordingMessage}).
  * The recording goes on untouched, and once the user has stopped it — the
  * take published, nothing being written — the same door no longer refuses; a
- * door gated by {@link ProjectLifecycleController#confirmProjectMayClose()}
+ * door gated by {@link ProjectLifecycleController#whenProjectMayClose}
  * then asks about unsaved changes, as it does for any dirty project, when
  * the Stop published an audio clip, which marks the project dirty. Quitting
  * the application is not one of those doors (story 333).
@@ -175,7 +175,7 @@ class ProjectChangeWhileRecordingTest {
         record(RecordingInFlightFixture.audio(project.get()));
         project.get().markDirty();
 
-        assertThat(onFx(lifecycle::confirmProjectMayClose))
+        assertThat(onFx(() -> DoorGate.proceedsAtOnce(lifecycle)))
                 .as("a door that would replace the open project is refused while recording")
                 .isFalse();
         assertThat(unsavedChangesPrompts).as("refused before the unsaved-changes prompt").hasValue(0);
@@ -183,28 +183,13 @@ class ProjectChangeWhileRecordingTest {
         recording.assertStillRecording();
 
         recording.stop();
-        assertThat(onFx(lifecycle::confirmProjectMayClose))
+        assertThat(onFx(() -> DoorGate.proceedsAtOnce(lifecycle)))
                 .as("fixture: the prompt, dismissed, cancels the change").isFalse();
         assertThat(unsavedChangesPrompts).as("once the recording is stopped, a dirty project prompts").hasValue(1);
         project.get().markClean();
-        assertThat(onFx(lifecycle::confirmProjectMayClose)).as("and a clean project proceeds").isTrue();
+        assertThat(onFx(() -> DoorGate.proceedsAtOnce(lifecycle))).as("and a clean project proceeds").isTrue();
         assertThat(unsavedChangesPrompts).hasValue(1);
         assertRefusedOnce();
-    }
-
-    /** The unsaved-changes prompt is only that prompt: the recording refusal belongs to the gate. */
-    @Test
-    void theUnsavedChangesPromptAloneRefusesNothingWhileRecording() throws Exception {
-        record(RecordingInFlightFixture.audio(project.get()));
-
-        assertThat(onFx(lifecycle::confirmDiscardUnsavedChanges))
-                .as("a clean project has nothing to ask about, recording or not").isTrue();
-        project.get().markDirty();
-        assertThat(onFx(lifecycle::confirmDiscardUnsavedChanges))
-                .as("fixture: the prompt, dismissed, cancels the change").isFalse();
-        assertThat(unsavedChangesPrompts).as("a dirty project is asked about").hasValue(1);
-        assertThat(shown.getEntries()).as("and nothing is refused").isEmpty();
-        recording.assertStillRecording();
     }
 
     @Test
@@ -332,7 +317,13 @@ class ProjectChangeWhileRecordingTest {
                 new SnapshotsController.Deps(
                         () -> null,
                         project::get,
-                        () -> lifecycle == null || lifecycle.confirmProjectMayClose(),
+                        proceed -> {
+                            if (lifecycle == null) {
+                                proceed.run();
+                            } else {
+                                lifecycle.whenProjectMayClose(ProjectLifecycleController.RESTORE_SNAPSHOT_DOOR, proceed);
+                            }
+                        },
                         (restored, label, missingAssets, unreadItems) -> restores.incrementAndGet()));
         SnapshotEntry entry = snapshots.createCheckpointWithLabel("Before the take");
         record(RecordingInFlightFixture.audio(project.get()));
@@ -470,7 +461,7 @@ class ProjectChangeWhileRecordingTest {
                     .isSameAs(inputCheck);
             assertThat(inputCheck.isAlive()).as("fixture: the input check still waits").isTrue();
 
-            assertThat(onFx(lifecycle::confirmProjectMayClose)).isFalse();
+            assertThat(onFx(() -> DoorGate.proceedsAtOnce(lifecycle))).isFalse();
 
             assertRefusedOnce();
             assertThat(onFx(current::isPreparingTake)).isTrue();
@@ -503,7 +494,7 @@ class ProjectChangeWhileRecordingTest {
     void theRecordingRefusalTellsTheUserToStopTheRecording() throws Exception {
         runOnFx(() -> lifecycle.setRecordingInFlightCheck(() -> true));
 
-        assertThat(onFx(lifecycle::confirmProjectMayClose)).isFalse();
+        assertThat(onFx(() -> DoorGate.proceedsAtOnce(lifecycle))).isFalse();
 
         assertRefusedOnce();
         assertThat(ProjectLifecycleController.PROJECT_CHANGE_WHILE_RECORDING_MESSAGE)
@@ -547,7 +538,7 @@ class ProjectChangeWhileRecordingTest {
             lifecycle.setRecordingInFlightCheck(() -> true);
         });
 
-        assertThat(onFx(lifecycle::confirmProjectMayClose)).isFalse();
+        assertThat(onFx(() -> DoorGate.proceedsAtOnce(lifecycle))).isFalse();
         runOnFx(() -> lifecycle.openRestoredArchive(destination, "Song B", List.of(), List.of()));
 
         assertThat(shown.getEntries()).extracting(NotificationEntry::level, NotificationEntry::message)

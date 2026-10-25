@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
+import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.saved;
 import static com.benesquivelmusic.daw.core.persistence.AudioFileFixtures.admScene;
 import static com.benesquivelmusic.daw.core.persistence.AudioFileFixtures.segment;
 import static com.benesquivelmusic.daw.core.persistence.AudioFileFixtures.wav;
@@ -78,7 +79,7 @@ class AssetRelinkerTest {
         assertThat(clip.getSourceRateMetadata()).isNull();
         assertThat(reopened.project().isDirty()).as("a relink is an edit").isTrue();
 
-        reopened.manager().saveProject();
+        saved(reopened.manager(), reopened.manager().getCurrentDawProject());
         assertThat(Files.readString(reopened.projectDir().resolve("project.daw")))
                 .contains("source-file=\"audio/found/tone.wav\"")
                 .doesNotContain(copy.toString());
@@ -95,7 +96,7 @@ class AssetRelinkerTest {
         RelinkPreparation.Candidate candidate =
                 (RelinkPreparation.Candidate) new AssetRelinker().prepare(request, copy);
         AssetRelinker.apply(candidate, id -> { });
-        reopened.manager().saveProject();
+        saved(reopened.manager(), reopened.manager().getCurrentDawProject());
 
         assertThat(onlyClip(reopened.project()).getAudioData()).isNotNull();
         assertThat(Files.readString(reopened.projectDir().resolve("project.daw")))
@@ -116,7 +117,7 @@ class AssetRelinkerTest {
         AudioClip take = new AudioClip("Take 1", 0.0, 0.04, null);
         take.setSourceSegmentPaths(recorded);
         track.addClip(take);
-        manager.saveDawProject(project);
+        saved(manager, project);
         manager.abandonProject();
         Path moved = ProjectManager.audioDirectory(projectDir).resolve("moved-take");
         Files.move(takeFolder, moved);
@@ -144,7 +145,7 @@ class AssetRelinkerTest {
         assertThat(clip.getSourceRateMetadata()).isEqualTo(new SourceRateMetadata(44_100, 2, onDisk[0].length));
         assertThat(loaded.isDirty()).isTrue();
 
-        reopened.saveProject();
+        saved(reopened, reopened.getCurrentDawProject());
         assertThat(Files.readString(projectDir.resolve("project.daw")))
                 .contains("source-file=\"audio/moved-take/segment-000.wav\"")
                 .contains("<source-segment path=\"audio/moved-take/segment-000.wav\"/>")
@@ -612,7 +613,7 @@ class AssetRelinkerTest {
         Path projectDir = manager.createProject(name, tempDir).projectPath();
         DawProject project = new DawProject(name, FORMAT);
         float[][] imported = new AudioFileImporter(project).importFile(library, 0.0).clip().getAudioData();
-        manager.saveDawProject(project);
+        saved(manager, project);
         manager.abandonProject();
         Path parked = Files.createDirectories(tempDir.resolve("parked-" + name)).resolve("tone.wav");
         Files.move(library, parked);

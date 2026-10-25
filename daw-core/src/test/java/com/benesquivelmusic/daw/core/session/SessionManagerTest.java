@@ -7,12 +7,17 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class SessionManagerTest {
 
@@ -58,6 +63,31 @@ class SessionManagerTest {
         assertThat(next.sealed().get().isActive()).isFalse();
         assertThat(next.current().id()).isNotEqualTo(first.current().id());
         assertThat(manager.store().listSessions(projectDir)).hasSize(2);
+    }
+
+    @Test
+    void aStaleSessionTheUserCannotWriteIsStillSealedAndANewSessionStarts() throws IOException {
+        assumeTrue(Files.getFileStore(projectDir).supportsFileAttributeView(PosixFileAttributeView.class),
+                "the file system has POSIX permission bits (Linux CI)");
+        SessionOpenResult first = manager.openSession(projectDir, Instant.parse("2026-03-21T09:00:00Z"));
+        Path sessions = manager.store().sessionsDirectory(projectDir);
+        Path stale = sessions.resolve(manager.store().manifestFileName(first.current()));
+        // Another user's session in a group-shared folder: this user may rename over it, not write it.
+        Files.setPosixFilePermissions(stale, PosixFilePermissions.fromString("r--r--r--"));
+        assumeFalse(Files.isWritable(stale), "a superuser may write a read-only file");
+
+        SessionOpenResult next = manager.openSession(projectDir, Instant.parse("2026-03-22T09:00:00Z"));
+
+        assertThat(next.continued()).isFalse();
+        assertThat(next.sealed()).hasValueSatisfying(sealed ->
+                assertThat(sealed.id()).isEqualTo(first.current().id()));
+        assertThat(manager.store().read(stale).isActive()).as("the stale session is sealed on disk").isFalse();
+        assertThat(PosixFilePermissions.toString(Files.getPosixFilePermissions(stale)))
+                .as("the replaced manifest keeps its bits").isEqualTo("r--r--r--");
+        try (Stream<Path> entries = Files.list(sessions)) {
+            assertThat(entries).as("the sealed and the new session, and no temp")
+                    .containsExactlyInAnyOrder(stale, sessions.resolve(manager.store().manifestFileName(next.current())));
+        }
     }
 
     @Test

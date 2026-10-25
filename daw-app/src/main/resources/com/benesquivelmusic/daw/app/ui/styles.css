@@ -1176,6 +1176,7 @@
     -ssc-text: -text;
     -ssc-warn: -warn;
     -ssc-critical: -danger;
+    -ssc-flash: -accent-soft;
 }
 
 /* Forward role tokens onto the checkpoint-countdown canvas; its Java draw

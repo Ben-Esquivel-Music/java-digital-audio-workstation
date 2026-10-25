@@ -25,6 +25,7 @@ import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 import java.util.stream.Stream;
 
+import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.saved;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -181,7 +182,7 @@ class ProjectSerializerVcaGroupTest {
         ProjectManager manager = manager();
         try {
             manager.openProject(directory);
-            manager.saveProject();
+            saved(manager, manager.getCurrentDawProject());
         } finally {
             manager.abandonProject();
         }
@@ -231,7 +232,7 @@ class ProjectSerializerVcaGroupTest {
         ProjectManager manager = manager();
         try {
             manager.openProject(directory);
-            manager.saveProject();
+            saved(manager, manager.getCurrentDawProject());
         } finally {
             manager.abandonProject();
         }

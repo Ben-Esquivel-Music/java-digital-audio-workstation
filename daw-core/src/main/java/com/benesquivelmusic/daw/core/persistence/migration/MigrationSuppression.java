@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.persistence.migration;
 
+import com.benesquivelmusic.daw.core.persistence.AtomicFileWriter;
+
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
@@ -69,11 +71,23 @@ public final class MigrationSuppression {
      * loads at that version (or older targets) will not surface the
      * dialog. A future schema bump produces a new {@link MigrationReport}
      * with a higher {@code toVersion} which is not suppressed.
+     *
+     * <p>The marker is replaced atomically ({@link AtomicFileWriter}, story
+     * 331): a failed write leaves the previous marker as it was.</p>
      */
     public static void suppress(Path projectDirectory, int toVersion) {
+        suppress(projectDirectory, toVersion, new AtomicFileWriter());
+    }
+
+    /**
+     * As {@link #suppress(Path, int)}, through {@code fileWriter} — for tests
+     * that fail or observe the write.
+     */
+    static void suppress(Path projectDirectory, int toVersion, AtomicFileWriter fileWriter) {
         Objects.requireNonNull(projectDirectory, "projectDirectory");
+        Objects.requireNonNull(fileWriter, "fileWriter");
         try {
-            Files.writeString(projectDirectory.resolve(MARKER_FILENAME),
+            fileWriter.writeString(projectDirectory.resolve(MARKER_FILENAME),
                     Integer.toString(toVersion));
         } catch (IOException e) {
             throw new UncheckedIOException(e);

@@ -5,16 +5,22 @@ import com.benesquivelmusic.daw.sdk.event.AutoSaveListener;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class CheckpointManagerTest {
+
+    private static final long TIMEOUT_SECONDS = 10;
 
     @TempDir
     Path tempDir;
@@ -43,31 +49,26 @@ class CheckpointManagerTest {
     }
 
     @Test
-    void shouldPerformManualCheckpoint() {
-        AutoSaveConfig config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
-        CheckpointManager manager = new CheckpointManager(config);
-        manager.start(tempDir);
+    void shouldWriteARequestedCheckpoint() throws Exception {
+        CheckpointManager manager = startedManager(10);
 
-        manager.performCheckpoint();
+        Path written = await(manager.writeCheckpoint(document(1), 1, CheckpointOrigin.AFTER_SAVE));
+
         assertThat(manager.getCheckpointCount()).isEqualTo(1);
-        assertThat(manager.getCheckpointFiles()).hasSize(1);
-
-        Path checkpointFile = manager.getCheckpointFiles().getFirst();
-        assertThat(checkpointFile).exists();
-        assertThat(checkpointFile.getFileName().toString()).startsWith("checkpoint-001-");
+        assertThat(manager.getCheckpointFiles()).containsExactly(written);
+        assertThat(written).exists();
+        assertThat(written.getFileName().toString()).startsWith("checkpoint-001-");
 
         manager.stop();
     }
 
     @Test
-    void shouldPerformMultipleCheckpoints() {
-        AutoSaveConfig config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
-        CheckpointManager manager = new CheckpointManager(config);
-        manager.start(tempDir);
+    void shouldWriteMultipleCheckpoints() throws Exception {
+        CheckpointManager manager = startedManager(10);
 
-        manager.performCheckpoint();
-        manager.performCheckpoint();
-        manager.performCheckpoint();
+        for (long revision = 1; revision <= 3; revision++) {
+            await(manager.writeCheckpoint(document(revision), revision, CheckpointOrigin.AFTER_SAVE));
+        }
 
         assertThat(manager.getCheckpointCount()).isEqualTo(3);
         assertThat(manager.getCheckpointFiles()).hasSize(3);
@@ -76,14 +77,12 @@ class CheckpointManagerTest {
     }
 
     @Test
-    void shouldPruneOldCheckpoints() {
-        AutoSaveConfig config = new AutoSaveConfig(Duration.ofHours(1), 2, true);
-        CheckpointManager manager = new CheckpointManager(config);
-        manager.start(tempDir);
+    void shouldPruneOldCheckpoints() throws Exception {
+        CheckpointManager manager = startedManager(2);
 
-        manager.performCheckpoint();
-        manager.performCheckpoint();
-        manager.performCheckpoint();
+        for (long revision = 1; revision <= 3; revision++) {
+            await(manager.writeCheckpoint(document(revision), revision, CheckpointOrigin.AFTER_SAVE));
+        }
 
         assertThat(manager.getCheckpointCount()).isEqualTo(3);
         assertThat(manager.getCheckpointFiles()).hasSize(2);
@@ -92,10 +91,8 @@ class CheckpointManagerTest {
     }
 
     @Test
-    void shouldNotifyListeners() {
-        AutoSaveConfig config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
-        CheckpointManager manager = new CheckpointManager(config);
-        manager.start(tempDir);
+    void shouldNotifyListeners() throws Exception {
+        CheckpointManager manager = startedManager(10);
 
         List<String> beforeEvents = new ArrayList<>();
         List<String> afterEvents = new ArrayList<>();
@@ -116,21 +113,19 @@ class CheckpointManagerTest {
             }
         });
 
-        manager.performCheckpoint();
+        await(manager.writeCheckpoint(document(1), 1, CheckpointOrigin.AFTER_SAVE));
 
         assertThat(beforeEvents).hasSize(1);
-        assertThat(afterEvents).hasSize(1);
+        assertThat(afterEvents).hasSize(1).isEqualTo(beforeEvents);
 
         manager.stop();
     }
 
     @Test
-    void shouldCreateCheckpointDirectory() {
-        AutoSaveConfig config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
-        CheckpointManager manager = new CheckpointManager(config);
-        manager.start(tempDir);
+    void shouldCreateCheckpointDirectory() throws Exception {
+        CheckpointManager manager = startedManager(10);
 
-        manager.performCheckpoint();
+        await(manager.writeCheckpoint(document(1), 1, CheckpointOrigin.AFTER_SAVE));
 
         assertThat(tempDir.resolve("checkpoints")).isDirectory();
 
@@ -146,30 +141,72 @@ class CheckpointManagerTest {
     }
 
     @Test
-    void shouldIgnoreCheckpointWithoutProjectDirectory() {
+    void aCheckpointRequestedWithoutAProjectDirectoryFailsAndWritesNothing() {
         AutoSaveConfig config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
         CheckpointManager manager = new CheckpointManager(config);
 
-        manager.performCheckpoint();
+        CompletableFuture<Path> request = manager.writeCheckpoint(document(1), 1, CheckpointOrigin.AFTER_SAVE);
 
+        assertThat(request).isCompletedExceptionally();
+        assertThat(request.exceptionNow()).isInstanceOf(IOException.class);
         assertThat(manager.getCheckpointCount()).isZero();
     }
 
     @Test
-    void shouldWriteCheckpointContent() throws Exception {
-        AutoSaveConfig config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
-        CheckpointManager manager = new CheckpointManager(config);
-        manager.start(tempDir);
+    void aCheckpointHoldsExactlyTheDocumentItWasGiven() throws Exception {
+        CheckpointManager manager = startedManager(10);
+        String xml = document(7);
 
-        manager.performCheckpoint();
+        Path written = await(manager.writeCheckpoint(xml, 7, CheckpointOrigin.AFTER_SAVE));
 
-        Path checkpointFile = manager.getCheckpointFiles().getFirst();
-        String content = Files.readString(checkpointFile);
-        assertThat(content).contains("# DAW Checkpoint");
-        assertThat(content).contains("id=chk-1-");
-        assertThat(content).contains("index=1");
+        assertThat(Files.readString(written)).as("no summary text: the document, byte for byte").isEqualTo(xml);
 
         manager.stop();
+    }
+
+    @Test
+    void aScheduledOriginIsTheCadencesOwnAndCannotBeRequested() {
+        CheckpointManager manager = new CheckpointManager(new AutoSaveConfig(Duration.ofHours(1), 10, true));
+
+        assertThatThrownBy(() -> manager.writeCheckpoint(document(1), 1, CheckpointOrigin.SCHEDULED))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void aCheckpointWhosePublishFailsIsReportedAndLeavesNoFile() throws Exception {
+        AutoSaveConfig config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
+        IOException crash = new IOException("injected failure before the checkpoint's publish");
+        CheckpointManager manager = new CheckpointManager(config, new AtomicFileWriter(
+                AtomicFileWriter.TEMP_CHANNEL_OPENER, (temp, target, options) -> {
+                    throw crash;
+                }));
+        List<Throwable> failures = new ArrayList<>();
+        manager.addListener(new AutoSaveListener() {
+            @Override
+            public void onBeforeCheckpoint(String checkpointId) {
+            }
+
+            @Override
+            public void onAfterCheckpoint(String checkpointId) {
+            }
+
+            @Override
+            public void onCheckpointFailed(String checkpointId, Throwable cause) {
+                failures.add(cause);
+            }
+        });
+        manager.start(tempDir).get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+
+        CompletableFuture<Path> request = manager.writeCheckpoint(document(1), 1, CheckpointOrigin.AFTER_SAVE);
+        assertThat(request).failsWithin(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        manager.stop();
+
+        assertThat(request.exceptionNow()).as("the original cause, same instance").isSameAs(crash);
+        assertThat(failures).as("the writer's exception reaches the listener").containsExactly(crash);
+        assertThat(manager.getCheckpointFiles()).isEmpty();
+        try (Stream<Path> entries = Files.list(tempDir.resolve("checkpoints"))) {
+            assertThat(entries).as("neither a checkpoint nor its temp").isEmpty();
+        }
     }
 
     // ── Reconfigure ──────────────────────────────────────────────────────────
@@ -205,6 +242,16 @@ class CheckpointManagerTest {
     }
 
     @Test
+    void aConfigurationThatDisablesAutosaveStopsTheCheckpoints() {
+        CheckpointManager manager = new CheckpointManager(new AutoSaveConfig(Duration.ofMinutes(5), 10, true));
+        manager.start(tempDir);
+
+        manager.reconfigure(new AutoSaveConfig(Duration.ofMinutes(5), 10, false));
+
+        assertThat(manager.isRunning()).isFalse();
+    }
+
+    @Test
     void shouldRejectNullConfigOnReconfigure() {
         AutoSaveConfig config = new AutoSaveConfig(Duration.ofMinutes(5), 10, true);
         CheckpointManager manager = new CheckpointManager(config);
@@ -214,12 +261,10 @@ class CheckpointManagerTest {
     }
 
     @Test
-    void shouldPreserveCheckpointsAfterReconfigure() {
-        AutoSaveConfig config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
-        CheckpointManager manager = new CheckpointManager(config);
-        manager.start(tempDir);
+    void shouldPreserveCheckpointsAfterReconfigure() throws Exception {
+        CheckpointManager manager = startedManager(10);
 
-        manager.performCheckpoint();
+        await(manager.writeCheckpoint(document(1), 1, CheckpointOrigin.AFTER_SAVE));
         assertThat(manager.getCheckpointCount()).isEqualTo(1);
 
         AutoSaveConfig newConfig = new AutoSaveConfig(Duration.ofSeconds(30), 10, true);
@@ -229,5 +274,20 @@ class CheckpointManagerTest {
         assertThat(manager.getCheckpointFiles()).hasSize(1);
 
         manager.stop();
+    }
+
+    private CheckpointManager startedManager(int maxCheckpoints) throws Exception {
+        CheckpointManager manager = new CheckpointManager(
+                new AutoSaveConfig(Duration.ofHours(1), maxCheckpoints, true));
+        manager.start(tempDir).get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        return manager;
+    }
+
+    private static String document(long revision) {
+        return "<daw-project revision=\"" + revision + "\"/>\n";
+    }
+
+    private static Path await(CompletableFuture<Path> checkpoint) throws Exception {
+        return checkpoint.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
     }
 }

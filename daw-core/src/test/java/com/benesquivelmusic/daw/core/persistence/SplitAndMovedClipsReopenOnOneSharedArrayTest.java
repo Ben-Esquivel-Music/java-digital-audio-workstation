@@ -32,6 +32,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
+import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.saved;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -83,7 +84,7 @@ class SplitAndMovedClipsReopenOnOneSharedArrayTest {
         assertThat(List.of(head.getAudioData(), middle.getAudioData(), tail.getAudioData()))
                 .as("fixture: before the save the three parts share the import's array")
                 .allSatisfy(audio -> assertThat(audio).isSameAs(beforeSave));
-        manager.saveDawProject(project);
+        saved(manager, project);
         manager.abandonProject();
 
         reopened = newManager();

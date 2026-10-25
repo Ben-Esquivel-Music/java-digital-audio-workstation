@@ -66,6 +66,16 @@ public final class StatusStripCell extends Control {
     public static final String SEVERITY_CRITICAL_CLASS = "status-cell-critical";
 
     /**
+     * Pseudo-class the strip sets on a cell for a one-shot flash and clears
+     * when the flash ends (the Saved cell's 600&nbsp;ms flash on a head save,
+     * PM book §4.5). Unlike severity it is transient visual state, so it is a
+     * pseudo-class ({@code .status-strip-cell:flash} in
+     * {@code status-strip-cell.css}), not a style class. Public so the strip
+     * and its tests name it exactly.
+     */
+    public static final String FLASH_PSEUDO_CLASS = "flash";
+
+    /**
      * Cell severity. {@link #NORMAL} adds no extra class; {@link #WARN} adds
      * {@link #SEVERITY_WARN_CLASS}; {@link #CRITICAL} adds
      * {@link #SEVERITY_CRITICAL_CLASS}.

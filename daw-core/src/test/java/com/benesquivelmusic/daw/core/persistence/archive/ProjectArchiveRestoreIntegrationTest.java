@@ -18,6 +18,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 
+import static com.benesquivelmusic.daw.core.persistence.archive.ArchiveTestSupport.archive;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -55,7 +56,7 @@ class ProjectArchiveRestoreIntegrationTest {
         // ── Act — archive then restore into a *different* directory. ─────
         ProjectArchiver archiver = new ProjectArchiver();
         Path archive = tmp.resolve("session.dawz");
-        archiver.saveAsArchive(project, archive);
+        archive(archiver, project, archive);
         assertThat(archive).exists();
 
         Path restoreDir = tmp.resolve("restored-here");
@@ -105,7 +106,7 @@ class ProjectArchiveRestoreIntegrationTest {
         // ── Act — archive should succeed and simply omit the missing asset.
         ProjectArchiver archiver = new ProjectArchiver();
         Path archive = tmp.resolve("ghost.dawz");
-        ProjectArchiveSummary summary = archiver.saveAsArchive(project, archive);
+        ProjectArchiveSummary summary = archive(archiver, project, archive);
 
         // ── Assert — zero unique assets in the archive (the only ref was
         //   missing on disk), and the restored project surfaces the

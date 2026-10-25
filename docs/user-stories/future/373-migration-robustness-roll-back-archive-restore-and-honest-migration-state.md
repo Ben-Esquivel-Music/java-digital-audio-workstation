@@ -26,6 +26,7 @@ For an engineer, migration is the moment a session is most at risk: the one dest
 - **The strip is true.** Before the first save it says that the first save will keep a backup of version `v<n>`; once the backup exists it says `backup v<n> available`.
 - **The badge means something.** The studio engineer rules, before implementation, what the hub shows for a project that was migrated and saved: for example, a format-only migration not badged once saved, the badge cleared after the user confirms, or migration backups pruned after a retention period.
 - **The other doors are recorded or say why not.** The studio engineer rules whether a migration through journal replay, snapshot restore or archive restore appears in Migration History; the implementation follows the ruling and the doors' Javadoc says what they do.
+- **Roll back and the dialog's suppression write leave the FX thread** (story 331's known limit; Persistence Integrity book §6.1). Since story 331 both write through `AtomicFileWriter`, which forces the data, fsyncs the folder and may pause up to 130 ms retrying a refused move, and both still run on the FX thread: `ProjectLifecycleController.rollBackNow` copies the chosen backup over `project.daw` there ("FX thread, as before story 331 — the copy blocks on storage there until story 373 moves it off"), after `rollbackMigration` has looked up the newest backup with `findNewestBackup`, a directory listing, there too; and the Project Migrated dialog's result converter calls `MigrationSuppression.suppress` when "Don't show again for this project" is ticked. Roll back's file work — the backup lookup, the copies this story adds and the copy over `project.daw` — and the suppression write run on a worker, and their outcomes come back to the FX thread through the `FxDispatcher`.
 
 ## Acceptance Criteria
 
@@ -34,6 +35,7 @@ For an engineer, migration is the moment a session is most at risk: the one dest
 3. After opening a schema-1 file and before saving, the strip does not say `backup v1 available`; after the first save it does.
 4. The hub badge follows the studio engineer's ruling; a degraded-open backup (`project.daw.degraded.*.bak`) and a roll-back copy (`project.daw.pre-rollback*.bak`) still never count as a migration.
 5. The three doors behave as ruled, and each is covered by a test.
+6. Roll back — from Migration History and from the Project Migrated dialog — and the dialog's "Don't show again for this project" write make no file-system call on the FX thread (story 331).
 
 ## Goals — Tests
 
@@ -47,6 +49,7 @@ These tests are binding acceptance criteria. They run headless, and none of them
 - **Strip**: open a schema-1 file; the strip's text names no available backup until the first save writes it.
 - **Badge**: the hub scan over a migrated-and-saved project gives the ruled badge.
 - **Doors**: replay a schema-1 checkpoint, restore a schema-1 snapshot and a schema-1 archive; each matches the ruling for Migration History.
+- **Off the FX thread** (story 331): with `ProjectLifecycleController.setFileWriter` given an `AtomicFileWriter` whose `Mover` records its thread, a Roll back from Migration History and one from the dialog publish only off the FX thread, and the FX thread returns before the copy is published; ticking "Don't show again for this project" writes `.migration-report-suppressed` off the FX thread.
 
 ## Non-Goals
 

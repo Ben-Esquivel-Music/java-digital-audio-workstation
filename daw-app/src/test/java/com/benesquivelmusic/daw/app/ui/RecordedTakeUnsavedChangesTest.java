@@ -201,12 +201,16 @@ class RecordedTakeUnsavedChangesTest {
         assertThat(onFx(() -> progress.dirtyProperty().get())).as("and the status strip's mirror of it").isTrue();
 
         promptAnswer = null;
-        assertThat(onFx(lifecycle::confirmProjectMayClose)).as("the prompt, dismissed, keeps the project open")
+        assertThat(onFx(() -> DoorGate.proceedsAtOnce(lifecycle))).as("the prompt, dismissed, keeps the project open")
                 .isFalse();
         assertThat(prompts).as("a door that replaces the project asks about the take").hasValue(1);
 
         promptAnswer = "Save";
-        assertThat(onFx(lifecycle::confirmProjectMayClose)).as("saved, the door may go ahead").isTrue();
+        // Story 331 — the Save the prompt offers is written off the FX thread; the door goes
+        // ahead once its outcome reached the FX thread.
+        CountDownLatch proceeded = onFx(() -> DoorGate.whenItProceeds(lifecycle));
+        assertThat(proceeded.await(WAIT_BUDGET_NANOS, TimeUnit.NANOSECONDS)).as("saved, the door may go ahead")
+                .isTrue();
         assertThat(prompts).hasValue(2);
         assertThat(onFx(project::isDirty)).isFalse();
         assertThat(onFx(projectVM::isDirty)).isFalse();
@@ -249,7 +253,7 @@ class RecordedTakeUnsavedChangesTest {
         assertThat(onFx(project::isDirty)).as("a take that published no clip is no change").isFalse();
         assertThat(onFx(projectVM::isDirty)).isFalse();
         promptAnswer = null;
-        assertThat(onFx(lifecycle::confirmProjectMayClose)).as("the door goes ahead").isTrue();
+        assertThat(onFx(() -> DoorGate.proceedsAtOnce(lifecycle))).as("the door goes ahead").isTrue();
         assertThat(prompts).as("without the unsaved-changes prompt").hasValue(0);
     }
 

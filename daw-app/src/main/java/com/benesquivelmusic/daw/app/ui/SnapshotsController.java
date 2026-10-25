@@ -1,8 +1,10 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.app.ui.status.CheckpointStatusListener;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
+import com.benesquivelmusic.daw.core.persistence.CheckpointOrigin;
 import com.benesquivelmusic.daw.core.persistence.MissingAssetsReport;
 import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
@@ -31,7 +33,8 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.function.BooleanSupplier;
+import java.util.concurrent.CompletionException;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -61,17 +64,32 @@ final class SnapshotsController {
             DateTimeFormatter.ofPattern("HH:mm:ss");
 
     /**
+     * The WARNING of a Create Checkpoint on a project that was never saved
+     * (ruling K2): the labelled entry exists in memory only.
+     */
+    static final String KEPT_IN_MEMORY_UNSAVED_MESSAGE = "Checkpoint kept in memory only, until the application"
+            + " closes: save the project to write checkpoints to disk.";
+
+    /**
+     * The WARNING of a Create Checkpoint on a project open read-only (ruling
+     * K2): the labelled entry exists in memory only.
+     */
+    static final String KEPT_IN_MEMORY_READ_ONLY_MESSAGE = "Checkpoint kept in memory only, until the application"
+            + " closes: this project is open read-only, so no checkpoint is written to its folder.";
+
+    /**
      * The functional dependencies the composition root supplies — story 294
      * replaces the callback-up {@code Host} interface (Control Synchronization
      * Design Book §4.2/§9 "use publish/subscribe, not a callback-up {@code Host}
      * for cross-surface updates") with a record of direct functional deps. The
      * swappable owner stage / current project are {@link Supplier}s read live;
-     * the gate a restore passes before it replaces the open project is a
-     * {@link BooleanSupplier} (delegated to
-     * {@code ProjectLifecycleController.confirmProjectMayClose()}, which
-     * refuses while a recording is in flight or a take is being written and
-     * otherwise asks about unsaved changes); the restore cascade is a
-     * {@link RestoredProjectSink} that swaps the
+     * the gate a restore passes before it replaces the open project takes the
+     * restore as its continuation (delegated to
+     * {@code ProjectLifecycleController.whenProjectMayClose}, which refuses
+     * while a recording is in flight or a take is being written, waits for a
+     * save still being written, then asks about unsaved changes, and runs the
+     * continuation only if the project may close: story 331, ruling G1); the
+     * restore cascade is a {@link RestoredProjectSink} that swaps the
      * project, resets the undo manager, and rebuilds the UI exactly as for an
      * open-from-disk — and, story 329, loads the restored clips' audio and
      * announces the restore qualified by what they could not find.
@@ -79,13 +97,13 @@ final class SnapshotsController {
     record Deps(
             Supplier<Stage> ownerStage,
             Supplier<DawProject> currentProject,
-            BooleanSupplier confirmProjectMayClose,
+            Consumer<Runnable> whenProjectMayClose,
             RestoredProjectSink applyRestoredProject) {
         Deps {
             Objects.requireNonNull(ownerStage, "ownerStage must not be null");
             Objects.requireNonNull(currentProject, "currentProject must not be null");
-            Objects.requireNonNull(confirmProjectMayClose,
-                    "confirmProjectMayClose must not be null");
+            Objects.requireNonNull(whenProjectMayClose,
+                    "whenProjectMayClose must not be null");
             Objects.requireNonNull(applyRestoredProject, "applyRestoredProject must not be null");
         }
     }
@@ -127,6 +145,15 @@ final class SnapshotsController {
      */
     private final FxDispatcher fxDispatcher;
 
+    /**
+     * Where a Create Checkpoint that wrote nothing is reported (story 331,
+     * rulings G8, G13 #9), and which a restore asks to post the countdown's
+     * last re-arm again (ruling M4): installed by {@code MainController};
+     * until then — a pure-unit context — such a failure is only logged, at
+     * WARNING, and a restore posts nothing.
+     */
+    private CheckpointStatusListener checkpointStatus;
+
     /** The last project checkpoint directory registered with the service,
      *  tracked so it can be removed when a different project is opened. */
     private Path lastRegisteredDirectory;
@@ -160,6 +187,17 @@ final class SnapshotsController {
     /** Returns the underlying snapshot service (intended for tests). */
     SnapshotBrowserService service() {
         return service;
+    }
+
+    /**
+     * Installs where a Create Checkpoint that wrote nothing is reported — the
+     * strip's checkpoint state and an ERROR notification (story 331) — and
+     * what keeps the countdown through a restore (ruling M4).
+     *
+     * @param status the checkpoint-status listener; must not be {@code null}
+     */
+    void setCheckpointStatus(CheckpointStatusListener status) {
+        this.checkpointStatus = Objects.requireNonNull(status, "status must not be null");
     }
 
     /** Returns the lazily-created browser view, or {@code null} if never opened (intended for tests). */
@@ -249,7 +287,7 @@ final class SnapshotsController {
      * {@code Ctrl+Alt+S} shortcut. Prompts for an optional label, then
      * captures the current project state both as an in-memory user
      * checkpoint (always available in the browser timeline) and on
-     * disk via the periodic {@link CheckpointManager}, so the
+     * disk through the {@link CheckpointManager}, so the
      * checkpoint survives a JVM restart.
      */
     void createCheckpoint() {
@@ -275,34 +313,119 @@ final class SnapshotsController {
      * and tests. Adds an in-memory user checkpoint with the given label
      * and asks {@link CheckpointManager} to persist a numbered file.
      *
+     * <p>Story 331 (Persistence Integrity book §4.2; rulings G8, G13 #9): the
+     * project is captured and rendered once, here, on the FX thread — the
+     * browser entry needs the document at once, and rendering touches no
+     * disk — and the same document is handed to
+     * {@link CheckpointManager#writeCheckpoint} as a
+     * {@link CheckpointOrigin#USER} checkpoint, which is always written. That
+     * request is made here too, so it belongs to the project the user asked
+     * it for: a project switch right after it can never send this project's
+     * document into the next project's {@code checkpoints/}. The call only
+     * queues; the write runs on the checkpoint writer. A checkpoint that
+     * writes nothing — the capture failed, no checkpoints are running, the
+     * write failed, or the project was replaced before it was written — is
+     * reported every time: an ERROR notification naming the cause and the
+     * strip's checkpoint failure state (of the project it was asked for,
+     * never of the one that replaced it).</p>
+     *
+     * <p>Two projects have no folder a checkpoint may be written to (ruling
+     * K2): one that was never saved, and one open read-only. For them the
+     * labelled entry is still created — restorable from the browser until the
+     * application closes — but nothing is asked of the checkpoints: a WARNING
+     * says so every time ({@link #KEPT_IN_MEMORY_UNSAVED_MESSAGE},
+     * {@link #KEPT_IN_MEMORY_READ_ONLY_MESSAGE}), logged at INFO, and nothing
+     * failed, so no checkpoint failure state is set and nothing counts toward
+     * the autosave streak.</p>
+     *
      * @param label optional user-supplied label (may be {@code null}/blank)
-     * @return the in-memory entry, or {@code null} if serialisation failed
+     * @return the in-memory entry, or {@code null} if the project could not be captured
      */
     SnapshotEntry createCheckpointWithLabel(String label) {
         String trimmed = (label == null) ? "" : label.trim();
         String safeLabel = trimmed.isEmpty()
                 ? "Checkpoint " + LABEL_TIME_FMT.format(LocalTime.now())
                 : trimmed;
+        Consumer<Throwable> reportFailure = failureReporter();
+        DawProject project = deps.currentProject().get();
+        long revision;
         String content;
         try {
-            content = serializer.serialize(deps.currentProject().get());
-        } catch (IOException e) {
-            LOG.log(Level.WARNING, "Failed to serialize project for checkpoint", e);
+            revision = project.getEditRevision();
+            content = serializer.capture(project).toXml();
+        } catch (Throwable notCaptured) {
+            // Anything the capture throws, an Error included, is a checkpoint that wrote nothing: never silent.
+            LOG.log(Level.WARNING, "Failed to capture the project for a checkpoint; nothing was written", notCaptured);
+            reportFailure.accept(notCaptured);
             return null;
         }
         SnapshotEntry entry = service.createUserCheckpoint(safeLabel, content);
-        // Best-effort: also write a numbered checkpoint file so the
-        // user-checkpoint survives a JVM restart. performCheckpoint() is
-        // a no-op when the manager has no project directory yet.
-        try {
-            checkpointManager.performCheckpoint();
-        } catch (RuntimeException e) {
-            LOG.log(Level.FINE, "On-disk checkpoint not persisted", e);
+        Optional<String> keptInMemoryOnly = whyNoCheckpointIsWritten();
+        if (keptInMemoryOnly.isPresent()) {
+            String message = keptInMemoryOnly.get();
+            LOG.info(() -> "The checkpoint \"" + safeLabel + "\" is kept in memory only: " + message);
+            reportKeptInMemory(message);
+        } else {
+            writeCheckpoint(content, revision, safeLabel, reportFailure);
         }
         if (browserView != null) {
             browserView.refresh();
         }
         return entry;
+    }
+
+    /**
+     * Why a user checkpoint of the open project is kept in memory only
+     * (ruling K2): it was never saved, or it is open read-only; empty when it
+     * has a folder its checkpoints are written to.
+     */
+    private Optional<String> whyNoCheckpointIsWritten() {
+        if (projectManager.getCurrentProject() == null) {
+            return Optional.of(KEPT_IN_MEMORY_UNSAVED_MESSAGE);
+        }
+        if (projectManager.isReadOnly()) {
+            return Optional.of(KEPT_IN_MEMORY_READ_ONLY_MESSAGE);
+        }
+        return Optional.empty();
+    }
+
+    /** Shows the kept-in-memory WARNING through the installed checkpoint status, or only logs it. */
+    private void reportKeptInMemory(String message) {
+        CheckpointStatusListener status = checkpointStatus;
+        if (status == null) {
+            LOG.warning(() -> "No checkpoint status is installed to show: " + message);
+            return;
+        }
+        status.userCheckpointKeptInMemory(message);
+    }
+
+    /** Asks the checkpoints for the user checkpoint and reports it if it writes nothing. FX thread. */
+    private void writeCheckpoint(String content, long revision, String safeLabel, Consumer<Throwable> reportFailure) {
+        checkpointManager.writeCheckpoint(content, revision, CheckpointOrigin.USER)
+                .whenComplete((file, failure) -> {
+                    if (failure == null) {
+                        LOG.fine(() -> "Wrote the checkpoint " + file + " (" + safeLabel + ")");
+                        return;
+                    }
+                    Throwable cause = failure instanceof CompletionException wrapped && wrapped.getCause() != null
+                            ? wrapped.getCause() : failure;
+                    LOG.log(Level.WARNING, cause, () -> "The checkpoint \"" + safeLabel + "\" was not written");
+                    reportFailure.accept(cause);
+                });
+    }
+
+    /**
+     * The failure reporter of a checkpoint the user asks for now: the
+     * installed checkpoint status, bound to the open project, or a WARNING
+     * log line where none is installed (a pure-unit context).
+     */
+    private Consumer<Throwable> failureReporter() {
+        CheckpointStatusListener status = checkpointStatus;
+        if (status == null) {
+            return cause -> LOG.log(Level.WARNING, "No checkpoint status is installed to report a checkpoint that"
+                    + " wrote nothing", cause);
+        }
+        return status.userCheckpointRequested();
     }
 
     void restoreEntry(SnapshotEntry entry) {
@@ -317,9 +440,17 @@ final class SnapshotsController {
         if (entry == null) {
             return;
         }
-        if (!deps.confirmProjectMayClose().getAsBoolean()) {
-            return;
-        }
+        deps.whenProjectMayClose().accept(() -> restoreNow(entry));
+    }
+
+    /**
+     * Installs {@code entry} once the gate let the restore replace the open
+     * project. The project's checkpoints run on through a restore, so in the
+     * same FX step the installed checkpoint status posts the countdown's last
+     * re-arm again, under the restore's project generation (story 331,
+     * ruling M4).
+     */
+    private void restoreNow(SnapshotEntry entry) {
         try {
             DawProject project = loadFromEntry(entry);
             // Story 329 — what this deserialization found missing, read right
@@ -329,6 +460,10 @@ final class SnapshotsController {
                     project, deserializer.getMissingFiles(), currentProjectDirectory());
             List<UnreadProjectItem> unreadItems = deserializer.getUnreadItems();
             deps.applyRestoredProject().apply(project, entry.label(), missingAssets, unreadItems);
+            CheckpointStatusListener status = checkpointStatus;
+            if (status != null) {
+                status.snapshotRestored();
+            }
             if (browserView != null) {
                 browserView.refresh();
             }
