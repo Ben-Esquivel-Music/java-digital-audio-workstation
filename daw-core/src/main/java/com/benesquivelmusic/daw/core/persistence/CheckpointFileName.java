@@ -152,7 +152,11 @@ public final class CheckpointFileName {
     /**
      * The instant the stamp names, read in {@code zone} — the zone the
      * checkpoint was written in. Inside a repeated daylight-saving hour the
-     * earlier of the two instants.
+     * earlier of the two instants. Inside a skipped hour, a stamp no clock in
+     * {@code zone} showed, the instant shifted later by the length of the
+     * gap ({@code 02:30} in Europe/Berlin on 2026-03-29 reads as
+     * {@code 03:30+02:00}, after {@code 03:00}), so there the order of the
+     * names and the order of the instants can disagree.
      *
      * @param zone the zone the stamp was written in
      * @return the instant

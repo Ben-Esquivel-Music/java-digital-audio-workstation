@@ -178,8 +178,12 @@ public final class SessionManager {
         for (Map.Entry<LocalDate, List<CheckpointRef>> entry : byDate.entrySet()) {
             List<CheckpointRef> refs = entry.getValue();
             refs.sort(Comparator.comparing(CheckpointRef::name, CheckpointFileName.ORDER));
-            Instant start = refs.getFirst().timestamp();
-            Instant end = refs.getLast().timestamp();
+            // Bounds from the instants, not first/last: a stamp in a
+            // daylight-saving gap reads later than a stamp named after it.
+            Instant start = refs.stream().map(CheckpointRef::timestamp)
+                    .min(Comparator.naturalOrder()).orElseThrow();
+            Instant end = refs.stream().map(CheckpointRef::timestamp)
+                    .max(Comparator.naturalOrder()).orElseThrow();
             List<String> checkpointIds = refs.stream().map(ref -> ref.name().fileName()).toList();
             WorkingSession synthesised = new WorkingSession(
                     "checkpoints-" + entry.getKey(),
