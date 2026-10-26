@@ -684,8 +684,8 @@ public final class ProjectManager {
             project.setMetadata(touched);
             currentDawProject = project;
             long revision = project.getEditRevision();
-            checkpointManager.captureStarted(revision);
-            job = new SaveJob(target, project, touched, revision, serializer.capture(project));
+            CheckpointManager.Capture capture = checkpointManager.captureStarted(revision);
+            job = new SaveJob(target, project, touched, capture, serializer.capture(project));
         } catch (Throwable notCaptured) {
             LOG.log(Level.WARNING, notCaptured, () -> "The project in " + target.projectDirectory()
                     + " could not be captured for its save; nothing was written");
@@ -1249,7 +1249,7 @@ public final class ProjectManager {
         if (headCause instanceof LockStolenException || target != saveTarget || checkpoints.isEmpty()) {
             return new SaveOutcome.Failed(headCause, Optional.empty());
         }
-        CompletableFuture<Path> copy = checkpointManager.writeCheckpoint(checkpoints.get(), xml, job.revision(),
+        CompletableFuture<Path> copy = checkpointManager.writeCheckpoint(checkpoints.get(), xml, job.capture(),
                 CheckpointOrigin.SAFETY_COPY);
         try {
             Path safety = copy.get(checkpointWait.toNanos(), TimeUnit.NANOSECONDS);
@@ -1299,7 +1299,7 @@ public final class ProjectManager {
             return Optional.empty();
         }
         CompletableFuture<Path> checkpoint = checkpointManager.writeCheckpoint(checkpoints.get(), xml,
-                job.revision(), CheckpointOrigin.AFTER_SAVE);
+                job.capture(), CheckpointOrigin.AFTER_SAVE);
         try {
             return Optional.of(checkpoint.get(checkpointWait.toNanos(), TimeUnit.NANOSECONDS));
         } catch (ExecutionException notWritten) {
@@ -1528,16 +1528,16 @@ public final class ProjectManager {
         private final SaveTarget target;
         private final DawProject project;
         private final ProjectMetadata metadata;
-        private final long revision;
+        private final CheckpointManager.Capture capture;
         private final ProjectDocument document;
         final List<CompletableFuture<SaveOutcome>> waiters = new ArrayList<>();
 
-        SaveJob(SaveTarget target, DawProject project, ProjectMetadata metadata, long revision,
+        SaveJob(SaveTarget target, DawProject project, ProjectMetadata metadata, CheckpointManager.Capture capture,
                 ProjectDocument document) {
             this.target = target;
             this.project = project;
             this.metadata = metadata;
-            this.revision = revision;
+            this.capture = capture;
             this.document = document;
         }
 
@@ -1554,8 +1554,10 @@ public final class ProjectManager {
         }
 
         long revision() {
-            return revision;
+            return capture.revision();
         }
+
+        CheckpointManager.Capture capture() { return capture; }
 
         ProjectDocument document() {
             return document;

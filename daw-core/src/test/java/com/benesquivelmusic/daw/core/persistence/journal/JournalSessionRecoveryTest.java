@@ -59,6 +59,38 @@ class JournalSessionRecoveryTest {
         assertThat(JournalState.records(context).stream().filter(record -> !record.isControl())).hasSize(2);
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void laterMarkerForAnOlderCaptureCannotOverrideTheHighestVerifiedBoundary(boolean corruptNewer)
+            throws Exception {
+        ProjectContext context = context("Start");
+        Path older = checkpoint("Older capture");
+        Path newer = Files.writeString(context.checkpointDirectory().resolve("checkpoint-002-20261025T080100.daw"),
+                xml("Newer capture"));
+        long earlierBoundary;
+        long laterBoundary;
+        try (JournalWriter writer = new JournalWriter(context, JournalConfig.DEFAULT, true, null)) {
+            writer.start();
+            writer.offer("MixerEvent.GainChanged", UUID.randomUUID(), null, NOW);
+            earlierBoundary = writer.captureSequence();
+            writer.offer("MixerEvent.MuteChanged", UUID.randomUUID(), null, NOW);
+            laterBoundary = writer.captureSequence();
+            writer.onCheckpointSucceeded(laterBoundary, newer, NOW);
+            writer.offer("MixerEvent.GainChanged", UUID.randomUUID(), null, NOW);
+            writer.onCheckpointSucceeded(earlierBoundary, older, NOW);
+            writer.forceFlush();
+            assertThat(writer.queuedSinceCheckpoint()).isEqualTo(1);
+        }
+        if (corruptNewer) Files.writeString(newer, xml("Unrelated replacement"));
+
+        JournalState.ReplayBase base = JournalState.replayBase(context);
+        assertThat(base.file()).isEqualTo(corruptNewer ? older : newer);
+        assertThat(base.sequence()).isEqualTo(corruptNewer ? earlierBoundary : laterBoundary);
+        RecoveryResult recovered = new JournalReplayer().recover(context);
+        assertThat(recovered.recoveredProject().getName()).isEqualTo(corruptNewer ? "Older capture" : "Newer capture");
+        assertThat(recovered.appliedRecordCount()).isEqualTo(corruptNewer ? 2 : 1);
+    }
+
     @Test void sealWithoutTrailingMutationsIsCleanButSealOverUncheckpointedEditsStillRecovers() throws Exception {
         ProjectContext context = context("Head");
         JournalWriter writer = new JournalWriter(context, JournalConfig.DEFAULT, true, null);

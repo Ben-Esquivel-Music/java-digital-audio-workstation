@@ -19,6 +19,9 @@ import java.io.IOException;
  */
 public interface CheckpointSource {
 
+    /** Whether the model owner currently exposes the project belonging to this checkpoint generation. */
+    default boolean isAvailable() { return true; }
+
     /**
      * The project's edit revision now
      * ({@link com.benesquivelmusic.daw.core.project.DawProject#getEditRevision()}).

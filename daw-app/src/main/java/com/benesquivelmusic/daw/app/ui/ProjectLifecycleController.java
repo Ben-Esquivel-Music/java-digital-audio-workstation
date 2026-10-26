@@ -421,8 +421,12 @@ final class ProjectLifecycleController {
     private Supplier<Runnable> prepareJournalClose = () -> () -> { };
     private Consumer<Path> prepareJournalOpen = _ -> { };
     private OpenRecoveryGate.Result recoveryResult = OpenRecoveryGate.Result.PLAIN;
-    private boolean projectInstallationPending;
-    boolean isProjectInstallationPending() { return projectInstallationPending; }
+    private final javafx.beans.property.ReadOnlyBooleanWrapper projectInstallationPending =
+            new javafx.beans.property.ReadOnlyBooleanWrapper(this, "projectInstallationPending");
+    boolean isProjectInstallationPending() { return projectInstallationPending.get(); }
+    javafx.beans.property.ReadOnlyBooleanProperty projectInstallationPendingProperty() {
+        return projectInstallationPending.getReadOnlyProperty();
+    }
 
     /** Production wiring: all disk-open doors use the same worker gate and FX installation. */
     void enableRecoveryGate(Supplier<Boolean> enabled, Supplier<Runnable> closeJournal, Consumer<Path> openJournal) {
@@ -449,12 +453,13 @@ final class ProjectLifecycleController {
     }
 
     private void beginGatedLoad(Path folder, OpenDoor door, long attempt) {
-        projectInstallationPending = true;
+        projectInstallationPending.set(true);
         rootPane.setDisable(true);
         startRecoveryWorker(RECOVERY_SCAN_WORKER, () -> {
             ProjectManager.PreparedOpen prepared = null;
             boolean installed = false;
             boolean retiredOutgoing = false;
+            boolean outgoingJournalDetached = false;
             try {
                 boolean sameDirectory = sameOpenDirectory(folder);
                 if (sameDirectory && !(door instanceof OpenDoor.MigrationRollback)) {
@@ -466,10 +471,13 @@ final class ProjectLifecycleController {
                 }
                 if (sameDirectory && door instanceof OpenDoor.MigrationRollback) {
                     Runnable close = callOnFx(prepareJournalClose);
+                    outgoingJournalDetached = true;
                     close.run();
+                    if (!mayRetireAfterJournalClose(folder)) return;
                     projectManager.getLockManager().verifyHeld();
                     com.benesquivelmusic.daw.core.persistence.journal.JournalState.clear(ProjectContext.forProject(folder));
                     projectManager.abandonProject();
+                    retiredOutgoing = true;
                 }
                 OpenDoor selectedDoor = door;
                 try {
@@ -482,15 +490,19 @@ final class ProjectLifecycleController {
                     selectedDoor = failed.writing() ? new OpenDoor.RecoveredWriteFailed(reason)
                             : new OpenDoor.FailedReplayFallback(reason);
                 }
-                Runnable closeJournal = callOnFx(() -> {
-                    String applied = "The recovery decision for " + folder + " was applied";
-                    if (refuseLateLoadWhileATakeIsRecordingOrBeingWritten(applied)) return null;
-                    return prepareJournalClose.get();
-                });
-                if (closeJournal == null) return;
-                closeJournal.run();
-                projectManager.abandonProject();
-                retiredOutgoing = true;
+                if (!retiredOutgoing) {
+                    Runnable closeJournal = callOnFx(() -> {
+                        String applied = "The recovery decision for " + folder + " was applied";
+                        if (refuseLateLoadWhileATakeIsRecordingOrBeingWritten(applied)) return null;
+                        return prepareJournalClose.get();
+                    });
+                    if (closeJournal == null) return;
+                    outgoingJournalDetached = true;
+                    closeJournal.run();
+                    if (!mayRetireAfterJournalClose(folder)) return;
+                    projectManager.abandonProject();
+                    retiredOutgoing = true;
+                }
                 projectManager.openProject(folder, prepared); // PARSE only; target lock and recovery already resolved
                 OpenRecoveryGate.Result result = recoveryResult;
                 OpenDoor actualDoor = result.applied() >= 0
@@ -498,7 +510,7 @@ final class ProjectLifecycleController {
                 PreparedLoad loaded = callOnFx(() -> {
                     if (refuseLateLoadWhileATakeIsRecordingOrBeingWritten(
                             "The recovery decision for " + folder + " was applied")) return null;
-                    projectInstallationPending = true;
+                    projectInstallationPending.set(true);
                     rootPane.setDisable(true);
                     headSavedAt = null;
                     progress.checkpointsEnded();
@@ -520,11 +532,13 @@ final class ProjectLifecycleController {
                 });
             } catch (Throwable failure) {
                 LOG.log(Level.WARNING, "Project open/recovery failed for " + folder, failure);
+                boolean outgoingJournalPaused = outgoingJournalDetached && !retiredOutgoing;
                 postFx(() -> {
                     if (attempt != loadAttempts) return;
                     finishOpenAttempt(attempt);
                     lastLoadResult = false;
-                    notificationBar.show(NotificationLevel.ERROR, "Open failed: " + failureReason(failure));
+                    notificationBar.show(NotificationLevel.ERROR, "Open failed: " + failureReason(failure)
+                            + (outgoingJournalPaused ? "; " + PAUSED_JOURNAL_MESSAGE : ""));
                 });
             } finally {
                 if (!installed) {
@@ -541,10 +555,24 @@ final class ProjectLifecycleController {
         });
     }
 
+    private static final String PAUSED_JOURNAL_MESSAGE =
+            "Recovery evidence was preserved. Journaled persistence is paused until this project is reopened.";
+
+    private boolean mayRetireAfterJournalClose(Path target) {
+        return callOnFx(() -> {
+            if (!refuseLateLoadWhileATakeIsRecordingOrBeingWritten("The outgoing journal was closed before opening " + target)) {
+                return true;
+            }
+            lastLoadResult = false;
+            notificationBar.show(NotificationLevel.WARNING, "Project switch cancelled; " + PAUSED_JOURNAL_MESSAGE);
+            return false;
+        });
+    }
+
     private void finishOpenAttempt(long attempt) {
         if (attempt != loadAttempts) return;
         recovering = false;
-        projectInstallationPending = false;
+        projectInstallationPending.set(false);
         rootPane.setDisable(false);
     }
 
@@ -867,6 +895,7 @@ final class ProjectLifecycleController {
      * ({@link #createNamedSnapshot}).
      */
     void onCreateNamedSnapshot() {
+        if (isProjectInstallationPending()) return;
         TextInputDialog dialog = new TextInputDialog("");
         dialog.setTitle("Snapshot");
         dialog.setHeaderText("Create a named snapshot of the current project.");
@@ -985,6 +1014,7 @@ final class ProjectLifecycleController {
      *         saved into (the failure is reported)
      */
     private Optional<CompletableFuture<SaveOutcome>> saveOpenProject(SaveFollowUp then) {
+        if (isProjectInstallationPending()) return Optional.empty();
         DawProject project = deps.project().get();
         if (projectManager.getCurrentProject() == null) {
             // §8 / §1.1 — a brand-new project that has never been saved
@@ -3076,7 +3106,7 @@ final class ProjectLifecycleController {
             return;
         }
         long attempt = ++loadAttempts;
-        projectInstallationPending = true;
+        projectInstallationPending.set(true);
         rootPane.setDisable(true);
         try {
             startRecoveryWorker("daw-project-replacement", () -> {
@@ -3758,7 +3788,7 @@ final class ProjectLifecycleController {
     void discardConfirmedRecovery(Path projectDir) {
         if (recovering) { refuseWhileASwitchIsPending(); return; }
         long attempt = ++loadAttempts;
-        projectInstallationPending = true;
+        projectInstallationPending.set(true);
         rootPane.setDisable(true);
         try {
             startRecoveryWorker("daw-recovery-discard", () -> {

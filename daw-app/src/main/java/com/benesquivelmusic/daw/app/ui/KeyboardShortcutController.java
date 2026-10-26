@@ -9,6 +9,8 @@ import javafx.scene.input.KeyCombination;
 import java.util.EnumMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Objects;
+import java.util.function.BooleanSupplier;
 import java.util.logging.Logger;
 
 /**
@@ -183,10 +185,16 @@ final class KeyboardShortcutController {
 
     private final KeyBindingManager keyBindingManager;
     private final Host host;
+    private final BooleanSupplier projectActionsAllowed;
 
     KeyboardShortcutController(KeyBindingManager keyBindingManager, Host host) {
+        this(keyBindingManager, host, () -> true);
+    }
+
+    KeyboardShortcutController(KeyBindingManager keyBindingManager, Host host, BooleanSupplier projectActionsAllowed) {
         this.keyBindingManager = keyBindingManager;
         this.host = host;
+        this.projectActionsAllowed = Objects.requireNonNull(projectActionsAllowed);
     }
 
     /**
@@ -307,6 +315,9 @@ final class KeyboardShortcutController {
             int slot = i + 1;
             actionHandlers.put(slotActions.get(i), () -> host.onSwitchToWorkspaceSlot(slot));
         }
+        actionHandlers.replaceAll((action, handler) -> () -> {
+            if (action == DawAction.STOP || projectActionsAllowed.getAsBoolean()) handler.run();
+        });
         return actionHandlers;
     }
 

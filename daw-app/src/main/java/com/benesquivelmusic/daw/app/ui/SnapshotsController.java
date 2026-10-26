@@ -136,6 +136,11 @@ final class SnapshotsController {
     private final Deps deps;
     private final ProjectSerializer serializer = new ProjectSerializer();
     private final ProjectDeserializer deserializer = new ProjectDeserializer();
+    private java.util.function.BooleanSupplier projectActionsAllowed = () -> true;
+
+    void setProjectActionsAllowed(java.util.function.BooleanSupplier allowed) {
+        projectActionsAllowed = Objects.requireNonNull(allowed);
+    }
 
     /**
      * The FX-thread marshalling seam (story 289), forwarded to the lazily-built
@@ -291,6 +296,7 @@ final class SnapshotsController {
      * checkpoint survives a JVM restart.
      */
     void createCheckpoint() {
+        if (!projectActionsAllowed.getAsBoolean()) return;
         TextInputDialog dialog = new TextInputDialog("");
         dialog.setTitle("Create Checkpoint");
         dialog.setHeaderText("Save the current state as a recoverable checkpoint.");
@@ -342,17 +348,17 @@ final class SnapshotsController {
      * @return the in-memory entry, or {@code null} if the project could not be captured
      */
     SnapshotEntry createCheckpointWithLabel(String label) {
+        if (!projectActionsAllowed.getAsBoolean()) return null;
         String trimmed = (label == null) ? "" : label.trim();
         String safeLabel = trimmed.isEmpty()
                 ? "Checkpoint " + LABEL_TIME_FMT.format(LocalTime.now())
                 : trimmed;
         Consumer<Throwable> reportFailure = failureReporter();
         DawProject project = deps.currentProject().get();
-        long revision;
+        CheckpointManager.Capture capture;
         String content;
         try {
-            revision = project.getEditRevision();
-            checkpointManager.captureStarted(revision);
+            capture = checkpointManager.captureStarted(project.getEditRevision());
             content = serializer.capture(project).toXml();
         } catch (Throwable notCaptured) {
             // Anything the capture throws, an Error included, is a checkpoint that wrote nothing: never silent.
@@ -367,7 +373,7 @@ final class SnapshotsController {
             LOG.info(() -> "The checkpoint \"" + safeLabel + "\" is kept in memory only: " + message);
             reportKeptInMemory(message);
         } else {
-            writeCheckpoint(content, revision, safeLabel, reportFailure);
+            writeCheckpoint(content, capture, safeLabel, reportFailure);
         }
         if (browserView != null) {
             browserView.refresh();
@@ -401,8 +407,8 @@ final class SnapshotsController {
     }
 
     /** Asks the checkpoints for the user checkpoint and reports it if it writes nothing. FX thread. */
-    private void writeCheckpoint(String content, long revision, String safeLabel, Consumer<Throwable> reportFailure) {
-        checkpointManager.writeCheckpoint(content, revision, CheckpointOrigin.USER)
+    private void writeCheckpoint(String content, CheckpointManager.Capture capture, String safeLabel, Consumer<Throwable> reportFailure) {
+        checkpointManager.writeCheckpoint(content, capture, CheckpointOrigin.USER)
                 .whenComplete((file, failure) -> {
                     if (failure == null) {
                         LOG.fine(() -> "Wrote the checkpoint " + file + " (" + safeLabel + ")");

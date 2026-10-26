@@ -42,6 +42,104 @@ class EveryOpenDoorRunsRecoveryFirstTest {
     enum Door { FILE, HUB, CONTINUE, ARCHIVE, RECOVER }
     @TempDir Path workspace;
 
+    enum SealOutcome { RECORDING, WRITING_TAKE, FAILURE }
+
+    static java.util.stream.Stream<org.junit.jupiter.params.provider.Arguments> doorsAndSealOutcomes() {
+        return java.util.Arrays.stream(Door.values()).flatMap(door -> java.util.Arrays.stream(SealOutcome.values())
+                .map(outcome -> org.junit.jupiter.params.provider.Arguments.of(door, outcome)));
+    }
+
+    @ParameterizedTest @org.junit.jupiter.params.provider.MethodSource("doorsAndSealOutcomes")
+    void everyDiskDoorPreservesOutgoingOwnershipWhenSealFailsOrATakeStarts(Door door, SealOutcome outcome) throws Exception {
+        Preferences preferences = Preferences.userRoot().node("daw-seal-door-" + UUID.randomUUID());
+        RecentProjectsStore recents = new RecentProjectsStore(preferences);
+        try (SaveFlowFixture fixture = new SaveFlowFixture(workspace, AutoSaveConfig.DEFAULT.withEnabled(false), recents)) {
+            Path incoming = fixture.anotherProjectOnDisk("Incoming");
+            recents.addRecentProject(incoming);
+            Path target = incoming;
+            Runnable open;
+            if (door == Door.HUB) {
+                ProjectHubView hub = onFx(() -> fixture.lifecycle().buildProjectHub());
+                ProjectCard card = onFx(() -> hub.recentCards().stream()
+                        .filter(value -> incoming.equals(hub.pathFor(value))).findFirst().orElseThrow());
+                open = () -> enter(card);
+            } else if (door == Door.CONTINUE) {
+                WelcomeView welcome = onFx(() -> fixture.lifecycle().buildWelcomeView());
+                fixture.awaitOnFx(() -> welcome.continuePaths().contains(incoming), "classified Continue card");
+                ProjectCard card = onFx(() -> welcome.continueCards().get(welcome.continuePaths().indexOf(incoming)));
+                open = () -> enter(card);
+            } else if (door == Door.ARCHIVE) {
+                Path archive = fixture.archiveOnDisk("Incoming archive");
+                target = fixture.restoreDestination("Incoming archive");
+                Path destination = target;
+                open = () -> fixture.lifecycle().startArchiveRestore(archive, destination);
+            } else if (door == Door.FILE) {
+                open = () -> {
+                    fixture.lifecycle().setOpenProjectPrompt(() -> incoming);
+                    fixture.lifecycle().onOpenProject();
+                };
+            } else {
+                open = () -> fixture.lifecycle().beginRecovery(incoming);
+            }
+            assertOutgoingPreservedAfterSeal(fixture, target, open, outcome);
+        } finally { preferences.removeNode(); }
+    }
+
+    @ParameterizedTest @EnumSource(SealOutcome.class)
+    void migrationRollbackAlsoRechecksBeforeClearingItsJournalAndRetiringItsLease(SealOutcome outcome) throws Exception {
+        try (SaveFlowFixture fixture = new SaveFlowFixture(workspace, AutoSaveConfig.DEFAULT.withEnabled(false))) {
+            assertOutgoingPreservedAfterSeal(fixture, fixture.songA,
+                    () -> fixture.lifecycle().loadProjectFromPath(fixture.songA, new OpenDoor.MigrationRollback(0)), outcome);
+        }
+    }
+
+    private void assertOutgoingPreservedAfterSeal(SaveFlowFixture fixture, Path target, Runnable open,
+                                                 SealOutcome outcome) throws Exception {
+        DawProject original = fixture.project.get();
+        ProjectMetadata metadata = fixture.projectManager.getCurrentProject();
+        ProjectLock lease = fixture.projectManager.getLockManager().currentLock().orElseThrow();
+        Object audioGeneration = onFx(() -> fixture.lifecycle().openProjectAudio().currentGeneration());
+        Path evidence = Files.writeString(Files.createDirectories(fixture.songA.resolve("journal"))
+                .resolve("segment-000.bin"), "accepted outgoing edits");
+        java.util.concurrent.CountDownLatch sealing = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicBoolean take = new java.util.concurrent.atomic.AtomicBoolean();
+        AtomicInteger opens = new AtomicInteger();
+        runOnFx(() -> {
+            fixture.lifecycle().setRecordingInFlightCheck(() -> outcome == SealOutcome.RECORDING && take.get());
+            fixture.lifecycle().setTakeBeingWrittenCheck(() -> outcome == SealOutcome.WRITING_TAKE && take.get());
+            fixture.lifecycle().enableRecoveryGate(() -> true, () -> {
+                assertThat(fixture.lifecycle().isProjectInstallationPending()).isTrue();
+                return () -> {
+                    sealing.countDown();
+                    try { assertThat(release.await(15, java.util.concurrent.TimeUnit.SECONDS)).isTrue(); }
+                    catch (InterruptedException failure) { Thread.currentThread().interrupt(); throw new AssertionError(failure); }
+                    if (outcome == SealOutcome.FAILURE) throw new IllegalStateException("seal failed");
+                };
+            }, _ -> opens.incrementAndGet());
+            open.run();
+        });
+        try {
+            assertThat(sealing.await(15, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            runOnFx(() -> take.set(true));
+        } finally { release.countDown(); }
+        fixture.awaitOnFx(() -> !fixture.lifecycle().isProjectInstallationPending()
+                && (target.equals(fixture.songA) || !Files.exists(target.resolve(ProjectLockManager.LOCK_FILE_NAME))),
+                "seal refusal cleanup");
+        assertThat(fixture.project.get()).isSameAs(original);
+        assertThat(fixture.projectManager.getCurrentProject()).isSameAs(metadata);
+        assertThat(fixture.projectManager.getLockManager().currentLock().orElseThrow().lockId()).isEqualTo(lease.lockId());
+        fixture.projectManager.getLockManager().verifyHeld();
+        assertThat(onFx(() -> fixture.lifecycle().openProjectAudio().currentGeneration())).isEqualTo(audioGeneration);
+        assertThat(Files.readString(evidence)).isEqualTo("accepted outgoing edits");
+        assertThat(opens).hasValue(0);
+        if (!target.equals(fixture.songA)) assertThat(target.resolve(ProjectLockManager.LOCK_FILE_NAME)).doesNotExist();
+        assertThat(fixture.notifications()).anySatisfy(notification -> {
+            assertThat(notification.level()).isIn(NotificationLevel.WARNING, NotificationLevel.ERROR);
+            assertThat(notification.message()).contains("preserved", "paused", "reopened");
+        });
+    }
+
     @ParameterizedTest @ValueSource(strings = {"Cancel", "Inspect events…"})
     void cancelledGatedRecoveryPreservesTheOutgoingModelLockAndLiveJournal(String answer) throws Exception {
         try (SaveFlowFixture fixture = new SaveFlowFixture(workspace, AutoSaveConfig.DEFAULT)) {

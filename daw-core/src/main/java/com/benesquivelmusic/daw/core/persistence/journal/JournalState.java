@@ -70,15 +70,20 @@ public final class JournalState {
     /** Select only a checkpoint whose durable marker proves its bytes and capture point. */
     public static ReplayBase replayBase(ProjectContext context) throws IOException {
         List<JournalRecord> records = records(context);
+        ReplayBase newestCapture = null;
         for (JournalRecord marker : records.reversed()) {
             if (!marker.isCheckpointMarker()) continue;
             String[] fields = new String(marker.payload(), StandardCharsets.UTF_8).split("\n", -1);
             if (fields.length != 3 || com.benesquivelmusic.daw.core.persistence.CheckpointFileName.parse(fields[1]).isEmpty()) continue;
             Path candidate = context.checkpointDirectory().resolve(fields[1]);
             long boundary = boundary(marker);
-            if (boundary >= -1L && boundary < marker.sequence() && Files.isRegularFile(candidate)
-                    && hash(candidate).equals(fields[2])) return new ReplayBase(candidate, boundary);
+            if (boundary >= -1L && boundary < marker.sequence()
+                    && (newestCapture == null || boundary > newestCapture.sequence())
+                    && matchesHash(candidate, fields[2])) {
+                newestCapture = new ReplayBase(candidate, boundary);
+            }
         }
+        if (newestCapture != null) return newestCapture;
         for (JournalRecord start : records) {
             if (!JournalRecord.SESSION_START_TYPE.equals(start.type())) continue;
             Path base = context.journalDirectory().resolve(BASE_FILE);
@@ -92,5 +97,13 @@ public final class JournalState {
         Path legacy = new RecoveryScanner().findNewestCheckpoint(context.checkpointDirectory())
                 .map(RecoveryScanner.Checkpoint::path).orElseThrow(() -> new IOException("No replay base exists"));
         return new ReplayBase(legacy, -1L);
+    }
+
+    private static boolean matchesHash(Path candidate, String expected) {
+        try {
+            return Files.isRegularFile(candidate) && hash(candidate).equals(expected);
+        } catch (IOException unreadable) {
+            return false;
+        }
     }
 }

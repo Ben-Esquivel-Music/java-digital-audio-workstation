@@ -790,6 +790,7 @@ public final class MainController {
 
     /** Routes an undo/redo intent (button, menu, or shortcut) to the existing handlers (§2.8). */
     private void dispatchHistoryCommand(HistoryCommand command) {
+        if (!projectActionsAllowed()) return;
         switch (command) {
             case UndoCommand _ -> onUndo();
             case RedoCommand _ -> onRedo();
@@ -805,9 +806,21 @@ public final class MainController {
      * always reaches the CURRENT epoch's handler.
      */
     private void dispatchTransportCommand(TransportCommand command) {
-        if ((command instanceof ToggleRecordCommand || command instanceof ToggleLoopRecordCommand)
-                && projectLifecycleController != null && projectLifecycleController.isProjectInstallationPending()) return;
+        if (!(command instanceof StopTransportCommand) && !projectActionsAllowed()) return;
         command.execute(transportController);
+    }
+
+    private boolean projectActionsAllowed() {
+        return projectLifecycleController == null || !projectLifecycleController.isProjectInstallationPending();
+    }
+
+    /** Floating content keeps its own disable state while the installation fence disables its parent. */
+    javafx.scene.Parent createFloatingProjectRoot(Node content) {
+        javafx.scene.layout.StackPane container = new javafx.scene.layout.StackPane(content);
+        if (projectLifecycleController != null) {
+            container.disableProperty().bind(projectLifecycleController.projectInstallationPendingProperty());
+        }
+        return container;
     }
 
     /**
@@ -845,9 +858,21 @@ public final class MainController {
     static Runnable wireAutosave(CheckpointManager checkpoints, java.util.concurrent.Executor fxOwner,
                                  java.util.function.Supplier<DawProject> project,
                                  com.benesquivelmusic.daw.app.ui.status.CheckpointStatusListener status) {
+        return wireAutosave(checkpoints, fxOwner, project, status, () -> true);
+    }
+
+    static Runnable wireAutosave(CheckpointManager checkpoints, java.util.concurrent.Executor fxOwner,
+                                 java.util.function.Supplier<DawProject> project,
+                                 com.benesquivelmusic.daw.app.ui.status.CheckpointStatusListener status,
+                                 java.util.function.BooleanSupplier captureAllowed) {
         com.benesquivelmusic.daw.core.persistence.ProjectSerializer serializer =
                 new com.benesquivelmusic.daw.core.persistence.ProjectSerializer();
         checkpoints.setCaptureSource(fxOwner, new com.benesquivelmusic.daw.core.persistence.CheckpointSource() {
+            @Override
+            public boolean isAvailable() {
+                return captureAllowed.getAsBoolean();
+            }
+
             @Override
             public long revision() {
                 return project.get().getEditRevision();
@@ -925,7 +950,7 @@ public final class MainController {
                 projectOperationProgress, projectManager.getCheckpointManager(), notificationBar,
                 dispatcher(), java.time.InstantSource.system(), java.time.ZoneId.systemDefault());
         checkpointStatusRemoval = wireAutosave(projectManager.getCheckpointManager(), this::postFx,
-                () -> project, checkpointStatus);
+                () -> project, checkpointStatus, this::projectActionsAllowed);
         if (snapshotsController != null) {
             snapshotsController.setCheckpointStatus(checkpointStatus);
         }
@@ -1165,6 +1190,7 @@ public final class MainController {
                         this::whenProjectMayCloseForSnapshotRestore,
                         this::applySnapshotRestoredProject),
                 dispatcher());
+        snapshotsController.setProjectActionsAllowed(this::projectActionsAllowed);
         toolbarStateStore = new ToolbarStateStore(prefs);
         keyBindingManager = new KeyBindingManager(prefs.node("keybindings"));
 
@@ -2463,6 +2489,7 @@ public final class MainController {
 
     private void replacePluginProject(DawProject next) {
         DawProject previous = project;
+        if (previous != next && atmosAbStage != null) atmosAbStage.close();
         project = next;
         if (pluginViewController != null) pluginViewController.reconcileGraph();
         if (inspectorDrawer != null) inspectorDrawer.refreshInserts();
@@ -2900,7 +2927,7 @@ public final class MainController {
                     @Override public void onOpenSnapshots() {
                         if (snapshotsController != null) snapshotsController.openBrowser();
                     }
-                });
+                }, this::projectActionsAllowed);
         createCommandPaletteView();
     }
 
@@ -3364,6 +3391,7 @@ public final class MainController {
                 // Story 329 (D15) — "Relink Missing Assets…" is enabled while the
                 // open's report has rows; the owner's change listener re-syncs it.
                 () -> projectLifecycleController != null && projectLifecycleController.hasUnresolvedAssets());
+        menuBarController.setProjectActionsAllowed(this::projectActionsAllowed);
         javafx.scene.control.MenuBar bar = menuBarController.build();
         // Wire the per-user Workspaces menu (Save Current as… / Switch to…).
         // The WorkspaceManager seeds the six default workspaces on first run
@@ -3381,6 +3409,7 @@ public final class MainController {
                 this::promptWorkspaceName,
                 this::exportWorkspaceWithChooser,
                 this::importWorkspaceWithChooser);
+        menuBuilder.setActionsAllowed(this::projectActionsAllowed);
         javafx.scene.control.Menu workspacesMenu = menuBuilder.build();
         // Insert before the last (Help) menu so Help stays right-most.
         var menus = bar.getMenus();
@@ -4427,9 +4456,7 @@ public final class MainController {
                     stage.initOwner(rootPane.getScene().getWindow());
                 }
                 detachFromParent(content);
-                javafx.scene.Scene scene = new javafx.scene.Scene(
-                        content instanceof javafx.scene.Parent p ? p
-                                : new javafx.scene.layout.StackPane(content));
+                javafx.scene.Scene scene = new javafx.scene.Scene(createFloatingProjectRoot(content));
                 // Apply the active theme + register for live re-theming so
                 // the floating panel inherits root-pane styling instead of
                 // showing the default JavaFX white background.
@@ -4594,9 +4621,9 @@ public final class MainController {
     // applyLoopAndRulerGrid().
     @FXML private void onSkipBack() { dispatchTransportCommand(new SkipBackCommand()); }
     @FXML private void onSkipForward() { dispatchTransportCommand(new SkipForwardCommand()); }
-    @FXML private void onToggleMetronome() { metronomeController.onToggleMetronome(); }
-    @FXML private void onAddAudioTrack() { trackCreationController.onAddAudioTrack(); }
-    @FXML private void onAddMidiTrack() { trackCreationController.onAddMidiTrack(); }
+    @FXML private void onToggleMetronome() { if (projectActionsAllowed()) metronomeController.onToggleMetronome(); }
+    @FXML private void onAddAudioTrack() { if (projectActionsAllowed()) trackCreationController.onAddAudioTrack(); }
+    @FXML private void onAddMidiTrack() { if (projectActionsAllowed()) trackCreationController.onAddMidiTrack(); }
 
     // ── Lane folding (Issue 568) ────────────────────────────────────────────
     private void onToggleFoldFocusedTrack() {
@@ -4707,6 +4734,7 @@ public final class MainController {
     @FXML private void onManagePlugins() { pluginViewController.onManagePlugins(pluginRegistry); }
 
     @FXML private void onUndo() {
+        if (!projectActionsAllowed()) return;
         if (undoManager.undo()) {
             // The project is marked dirty by the per-generation
             // UndoHistoryDirtyBinder (rebuildViewModels) on the UNDONE change.
@@ -4718,6 +4746,7 @@ public final class MainController {
     }
 
     @FXML private void onRedo() {
+        if (!projectActionsAllowed()) return;
         if (undoManager.redo()) {
             // Dirty via UndoHistoryDirtyBinder on the REDONE change.
             status("Redo: " + undoManager.undoDescription(), DawIcon.REDO);
@@ -4856,6 +4885,7 @@ public final class MainController {
      * avoids conflicts with the main view-navigation center pane.
      */
     void onOpenImmersiveAb() {
+        if (!projectActionsAllowed()) return;
         if (atmosAbStage != null) {
             atmosAbStage.toFront();
             atmosAbStage.requestFocus();
@@ -4865,7 +4895,7 @@ public final class MainController {
                 project.getReferenceTrackManager());
         atmosAbStage = new Stage(javafx.stage.StageStyle.UTILITY);
         atmosAbStage.setTitle("Immersive A/B — QC");
-        javafx.scene.Scene scene = new javafx.scene.Scene(atmosAbView);
+        javafx.scene.Scene scene = new javafx.scene.Scene(createFloatingProjectRoot(atmosAbView));
         ThemeManager.getDefault().applyTo(scene);
         atmosAbStage.setScene(scene);
         atmosAbStage.setMinWidth(600);
@@ -5047,6 +5077,7 @@ public final class MainController {
      * {@link com.benesquivelmusic.daw.core.reference.ReferenceTrackManager}.
      */
     void onImmersiveAbToggle() {
+        if (!projectActionsAllowed()) return;
         if (atmosAbView != null) {
             atmosAbView.toggleAb();
         } else {

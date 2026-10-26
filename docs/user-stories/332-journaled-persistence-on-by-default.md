@@ -365,3 +365,107 @@ The successful log is `target/pr988-final-review-tests.log`. This is targeted
 local regression validation, not a new unfiltered suite, native rebuild,
 packaging run or remote CI run. Changes remain uncommitted and unpushed; GitHub
 review discussions were not modified.
+
+### PR 988 review 5659203633 and CI 40401778571 — local resolution, 2026-10-26
+
+The six findings in [the follow-up review](https://github.com/Ben-Esquivel-Music/java-digital-audio-workstation/pull/988#pullrequestreview-5659203633)
+are addressed against `8483a644cd2636da6ff50a1e5e167973ba6726a0`. Java 27 agents
+made the code changes; studio-engineer review traced the disk-open doors,
+recording/take ownership, detached windows and checkpoint recovery boundaries.
+The JavaFX application-design and DAW-architecture skills informed the FX
+capture, worker publication and live input-guard boundaries.
+
+| Review comment | Resolution | Regression evidence |
+| --- | --- | --- |
+| `4382620291` — disk open retires a take started during seal | Every gated disk-open door rechecks recording and take-writing on FX after the outgoing seal, before lease retirement or target installation. The same-folder migration branch checks before clearing its journal. | `EveryOpenDoorRunsRecoveryFirstTest` drives File, Hub, Continue, Archive and Recover through held seal, then starts recording or take-writing. The original model, audio generation, lease and evidence survive; the target lease is released and no incoming journal starts. Migration rollback has the same checks. |
+| `4382620350` — accelerators edit/save during installation | Dynamic guards wrap registered shortcuts, retained palette handlers, menu actions and workspace actions. Direct save/checkpoint, undo/redo and transport dispatch are fenced; Stop remains available. Floating dock and immersive A/B roots inherit the installation property. A/B closes when its project is replaced. Autosave skips capture while the FX model is between projects. | `ProjectInstallationInputFenceTest` exercises actual registered accelerators, retained handlers, direct menu actions, held-seal floating controls and A/B, plus the interval when ProjectManager owns B while FX still displays A. Save, Undo, Delete and autosave leave B's bytes and A's model intact; normal saving resumes after installation. |
+| `4382620407` — revision reused as capture identity | Each checkpoint request carries an immutable `CheckpointManager.Capture` containing its revision and journal sequence. Explicit saves, user checkpoints and scheduled captures retain that exact token through completion. Journal notifications also check the current checkpoint generation. | `CheckpointCaptureIdentityTest` covers explicit and scheduled captures. `JournalCaptureIntegrationTest` uses two transport-only captures with the same revision and both completion orders, a failed-save retry and a retired-generation event. |
+| `4382620469` — newest appended marker selects an older state | Recovery chooses the highest hash-verified capture boundary. Equal boundaries retain the latest durable marker; invalid or missing candidates fall back to the next verified checkpoint and ultimately the immutable session base. Retention protects the highest captured recovery base. | `JournalSessionRecoveryTest` covers reversed marker order and an invalid higher candidate. `JournalCaptureIntegrationTest` delays an older explicit save behind a newer user checkpoint, then verifies replay starts from the newer boundary. |
+| `4382620517` — seal failure silently leaves journaling paused | Disk-open failure tracks recorder detachment and explicitly reports preserved recovery evidence and paused journaled persistence before restoring editing. It retains the outgoing lease and model. | All five real disk-open doors and migration rollback inject seal failure in `EveryOpenDoorRunsRecoveryFirstTest`, asserting the warning/error, original ownership and evidence, no journal startup and guard cleanup. |
+| `4382620583` — certification metadata grows after pruning | Successful or confirmed-missing deletion removes its certification. Complete startup enumeration compacts absent names; uncertain or partially enumerated files retain provenance. A failed publication confirmed absent is removed before the next publication. | `CheckpointCertificationCompactionTest` covers repeated retention, restart compaction, publication failure before/after physical publication, deletion refusal and the protected recovery base. |
+
+With healthy storage deletion, an older capture completing late can temporarily
+leave `cap + 1` checkpoint files: the highest captured recovery base and the
+file just returned to the caller both remain until a newer capture supersedes
+them. Refused deletions preserve their files and certifications, so the cap is
+not an unconditional storage bound.
+
+The failing [CI job](https://github.com/Ben-Esquivel-Music/java-digital-audio-workstation/actions/runs/40401778571/job/121849202158)
+expected ProjectManager to expose B before its recent-project publication
+completed. The preceding lease fix deliberately keeps A installed until B is
+accepted. `SaveCheckpointGenerationTest` now checks A's model and lease before
+acceptance, B afterward, and retains the original assertion that the superseded
+save requests no checkpoint. Its seven cases passed locally.
+
+Focused validation passed **155 distinct cases, zero failures, errors or
+skips**: 47 core cases in `target/pr988-round2-focused.log` and 108 application
+cases in `target/pr988-round2-app-tests.log`. This includes all **43 new
+regression cases**. The first integrated command reached a test-compilation
+error in new event-bus cleanup; that fixture was corrected and the application
+selection rerun successfully. The exact commands were:
+
+```powershell
+mvn -B -pl daw-app -am test '-Dtest=CheckpointCaptureIdentityTest,CheckpointCertificationCompactionTest,SaveCheckpointGenerationTest,JournalSessionRecoveryTest,CheckpointWithAutosaveDisabledTest,JournalCaptureIntegrationTest,ProjectInstallationInputFenceTest,EveryOpenDoorRunsRecoveryFirstTest,ProjectReplacementJournalSafetyTest,CheckpointCaptureFailureReachesTheStripTest,DawMenuBarControllerTest,WorkspacesMenuTest,SingleSaveRequestTest,MigrationRollBackAndRecoveryGuardTest,OpenAnnouncedOnceThroughAMigrationRollBackTest' '-Dsurefire.failIfNoSpecifiedTests=false' '-DskipNativeBuild=true' '-Dsnapshots.autoBaseline=false' '-Dsnapshots.update=false'
+mvn -B -pl daw-app -am test '-Dtest=JournalCaptureIntegrationTest,ProjectInstallationInputFenceTest,EveryOpenDoorRunsRecoveryFirstTest,ProjectReplacementJournalSafetyTest,CheckpointCaptureFailureReachesTheStripTest,DawMenuBarControllerTest,WorkspacesMenuTest,SingleSaveRequestTest,MigrationRollBackAndRecoveryGuardTest,OpenAnnouncedOnceThroughAMigrationRollBackTest' '-Dsurefire.failIfNoSpecifiedTests=false' '-DskipNativeBuild=true' '-Dsnapshots.autoBaseline=false' '-Dsnapshots.update=false'
+```
+
+The first unfiltered reactor attempt (`target/pr988-round2-verify.log`) ran
+14,392 cases: 14,348 passed, 43 skipped and one failed. It exposed an older
+`OpenGenerationFenceTest` expectation that New Project's success notification
+was synchronous. The preceding initial-XML ordering fix deliberately emits
+success after the save completes. The fixture now installs a completion
+listener before invoking New and awaits that notification with a bounded latch
+off the FX thread before releasing the old decodes. Its original audio,
+repaint, operation, generation and exact-notification assertions remain.
+Studio-engineer review confirmed that the late-completion guarantee is retained.
+
+The next unfiltered attempt (`target/pr988-round2-verify-final.log`) completed
+10,159 dependency-module cases again (10,119 passed, 40 skipped), then exposed a test compilation
+error in the new listener: `getEntries()` returns a snapshot list. The fixture
+now uses the supported `NotificationHistoryService.addListener` API and removes
+the listener in `finally`. Its seven cases compiled and passed in
+`target/pr988-round2-generation-fence.log`:
+
+```powershell
+mvn -B -pl daw-app -am test '-Dtest=OpenGenerationFenceTest' '-Dsurefire.failIfNoSpecifiedTests=false' '-DskipNativeBuild=true' '-Dsnapshots.autoBaseline=false' '-Dsnapshots.update=false'
+```
+
+The application rerun keeps dependencies in the same reactor and uses
+package-qualified versions of
+[Surefire's four default patterns](https://maven.apache.org/surefire/maven-surefire-plugin/examples/inclusion-exclusion.html).
+Windows batch parsing rejected an initial regex spelling before Maven started;
+the Ant-style command below completed **4,219 cases: 4,216 passed, three skipped,
+zero failures and zero errors**, followed by JAR and `jlink` runtime-image
+creation (`target/pr988-round2-all-app-verify.log`, `BUILD SUCCESS`). The per-class
+comparison with the unfiltered run then identified fourteen omitted app-root
+cases: `DawLauncherTest` (ten) and `DawRuntimeTest` (four). The `**/` selection
+required an intervening directory in this invocation; those two classes are
+verified separately below. `ThemePickerScreenshotIT` remains outside the normal
+Surefire suite, as in the unfiltered run.
+
+```powershell
+mvn -B verify '-Dtest=com/benesquivelmusic/daw/app/**/Test*.java,com/benesquivelmusic/daw/app/**/*Test.java,com/benesquivelmusic/daw/app/**/*Tests.java,com/benesquivelmusic/daw/app/**/*TestCase.java' '-Dsurefire.failIfNoSpecifiedTests=false' '-DskipNativeBuild=true' '-Dsnapshots.autoBaseline=false' '-Dsnapshots.update=false'
+mvn -B -pl daw-app -am test '-Dtest=DawLauncherTest,DawRuntimeTest' '-Dsurefire.failIfNoSpecifiedTests=false' '-DskipNativeBuild=true' '-Dsnapshots.autoBaseline=false' '-Dsnapshots.update=false'
+```
+
+The fourteen app-root cases passed with no skips, failures or errors
+(`target/pr988-round2-app-root-tests.log`, `BUILD SUCCESS`). The two green app
+selections cover the same **4,233 cases** as the unfiltered application suite;
+per-class counts were compared to ensure that no case was omitted.
+
+Final distinct local evidence therefore covers **14,392 cases: 14,349 passed,
+43 skipped, zero outstanding failures or errors**. This combines the green
+10,159 dependency-module cases from the last unfiltered attempt with the green
+4,233 application cases above; it does not claim that one unfiltered command
+completed successfully. Module totals are SDK 1,348 (two skips), acoustics 106,
+core 8,676 (38 skips), FX 29, and app 4,233 (three skips).
+
+Validation used Windows, Maven 3.10.0 and JDK 27+35 without `clean`. Native
+rebuilding and `jpackage` were skipped; available existing native binaries were
+used, and snapshot creation/updates were disabled. The 43 skips comprise six
+unavailable/unregistered ASIO-shim cases, nine unavailable AAC-library cases,
+thirteen unavailable Ogg/Vorbis-library cases, eleven Linux/POSIX-specific
+cases, one opt-in strict DSP coverage check and three disabled cross-platform
+snapshot cases whose reports cite Linux-golden/font-metric differences.
+Remote Ubuntu CI was not rerun. No changes were staged, committed or pushed;
+GitHub review discussions were not modified.

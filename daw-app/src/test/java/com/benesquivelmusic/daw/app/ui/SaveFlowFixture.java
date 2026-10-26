@@ -81,8 +81,8 @@ final class SaveFlowFixture implements AutoCloseable {
     final CheckpointManager checkpoints;
     final ProjectManager projectManager;
     /** Never started: the strip model's keyed work runs only inside {@link #pulse()}. */
-    final FxDispatcher dispatcher = new FxDispatcher();
-    final ProjectOperationProgress progress = new ProjectOperationProgress(dispatcher);
+    final FxDispatcher dispatcher;
+    final ProjectOperationProgress progress;
     final NotificationHistoryService shown = new NotificationHistoryService();
     final AtomicReference<DawProject> project = new AtomicReference<>();
     final AtomicReference<UndoManager> undoManager = new AtomicReference<>(new UndoManager());
@@ -138,7 +138,14 @@ final class SaveFlowFixture implements AutoCloseable {
      * {@code null}.
      */
     SaveFlowFixture(Path workspace, AutoSaveConfig config, RecentProjectsStore recentProjects) throws Exception {
+        this(workspace, config, recentProjects, new FxDispatcher());
+    }
+
+    SaveFlowFixture(Path workspace, AutoSaveConfig config, RecentProjectsStore recentProjects,
+                    FxDispatcher dispatcher) throws Exception {
         this.workspace = workspace;
+        this.dispatcher = dispatcher;
+        this.progress = new ProjectOperationProgress(dispatcher);
         this.checkpoints = new CheckpointManager(config, writer);
         this.projectManager = new ProjectManager(checkpoints, recentProjects, new ProjectLockManager(),
                 new ProjectDeserializer(), writer);
@@ -153,7 +160,8 @@ final class SaveFlowFixture implements AutoCloseable {
             notificationBar.setHistoryService(shown);
             status = new CheckpointStatusListener(progress, checkpoints, notificationBar, dispatcher,
                     InstantSource.system(), ZoneId.systemDefault());
-            statusRemoval = MainController.wireAutosave(checkpoints, dispatcher::onFx, project::get, status);
+            statusRemoval = MainController.wireAutosave(checkpoints, dispatcher::onFx, project::get, status,
+                    () -> lifecycle == null || !lifecycle.isProjectInstallationPending());
         });
         eventRecording = checkpoints.addEventListener(checkpointEvents::add);
         songA = projectManager.createProject("Song A", workspace).projectPath();
@@ -177,6 +185,7 @@ final class SaveFlowFixture implements AutoCloseable {
                                     restored, label, missing, unread)),
                     dispatcher);
             snapshots.setCheckpointStatus(status);
+            snapshots.setProjectActionsAllowed(() -> !lifecycle.isProjectInstallationPending());
         });
         publishes.clear();
     }

@@ -226,14 +226,15 @@ public final class ProjectJournalCoordinator {
                         "Journaled persistence could not start: " + failure.getMessage()));
                 return;
             }
-            java.util.concurrent.ConcurrentHashMap<Long, Long> captures = new java.util.concurrent.ConcurrentHashMap<>();
-            Runnable captureRemoval = checkpointManager.addCaptureListener(revision ->
-                    captures.putIfAbsent(revision, newWriter.captureSequence()));
+            java.util.OptionalLong journalGeneration = checkpointManager.runningGeneration();
+            Runnable captureRemoval = checkpointManager.observeJournalSequence(newWriter::captureSequence);
             Runnable listener = checkpointManager.addEventListener(event -> {
                 if (event instanceof com.benesquivelmusic.daw.core.persistence.CheckpointEvent.Written written
+                        && journalGeneration.isPresent() && written.generation() == journalGeneration.getAsLong()
+                        && journalGeneration.equals(checkpointManager.runningGeneration())
                         && written.file().getParent().equals(projectDir.resolve("checkpoints"))) {
-                    Long boundary = captures.get(written.revision());
-                    if (boundary != null) {
+                    if (written.journalSequence().isPresent()) {
+                        long boundary = written.journalSequence().getAsLong();
                         try { newWriter.onCheckpointSucceeded(boundary, written.file(), clock.instant()); }
                         catch (IOException failure) { LOG.log(Level.WARNING, "Could not record checkpoint capture boundary", failure); }
                     }
