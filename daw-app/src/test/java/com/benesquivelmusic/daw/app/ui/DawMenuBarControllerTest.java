@@ -14,6 +14,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.prefs.Preferences;
 
@@ -28,17 +29,29 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class DawMenuBarControllerTest {
+    private static final List<String> MENU_TITLES = List.of("File", "Edit", "Tracks", "Clip", "Plugins", "Window", "Help");
 
     private void runOnFxThread(Runnable action) throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
         Platform.runLater(() -> {
             try {
                 action.run();
+            } catch (Throwable thrown) {
+                failure.set(thrown);
             } finally {
                 latch.countDown();
             }
         });
         assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+        if (failure.get() != null) throw new AssertionError("FX action failed", failure.get());
+    }
+
+    @Test
+    void anAssertionOnTheFxThreadIsReportedToTheCallingTest() {
+        AssertionError failure = new AssertionError("injected FX assertion");
+        assertThatThrownBy(() -> runOnFxThread(() -> { throw failure; }))
+                .isInstanceOf(AssertionError.class).hasCause(failure);
     }
 
     /**
@@ -175,14 +188,14 @@ class DawMenuBarControllerTest {
     // ── Menu bar structure ───────────────────────────────────────────────────
 
     @Test
-    void shouldBuildMenuBarWithFiveMenus() throws Exception {
+    void shouldBuildMenuBarWithSevenMenus() throws Exception {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
                     newController(host);
             MenuBar bar = controller.build();
 
-            assertThat(bar.getMenus()).hasSize(5);
+            assertThat(bar.getMenus()).hasSize(MENU_TITLES.size());
         });
     }
 
@@ -196,8 +209,7 @@ class DawMenuBarControllerTest {
 
             List<String> titles = bar.getMenus().stream()
                     .map(Menu::getText).toList();
-            assertThat(titles).containsExactly(
-                    "File", "Edit", "Plugins", "Window", "Help");
+            assertThat(titles).containsExactlyElementsOf(MENU_TITLES);
         });
     }
 
@@ -770,7 +782,8 @@ class DawMenuBarControllerTest {
             controller.build();
             controller.build();
 
-            assertThat(controller.getMenuBar().getMenus()).hasSize(5);
+            assertThat(controller.getMenuBar().getMenus()).extracting(Menu::getText)
+                    .containsExactlyElementsOf(MENU_TITLES);
         });
     }
 

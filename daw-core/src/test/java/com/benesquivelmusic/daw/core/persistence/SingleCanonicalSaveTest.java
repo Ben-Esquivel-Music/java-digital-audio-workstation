@@ -98,10 +98,16 @@ class SingleCanonicalSaveTest {
         List<Publish> checkpoints = mover.publishes(CHECKPOINT);
         assertThat(checkpoints).as("at most one checkpoint: exactly one here").singleElement()
                 .satisfies(checkpoint -> assertThat(checkpoint.thread().getName()).isEqualTo("daw-checkpoint-writer"));
-        assertThat(mover.publishes()).as("and nothing else").hasSize(2);
+        Path orderingFact = directory.resolve("checkpoints").resolve(CheckpointOrder.FILE_NAME);
+        assertThat(mover.publishes(orderingFact::equals)).as("one explicit checkpoint-order certification")
+                .singleElement().satisfies(fact -> assertThat(fact.thread()).isSameAs(checkpoints.getFirst().thread()));
+        assertThat(mover.publishes()).extracting(Publish::target)
+                .as("one head, its checkpoint certification, and one checkpoint, with no other writes")
+                .containsExactly(heads.getFirst().target(), orderingFact, checkpoints.getFirst().target());
         assertThat(mover.publishes()).extracting(Publish::thread).doesNotContain(caller);
         Path checkpoint = checkpoints.getFirst().target();
         assertThat(((SaveOutcome.Saved) outcome).checkpoint()).contains(checkpoint);
+        assertThat(CheckpointOrder.read(orderingFact.getParent())).containsExactly(checkpoint.getFileName().toString());
         assertThat(Files.readString(checkpoint)).as("the checkpoint holds the bytes the head was written with")
                 .isEqualTo(Files.readString(directory.resolve("project.daw")));
     }

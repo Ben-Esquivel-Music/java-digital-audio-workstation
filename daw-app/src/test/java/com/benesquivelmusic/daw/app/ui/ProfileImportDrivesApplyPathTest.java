@@ -40,7 +40,7 @@ class ProfileImportDrivesApplyPathTest {
         Files.writeString(file, """
                 # dawg-settings-profile v1
                 application|appearance.uiScale=1.75
-                application|project.useJournaledPersistence=true
+                application|project.useJournaledPersistence=false
                 projectDefaults|project.defaultTempo=5000
                 """, StandardCharsets.UTF_8);
 
@@ -50,8 +50,8 @@ class ProfileImportDrivesApplyPathTest {
                 .as("precondition: 1.75 is a NON-default uiScale")
                 .isNotEqualTo(1.75);
         assertThat(model.isUseJournaledPersistence())
-                .as("precondition: journaled persistence defaults off")
-                .isFalse();
+                .as("precondition: journaled persistence defaults on, so importing false is an explicit opt-out")
+                .isTrue();
 
         SettingsDialog dialog = Story307TestSupport.onFx(() -> {
             SettingsDialog created = new SettingsDialog(model);
@@ -76,14 +76,14 @@ class ProfileImportDrivesApplyPathTest {
             // runs applySettings() — wait for PERSISTENCE, the end of
             // the composed loop.
             waitUntil(() -> model.getUiScale() == 1.75
-                    && model.isUseJournaledPersistence());
+                    && !model.isUseJournaledPersistence());
 
             assertThat(model.getUiScale())
                     .as("valid appearance.uiScale PERSISTED through applySettings()")
                     .isEqualTo(1.75);
             assertThat(model.isUseJournaledPersistence())
-                    .as("valid project.useJournaledPersistence PERSISTED")
-                    .isTrue();
+                    .as("the explicit project.useJournaledPersistence opt-out PERSISTED")
+                    .isFalse();
             assertThat(model.getDefaultTempo())
                     .as("the validator-rejected tempo (guard 20..999) was NOT applied")
                     .isCloseTo(defaultTempo, within(0.001));

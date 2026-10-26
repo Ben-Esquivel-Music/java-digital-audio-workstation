@@ -58,9 +58,13 @@ class CheckpointStopFenceTest {
     private final CountDownLatch moveReleased = new CountDownLatch(1);
     private final ExecutorService stopper = Executors.newVirtualThreadPerTaskExecutor();
 
-    /** A writer whose every publish waits inside the atomic write until the test releases it. */
+    /** A writer whose checkpoint publishes wait inside their atomic writes until released. */
     private final AtomicFileWriter heldWriter = new AtomicFileWriter(AtomicFileWriter.TEMP_CHANNEL_OPENER,
             (temp, target, options) -> {
+                if (CheckpointFileName.parse(target.getFileName().toString()).isEmpty()) {
+                    AtomicFileWriter.FILE_SYSTEM_MOVER.move(temp, target, options);
+                    return;
+                }
                 moveEntered.countDown();
                 try {
                     if (!moveReleased.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {

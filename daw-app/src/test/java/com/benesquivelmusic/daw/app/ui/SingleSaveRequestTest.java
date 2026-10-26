@@ -66,7 +66,16 @@ class SingleSaveRequestTest {
         List<SaveFlowFixture.Publish> checkpoints = fixture.publishes.done(SaveFlowFixture::isCheckpoint);
         assertThat(heads).as("exactly one head write").hasSize(1);
         assertThat(checkpoints).as("at most one checkpoint: the one after the save").hasSize(1);
-        assertThat(fixture.publishes.done()).as("nothing else was published").hasSize(2)
+        Path orderingFact = fixture.songA.resolve("checkpoints").resolve(
+                com.benesquivelmusic.daw.core.persistence.CheckpointOrder.FILE_NAME);
+        assertThat(fixture.publishes.done()).extracting(SaveFlowFixture.Publish::target)
+                .as("the head, checkpoint certification and checkpoint are the complete write sequence")
+                .containsExactly(heads.getFirst().target(), orderingFact, checkpoints.getFirst().target());
+        assertThat(fixture.publishes.done(orderingFact::equals)).singleElement()
+                .satisfies(fact -> assertThat(fact.thread()).isSameAs(checkpoints.getFirst().thread()));
+        assertThat(com.benesquivelmusic.daw.core.persistence.CheckpointOrder.read(orderingFact.getParent()))
+                .containsExactly(checkpoints.getFirst().target().getFileName().toString());
+        assertThat(fixture.publishes.done())
                 .allSatisfy(publish -> assertThat(publish.thread()).as("published off the FX thread")
                         .isNotSameAs(fixture.fxThread()));
         assertThat(Files.readString(checkpoints.getFirst().target()))

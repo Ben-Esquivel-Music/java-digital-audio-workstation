@@ -5,6 +5,8 @@ import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.archive.ArchiveHeader;
 import com.benesquivelmusic.daw.core.persistence.journal.ProjectContext;
+import com.benesquivelmusic.daw.core.persistence.journal.JournalRecord;
+import com.benesquivelmusic.daw.core.persistence.journal.JournalState;
 import com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry;
 import com.benesquivelmusic.daw.core.snapshot.SnapshotBrowserService;
 import com.benesquivelmusic.daw.core.snapshot.SnapshotEntry;
@@ -117,7 +119,12 @@ class UnreadItemsQualifyTheOpenAnnouncementTest {
     void aJournalReplayCountsItsCheckpointsItemsAndOwesNoDegradedBackup() throws Exception {
         Path directory = projectFolderHolding("Song", ONE_BAD_NOTE.replace("velocity=\"128\"", "velocity=\"90\""));
         Path checkpoints = Files.createDirectories(ProjectContext.forProject(directory).checkpointDirectory());
-        Files.writeString(checkpoints.resolve("checkpoint-999-20261021T120000.daw"), ONE_BAD_NOTE);
+        Path checkpoint = Files.writeString(checkpoints.resolve("checkpoint-999-20261021T120000.daw"), ONE_BAD_NOTE);
+        Path journal = Files.createDirectories(ProjectContext.forProject(directory).journalDirectory());
+        try (OutputStream out = Files.newOutputStream(journal.resolve("segment-000.bin"))) {
+            new JournalRecord(0L, Instant.EPOCH, JournalRecord.CHECKPOINT_TYPE, null,
+                    JournalState.capture(-1L, checkpoint)).writeTo(java.nio.channels.Channels.newChannel(out));
+        }
 
         // The worker half runs off the FX thread, as the replay's virtual thread runs it,
         // and posts the FX half; the barrier lets it run.

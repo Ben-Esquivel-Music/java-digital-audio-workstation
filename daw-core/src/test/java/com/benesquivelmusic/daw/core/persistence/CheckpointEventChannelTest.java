@@ -242,10 +242,10 @@ class CheckpointEventChannelTest {
         return recorder;
     }
 
-    /** A real writer whose publish fails while {@link #failPublish} is set. */
+    /** A real writer whose checkpoint publish fails while {@link #failPublish} is set. */
     private AtomicFileWriter writer() {
         return new AtomicFileWriter(AtomicFileWriter.TEMP_CHANNEL_OPENER, (temp, target, options) -> {
-            if (failPublish.get()) {
+            if (failPublish.get() && CheckpointFileName.parse(target.getFileName().toString()).isPresent()) {
                 throw publishFailure;
             }
             AtomicFileWriter.FILE_SYSTEM_MOVER.move(temp, target, options);

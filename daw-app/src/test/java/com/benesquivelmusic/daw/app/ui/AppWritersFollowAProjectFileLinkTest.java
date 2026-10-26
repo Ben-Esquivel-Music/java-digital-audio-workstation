@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.persistence.AtomicFileWriter;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
 import com.benesquivelmusic.daw.core.persistence.journal.JournalRecord;
+import com.benesquivelmusic.daw.core.persistence.journal.JournalState;
 import com.benesquivelmusic.daw.core.persistence.journal.ProjectContext;
 import com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry;
 import com.benesquivelmusic.daw.core.persistence.migration.MigrationReport;
@@ -225,8 +226,8 @@ class AppWritersFollowAProjectFileLinkTest {
     }
 
     /**
-     * A saved project on disk with a checkpoint of one track, "Vocals", and a
-     * journal of three changes after it (the shape the recovery tests use).
+     * A saved project with a hash-verified checkpoint capture of "Vocals" and
+     * three journaled changes after that capture, independent of the current head.
      */
     private Path aProjectWithACheckpointAndAJournal(String name) throws IOException {
         Path directory = fixture.anotherProjectOnDisk(name);
@@ -237,11 +238,13 @@ class AppWritersFollowAProjectFileLinkTest {
         for (Path written : SaveFlowFixture.checkpointFiles(directory)) {
             Files.delete(written);
         }
-        Files.writeString(context.checkpointDirectory().resolve("checkpoint-999-20260101T000000.daw"),
+        Path checkpoint = Files.writeString(context.checkpointDirectory().resolve("checkpoint-999-20260101T000000.daw"),
                 new ProjectSerializer().serialize(checkpointed), StandardCharsets.UTF_8);
         ByteArrayOutputStream frames = new ByteArrayOutputStream();
+        new JournalRecord(0L, Instant.EPOCH, JournalRecord.CHECKPOINT_TYPE, null,
+                JournalState.capture(-1L, checkpoint)).writeTo(java.nio.channels.Channels.newChannel(frames));
         for (int sequence = 0; sequence < 3; sequence++) {
-            ByteBuffer frame = JournalRecord.ofMutation(sequence, Instant.ofEpochMilli(1_000L + sequence),
+            ByteBuffer frame = JournalRecord.ofMutation(sequence + 1L, Instant.ofEpochMilli(1_000L + sequence),
                     "MixerEvent.MuteChanged", UUID.randomUUID(), null).toBuffer();
             byte[] bytes = new byte[frame.remaining()];
             frame.get(bytes);

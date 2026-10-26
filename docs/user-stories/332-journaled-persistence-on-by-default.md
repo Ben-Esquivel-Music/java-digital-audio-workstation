@@ -178,8 +178,8 @@ errors or skips. It ran the suites in the table plus
 `JournaledPersistencePreferenceGateTest`, `ProjectJournalCoordinatorTest` and
 `SettingsModelTest`. Reports are under each module's `target/surefire-reports/`.
 
-The final related regression completed **563 cases: 562 passed and one skipped**,
-with no remaining failures or errors: 296 core cases (one POSIX-permission case
+The initial **selected** related regression completed **563 cases: 562 passed and one skipped**,
+with no failures or errors among those selected cases: 296 core cases (one POSIX-permission case
 skipped on Windows) and 267 application cases. All 50 new acceptance cases are
 included. The skipped existing case is
 `SessionManagerTest.aStaleSessionTheUserCannotWriteIsStillSealedAndANewSessionStarts`.
@@ -209,3 +209,59 @@ $appTestSuites = Get-ChildItem daw-app/target/surefire-reports -File -Filter 'TE
     } | Sort-Object -Unique
 mvn -B -pl daw-app -am test "-Dtest=$($appTestSuites -join ',')" '-Dsurefire.failIfNoSpecifiedTests=false' '-DskipNativeBuild=true'
 ```
+
+### Full default-suite validation follow-up
+
+The 563-case validation above used explicit `-Dtest` selection. It did **not**
+run the full repository test suite. Subsequent full-suite execution exposed
+additional save/backup instrumentation that treated every publication other
+than a checkpoint as a head or backup, or expected only two total publications.
+Those tests now assert the complete typed sequence, including the ordering fact:
+backup → head → ordering fact → checkpoint, or ordering fact → safety checkpoint
+after a failed backup. They still reject unknown writes, duplicate heads or
+checkpoints, head writes after a failed backup, and publications on the owner
+thread. A failed backup still leaves the backup owed for the next save.
+
+Checkpoint-stop, autosave-disabled and event-channel fault/hold seams explicitly
+target checkpoint filenames, so they continue to stall or fail the checkpoint's
+atomic publication rather than accidentally intercepting its metadata first.
+The independent ordering-fact publication-failure tests remain in place.
+
+Recovery-link and unread-item announcement fixtures now supply hash-verified
+checkpoint capture markers instead of assuming an unrelated newest checkpoint
+is the session's base. Their existing link-preservation, refusal, backup and
+qualified-warning assertions remain intact. Profile import exercises the real
+default-on setting changing to an explicit opt-out. The existing menu test
+harness now propagates FX-thread assertion failures to JUnit, with a dedicated
+regression; its structure assertions describe the seven-menu hierarchy already
+present before story 332. No production menu or persistence behavior was changed
+by these full-suite follow-up corrections.
+
+Full default-reactor validation uses **no test selector** and disables snapshot
+creation and updates:
+
+```powershell
+mvn -B test '-DskipNativeBuild=true' '-Dsnapshots.autoBaseline=false' '-Dsnapshots.update=false'
+```
+
+This is the default test suite; the repository's opt-in `long-tests` profile is
+separate. The first unfiltered run, retained in `target/story332-full-test.log`,
+completed 14,314 cases with four failures, no errors and 43 skips. Its four
+failures were the recovery-link, profile-import and unread-item fixtures
+described above. The corrected affected application suites then passed all 44
+cases, including the added FX-assertion propagation regression, in
+`target/story332-full-suite-app-corrections.log`.
+
+The final unfiltered default-reactor run of that exact command completed with
+**BUILD SUCCESS: 14,315 cases, 14,272 passed, 43 skipped, zero failures and zero
+errors**. Module totals were 1,348 SDK cases (two skipped), 106 acoustics cases,
+8,649 core cases (38 skipped), 29 FX cases and 4,183 application cases (three
+skipped). The skips cover optional native-library availability, platform-specific
+cases and explicitly disabled cases; none of the 50 new story-332 acceptance
+cases was skipped. Snapshot creation and updates were disabled throughout.
+The complete green run is retained in `target/story332-full-test-final.log`.
+
+These full-suite follow-up changes affect tests and this validation record only;
+production sources remain unchanged from implementation commit `5cee116c`.
+The opt-in `long-tests` profile was not run. No changes were committed or pushed
+by the agents.
