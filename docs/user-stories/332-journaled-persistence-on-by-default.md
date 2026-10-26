@@ -319,3 +319,49 @@ native rebuilding and `jpackage` were skipped, and snapshot creation and updates
 were disabled. It was not an Ubuntu CI rerun. The linked CI result still refers
 to failed head `c435f965`; validating the correction there requires the user's
 commit/push and another CI run. Agents made no commits or pushes.
+
+### PR 988 review 5658601036 — local resolution, 2026-10-26
+
+The ten findings in [the linked review](https://github.com/Ben-Esquivel-Music/java-digital-audio-workstation/pull/988#pullrequestreview-5658601036)
+are addressed in the working tree. Java 27 agents made the code changes;
+the studio-engineer review checked recording/take preservation, journal evidence,
+lease ownership and failure announcements. The JavaFX application-design and
+DAW-architecture skills informed the worker/FX separation. No audio callback
+path or persisted project schema changed.
+
+| Review comment | Resolution | Regression evidence |
+| --- | --- | --- |
+| `4382168153` — manifest writes after retirement | Session refresh captures the lock manager and exact lease UUID. `withHeldLease` excludes retirement/rebinding through the complete `openSession` publication. A missing captured lease permits history-only refresh. | `ReadOnlySessionRefreshTest` stalls the worker inside `openSession`; retirement waits, and the same folder's subsequent read-only refresh changes no manifests. `ProjectLeaseRetirementTest` rejects queued work using a retired lease. |
+| `4382168256` — opted-out evidence deleted during temp recovery | Both accepted head-temp decisions preserve journal segments and the immutable base when journaling is opted out. | Two `OpenRecoveryGateTest` cases compare segment/base bytes after Replay all and Checkpoint only. |
+| `4382168350` — active-folder alias bypass | Worker-side `Files.isSameFile` runs before acquiring any target lease; aliases of the active folder are refused. | `ActiveProjectAliasTest` exercises open/discard through symbolic links and Windows junctions without lock negotiation or journal mutation. |
+| `4382168400` — New Project edits during drain | The installation/command guard and disabled root precede recorder detachment and stay set through replacement, initial XML publication and journal readiness. Recording/take state is rechecked before detachment and after seal. | `ProjectReplacementJournalSafetyTest` stalls seal, then starts recording or take-writing; model, lease and evidence remain, with cleanup and an explicit paused-journal warning. Seal failure is also covered. |
+| `4382168451` — release before seal on Import/rollback | Import and no-backup rollback install their replacements only after the outgoing seal finishes and the worker retires the lease. | Two `ProjectReplacementJournalSafetyTest` cases hold seal and verify the outgoing lock remains until the continuation. |
+| `4382168542` — discard deletes a live journal | Confirmed discard first rejects the active directory identity, negotiates an independent target lease, and holds its writable lease through deletion. Cancel/read-only preserve evidence; explicit Take Over remains available for fresh crash locks. | `LockedRecoveryDiscardTest` covers active, foreign Cancel/read-only and fresh Take Over; alias cases also verify byte/lock preservation. |
+| `4382168613` — direct-open cancellation releases A | Unsupplied opens prepare an independent target lease and parse before replacing the outgoing lease. Failed parse or recent-project publication also preserves the outgoing project. | `PreparedProjectLeaseTest` covers cancelled B, parse failure and failed recent-project publication with A still held. |
+| `4382168677` — metadata-only replay base | New Project starts journaling only after its initial full XML save succeeds. The guard remains until `openForRequired` confirms the enabled journal is ready for that directory. | `ProjectReplacementJournalSafetyTest` stalls XML publication and journal startup, deserializes the immutable base, and covers save/startup failure; `ProjectJournalCoordinatorTest` exercises a real obstructed journal directory, missing bus and explicit opt-out. |
+| `4382168718` — abandoned scheduler threads | Rejected/unconsumed target leases and retired managers are closed; ownership transfers only after acceptance. Closing a consumed preparation leaves the accepted lease live. | `PreparedProjectLeaseTest` checks cancellation, unconsumed close and accepted transfer dispose the appropriate schedulers. |
+| `4382168816` — readable XML link rejected | Temp inspection follows readable links without applying the replacement writer's `.daw` restriction. The commit writer still enforces that restriction. | `RecoveryTempsReadLinksTest` opens `project.daw` linked to `Song.xml`, finds its newer temp, and verifies replacement remains refused. |
+
+A failed seal or a recording/take that begins despite the installation guard can
+leave the outgoing journal closed. The project, take, lease and recovery evidence
+are retained; the UI is re-enabled and explicitly reports that journaled
+persistence is paused until the project is reopened. No prior segments are
+cleared merely to restart recording. The legacy `forceFlush` escape hatch is not
+used as a handover barrier.
+
+Final focused validation passed on Windows with Maven 3.10.0 and JDK 27+35:
+**170 cases: 169 passed, one skipped, zero failures and zero errors**. Core ran
+72 cases (one skip) and the application ran 98 cases (no skips), including all
+32 new regression cases. The existing skip is
+`ProjectLockManagerTest.aStaleLockTheUserCannotWriteIsStillTakenOverAndKeptFresh`,
+which requires Linux/POSIX permission bits. Both symbolic-link and Windows
+junction scenarios ran successfully. The exact final command was:
+
+```powershell
+mvn -pl daw-app -am test '-Dtest=PreparedProjectLeaseTest,ProjectLeaseRetirementTest,RecoveryTempsReadLinksTest,ProjectManagerLockingTest,ProjectManagerTest,ProjectFileSymbolicLinkTest,ProjectLockManagerTest,ProjectManagerDurableWritesTest,CheckpointsNeedTheProjectLockTest,ReadOnlySessionRefreshTest,OpenRecoveryGateTest,ProjectReplacementJournalSafetyTest,LockedRecoveryDiscardTest,ActiveProjectAliasTest,EveryOpenDoorRunsRecoveryFirstTest,NewProjectPromptsForLocationTest,MigrationRollBackAndRecoveryGuardTest,OpenAnnouncedOnceThroughAMigrationRollBackTest,ProjectLifecycleControllerTest,SingleSaveRequestTest,JournalCaptureIntegrationTest,ProjectJournalCoordinatorTest,RecoverSessionIsTheOnePendingSwitchTest' '-Dsurefire.failIfNoSpecifiedTests=false' '-DskipNativeBuild=true'
+```
+
+The successful log is `target/pr988-final-review-tests.log`. This is targeted
+local regression validation, not a new unfiltered suite, native rebuild,
+packaging run or remote CI run. Changes remain uncommitted and unpushed; GitHub
+review discussions were not modified.

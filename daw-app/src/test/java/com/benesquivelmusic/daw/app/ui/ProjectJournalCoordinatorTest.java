@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Story 298 — focused tests for {@link ProjectJournalCoordinator}: the
@@ -107,6 +108,30 @@ class ProjectJournalCoordinatorTest {
         // No journal/ directory is created when disabled.
         assertThat(Files.exists(projectDir.resolve("journal"))).isFalse();
         coordinator.closeCurrent(null); // idempotent no-op
+    }
+
+    @Test
+    void requiredStartupReportsARealJournalDirectoryFailure() throws Exception {
+        enabled.set(true);
+        Files.writeString(projectDir.resolve("journal"), "directory is obstructed");
+        ProjectJournalCoordinator coordinator = newCoordinator();
+        assertThatThrownBy(() -> coordinator.openForRequired(projectDir))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("could not start");
+        assertThat(coordinator.isOpen()).isFalse();
+        assertThat(Files.readString(projectDir.resolve("journal"))).isEqualTo("directory is obstructed");
+    }
+
+    @Test
+    void requiredStartupHonoursOptOutButRejectsMissingEventBusAndNullTarget() {
+        ProjectJournalCoordinator coordinator = newCoordinator();
+        coordinator.openForRequired(projectDir);
+        assertThat(coordinator.isOpen()).isFalse();
+        enabled.set(true);
+        bus.close();
+        bus = null;
+        assertThatThrownBy(() -> coordinator.openForRequired(projectDir)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> coordinator.openForRequired(null)).isInstanceOf(NullPointerException.class);
+        assertThat(coordinator.isOpen()).isFalse();
     }
 
     @Test

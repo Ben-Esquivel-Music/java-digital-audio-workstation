@@ -90,7 +90,7 @@ final class OpenRecoveryGate {
             catch (IOException failure) { throw new ReplayFailed(failure, true); }
         }
         lock.verifyHeld();
-        JournalState.clear(context);
+        if (journalEnabled) JournalState.clear(context);
         temps.clean();
         return result;
     }

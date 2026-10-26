@@ -147,7 +147,7 @@ public final class ProjectLockManager implements AutoCloseable {
      * with the existing holder and a {@code stale} flag — no lock is written
      * in that case.
      */
-    public AcquisitionResult tryAcquire(Path projectDir) throws IOException {
+    public synchronized AcquisitionResult tryAcquire(Path projectDir) throws IOException {
         Objects.requireNonNull(projectDir, "projectDir must not be null");
         Path lockFile = projectDir.resolve(LOCK_FILE_NAME);
         Instant now = clock.instant();
@@ -175,7 +175,7 @@ public final class ProjectLockManager implements AutoCloseable {
      * Unconditionally writes a fresh lock for {@code projectDir}, replacing
      * any existing one. Records the takeover in the project audit log.
      */
-    public ProjectLock forceAcquire(Path projectDir) throws IOException {
+    public synchronized ProjectLock forceAcquire(Path projectDir) throws IOException {
         Objects.requireNonNull(projectDir, "projectDir must not be null");
         Path lockFile = projectDir.resolve(LOCK_FILE_NAME);
         Instant now = clock.instant();
@@ -202,7 +202,7 @@ public final class ProjectLockManager implements AutoCloseable {
      * Records that the project at {@code projectDir} was opened read-only.
      * No lock file is written.
      */
-    public void openReadOnly(Path projectDir) {
+    public synchronized void openReadOnly(Path projectDir) {
         Objects.requireNonNull(projectDir, "projectDir must not be null");
         projectDirectory.set(projectDir);
         heldLock.set(null);
@@ -249,6 +249,29 @@ public final class ProjectLockManager implements AutoCloseable {
         verify(ours, dir);
     }
 
+    /** A filesystem operation that must finish before its project lease is retired. */
+    @FunctionalInterface
+    public interface LeaseOperation<T> {
+        T run() throws IOException;
+    }
+
+    /**
+     * Runs an operation under the captured lease, excluding release and rebinding
+     * until publication finishes. A queued operation cannot use a later lease,
+     * even when this manager has reopened the same project directory.
+     */
+    public synchronized <T> T withHeldLease(ProjectLock expected, LeaseOperation<T> operation)
+            throws IOException {
+        Objects.requireNonNull(expected, "expected must not be null");
+        Objects.requireNonNull(operation, "operation must not be null");
+        ProjectLock current = heldLock.get();
+        if (current == null || !current.lockId().equals(expected.lockId())) {
+            throw new IOException("The captured project lease has been retired");
+        }
+        verifyHeld();
+        return operation.run();
+    }
+
     private void verify(ProjectLock ours, Path dir) throws LockStolenException, IOException {
         Path lockFile = dir.resolve(LOCK_FILE_NAME);
         if (!Files.exists(lockFile)) {
@@ -270,7 +293,7 @@ public final class ProjectLockManager implements AutoCloseable {
      * Returns {@code true} if the heartbeat succeeded; {@code false} if the
      * lock has been stolen or the file is gone (status is updated accordingly).
      */
-    public boolean heartbeat() {
+    public synchronized boolean heartbeat() {
         ProjectLock ours = heldLock.get();
         Path dir = projectDirectory.get();
         if (ours == null || dir == null) {
@@ -349,7 +372,7 @@ public final class ProjectLockManager implements AutoCloseable {
     }
 
     @Override
-    public void close() throws IOException {
+    public synchronized void close() throws IOException {
         try {
             release();
         } finally {

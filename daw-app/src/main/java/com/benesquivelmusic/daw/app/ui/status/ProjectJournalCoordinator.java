@@ -254,6 +254,19 @@ public final class ProjectJournalCoordinator {
         }
     }
 
+    /** Opens the journal and requires readiness before a guarded project installation completes. */
+    public void openForRequired(Path projectDir) {
+        Objects.requireNonNull(projectDir, "projectDir must not be null");
+        lifecycleLock.lock();
+        try {
+            openFor(projectDir);
+            if (Boolean.TRUE.equals(journaledPersistenceEnabled.get())
+                    && (writer == null || !projectDir.equals(openProjectDir))) {
+                throw new IllegalStateException("Journaled persistence could not start for " + projectDir);
+            }
+        } finally { lifecycleLock.unlock(); }
+    }
+
     /**
      * Atomically closes the journal currently open (if any), sealing its
      * segments into {@code outgoingSession}, then opens the journal for

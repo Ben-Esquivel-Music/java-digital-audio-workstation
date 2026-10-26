@@ -467,16 +467,35 @@ public final class ProjectManager {
 
         Path projectFile = projectDirectory.resolve(PROJECT_FILE_NAME);
         if (!Files.exists(projectFile)) {
+            if (supplied != null) supplied.close();
             throw new IOException("Project file not found: " + projectFile);
         }
 
-        PreparedOpen prepared = supplied != null ? supplied : prepareOpen(projectDirectory, lockManager);
-        if (!prepared.directory().equals(projectDirectory)) throw new IOException("Prepared open belongs to another project");
-        this.lockManager = prepared.lock();
-        boolean openedReadOnly = prepared.readOnly();
-        String content = Files.readString(projectFile);
+        try (PreparedOpen prepared = supplied != null ? supplied : prepareOpen(projectDirectory)) {
+            if (!prepared.directory().equals(projectDirectory)) {
+                throw new IOException("Prepared open belongs to another project");
+            }
+            PreparedProject loaded = readProject(projectDirectory, projectFile);
+            recordRecentProject(projectDirectory);
+            ProjectLockManager accepted = prepared.transferFrom(lockManager);
+            saveTarget = null;
+            lockManager = accepted;
+            currentProject = loaded.metadata();
+            currentDawProject = loaded.project();
+            lastMigrationReport = loaded.migration();
+            lastMissingAssets = loaded.missingAssets();
+            lastUnreadItems = loaded.unreadItems();
+            readOnly = prepared.readOnly();
+            recentProjects.put(projectDirectory.toString(), currentProject);
+            saveTarget = readOnly ? SaveTarget.readOnly(projectDirectory, loaded.backup())
+                    : SaveTarget.writable(projectDirectory, loaded.backup(),
+                            checkpointManager.startGeneration(projectDirectory));
+            return currentProject;
+        }
+    }
 
-        PendingBackup owed;
+    private PreparedProject readProject(Path projectDirectory, Path projectFile) throws IOException {
+        String content = Files.readString(projectFile);
         if (content.strip().startsWith("<?xml") || content.strip().startsWith("<daw-project")) {
             // Project-relative clip references (story 323) resolve against
             // the directory the project file lives in.
@@ -485,48 +504,70 @@ public final class ProjectManager {
             dawProject.setMetadata(metadata);
             dawProject.markClean();
             MigrationReport migration = deserializer.getLastMigrationReport();
-            owed = PendingBackup.at(migration, deserializer.losesSavedContent());
-            // The open project's saves are fenced from here; the new target follows its checkpoint generation.
-            saveTarget = null;
-            currentDawProject = dawProject;
-            currentProject = metadata;
-            lastMigrationReport = migration;
-            lastMissingAssets = MissingAssetsReport.atOpen(
-                    dawProject, deserializer.getMissingFiles(), projectDirectory);
-            lastUnreadItems = deserializer.getUnreadItems();
+            return new PreparedProject(metadata, dawProject, migration,
+                    PendingBackup.at(migration, deserializer.losesSavedContent()),
+                    MissingAssetsReport.atOpen(dawProject, deserializer.getMissingFiles(), projectDirectory),
+                    deserializer.getUnreadItems());
         } else {
             ProjectMetadata metadata = parseProjectFile(content, projectDirectory);
-            owed = PendingBackup.NONE;
-            saveTarget = null;
-            currentProject = metadata;
-            currentDawProject = null;
-            lastMigrationReport = MigrationReport.noOp(
-                    com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION);
-            // The deserializer did not run: its missing-files and unread-items
-            // lists are the previous open's, and this file has nothing to report.
-            lastMissingAssets = MissingAssetsReport.EMPTY;
-            lastUnreadItems = List.of();
+            return new PreparedProject(metadata, null, MigrationReport.noOp(
+                    com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION),
+                    PendingBackup.NONE, MissingAssetsReport.EMPTY, List.of());
         }
-
-        readOnly = openedReadOnly;
-        recentProjects.put(projectDirectory.toString(), currentProject);
-        recordRecentProject(projectDirectory);
-        if (openedReadOnly) {
-            saveTarget = SaveTarget.readOnly(projectDirectory, owed);
-        } else {
-            saveTarget = SaveTarget.writable(projectDirectory, owed,
-                    checkpointManager.startGeneration(projectDirectory));
-        }
-        return currentProject;
     }
 
+    private record PreparedProject(ProjectMetadata metadata, DawProject project, MigrationReport migration,
+                                   PendingBackup backup, MissingAssetsReport missingAssets,
+                                   List<UnreadProjectItem> unreadItems) { }
+
     /** A target lease; closing an unapplied open never touches the outgoing project. */
-    public record PreparedOpen(Path directory, ProjectLockManager lock, boolean readOnly) implements AutoCloseable {
-        @Override public void close() throws IOException { lock.release(); }
+    public static final class PreparedOpen implements AutoCloseable {
+        private final Path directory;
+        private final ProjectLockManager lock;
+        private final boolean readOnly;
+        private boolean consumed;
+
+        private PreparedOpen(Path directory, ProjectLockManager lock, boolean readOnly) {
+            this.directory = directory;
+            this.lock = lock;
+            this.readOnly = readOnly;
+        }
+
+        public Path directory() { return directory; }
+        public ProjectLockManager lock() { return lock; }
+        public boolean readOnly() { return readOnly; }
+
+        private synchronized ProjectLockManager transferFrom(ProjectLockManager retired) throws IOException {
+            if (consumed) throw new IOException("The prepared project lease has already been closed or transferred");
+            if (!readOnly) lock.verifyHeld();
+            if (retired != lock) retired.close();
+            consumed = true;
+            return lock;
+        }
+
+        @Override
+        public synchronized void close() throws IOException {
+            if (!consumed) {
+                consumed = true;
+                lock.close();
+            }
+        }
     }
 
     public PreparedOpen prepareOpen(Path directory) throws IOException {
-        return prepareOpen(directory, lockManager.fork());
+        PreparedOpen prepared = prepareLockedAccess(directory);
+        try {
+            recoveryGate.beforeParse(directory, prepared.readOnly(), prepared.lock());
+            return prepared;
+        } catch (IOException | RuntimeException | Error failure) {
+            try { prepared.close(); } catch (IOException release) { failure.addSuppressed(release); }
+            throw failure;
+        }
+    }
+
+    /** Negotiates an independent target lease without scanning or applying recovery. */
+    public PreparedOpen prepareLockedAccess(Path directory) throws IOException {
+        return acquireTarget(directory, lockManager.fork());
     }
 
     /** Recovery failed after its lock decision: the last saved head may be inspected without changing evidence. */
@@ -536,7 +577,7 @@ public final class ProjectManager {
         return new PreparedOpen(directory, target, true);
     }
 
-    private PreparedOpen prepareOpen(Path directory, ProjectLockManager target) throws IOException {
+    private PreparedOpen acquireTarget(Path directory, ProjectLockManager target) throws IOException {
         boolean readOnly = false;
         try {
             ProjectLockManager.AcquisitionResult result = target.tryAcquire(directory);
@@ -551,10 +592,9 @@ public final class ProjectManager {
                 }
             }
             if (!readOnly) target.startHeartbeat();
-            recoveryGate.beforeParse(directory, readOnly, target);
             return new PreparedOpen(directory, target, readOnly);
         } catch (IOException | RuntimeException | Error failure) {
-            try { target.release(); } catch (IOException release) { failure.addSuppressed(release); }
+            try { target.close(); } catch (IOException release) { failure.addSuppressed(release); }
             throw failure;
         }
     }
@@ -808,7 +848,7 @@ public final class ProjectManager {
         saveTarget = null;
         checkpointManager.stop();
         try {
-            lockManager.release();
+            lockManager.close();
         } catch (IOException ignored) {
             // best-effort cleanup
         }
@@ -856,7 +896,7 @@ public final class ProjectManager {
         saveTarget = null;
         checkpointManager.stop();
         try {
-            lockManager.release();
+            lockManager.close();
         } catch (IOException ignored) {
             // best-effort cleanup
         }

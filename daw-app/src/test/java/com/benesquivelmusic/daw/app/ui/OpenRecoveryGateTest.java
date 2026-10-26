@@ -115,6 +115,24 @@ class OpenRecoveryGateTest {
         assertThat(decisions).hasValue(0);
         assertThat(Files.readAllBytes(folder.resolve("journal/segment-000.bin"))).isEqualTo(before);
     }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(value = RecoveryChoice.class, names = {"REPLAY_ALL", "CHECKPOINT_ONLY"})
+    void recoveringAHeadTempWhileOptedOutPreservesTheUnreplayedJournalAndBase(RecoveryChoice choice) throws Exception {
+        Path folder = project("Opted out");
+        crash(folder);
+        byte[] journal = Files.readAllBytes(folder.resolve("journal/segment-000.bin"));
+        byte[] base = Files.readAllBytes(folder.resolve("journal").resolve(JournalState.BASE_FILE));
+        Files.setLastModifiedTime(folder.resolve("project.daw"), FileTime.from(Instant.now().minusSeconds(100)));
+        Path temp = Files.writeString(folder.resolve(".project.daw.0123456789abcdef.tmp"), xml("Newer complete head"));
+        gate(folder, choice, false);
+        assertThat(decisions).hasValue(1);
+        assertThat(Files.readAllBytes(folder.resolve("journal/segment-000.bin"))).isEqualTo(journal);
+        assertThat(Files.readAllBytes(folder.resolve("journal").resolve(JournalState.BASE_FILE))).isEqualTo(base);
+        assertThat(temp).doesNotExist();
+        assertThat(Files.readString(folder.resolve("project.daw")))
+                .contains(choice == RecoveryChoice.REPLAY_ALL ? "Newer complete head" : "Opted out");
+    }
     @Test void cancelPreservesTheOutgoingModelLockAndIncomingEvidence() throws Exception {
         Path incoming = project("Incoming");
         crash(incoming);

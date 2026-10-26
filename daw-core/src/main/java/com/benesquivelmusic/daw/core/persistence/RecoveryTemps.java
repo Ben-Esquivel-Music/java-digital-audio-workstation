@@ -16,7 +16,8 @@ public record RecoveryTemps(List<Path> files, Path newerHead) {
     public RecoveryTemps { files = List.copyOf(files); }
 
     public static RecoveryTemps inspect(Path folder) throws IOException {
-        Path head = AtomicFileWriter.followLinkToDawFile(folder.resolve(ProjectManager.PROJECT_FILE_NAME));
+        Path projectFile = folder.resolve(ProjectManager.PROJECT_FILE_NAME);
+        Path head = Files.isSymbolicLink(projectFile) ? projectFile.toRealPath() : projectFile;
         LinkedHashSet<Path> temps = new LinkedHashSet<>();
         collect(folder, null, temps);
         collect(folder.resolve("snapshots"), null, temps);

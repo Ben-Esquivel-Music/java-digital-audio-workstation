@@ -27,6 +27,55 @@ import static org.mockito.Mockito.*;
 class ReadOnlySessionRefreshTest {
     @TempDir Path workspace;
 
+    @Test void aStalledManifestWriterFinishesBeforeItsWritableLeaseCanRetire() throws Exception {
+        ProjectManager manager = new ProjectManager(new CheckpointManager(AutoSaveConfig.DEFAULT.withEnabled(false)));
+        Path folder = createHead("Stalled");
+        manager.openProject(folder);
+        SessionManager sessions = spy(new SessionManager());
+        java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        doAnswer(invocation -> {
+            entered.countDown();
+            assertThat(release.await(15, TimeUnit.SECONDS)).isTrue();
+            manager.getLockManager().verifyHeld();
+            return invocation.callRealMethod();
+        }).when(sessions).openSession(any(Path.class), any(Instant.class));
+        LinkedBlockingQueue<Runnable> queued = new LinkedBlockingQueue<>();
+        MainController main = main(manager, queued, sessions);
+        java.util.concurrent.CompletableFuture<Void> retired = new java.util.concurrent.CompletableFuture<>();
+        ProjectLockManager foreign = new ProjectLockManager();
+        try {
+            refresh(main);
+            assertThat(entered.await(15, TimeUnit.SECONDS)).isTrue();
+            Thread.ofVirtual().start(() -> {
+                try { manager.abandonProject(); retired.complete(null); }
+                catch (Throwable failure) { retired.completeExceptionally(failure); }
+            });
+            assertThatThrownBy(() -> retired.get(150, TimeUnit.MILLISECONDS))
+                    .isInstanceOf(java.util.concurrent.TimeoutException.class);
+            assertThat(folder.resolve(ProjectLockManager.LOCK_FILE_NAME)).exists();
+            release.countDown();
+            retired.get(15, TimeUnit.SECONDS);
+            Runnable stale = queued.poll(15, TimeUnit.SECONDS);
+            assertThat(stale).isNotNull();
+            Map<Path, String> published = manifestBytes(folder);
+            foreign.forceAcquire(folder);
+            manager.setLockConflictHandler((_, _) -> LockConflictResolution.OPEN_READ_ONLY);
+            manager.openProject(folder);
+            refresh(main);
+            Runnable current = queued.poll(15, TimeUnit.SECONDS);
+            assertThat(current).isNotNull();
+            runOnFx(current);
+            runOnFx(stale);
+            assertThat(manifestBytes(folder)).isEqualTo(published);
+            assertThat(field(main, "activeSession")).isNull();
+        } finally {
+            release.countDown();
+            manager.abandonProject();
+            foreign.close();
+        }
+    }
+
     @Test void theActualMainControllerRefreshDoesNotWriteOrSealTheLockHoldersOldActiveManifest() throws Exception {
         ProjectManager manager = new ProjectManager(new CheckpointManager(AutoSaveConfig.DEFAULT.withEnabled(false)));
         Path folder = createHead("Read only");
@@ -85,7 +134,11 @@ class ReadOnlySessionRefreshTest {
     }
 
     private MainController main(ProjectManager manager, LinkedBlockingQueue<Runnable> queued) throws Exception {
-        MainController main = new MainController();
+        return main(manager, queued, new SessionManager());
+    }
+
+    private MainController main(ProjectManager manager, LinkedBlockingQueue<Runnable> queued, SessionManager sessions) throws Exception {
+        MainController main = new MainController(sessions);
         FxDispatcher dispatcher = spy(new FxDispatcher());
         doAnswer(invocation -> { queued.add(invocation.getArgument(0)); return null; })
                 .when(dispatcher).onFx(any(Runnable.class));

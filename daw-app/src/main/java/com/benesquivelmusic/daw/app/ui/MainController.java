@@ -448,8 +448,16 @@ public final class MainController {
      * instance — reused across project opens to avoid constructing a new store on
      * every history refresh.
      */
-    private final com.benesquivelmusic.daw.core.session.SessionManager sessionManager =
-            new com.benesquivelmusic.daw.core.session.SessionManager();
+    private final com.benesquivelmusic.daw.core.session.SessionManager sessionManager;
+
+    public MainController() {
+        this(new com.benesquivelmusic.daw.core.session.SessionManager());
+    }
+
+    MainController(com.benesquivelmusic.daw.core.session.SessionManager sessionManager) {
+        this.sessionManager = java.util.Objects.requireNonNull(sessionManager);
+    }
+
     /**
      * The currently open {@link com.benesquivelmusic.daw.core.session.WorkingSession};
      * {@code null} until the first project with an on-disk directory is loaded.
@@ -1902,7 +1910,7 @@ public final class MainController {
                                 Objects.equals(journalDirectory, activeSessionProjectDir) ? activeSession : null;
                         projectJournalCoordinator.detachFromBus();
                         return () -> projectJournalCoordinator.closeCurrentFor(journalDirectory, outgoing);
-                    }, projectJournalCoordinator::openFor);
+                    }, projectJournalCoordinator::openForRequired);
             projectLifecycleController.setJournalOpenHook(projectDir -> {
                 com.benesquivelmusic.daw.core.session.WorkingSession outgoing = activeSession;
                 Thread.ofVirtual().name("daw-journal-reopen")
@@ -2161,6 +2169,8 @@ public final class MainController {
         }
         java.nio.file.Path projectDir = current.projectPath();
         boolean writableSession = openSession && !projectManager.isReadOnly();
+        com.benesquivelmusic.daw.core.persistence.ProjectLockManager sessionLease = projectManager.getLockManager();
+        com.benesquivelmusic.daw.core.persistence.ProjectLock sessionLock = sessionLease.currentLock().orElse(null);
         if (openSession && !writableSession) {
             activeSession = null;
             activeSessionProjectDir = null;
@@ -2170,12 +2180,13 @@ public final class MainController {
             java.util.List<com.benesquivelmusic.daw.core.session.WorkingSession> history;
             java.util.List<com.benesquivelmusic.daw.core.snapshot.SnapshotEntry> snapshots;
             try {
-                if (writableSession && sessionGeneration == sessionRefreshGeneration
+                if (writableSession && sessionLock != null && sessionGeneration == sessionRefreshGeneration
                         && projectManager.getCurrentProject() != null
                         && projectDir.equals(projectManager.getCurrentProject().projectPath())
                         && !projectManager.isReadOnly()) {
                     com.benesquivelmusic.daw.core.session.SessionManager.SessionOpenResult result =
-                            sessionManager.openSession(projectDir, java.time.Instant.now());
+                            sessionLease.withHeldLease(sessionLock,
+                                    () -> sessionManager.openSession(projectDir, java.time.Instant.now()));
                     opened = result.current();
                 }
                 history = sessionManager.history(projectDir);

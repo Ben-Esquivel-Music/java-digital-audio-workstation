@@ -421,7 +421,6 @@ final class ProjectLifecycleController {
     private Supplier<Runnable> prepareJournalClose = () -> () -> { };
     private Consumer<Path> prepareJournalOpen = _ -> { };
     private OpenRecoveryGate.Result recoveryResult = OpenRecoveryGate.Result.PLAIN;
-    private boolean journalClosedForCreation;
     private boolean projectInstallationPending;
     boolean isProjectInstallationPending() { return projectInstallationPending; }
 
@@ -457,7 +456,15 @@ final class ProjectLifecycleController {
             boolean installed = false;
             boolean retiredOutgoing = false;
             try {
-                if (sameOpenFolder(folder) && door instanceof OpenDoor.MigrationRollback) {
+                boolean sameDirectory = sameOpenDirectory(folder);
+                if (sameDirectory && !(door instanceof OpenDoor.MigrationRollback)) {
+                    postFx(() -> {
+                        lastLoadResult = false;
+                        notificationBar.show(NotificationLevel.INFO, "Project is already open: " + folder);
+                    });
+                    return;
+                }
+                if (sameDirectory && door instanceof OpenDoor.MigrationRollback) {
                     Runnable close = callOnFx(prepareJournalClose);
                     close.run();
                     projectManager.getLockManager().verifyHeld();
@@ -554,6 +561,13 @@ final class ProjectLifecycleController {
         ProjectMetadata current = projectManager.getCurrentProject();
         return current != null && current.projectPath() != null
                 && current.projectPath().toAbsolutePath().normalize().equals(folder.toAbsolutePath().normalize());
+    }
+
+    /** Filesystem identity must be checked on a worker before target-lock negotiation. */
+    private boolean sameOpenDirectory(Path folder) throws IOException {
+        ProjectMetadata current = projectManager.getCurrentProject();
+        return current != null && current.projectPath() != null
+                && (sameOpenFolder(folder) || Files.isSameFile(current.projectPath(), folder));
     }
 
     /**
@@ -1327,41 +1341,30 @@ final class ProjectLifecycleController {
 
     /** Replaces the open project with a new one created in {@code parentDirectory}. FX thread. */
     private void createNewProjectIn(Path parentDirectory) {
-        if (openRecoveryGate != null && !journalClosedForCreation) {
-            Runnable closeJournal = prepareJournalClose.get();
-            startRecoveryWorker("daw-new-project-seal", () -> {
-                try {
-                    closeJournal.run();
-                    postFx(() -> {
-                        recovering = false;
-                        journalClosedForCreation = true;
-                        try { createNewProjectIn(parentDirectory); }
-                        finally { journalClosedForCreation = false; }
-                    });
-                } catch (Throwable failure) {
-                    postFx(() -> {
-                        recovering = false;
-                        notificationBar.show(NotificationLevel.ERROR, "Project close failed: " + failureReason(failure));
-                    });
-                }
-            });
-            return;
-        }
-        resetProjectState();
+        replaceAfterJournalClose(attempt -> createNewProjectAfterClose(parentDirectory, attempt));
+    }
+
+    private void createNewProjectAfterClose(Path parentDirectory, long attempt) {
         DawProject newProject = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
         deps.setProject().accept(newProject);
         projectReplaced(null);
         deps.setUndoManager().accept(new UndoManager());
         deps.rebuildHistoryPanel().run();
         deps.resetTrackCounters().run();
-        Path createdIn = null;
         try {
-            createdIn = projectManager.createProject(newProject.getName(), parentDirectory).projectPath();
+            Path folder = projectManager.createProject(newProject.getName(), parentDirectory).projectPath();
             // Persist the full initial state (createProject writes a metadata-only
             // file first) through the one save request; the new project's layout
             // is the built-in Default, so none is stored. Its outcome is reported
             // like any save's.
-            submitSave(newProject, null, SaveFollowUp.NONE);
+            Optional<CompletableFuture<SaveOutcome>> initialSave = submitSave(newProject, null, (outcome, sameProject) -> {
+                if (sameProject && outcome instanceof SaveOutcome.Saved) {
+                    openCreatedJournal(folder, attempt);
+                } else {
+                    finishReplacement(attempt);
+                }
+            });
+            if (initialSave.isEmpty()) finishReplacement(attempt);
         } catch (IOException e) {
             // The on-disk create failed (e.g. permissions); keep the in-memory
             // project so the UI is still usable and surface the error.
@@ -1369,21 +1372,35 @@ final class ProjectLifecycleController {
             notificationBar.show(NotificationLevel.ERROR,
                     "Could not create project: " + e.getMessage());
             LOG.log(Level.WARNING, "Failed to create new project on disk", e);
+            finishReplacement(attempt);
         }
         rebuildUI();
         // Story 282 — Reset layouts to the built-in Default so that a
         // previously opened project's saved layouts don't leak into the
         // new project.
         deps.applyLayoutJson().accept(null);
-        // Only confirm success when the project actually reached disk — the
-        // catch above already surfaced the failure, so don't contradict it.
-        if (createdIn != null) {
+    }
+
+    private void openCreatedJournal(Path folder, long attempt) {
+        if (openRecoveryGate == null) {
+            notifyJournalOpen(folder);
             notificationBar.show(NotificationLevel.SUCCESS, "New project created");
-            LOG.info("Created new project");
-            // Story 298 — open the write-ahead journal for the freshly-created
-            // project directory (no-op when journaled persistence is disabled).
-            notifyJournalOpen(createdIn);
+            return;
         }
+        Thread.ofVirtual().name("daw-new-project-journal").start(() -> {
+            try {
+                prepareJournalOpen.accept(folder);
+                postFx(() -> {
+                    if (attempt == loadAttempts) notificationBar.show(NotificationLevel.SUCCESS, "New project created");
+                    finishReplacement(attempt);
+                });
+            } catch (RuntimeException | Error failure) {
+                postFx(() -> {
+                    notificationBar.show(NotificationLevel.ERROR, "Project journal could not start: " + failureReason(failure));
+                    finishReplacement(attempt);
+                });
+            }
+        });
     }
 
     /**
@@ -1492,7 +1509,13 @@ final class ProjectLifecycleController {
 
     /** Replaces the open project with the session {@code result} imported from {@code source}. FX thread. */
     private void installImportedSession(Path source, SessionImportResult result) {
-        resetProjectState();
+        replaceAfterJournalClose(attempt -> {
+            try { installImportedSessionAfterClose(source, result); }
+            finally { finishReplacement(attempt); }
+        });
+    }
+
+    private void installImportedSessionAfterClose(Path source, SessionImportResult result) {
         deps.setProject().accept(new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY));
         projectReplaced(null);
         deps.setUndoManager().accept(new UndoManager());
@@ -2890,19 +2913,21 @@ final class ProjectLifecycleController {
             } else {
                 // No backup yet: the migrated DawProject lives only in
                 // memory, so abandoning is a complete rollback.
-                resetProjectState();
-                deps.setProject().accept(new DawProject("Untitled Project",
-                    AudioFormat.STUDIO_QUALITY));
-                projectReplaced(null);
-                deps.setUndoManager().accept(new UndoManager());
-                deps.rebuildHistoryPanel().run();
-                deps.resetTrackCounters().run();
-                deps.project().get().markClean();
-                rebuildUI();
-                notificationBar.show(NotificationLevel.SUCCESS,
-                        "Discarded in-memory migration; the on-disk file is "
-                                + "still the original (v" + report.fromVersion() + ")");
-                LOG.info("Rolled back migration by abandoning in-memory project (no .bak yet)");
+                replaceAfterJournalClose(attempt -> {
+                    try {
+                        deps.setProject().accept(new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY));
+                        projectReplaced(null);
+                        deps.setUndoManager().accept(new UndoManager());
+                        deps.rebuildHistoryPanel().run();
+                        deps.resetTrackCounters().run();
+                        deps.project().get().markClean();
+                        rebuildUI();
+                        notificationBar.show(NotificationLevel.SUCCESS,
+                                "Discarded in-memory migration; the on-disk file is "
+                                        + "still the original (v" + report.fromVersion() + ")");
+                        LOG.info("Rolled back migration by abandoning in-memory project (no .bak yet)");
+                    } finally { finishReplacement(attempt); }
+                });
             }
         } catch (IOException e) {
             notificationBar.show(NotificationLevel.ERROR,
@@ -3039,18 +3064,73 @@ final class ProjectLifecycleController {
      * project parsed.
      */
     void resetProjectState() {
-        if (openRecoveryGate != null && !journalClosedForCreation) {
-            Runnable close = prepareJournalClose.get();
-            Thread.ofVirtual().name("daw-project-reset-seal").start(() -> {
-                try { close.run(); }
-                catch (RuntimeException failure) {
-                    postFx(() -> notificationBar.show(NotificationLevel.ERROR,
-                            "Project close failed: " + failureReason(failure)));
+        replaceAfterJournalClose(this::finishReplacement);
+    }
+
+    /** Keeps editing and transport fenced until the replacement's durable state is ready. */
+    private void replaceAfterJournalClose(java.util.function.LongConsumer replacement) {
+        if (openRecoveryGate == null) {
+            openProjectAudio.retire();
+            abandonOpenProject();
+            replacement.accept(-1L);
+            return;
+        }
+        long attempt = ++loadAttempts;
+        projectInstallationPending = true;
+        rootPane.setDisable(true);
+        try {
+            startRecoveryWorker("daw-project-replacement", () -> {
+                boolean detached = false;
+                try {
+                    Runnable close = callOnFx(() -> {
+                        if (refuseWhileATakeIsRecordingOrBeingWritten()) return null;
+                        return prepareJournalClose.get();
+                    });
+                    if (close == null) {
+                        postFx(() -> finishReplacement(attempt));
+                        return;
+                    }
+                    detached = true;
+                    close.run();
+                    boolean mayReplace = callOnFx(() ->
+                            !refuseLateLoadWhileATakeIsRecordingOrBeingWritten("The outgoing journal was closed"));
+                    if (!mayReplace) {
+                        postFx(() -> {
+                            notificationBar.show(NotificationLevel.WARNING,
+                                    "Project switch cancelled; recovery evidence was preserved. Journaled persistence is paused until this project is reopened.");
+                            finishReplacement(attempt);
+                        });
+                        return;
+                    }
+                    projectManager.abandonProject();
+                    postFx(() -> {
+                        if (attempt != loadAttempts) return;
+                        openProjectAudio.retire();
+                        headSavedAt = null;
+                        progress.checkpointsEnded();
+                        try { replacement.accept(attempt); }
+                        catch (RuntimeException | Error failure) {
+                            finishReplacement(attempt);
+                            notificationBar.show(NotificationLevel.ERROR, "Project replacement failed: " + failureReason(failure));
+                        }
+                    });
+                } catch (RuntimeException | Error failure) {
+                    boolean journalDetached = detached;
+                    postFx(() -> {
+                        finishReplacement(attempt);
+                        notificationBar.show(NotificationLevel.ERROR, "Project close failed: " + failureReason(failure)
+                                + (journalDetached ? "; recovery evidence was preserved. Journaled persistence is paused until this project is reopened." : ""));
+                    });
                 }
             });
+        } catch (RuntimeException | Error failure) {
+            finishReplacement(attempt);
+            throw failure;
         }
-        openProjectAudio.retire();
-        abandonOpenProject();
+    }
+
+    private void finishReplacement(long attempt) {
+        if (attempt >= 0L) finishOpenAttempt(attempt);
     }
 
     /**
@@ -3653,6 +3733,10 @@ final class ProjectLifecycleController {
         if (projectDir == null) {
             return;
         }
+        if (recovering) {
+            refuseWhileASwitchIsPending();
+            return;
+        }
         DawgDialog<javafx.scene.control.ButtonType> confirm = DawgDialog.confirm(
                 "Discard recovery",
                 "Discard the unsaved changes captured since the last clean save? "
@@ -3667,19 +3751,42 @@ final class ProjectLifecycleController {
             reshowWelcomeAfterRecovery();
             return;
         }
-        Path journalDir = ProjectContext.forProject(projectDir).journalDirectory();
-        Thread.ofVirtual().name("daw-recovery-discard").start(() -> {
-            boolean deleted = deleteJournalDirectory(journalDir);
-            postFx(() -> {
-                notificationBar.show(
-                        deleted ? NotificationLevel.SUCCESS : NotificationLevel.WARNING,
-                        deleted ? "Discarded recovery journal"
-                                : "No recovery journal to discard");
-                // Return to the launch screen (now without this project's recover
-                // row) instead of leaving the user on the empty main window.
-                reshowWelcomeAfterRecovery();
+        discardConfirmedRecovery(projectDir);
+    }
+
+    /** Holds an independent writable target lease for the entire confirmed discard. */
+    void discardConfirmedRecovery(Path projectDir) {
+        if (recovering) { refuseWhileASwitchIsPending(); return; }
+        long attempt = ++loadAttempts;
+        projectInstallationPending = true;
+        rootPane.setDisable(true);
+        try {
+            startRecoveryWorker("daw-recovery-discard", () -> {
+                try {
+                    if (sameOpenDirectory(projectDir)) throw new IOException("The active project's recovery journal cannot be discarded");
+                    try (ProjectManager.PreparedOpen target = projectManager.prepareLockedAccess(projectDir)) {
+                        if (target.readOnly()) throw new IOException("Recovery journal was preserved because the project is read-only");
+                        boolean deleted = target.lock().withHeldLease(target.lock().currentLock().orElseThrow(),
+                                () -> deleteJournalDirectory(ProjectContext.forProject(projectDir).journalDirectory()));
+                        postFx(() -> notificationBar.show(
+                                deleted ? NotificationLevel.SUCCESS : NotificationLevel.WARNING,
+                                deleted ? "Discarded recovery journal" : "No recovery journal to discard"));
+                    }
+                } catch (IOException | RuntimeException failure) {
+                    LOG.log(Level.WARNING, "Recovery discard refused or failed for " + projectDir, failure);
+                    postFx(() -> notificationBar.show(NotificationLevel.WARNING,
+                            "Recovery journal was preserved: " + failureReason(failure)));
+                } finally {
+                    postFx(() -> {
+                        finishOpenAttempt(attempt);
+                        reshowWelcomeAfterRecovery();
+                    });
+                }
             });
-        });
+        } catch (RuntimeException | Error failure) {
+            finishOpenAttempt(attempt);
+            throw failure;
+        }
     }
 
     /** Recursively deletes {@code journalDir}; returns {@code true} if it existed and was removed. */
