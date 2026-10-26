@@ -265,3 +265,57 @@ These full-suite follow-up changes affect tests and this validation record only;
 production sources remain unchanged from implementation commit `5cee116c`.
 The opt-in `long-tests` profile was not run. No changes were committed or pushed
 by the agents.
+
+### CI checkpoint-start publication follow-up
+
+The Ubuntu [PR 988 CI run](https://github.com/Ben-Esquivel-Music/java-digital-audio-workstation/actions/runs/40247765377/job/121332875538?pr=988)
+on commit `c435f965` exposed a checkpoint-start race in
+`LastGoodCheckpointTest`: a fast writer could report `Seeded` before
+`startGeneration` published its running session. The status listener correctly
+rejected a fact whose generation was not running yet, leaving the last-good
+checkpoint unset. Increasing the test's wait would not recover that lost fact.
+
+Checkpoint start now publishes the session and enqueues its seed job while
+holding the same state lock used to accept checkpoint requests, then starts the
+writer drain. The session is published before the seed becomes visible to an
+already-running drain, and a concurrent request cannot overtake the seed. No
+disk work or listener notification is performed inside that critical section.
+The default writer still runs on a virtual thread; a package-private controlled
+executor permits deterministic scheduling in the regression tests.
+
+Both new regressions failed before the ordering fix: a seeded listener observed
+no running generation, and a checkpoint requested by that listener was refused
+because no project directory was open. The expected failing run is retained in
+`target/story332-ci-seed-race-red.log`. After the fix, both pass and the
+listener-requested checkpoint follows seeding at the next persisted index. The
+original off-FX last-good-checkpoint test and its timeout remain unchanged.
+
+The focused follow-up passed **38 cases** (27 core and 11 application), with no
+failures, errors or skips, using:
+
+```powershell
+mvn -B -pl daw-app -am test '-Dtest=CheckpointStartPublicationTest,CheckpointEventChannelTest,CheckpointStopFenceTest,SaveCheckpointGenerationTest,ReplacingAProjectEndsItsCheckpointsFirstTest,LastGoodCheckpointTest,CheckpointFactsFollowTheirGenerationTest,CheckpointCountdownAcrossReplacementsTest' '-Dsurefire.failIfNoSpecifiedTests=false' '-DskipNativeBuild=true' '-Dsnapshots.autoBaseline=false' '-Dsnapshots.update=false'
+```
+
+The green focused log is `target/story332-ci-seed-race-green.log`. This local
+run used Windows, JDK 27 and Maven 3.10.0; it does not claim that the remote
+Ubuntu CI job has rerun successfully.
+
+The subsequent **unfiltered local reactor verification passed** with
+**14,317 cases: 14,274 passed, 43 skipped, zero failures and zero errors**.
+It included 1,348 SDK cases (two skipped), 106 acoustics cases, 8,651 core
+cases (38 skipped), 29 FX cases and 4,183 application cases (three skipped),
+followed by the JAR and `jlink` runtime-image phases. The skip categories remain
+optional native-library availability, platform-specific cases and explicitly
+disabled cases. The exact command was:
+
+```powershell
+mvn -B verify '-DskipNativeBuild=true' '-Dsnapshots.autoBaseline=false' '-Dsnapshots.update=false'
+```
+
+The complete `BUILD SUCCESS` log is `target/story332-ci-verify.log`. This was a
+Windows/JDK-27 verification without `clean`, using existing native binaries;
+native rebuilding and `jpackage` were skipped, and snapshot creation and updates
+were disabled. It was not an Ubuntu CI rerun. The linked CI result still refers
+to failed head `c435f965`; validating the correction there requires the user's
+commit/push and another CI run. Agents made no commits or pushes.

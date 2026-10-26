@@ -234,6 +234,7 @@ public final class CheckpointManager {
     private final InstantSource clock;
     private final FileDeleter deleter;
     private final Duration stopWait;
+    private final Executor writerExecutor;
 
     private final List<AutoSaveListener> listeners = new CopyOnWriteArrayList<>();
     private final List<Consumer<CheckpointEvent>> eventListeners = new CopyOnWriteArrayList<>();
@@ -309,11 +310,19 @@ public final class CheckpointManager {
      */
     CheckpointManager(AutoSaveConfig config, AtomicFileWriter fileWriter, InstantSource clock, FileDeleter deleter,
                       Duration stopWait) {
+        this(config, fileWriter, clock, deleter, stopWait,
+                task -> Thread.ofVirtual().name("daw-checkpoint-writer").start(task));
+    }
+
+    /** A controlled writer executor pins publication ordering without relying on thread scheduling in tests. */
+    CheckpointManager(AutoSaveConfig config, AtomicFileWriter fileWriter, InstantSource clock, FileDeleter deleter,
+                      Duration stopWait, Executor writerExecutor) {
         this.config = Objects.requireNonNull(config, "config must not be null");
         this.fileWriter = Objects.requireNonNull(fileWriter, "fileWriter must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.deleter = Objects.requireNonNull(deleter, "deleter must not be null");
         this.stopWait = Objects.requireNonNull(stopWait, "stopWait must not be null");
+        this.writerExecutor = Objects.requireNonNull(writerExecutor, "writerExecutor must not be null");
     }
 
     /**
@@ -352,9 +361,16 @@ public final class CheckpointManager {
                 stop();
             }
             Session started = new Session(generations.incrementAndGet(), projectDirectory, newScheduler());
-            // Queued before the generation is published: no request reaches the writer ahead of its seeding.
-            submit(new SeedJob(started));
-            session = started;
+            stateLock.lock();
+            try {
+                // A caller that observes this generation cannot queue a write ahead of its seeding;
+                // a fast writer cannot report its facts before listeners can observe it running.
+                session = started;
+                enqueueLocked(new SeedJob(started));
+            } finally {
+                stateLock.unlock();
+            }
+            ensureDrain();
             return new Generation(started);
         }
     }
@@ -885,9 +901,7 @@ public final class CheckpointManager {
         try {
             accepted = !owner.ended;
             if (accepted) {
-                owner.heldJobs++;
-                heldJobsOfEveryGeneration++;
-                queue.add(job);
+                enqueueLocked(job);
             }
         } finally {
             stateLock.unlock();
@@ -899,14 +913,20 @@ public final class CheckpointManager {
         }
     }
 
+    /** Registers a held job in submission order. Caller holds {@link #stateLock}. */
+    private void enqueueLocked(WriterJob job) {
+        job.session().heldJobs++;
+        heldJobsOfEveryGeneration++;
+        queue.add(job);
+    }
+
     /** Starts the writer's virtual thread unless one is draining the queue. */
     private void ensureDrain() {
         if (!draining.compareAndSet(false, true)) {
             return;
         }
         try {
-            Thread.ofVirtual().name("daw-checkpoint-writer")
-                    .start(() -> ScopedValue.where(WRITING, this).run(this::drain));
+            writerExecutor.execute(() -> ScopedValue.where(WRITING, this).run(this::drain));
         } catch (Throwable notStarted) {
             draining.set(false);
             LOG.log(Level.SEVERE, notStarted, () -> "The checkpoint writer could not start; its queued jobs fail");
