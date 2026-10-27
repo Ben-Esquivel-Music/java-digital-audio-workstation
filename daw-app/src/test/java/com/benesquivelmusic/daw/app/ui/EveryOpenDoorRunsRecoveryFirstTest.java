@@ -25,8 +25,21 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.AclEntry;
+import java.nio.file.attribute.AclEntryPermission;
+import java.nio.file.attribute.AclEntryType;
+import java.nio.file.attribute.AclFileAttributeView;
+import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFilePermission;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.EnumSet;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -36,6 +49,8 @@ import java.util.zip.ZipFile;
 import java.util.zip.ZipOutputStream;
 import static com.benesquivelmusic.daw.app.ui.SaveFlowFixture.*;
 import static org.assertj.core.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 @ExtendWith(JavaFxToolkitExtension.class)
 class EveryOpenDoorRunsRecoveryFirstTest {
@@ -298,6 +313,129 @@ class EveryOpenDoorRunsRecoveryFirstTest {
         }
     }
 
+    @ParameterizedTest @ValueSource(booleans = {true, false})
+    void aTakeoverWhileRecoveryBacksUpTheHeadFailsTheOpenAndReplacesNothing(boolean journal) throws Exception {
+        takeOverAtTheBackup(journal, false);
+    }
+
+    /** A takeover can be what made the recovered write fail, so the lock wins over the failed write's read-only fallback. */
+    @ParameterizedTest @ValueSource(booleans = {true, false})
+    void aTakeoverThatFailsTheRecoveredBackupFailsTheOpenAsTheLockNotAsTheReadOnlyFallback(boolean journal) throws Exception {
+        takeOverAtTheBackup(journal, true);
+    }
+
+    /**
+     * Recover everything through the production gate wiring, with a writer whose Mover, on the
+     * backup's publish, has a second session take the folder over: after it moves the backup into
+     * place, or instead of moving it, failing the write ({@code backupFails}). Either way the
+     * user reads the lock's failure, the outgoing project stays, and project.daw, the journal, the
+     * temp and the new holder's lock are untouched.
+     */
+    private void takeOverAtTheBackup(boolean journal, boolean backupFails) throws Exception {
+        ProjectLockManager foreign = new ProjectLockManager(java.time.InstantSource.system(), "other engineer",
+                "other studio", 4242L);
+        try (SaveFlowFixture fixture = new SaveFlowFixture(workspace, AutoSaveConfig.DEFAULT)) {
+            Path incoming = fixture.anotherProjectOnDisk("Taken over");
+            Path head = incoming.resolve("project.daw");
+            Path temp;
+            if (journal) {
+                try (JournalWriter crashed = new JournalWriter(ProjectContext.forProject(incoming), JournalConfig.DEFAULT, true, null)) {
+                    crashed.start(); crashed.offer("MixerEvent.GainChanged", UUID.randomUUID(), null, Instant.now());
+                }
+                temp = Files.writeString(incoming.resolve(".notes.json.0123456789abcdef.tmp"), "{} ");
+            } else {
+                temp = Files.writeString(incoming.resolve(".project.daw.0123456789abcdef.tmp"),
+                        new ProjectSerializer().serialize(new DawProject("Interrupted", AudioFormat.CD_QUALITY)));
+                Files.setLastModifiedTime(temp, FileTime.from(Files.getLastModifiedTime(head).toInstant().plusSeconds(60)));
+            }
+            Map<Path, String> evidence = evidence(incoming, temp);
+            DawProject outgoing = fixture.project.get();
+            ProjectLock outgoingLease = fixture.projectManager.getLockManager().currentLock().orElseThrow();
+            AtomicReference<Path> backup = new AtomicReference<>();
+            AtomicReference<byte[]> foreignLock = new AtomicReference<>();
+            List<Path> published = new java.util.concurrent.CopyOnWriteArrayList<>();
+            AtomicFileWriter takenOverAtTheBackup = new AtomicFileWriter(AtomicFileWriter.TEMP_CHANNEL_OPENER,
+                    (from, target, options) -> {
+                        String name = target.getFileName().toString();
+                        boolean firstBackup = name.startsWith("project.daw.recovered.") && name.endsWith(".bak")
+                                && backup.compareAndSet(null, target);
+                        if (!(firstBackup && backupFails)) {
+                            AtomicFileWriter.FILE_SYSTEM_MOVER.move(from, target, options);
+                            published.add(target);
+                        }
+                        if (firstBackup) {
+                            foreign.forceAcquire(incoming);
+                            foreignLock.set(Files.readAllBytes(incoming.resolve(ProjectLockManager.LOCK_FILE_NAME)));
+                            if (backupFails) throw new IOException("the backup could not be published");
+                        }
+                    });
+            AtomicReference<Throwable> answerFailure = new AtomicReference<>();
+            AtomicInteger journalOpens = new AtomicInteger();
+            ListChangeListener<Window> answerRecovery = change -> {
+                while (change.next()) for (Window window : change.getAddedSubList()) {
+                    if (window instanceof Stage stage && "Recover unsaved work".equals(stage.getTitle())) {
+                        Platform.runLater(() -> {
+                            try {
+                                Node root = stage.getScene().getRoot();
+                                DialogPane pane = root instanceof DialogPane direct ? direct : (DialogPane) root.lookup(".dialog-pane");
+                                javafx.scene.control.ButtonType choice = pane.getButtonTypes().stream()
+                                        .filter(type -> "Recover everything".equals(type.getText())).findFirst().orElseThrow();
+                                ((Button) pane.lookupButton(choice)).fire();
+                            } catch (Throwable failure) { answerFailure.set(failure); stage.hide(); }
+                        });
+                    }
+                }
+            };
+            try {
+                runOnFx(() -> {
+                    Window.getWindows().addListener(answerRecovery);
+                    fixture.lifecycle().enableRecoveryGate(() -> true, () -> () -> { }, _ -> journalOpens.incrementAndGet());
+                    fixture.lifecycle().setFileWriter(takenOverAtTheBackup);
+                    fixture.lifecycle().beginRecovery(incoming);
+                });
+                fixture.awaitOnFx(() -> answerFailure.get() != null || !fixture.lifecycle().isProjectInstallationPending()
+                        && !fixture.shown.getEntries().isEmpty(), "the open's outcome reported");
+                if (answerFailure.get() != null) throw new AssertionError("the recovery dialog could not be answered", answerFailure.get());
+            } finally { runOnFx(() -> Window.getWindows().removeListener(answerRecovery)); }
+            assertThat(backup.get()).as("the folder was taken over at the head's backup").isNotNull();
+            // A replayed head can serialize to the head's own bytes, so the publishes themselves are checked.
+            if (backupFails) {
+                assertThat(published).as("nothing was published").isEmpty();
+                assertThat(backup.get()).as("the backup failed").doesNotExist();
+            } else {
+                assertThat(published).as("the backup was published, and the head was not replaced").containsExactly(backup.get());
+            }
+            assertThat(fixture.notifications()).as("the lock wins: no read-only fallback").singleElement().satisfies(entry -> {
+                assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
+                assertThat(entry.message()).isEqualTo("Open failed: Lock has been taken over by other engineer@other studio");
+            });
+            assertThat(fixture.project.get()).as("the outgoing project stays").isSameAs(outgoing);
+            assertThat(fixture.currentProjectIs(fixture.songA)).isTrue();
+            assertThat(fixture.projectManager.isReadOnly()).isFalse();
+            assertThat(fixture.projectManager.getLockManager().currentLock().orElseThrow().lockId())
+                    .isEqualTo(outgoingLease.lockId());
+            assertThat(journalOpens).hasValue(0);
+            assertThat(evidence(incoming, temp)).as("project.daw, the journal and the temp are untouched").isEqualTo(evidence);
+            assertThat(Files.readAllBytes(incoming.resolve(ProjectLockManager.LOCK_FILE_NAME)))
+                    .as("the new holder's lock is untouched").isEqualTo(foreignLock.get());
+        } finally { foreign.release(); }
+    }
+
+    /** The bytes, as hex, of {@code project.daw}, of every file under {@code journal/} and of {@code others}, by path. */
+    private static Map<Path, String> evidence(Path folder, Path... others) throws IOException {
+        List<Path> files = new ArrayList<>(List.of(others));
+        files.add(folder.resolve("project.daw"));
+        Path journal = folder.resolve("journal");
+        if (Files.isDirectory(journal)) {
+            try (java.util.stream.Stream<Path> paths = Files.walk(journal)) {
+                files.addAll(paths.filter(Files::isRegularFile).toList());
+            }
+        }
+        Map<Path, String> bytes = new TreeMap<>();
+        for (Path file : files) bytes.put(file, HexFormat.of().formatHex(Files.readAllBytes(file)));
+        return bytes;
+    }
+
     @ParameterizedTest @EnumSource(Door.class)
     void crashEvidenceIsUntouchedWhenTheRealDoorPresentsItsRecoveryDialog(Door door) throws Exception {
         Preferences preferences = Preferences.userRoot().node("daw-story332-" + UUID.randomUUID());
@@ -450,6 +588,93 @@ class EveryOpenDoorRunsRecoveryFirstTest {
             assertThat(Files.readAllBytes(head)).as("project.daw holds the interrupted save").isEqualTo(saved);
             assertThat(temp).doesNotExist();
         }
+    }
+
+    @Test void anUnreadableNewerHeadTempFailsTheOpenBeforeAnyDialogAndIsKept() throws Exception {
+        try (SaveFlowFixture fixture = new SaveFlowFixture(workspace, AutoSaveConfig.DEFAULT)) {
+            Path incoming = fixture.anotherProjectOnDisk("Unreadable interrupted save");
+            Path head = incoming.resolve("project.daw");
+            assertThat(JournalState.needsRecovery(ProjectContext.forProject(incoming))).as("no journal decision is owed")
+                    .isFalse();
+            Path temp = Files.writeString(incoming.resolve(".project.daw.0123456789abcdef.tmp"),
+                    new ProjectSerializer().serialize(new DawProject("Interrupted", AudioFormat.CD_QUALITY)));
+            Files.setLastModifiedTime(temp, FileTime.from(Files.getLastModifiedTime(head).toInstant().plusSeconds(60)));
+            byte[] saved = Files.readAllBytes(temp);
+            byte[] savedHead = Files.readAllBytes(head);
+            DawProject outgoing = fixture.project.get();
+            AtomicInteger dialogs = new AtomicInteger();
+            AtomicInteger journalOpens = new AtomicInteger();
+            ListChangeListener<Window> recoveryDialogs = change -> {
+                while (change.next()) for (Window window : change.getAddedSubList()) {
+                    if (window instanceof Stage stage && "Recover unsaved work".equals(stage.getTitle())) {
+                        dialogs.incrementAndGet();
+                        Platform.runLater(stage::hide);
+                    }
+                }
+            };
+            try (Access _ = denyReading(temp)) {
+                runOnFx(() -> {
+                    Window.getWindows().addListener(recoveryDialogs);
+                    fixture.lifecycle().enableRecoveryGate(() -> true, () -> () -> { }, _ -> journalOpens.incrementAndGet());
+                    assertThat(fixture.lifecycle().loadProjectFromPath(incoming)).isTrue();
+                });
+                fixture.awaitOnFx(() -> !fixture.lifecycle().isProjectInstallationPending()
+                        && fixture.shown.getEntries().stream().anyMatch(entry -> entry.message().startsWith("Open failed: ")),
+                        "the failed open reported");
+            } finally { runOnFx(() -> Window.getWindows().removeListener(recoveryDialogs)); }
+            assertThat(fixture.notifications()).singleElement().satisfies(entry -> {
+                assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
+                assertThat(entry.message())
+                        .startsWith("Open failed: The interrupted save " + temp + " could not be read (")
+                        .endsWith("), so it was not checked for recovery; nothing was deleted. "
+                                + "Make it readable and open the project again");
+            });
+            assertThat(dialogs).as("no recovery dialog").hasValue(0);
+            assertThat(journalOpens).hasValue(0);
+            assertThat(fixture.project.get()).as("the outgoing project stays").isSameAs(outgoing);
+            assertThat(fixture.currentProjectIs(fixture.songA)).isTrue();
+            assertThat(Files.readAllBytes(temp)).as("the interrupted save survives").isEqualTo(saved);
+            assertThat(Files.readAllBytes(head)).isEqualTo(savedHead);
+        }
+    }
+
+    /** Read access taken from a file; closing gives it back, so {@code @TempDir} can clean up. */
+    @FunctionalInterface
+    private interface Access extends AutoCloseable {
+        @Override void close() throws IOException;
+    }
+
+    /**
+     * Makes {@code file} unreadable to its owner while its folder still lets it be deleted: a POSIX
+     * mode without read, or, where the file system has no POSIX permissions (Windows), a DENY ACE for
+     * READ_DATA. Skips the test where the file stays readable, as it does for a superuser.
+     */
+    private static Access denyReading(Path file) throws IOException {
+        Access restore;
+        PosixFileAttributeView posix = Files.getFileAttributeView(file, PosixFileAttributeView.class);
+        if (posix != null) {
+            Set<PosixFilePermission> before = posix.readAttributes().permissions();
+            Set<PosixFilePermission> withoutRead = EnumSet.noneOf(PosixFilePermission.class);
+            withoutRead.addAll(before);
+            withoutRead.removeAll(EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.GROUP_READ,
+                    PosixFilePermission.OTHERS_READ));
+            posix.setPermissions(withoutRead);
+            restore = () -> posix.setPermissions(before);
+        } else {
+            AclFileAttributeView acl = Files.getFileAttributeView(file, AclFileAttributeView.class);
+            assumeTrue(acl != null, "the file system can deny reading a file");
+            List<AclEntry> before = acl.getAcl();
+            List<AclEntry> denyingReads = new ArrayList<>();
+            denyingReads.add(AclEntry.newBuilder().setType(AclEntryType.DENY).setPrincipal(acl.getOwner())
+                    .setPermissions(AclEntryPermission.READ_DATA).build());
+            denyingReads.addAll(before);
+            acl.setAcl(denyingReads);
+            restore = () -> acl.setAcl(before);
+        }
+        boolean readable = Files.isReadable(file);
+        if (readable) restore.close();
+        assumeFalse(readable, "a superuser may read a file its owner cannot");
+        return restore;
     }
 
     private static void enter(ProjectCard card) {

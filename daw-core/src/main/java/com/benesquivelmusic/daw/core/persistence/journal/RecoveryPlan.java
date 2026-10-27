@@ -1,8 +1,9 @@
 package com.benesquivelmusic.daw.core.persistence.journal;
 
+import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
+import com.benesquivelmusic.daw.core.persistence.RecoveryTemps;
+
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
@@ -379,7 +380,8 @@ public record RecoveryPlan(
          * Reads the interrupted save's document for promotion, refusing a file that is no longer
          * the one the plan described.
          *
-         * @return the document, decoded as UTF-8
+         * @return the document, decoded as strict UTF-8 by {@link ProjectDeserializer#decodeUtf8}, the
+         *         decoding {@link RecoveryTemps#inspect} judged it complete with
          * @throws IOException if the temp cannot be read or decoded, or its size or last-modified
          *                     time differs from the plan's
          */
@@ -393,7 +395,7 @@ public record RecoveryPlan(
             if (bytes.length != size || !Files.getLastModifiedTime(temp).toInstant().equals(writtenAt)) {
                 throw new IOException("The interrupted save changed after it was described: " + temp);
             }
-            return StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString();
+            return ProjectDeserializer.decodeUtf8(bytes);
         }
 
         RecoverySummary.InterruptedSave described() {

@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.dialogs.RecoveryChoice;
+import com.benesquivelmusic.daw.core.persistence.LockStolenException;
+import com.benesquivelmusic.daw.core.persistence.ProjectLockManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
 import com.benesquivelmusic.daw.core.persistence.RecoveryTemps;
@@ -13,6 +15,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.logging.Logger;
@@ -24,6 +27,21 @@ import java.util.logging.Logger;
  * An interrupted save is never deleted without a copy: before anything is cleared, a choice that
  * does not promote it keeps it byte for byte as an "Interrupted save" snapshot, and a copy that
  * fails aborts the decision with nothing deleted.
+ *
+ * <p>The target lease is verified before the evidence is read; before clearing, when nothing is
+ * owed; after the choice; after a journal replay, before its copies are made; by the commit,
+ * immediately before it replaces the head (after its backup); after the commit, before the
+ * clears; and, when recovery fails in a way the controller shows as the read-only fallback (a
+ * {@link ReplayFailed}), before that failure is reported, since a takeover can be what made it
+ * fail. Recovery I/O can be long, and a session that has lost the folder writes nothing more into
+ * it: the new holder's own gate owns the evidence. So a failed check fails the open as itself
+ * (Persistence Integrity book §5.5, "lock wins"), with the outgoing project kept and nothing
+ * deleted, never as the read-only fallback, whose "evidence was preserved" this session could no
+ * longer keep. A check is not atomic with the step after it: a takeover between the last check
+ * and the head's rename is not seen before the replace, though the check after the commit still
+ * fails the open before the clears; likewise, a takeover just after a failed recovery's last check
+ * is not seen before the read-only fallback. Every save's ownership check leaves a gap of the same
+ * kind, and a wider one (story 393).
  */
 final class OpenRecoveryGate {
     private static final Logger LOG = Logger.getLogger(OpenRecoveryGate.class.getName());
@@ -31,7 +49,15 @@ final class OpenRecoveryGate {
     static final String INTERRUPTED_SAVE_SNAPSHOT = "Interrupted save";
     static final String NO_HEAD_FOR_CHECKPOINT_ONLY =
             "project.daw is missing, so Restore checkpoint only cannot open this project; the journal was kept";
-    @FunctionalInterface interface Commit { void write(Path head, String xml) throws IOException; }
+    /** The open's lease check, which a {@link Commit} runs as its last step before it replaces the head. */
+    @FunctionalInterface interface LeaseCheck { void verify() throws IOException; }
+    /**
+     * Replaces the head with {@code xml}: anything it does first (a backup), then
+     * {@code beforeReplace}, then the replace. A failed check must propagate, with nothing replaced.
+     */
+    @FunctionalInterface interface Commit { void write(Path head, String xml, LeaseCheck beforeReplace) throws IOException; }
+    /** Replays a journal plan; production uses {@link JournalReplayer#recover(RecoveryPlan)}. */
+    @FunctionalInterface interface Replay { RecoveryResult recover(RecoveryPlan plan); }
 
     /**
      * What the gate did. {@code applied} is -1 when nothing was recovered, else the journal records
@@ -72,20 +98,28 @@ final class OpenRecoveryGate {
     private final Supplier<Boolean> enabled;
     private final Function<RecoverySummary, RecoveryChoice> choose;
     private final Commit commit;
+    private final Replay replay;
 
     OpenRecoveryGate(ProjectManager manager, Supplier<Boolean> enabled,
                      Function<RecoverySummary, RecoveryChoice> choose, Commit commit) {
+        this(manager, enabled, choose, commit, plan -> new JournalReplayer().recover(plan));
+    }
+
+    /** As the production constructor, with the journal replay replaced: a test acts while it runs. */
+    OpenRecoveryGate(ProjectManager manager, Supplier<Boolean> enabled,
+                     Function<RecoverySummary, RecoveryChoice> choose, Commit commit, Replay replay) {
         this.manager = manager;
         this.enabled = enabled;
         this.choose = choose;
         this.commit = commit;
+        this.replay = replay;
     }
 
     Result run(Path folder, boolean readOnly) throws IOException {
         return run(folder, readOnly, manager.getLockManager());
     }
 
-    Result run(Path folder, boolean readOnly, com.benesquivelmusic.daw.core.persistence.ProjectLockManager lock) throws IOException {
+    Result run(Path folder, boolean readOnly, ProjectLockManager lock) throws IOException {
         if (!Thread.currentThread().isVirtual()) throw new IllegalStateException("Recovery must run on a virtual thread");
         if (readOnly) return Result.PLAIN;
         lock.verifyHeld();
@@ -105,7 +139,14 @@ final class OpenRecoveryGate {
         RecoveryChoice decision = choose.apply(plan.summary());
         if (decision == RecoveryChoice.CANCEL || decision == RecoveryChoice.INSPECT_EVENTS) throw new Cancelled();
         lock.verifyHeld();
-        Result result = decision == RecoveryChoice.REPLAY_ALL ? recoverEverything(plan) : restoreCheckpointOnly(plan);
+        Result result;
+        try { result = decision == RecoveryChoice.REPLAY_ALL ? recoverEverything(plan, lock) : restoreCheckpointOnly(plan); }
+        catch (ReplayFailed failed) {
+            // Here, not in the controller: the target lease is released as soon as the gate fails.
+            try { lock.verifyHeld(); }
+            catch (IOException lost) { lost.addSuppressed(failed); throw lost; }
+            throw failed;
+        }
         lock.verifyHeld();
         if (journalEnabled) JournalState.clear(context);
         temps.clean();
@@ -116,31 +157,62 @@ final class OpenRecoveryGate {
      * Recover everything with {@code plan}: promotes the interrupted save if that is the plan
      * (refusing one that changed since the plan described it), otherwise replays the journal from
      * the plan's verified recovery point, keeps any interrupted save as a snapshot, and only then
-     * writes {@code project.daw}.
+     * writes {@code project.daw}. A replay can take long, so {@code lock} is verified again after
+     * it, before any copy is made, and the commit verifies it last before it replaces the head
+     * ({@link #replaceHead(Path, String, ProjectLockManager)}). Those checks fail as themselves,
+     * never as {@link ReplayFailed}: the class note says why. A {@link ReplayFailed} from here
+     * leaves {@code run} only after the lease is verified once more.
      */
-    private Result recoverEverything(RecoveryPlan plan) throws IOException {
+    private Result recoverEverything(RecoveryPlan plan, ProjectLockManager lock) throws IOException {
         Path head = plan.context().projectFile();
         return switch (plan.recovery()) {
             case RecoveryPlan.PromoteNewerHead promote -> {
                 String xml;
                 try { xml = promote.temp().readUnchanged(); }
                 catch (IOException changed) { throw new ReplayFailed(changed, false); }
-                try { commit.write(head, xml); }
-                catch (IOException failure) { throw new ReplayFailed(failure, true); }
+                replaceHead(head, xml, lock);
                 yield Result.INTERRUPTED_SAVE;
             }
             case RecoveryPlan.ReplayJournal _ -> {
-                RecoveryResult replay;
-                try { replay = new JournalReplayer().recover(plan); }
+                RecoveryResult replayed;
+                try { replayed = replay.recover(plan); }
                 catch (JournalRecoveryException failure) { throw new ReplayFailed(failure, false); }
+                lock.verifyHeld();
                 keepInterruptedSave(plan);
-                try { commit.write(head, new ProjectSerializer().serialize(replay.recoveredProject())); }
+                String xml;
+                try { xml = new ProjectSerializer().serialize(replayed.recoveredProject()); }
                 catch (IOException failure) { throw new ReplayFailed(failure, true); }
+                replaceHead(head, xml, lock);
                 RecoverySummary.Changes changes = ((RecoverySummary.Replay) plan.summary().recovery()).changes();
-                yield new Result(replay.appliedRecordCount(), Math.toIntExact(changes.count() - changes.rebuilt()),
-                        replay.unreadItems(), false);
+                yield new Result(replayed.appliedRecordCount(), Math.toIntExact(changes.count() - changes.rebuilt()),
+                        replayed.unreadItems(), false);
             }
         };
+    }
+
+    /**
+     * Hands {@code xml} to the commit with {@code lock}'s check to run immediately before the
+     * replace. The step that failed decides how the failure leaves, not its type (a
+     * {@link LockStolenException} is an {@link IOException} too): a failed check propagates as
+     * itself, even if the commit wrapped it in, or replaced it with, another {@link IOException}
+     * (kept as suppressed); any other {@link IOException} from the commit is the write's,
+     * {@link ReplayFailed} with {@code writing}.
+     */
+    private void replaceHead(Path head, String xml, ProjectLockManager lock) throws IOException {
+        AtomicReference<IOException> checkFailed = new AtomicReference<>();
+        try {
+            commit.write(head, xml, () -> {
+                try { lock.verifyHeld(); }
+                catch (IOException lost) { checkFailed.set(lost); throw lost; }
+            });
+        } catch (IOException failure) {
+            IOException lost = checkFailed.get();
+            if (lost != null) {
+                if (failure != lost) lost.addSuppressed(failure);
+                throw lost;
+            }
+            throw new ReplayFailed(failure, true);
+        }
     }
 
     /**

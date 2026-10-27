@@ -3585,7 +3585,8 @@ final class ProjectLifecycleController {
             beforeRecoveryWork.accept(RECOVERY_REPLAY_WORKER);
             RecoveryResult result = new JournalReplayer().recover(ctx);
             String xml = new ProjectSerializer().serialize(result.recoveredProject());
-            writeRecoveredProjectFile(ctx.projectFile(), xml);
+            // Ungated, so no lease check before the replace; story 384 retires this test-only path.
+            writeRecoveredProjectFile(ctx.projectFile(), xml, () -> { });
             // The replayed records are now folded into project.daw, so the
             // journal that produced them is subsumed — clear it so the next
             // launch does not re-offer (and re-replay) the same changes. A
@@ -3702,15 +3703,20 @@ final class ProjectLifecycleController {
      * through it, so no backup is taken of the file it leads to. A read-only
      * {@code .daw} file — {@code project.daw} itself, or the one a link leads
      * to — is not refused until the replace, so it is backed up first and
-     * the backup stays (story 383). Runs off the FX thread, on the replay's
-     * worker.
+     * the backup stays (story 383). {@code beforeReplace} runs last before
+     * the replace, after the backup, whose copy can be long: the open
+     * recovery gate's lease check, so a session whose lock was taken over
+     * meanwhile replaces nothing (its failure propagates as itself, and the
+     * backup stays). Runs off the FX thread, on the replay's worker.
      */
-    private void writeRecoveredProjectFile(Path projectFile, String xml) throws IOException {
+    private void writeRecoveredProjectFile(Path projectFile, String xml,
+                                           OpenRecoveryGate.LeaseCheck beforeReplace) throws IOException {
         AtomicFileWriter writer = fileWriter;
         Path dawFile = AtomicFileWriter.followLinkToDawFile(projectFile);
         if (Files.exists(dawFile)) {
             backUpBeforeRecovery(writer, projectFile);
         }
+        beforeReplace.verify();
         writer.writeString(projectFile, xml, AtomicFileWriter.ReplacePermission.TARGET,
                 AtomicFileWriter.ReplaceOption.FOLLOW_LINK_TO_DAW_FILE);
     }

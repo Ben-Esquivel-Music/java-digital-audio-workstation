@@ -16,12 +16,13 @@ Story 332 put every disk open behind one recovery gate. `MainController` always 
 
 Tests still drive this path or pin its source instead of the gate, for example `FailedPublishLeavesTheProjectFileWholeTest`, `UnreadItemsQualifyTheOpenAnnouncementTest`, `RecoverSessionIsTheOnePendingSwitchTest`, `LateLoadOutcomeReportingTest`, `MissingAssetsOnOpenTest`, `ProjectChangeWhileRecordingTest` and `ProjectChangeWhileTakeIsWrittenTest`, which drive it; `LateSwitchWaitsForAppWritesTest`, which calls `openRecoveredProject` directly; `MigrationRollBackAndRecoveryGuardTest`, which calls `beginRecovery` on a controller with no gate; and `SourcePinnedWiringTest`, which pins the body of `discardJournalThenLoad`. The implementer finds the complete set by searching the tests for the methods this story removes and for `beginRecovery` on a controller without `enableRecoveryGate`.
 
-Story 332's PR 988 review round 3 gave this path the new `RecoveryDialog` body, but its actions do not do what that dialog says. The round's verification found these contradictions:
+Story 332's PR 988 review round 3 gave this path the new `RecoveryDialog` body, but its actions do not do what that dialog says. The round's verification found these contradictions (the last was recorded later, by story 332's resolution of PR 988 review 5666358306):
 
 - Its Restore checkpoint only deletes `journal/` recursively, then loads a `project.daw` that may be missing, while the dialog says "Restore checkpoint only cannot open this project because project.daw is missing; the journal is kept if you choose it."
 - Its Recover everything plans the replay again on its own (`new JournalReplayer().recover(ctx)`) instead of executing the plan the dialog described, and the plan it shows reads no atomic-writer temps: `scanForRecovery` passes `new RecoveryTemps(List.of(), null)`.
 - After a failed replay or a refused write it opens the last clean save writable, where the dialog and story 332 say the fallback is read-only.
 - It still announces "Recovered N changes from the journal" for changes the dialog said would not be in the recovered project.
+- Its Recover everything replaces the head with no lease check before the replace: `replayJournal` hands `writeRecoveredProjectFile` a no-op check (`ProjectLifecycleController.java:3589`), where the gate's commit verifies the open's lease after its backup, immediately before the replace.
 
 None of this reaches a user today. But a test that passes on this path proves nothing about production, and these classes pin behaviour that production no longer has.
 

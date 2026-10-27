@@ -647,11 +647,17 @@ These are categories, each named with examples; none is a closed list.
   did not close cleanly" are shown even after a sealed close that still owes a
   decision (the story 382 extension).
 - **Duplicate copies after a refused commit.** A Recover everything whose
-  commit is refused, for example because `project.daw` is read-only, keeps the
-  journal and any interrupted save, so each retry adds another
+  commit is refused keeps the journal and any interrupted save. For example,
+  when `project.daw` is read-only, each retry adds another
   `project.daw.recovered.*.bak` and, when an interrupted save sits beside the
-  journal, another identical "Interrupted save" snapshot. Nothing is lost
-  (story 383).
+  journal, another identical "Interrupted save" snapshot; and when another
+  session takes the folder over after those copies were made, they stay in
+  the new holder's folder, whose own recovery decision can copy the same
+  interrupted save again. Nothing is lost (story 383).
+- **More than one interrupted save.** The plan's interrupted save is the
+  newest complete head temp newer than `project.daw`; an older complete one is
+  deleted with the other temps after the choice, without a copy. For example,
+  after two saves cut off with no writable open between them (story 390).
 - **The ungated, test-only recovery path.** Production always installs the
   gate (`MainController` calls `enableRecoveryGate`), but the path used without
   it shows the new dialog while acting on its own reading of the evidence: for
@@ -660,13 +666,35 @@ These are categories, each named with examples; none is a closed list.
   writable (story 384).
 - **Evidence that cannot be read before the dialog.** For example, an older
   version's journal with no `project.daw` whose newest checkpoint cannot be
-  read, or a complete head temp beside a missing `project.daw` (story 390): the
-  open fails with `Open failed: …` before any dialog, and nothing is deleted.
+  read; a complete head temp beside a missing `project.daw` (story 390); a head
+  temp newer than `project.daw` that cannot be read; or a complete interrupted
+  save this build refuses, such as one with a newer schema version: the open
+  fails with `Open failed: …` before any dialog, and nothing is deleted. A
+  checkpoint or session base that the recovery point is proved against, and
+  that cannot be read, does not fail the open: it is passed over as if its
+  digest differed, so an older recovery point is used, or the base is
+  described as changed and Restore checkpoint only deletes it with the journal
+  (story 389).
 - **The read-only-fallback wording.** The failed-replay and refused-write
   ERRORs give no next step, the base reasons other than a damaged segment
   still read "Cannot establish the session replay base", and, for example, a
   `project.daw` link to a file that is not a project opens read-only as an
   "Untitled" project that the ERROR calls the last clean save (story 385).
+- **Ownership checks are not atomic with the step after them.** A lease check
+  and the step after it are separate, and another process can act between
+  them. For example, a session that takes the folder over between the
+  recovered commit's lease check and the head's rename is not seen before the
+  replace; the check after the commit then fails the open before the journal
+  is cleared or a temp is deleted. Likewise, a takeover just after a failed
+  recovery's last lease check is not seen: the open shows the read-only
+  fallback, whose ERROR says the recovery evidence was preserved although the
+  new holder's gate now owns it; the fallback writes nothing. Every save
+  leaves a gap of the same kind, and a wider one: its ownership check comes
+  before its render and any owed backup, not immediately before its head
+  write (story 393). The lock's own heartbeat and release are steps of the
+  same kind: each reads `.project.lock` and then rewrites or deletes it, so
+  another session's takeover between the two steps is overwritten, or
+  deleted (story 394).
 
 #### Evidence
 
@@ -1035,3 +1063,599 @@ Native rebuilding (`-DskipNativeBuild=true`) and `jpackage` were skipped, and
 snapshot creation and updates were disabled. Remote GitHub CI (Ubuntu) was not
 rerun; that needs the user's push. Nothing was staged, committed or pushed,
 and no GitHub review discussion was modified.
+
+### PR 988 review 5666358306 — local resolution, 2026-10-27
+
+[Review 5666358306](https://github.com/Ben-Esquivel-Music/java-digital-audio-workstation/pull/988#pullrequestreview-5666358306)
+on commit `ce92309d` raised two High findings: H1
+([comment `4388149193`](https://github.com/Ben-Esquivel-Music/java-digital-audio-workstation/pull/988#discussion_r4388149193),
+on `OpenRecoveryGate`) and H2
+([comment `4388149257`](https://github.com/Ben-Esquivel-Music/java-digital-audio-workstation/pull/988#discussion_r4388149257),
+on `RecoveryTemps`). This section records their local resolution, in order:
+the implementation; the first verification; a fix round for what that
+verification found; the fix round's verification; a second fix round for what
+it found, and the second fix round's verification; a third, text-only fix
+round for what that verification found; a fourth fix round for what the build
+of record's first full run found; and the build of record. Java 27 agents made
+the code changes, and the studio engineer ruled every design question, those
+the verifications raised included. The Persistence Integrity design book is
+the authority for crash consistency here: §2.2 "Every durable write is atomic,
+or it is a hazard", §2.6 "Every open is a potential recovery", §4.1 (the
+atomic-replace writer), §4.7 (the recovery gate on the open pipeline), §5.3
+(the open contract) and §5.5 (the recovery decision table). The `research-daw`
+skill's lesson 4 ("Project File Format") covers a versioned custom format and
+gives no crash-recovery guidance. Following the `javafx-application-design`
+skill's §11 "Threading", every read and check this round adds runs on the
+open's virtual-thread worker, which `OpenRecoveryGate.run` requires
+(`OpenRecoveryGate.java:123`), never on the FX thread. The failures reach the
+user through the existing `Open failed: …` ERROR
+(`ProjectLifecycleController.java:538`). The two new failure texts are built
+in `daw-core`, which has no resource bundle, so they are English literals;
+story 382's extension leaves such `daw-core` texts in English until `daw-core`
+reports typed reasons (the skill's §14 "Accessibility, internationalization,
+and quality").
+
+H1 found that the gate verified the open's lease again only after
+`recoverEverything` had committed the recovered head. The replay, the copy of
+an interrupted save and the head's backup can take long, and the commit
+(`ProjectLifecycleController.writeRecoveredProjectFile`) checked no lease, so
+a session whose folder was taken over during that work replaced the new
+holder's `project.daw` before the check after the commit reported the stolen
+lock. The rulings and the changes:
+
+- **The commit checks the lease last, immediately before the replace.**
+  `OpenRecoveryGate.Commit` is now `write(Path head, String xml, LeaseCheck
+  beforeReplace)` (`OpenRecoveryGate.java:52-58`), and the gate hands it the
+  open's `ProjectLockManager.verifyHeld` (`OpenRecoveryGate.java:201-216`).
+  The production commit backs `project.daw` up when its `.daw` file exists,
+  then runs the check, then replaces the head
+  (`ProjectLifecycleController.java:3712-3722`, the check at :3719), so a
+  takeover during the backup's copy replaces nothing; the backup stays.
+- **A failed check fails the open as itself.** Its failure leaves `run`
+  unwrapped, as the gate's other lease checks do, so the user reads the
+  existing "Open failed: Lock has been taken over by <user>@<host>", the
+  outgoing project stays installed, nothing is deleted, and there is no
+  read-only fallback. Why: §5.5's row for a lock held by another session says
+  the lock wins, and the new holder's own gate owns the evidence, so the
+  fallback's "recovery evidence was preserved" would be a promise this session
+  cannot keep.
+- **Classified by step, not by type.** `LockStolenException` is an
+  `IOException`, and before this change every `IOException` from the commit
+  became the failed write's `ReplayFailed`, and with it the read-only
+  fallback: the hazard of the design book's rejection 14, "Swallowing a typed
+  exception into its supertype's generic handler". The check can also fail
+  with a plain `IOException` (no lease held, or the lock file cannot be read),
+  so the gate does not test the type: the check records its own failure, and
+  when the commit then throws an `IOException`, the failed check propagates as
+  itself, even if the commit wrapped it in, or replaced it with, another
+  `IOException`, which is kept as suppressed (`OpenRecoveryGate.java:193-216`,
+  the suppression at :211). Any other `IOException` from the commit is the
+  write's, a failure of the backup or the replace, and is still `ReplayFailed`
+  with `writing()` true.
+- **One more check, after the replay.** In the journal branch the gate
+  verifies the lease again after the replay returns and before the
+  interrupted save is copied (`OpenRecoveryGate.java:180`). This is ownership
+  hygiene rather than data safety: a session that has lost the folder writes
+  nothing more into it, as story 331's save checks the lock before it renders,
+  backs up and writes the head (`ProjectManager`'s class note, "The save").
+  Restore checkpoint only gets no extra check, because the check after the
+  choice directly precedes it, and neither does the promotion of an
+  interrupted save, which reads one file before its commit. The replay is a
+  package-private seam, `OpenRecoveryGate.Replay` (`OpenRecoveryGate.java:60`,
+  with the constructor overload at :108-116); the production constructor
+  replays with `JournalReplayer` (:103-106).
+- **A failed recovery re-checks the lease before it is reported.** A replay
+  that fails, an interrupted save that changed before its promotion, and a
+  write that fails other than at its lease check each become `ReplayFailed`,
+  which the controller shows as the read-only fallback. A takeover can be what
+  made them fail, so `run` verifies the lease once more before a
+  `ReplayFailed` leaves it (`OpenRecoveryGate.java:143-149`); when that check
+  fails, its own failure leaves instead, with the `ReplayFailed` attached as
+  suppressed for the log, and after a takeover the user reads "Open failed:
+  Lock has been taken over by <user>@<host>". The check runs in the gate
+  because `prepareOpen` releases the target lease as soon as the gate fails
+  (`ProjectManager.java:557-565`).
+- **Where the open's lease is verified.** Before the evidence is read
+  (`OpenRecoveryGate.java:125`); before the clears when no decision is owed
+  (:133); after the choice (:141); after a journal replay, before its copies
+  (:180); by the commit, after its backup and immediately before the replace
+  (`ProjectLifecycleController.java:3719`); after the commit, before the
+  journal is cleared and the temps are cleaned (`OpenRecoveryGate.java:150`);
+  and, when recovery fails in a way the controller shows as the read-only
+  fallback (a `ReplayFailed`), before that failure is reported, since a
+  takeover can be what made it fail (:146). The class note says so
+  (`OpenRecoveryGate.java:31-44`).
+- **Accepted residual.** A check is not atomic with the step after it:
+  another session that takes the folder over between the commit's check and
+  the head's rename is not seen before the replace, though the check after
+  the commit (:150) still fails the open before the journal's clear and the
+  temps' clean; likewise, one that takes it over just after a failed
+  recovery's last check, the re-check at :146, is not seen before the
+  read-only fallback. Every save's ownership check leaves a gap of the same
+  kind, and a wider one (story 393).
+- **The ungated, test-only path.** `replayJournal` hands the commit a no-op
+  check and keeps its behaviour (`ProjectLifecycleController.java:3588-3589`);
+  story 384 retires that path.
+
+H2 found that `RecoveryTemps.inspect` caught every failure of a newer head
+temp in one catch that called it unfinished, a failure to read the file
+included, and left it in the list a plain open deletes. With no other
+evidence the gate then opened plainly and `temps.clean()` deleted a complete
+interrupted save that could not be read, with no dialog and no copy. The same
+catch let a plain open delete a complete interrupted save this build refuses,
+for example one whose schema version is newer than this build's
+(`MigrationRegistry.java:120-125`). The rulings and the changes:
+
+- **Three outcomes, decided by step.** A temp named for the head, beside it
+  and newer than it is read, decoded, checked for its markers, parsed and read
+  as a project, in that order, and the step that stops it decides the outcome,
+  never the failure's type (`RecoveryTemps.java:54-118`, with the Javadoc at
+  :23-53). It is *complete* (the newest complete temp is the interrupted save
+  the dialog offers), *incomplete* (no candidate; it stays in the list a plain
+  open deletes), or it *cannot be assessed* (inspection throws, the open fails
+  before any dialog, and nothing is deleted). Why: every open is a potential
+  recovery (§2.6), and the gate reads an open's evidence once, before its
+  dialog describes it (§4.7, and the plan-per-open rule of the H1 entry
+  above), so evidence that was never read can be neither described nor safely
+  discarded.
+- **A temp that cannot be read fails the open.** Any failure to read its
+  bytes, including a `NoSuchFileException` for a temp that vanished after its
+  time was read, throws the first text below with the failure as its cause
+  (`RecoveryTemps.java:81-90`); one that vanishes before its time is read
+  fails the open with that failure as it is (see "Times are read outside
+  every classification"). The message names the temp by its full path,
+  because a linked head's temps sit beside the link's target. Its reason
+  follows `JournalState.reason`'s rule, mirrored in a private
+  `RecoveryTemps.reason` (`RecoveryTemps.java:120-133`) because the journal
+  package depends on `core.persistence`, and an import the other way would
+  make a package cycle. Temps older than the head and temps of other files are
+  never read (`RecoveryTemps.java:65-68`), so a plain open still deletes them.
+- **Incomplete is what a crash leaves.** Bytes that are not strict UTF-8, a
+  missing `<daw-project` or `</daw-project>` marker, or XML that is not
+  well-formed (`ProjectDeserializer.parseXml` throws) make a temp incomplete
+  (`RecoveryTemps.java:97-110`); a write cut short by a crash takes one of
+  these forms.
+- **A complete save this build refuses fails the open.** A decoded,
+  end-marked, well-formed document that `ProjectDeserializer.deserialize`
+  refuses with a `RuntimeException`, for example a `MigrationException` for a
+  newer schema, is not incomplete: inspection throws the second text below,
+  with the refusal as its cause (`RecoveryTemps.java:111-116`).
+- **One strict decoder.** `ProjectDeserializer.decodeUtf8`
+  (`ProjectDeserializer.java:402-418`) decodes with
+  `StandardCharsets.UTF_8.newDecoder()`, which reports malformed input instead
+  of substituting U+FFFD. Inspection (`RecoveryTemps.java:100`), the
+  promotion's `RecoveryPlan.NewerHead.readUnchanged` (`RecoveryPlan.java:398`)
+  and the journal replay's read of its recovery point
+  (`JournalReplayer.java:280`, which decoded the same way inline before) all
+  call it, so a temp classified complete is one the promotion can read;
+  `readUnchanged` and the replay behave as before.
+- **Times are read outside every classification.** Each temp's last-modified
+  time is read once, into a local, and the head's is read after the target
+  filter, both outside any catch (`RecoveryTemps.java:67-68`), so a time that
+  cannot be read fails the inspection: story 390's case, a missing
+  `project.daw` beside a complete temp, still fails the open. Such a failure
+  leaves as it is, so a temp that vanished before its time was read, or a
+  missing `project.daw` beside a head temp, fails the open with a
+  `NoSuchFileException` whose message is that file's path, and the user reads
+  `Open failed: ` followed by the path, with no reason; nothing is deleted
+  (story 390's extension).
+- **The persistence DOM-user contract declares `RecoveryTemps`.** The full
+  build of record on Windows found
+  `ProjectSchemaParityContractTest.theWriterAndReaderFilesAreExactlyTheDeclaredOnes`
+  failing on "files under persistence/ that use org.w3c.dom; declare each as
+  a writer, a reader, or an out-of-scope DOM user with its reason"
+  (`ProjectSchemaParityContractTest.java:308-311`): `RecoveryTemps.java` used
+  `org.w3c.dom` and was not declared. For the classification by step above,
+  `isComplete` now parses before it deserializes, so that XML that is not
+  well-formed makes a temp incomplete while a refusal fails the open: it calls
+  `ProjectDeserializer.parseXml(xml)` (`RecoveryTemps.java:107`) and hands the
+  `Document` to the package-private `deserialize(Document, Path)`,
+  `new ProjectDeserializer().deserialize(document, folder)` (:112), where at
+  `ce92309d` `inspect` called `deserialize(xml, folder)` inline. It therefore
+  has `import org.w3c.dom.Document;` (:3), and the contract counts every file
+  under `persistence/` whose source contains `import org.w3c.dom.` as a DOM
+  user (`PersistenceSourceScan.usesDom`,
+  `PersistenceSourceScan.java:339-341`). `RecoveryTemps.java` is now declared
+  in `OTHER_DOM_FILES`, the out-of-scope DOM users
+  (`ProjectSchemaParityContractTest.java:87-90`), with the reason "parses an
+  interrupted save only to tell a torn one (not well-formed) from one this
+  build refuses, and hands the Document to ProjectDeserializer; it creates no
+  element and asks the Document for no name itself"; no production code
+  changed for it. None of the implementers' targeted runs until then had
+  included that contract test.
+
+The user-facing texts, exactly, each read after `Open failed: `:
+
+- `The interrupted save <temp> could not be read (<reason>), so it was not checked for recovery; nothing was deleted. Make it readable and open the project again`,
+  where `<temp>` is the temp's full path and `<reason>` is a
+  `FileSystemException`'s reason, any other failure's message, or the
+  failure's type when there is none, never the path; for example
+  `(AccessDeniedException)` when reading is denied
+- `The interrupted save <temp> could not be checked for recovery (<reason>); nothing was deleted`,
+  where `<reason>` is the refusal's message, or its type when there is none
+- `Lock has been taken over by <user>@<host>`, or another existing text of
+  `ProjectLockManager.verifyHeld`, unchanged
+
+`InterruptedSaveInspectionTest` (new, in `daw-core`) pins the outcomes at
+inspection: `aNewerHeadTempThatCannotBeReadFailsInspectionAndIsKept` (the
+first text, a reason that never repeats the temp's name, the cause, and the
+temp's bytes unchanged);
+`unreadableTempsOlderThanTheHeadOrOfAnotherFileAreNeverReadAndStayCleanable`;
+`aNewerTempWhoseBytesAreNotUtf8IsIncompleteThoughALenientDecodeWouldReadIt`
+(it first shows that a lenient decode reads the project);
+`aNewerCompleteTempWithASchemaNewerThanThisBuildFailsInspectionAndIsKept`
+(the second text, with a `MigrationException` cause);
+`aNewerTempCutShortBeforeItsEndMarkerIsIncomplete` and
+`aNewerTempWithBothMarkersThatIsNotWellFormedIsIncomplete` (behaviour kept);
+`theNewestCompleteNewerTempIsTheCandidate`, which the fix round rewrote with
+three complete newer temps and the second fix round made a parameterised
+test: each of its three cases gives the newest time to a different temp,
+`0000000000000000`, `1111111111111111` or `2222222222222222`, and older
+times to the other two, and asserts that `newerHead()` is the newest and that
+`files()` holds all three, so, as its Javadoc says, no rule that takes the
+first or last one listed passes all three while the temps are listed in the
+same order in each case, as they are by name on Windows and by a
+per-filesystem hash on Linux ext4; and, added by the fix round,
+`aCompleteHeadTempWithNoProjectFileBesideItFailsInspectionAndIsKept`
+(with no `project.daw`, inspection throws an `IOException` and the temp's
+bytes are unchanged; its Javadoc says story 390 owns what the open should
+eventually do). To make a temp unreadable the tests remove read permission
+where the file system has POSIX permissions and add a DENY `READ_DATA` entry
+for the file's owner where it does not (Windows); they skip where the file
+stays readable, as it does for a superuser, and give access back on close.
+
+`RecoveryPlanTest` gained, in the fix round,
+`anInterruptedSaveThatIsNotStrictUtf8IsRefusedAtItsPromotion`: a
+`RecoveryPlan.NewerHead` with its temp's real size and time, whose bytes hold
+both markers and malformed UTF-8, makes `readUnchanged()` throw
+`MalformedInputException`, the strict decoder's own failure.
+
+`JournalSessionRecoveryTest` gained, in the second fix round,
+`aCertifiedRecoveryPointWhoseBytesAreNotUtf8RollsTheReplayBack`. Its
+checkpoint holds the malformed UTF-8 bytes `0xC3 0x28` in the project's name;
+a lenient decode, the test first shows, reads the project with U+FFFD in its
+name. The journal's checkpoint marker carries the digest of those bytes, so
+the plan certifies the checkpoint as the recovery point, the digest check
+passes, and the strict decode of the recovery point
+(`JournalReplayer.java:280`) is what refuses it: `JournalReplayer.recover`
+throws `JournalRecoveryException` "recovery rolled back" whose cause is
+exactly a `MalformedInputException`; `project.daw` and the checkpoint are
+byte-identical, and the journal still needs recovery.
+
+`EveryOpenDoorRunsRecoveryFirstTest` drives the production wiring
+(`enableRecoveryGate`):
+
+- `anUnreadableNewerHeadTempFailsTheOpenBeforeAnyDialogAndIsKept`, with no
+  journal: exactly one ERROR, the first text after `Open failed: `; no
+  recovery dialog and no journal opened; the outgoing project still current;
+  the temp and `project.daw` byte-identical.
+- `aTakeoverWhileRecoveryBacksUpTheHeadFailsTheOpenAndReplacesNothing`, for a
+  journal replay and for an interrupted save's promotion: through the
+  `setFileWriter` seam, the backup's publish moves the copy into place and then
+  another session force-acquires the folder. Nothing but the backup is
+  published; there is exactly one ERROR, "Open failed: Lock has been taken over
+  by other engineer@other studio"; the outgoing project is still current and
+  writable, under its own lease; no journal opens; and `project.daw`, the
+  journal's files, the temp and the new holder's `.project.lock` are
+  byte-identical.
+- `aTakeoverThatFailsTheRecoveredBackupFailsTheOpenAsTheLockNotAsTheReadOnlyFallback`,
+  added by the fix round, for the same two kinds: the backup's publish has the
+  other session force-acquire the folder and then throws instead of moving.
+  Nothing is published; the user reads exactly the same one ERROR, not the
+  read-only fallback; the outgoing project stays current and writable under
+  its own lease; no journal opens; and the same files and the new holder's
+  lock are byte-identical. Both tests share one helper,
+  `takeOverAtTheBackup`.
+
+`OpenRecoveryGateTest` pins the gate:
+
+- `aTakeoverBeforeTheReplaceFailsTheOpenAsTheStolenLockWithNothingReplacedOrCleared`,
+  for both kinds of recovery: a commit that takes the folder over and then
+  runs the check makes `run` throw `LockStolenException`; nothing is replaced,
+  and the journal and temps are not cleared.
+- `aLeaseNoLongerHeldBeforeTheReplaceFailsAsItselfNotAsAFailedWrite`: a
+  commit that releases the open's lease and then runs the check fails the open
+  with a plain `IOException`, "This session holds no project lock (NONE); it
+  does not write the project folder", not `ReplayFailed`; nothing is replaced
+  and the evidence is unchanged. Since the fix round's re-check in `run`,
+  which, were the check's failure taken for a failed write, would find the
+  lease still released and fail with the same text, this case no longer shows
+  that the gate classifies the check's failure by its step, not its type;
+  `aCheckThatFailsWhileTheLeaseIsHeldAgainAtTheRecheckFailsAsItselfNotAsAFailedWrite`
+  pins that.
+- `aTakeoverDuringTheReplayFailsTheOpenBeforeTheInterruptedSaveIsCopiedOrTheHeadBackedUp`:
+  through the replay seam, beside an interrupted save, `LockStolenException`
+  with no "Interrupted save" snapshot and no backup.
+- `failedReplayCommitPreservesHeadJournalAndTempsAndReleasesTheTargetLock`,
+  strengthened: a write that fails after the check passed is `ReplayFailed`
+  with `writing()` true.
+- `aReplayThatFailsAfterATakeoverFailsTheOpenAsTheStolenLockWithTheFailedReplayKept`,
+  added by the fix round: through the replay seam, beside an interrupted save,
+  the replay has another session force-acquire the folder and then throws a
+  `JournalRecoveryException`. `run` throws `LockStolenException` ("Lock has
+  been taken over by other engineer@other studio") with exactly one
+  suppressed `ReplayFailed`, whose `writing()` is false and whose cause is
+  that `JournalRecoveryException`; there is no snapshot and no backup, and
+  the head, the journal and the temp are unchanged.
+- `aWriteThatFailsAfterATakeoverFailsTheOpenAsTheStolenLockWithTheFailedWriteKept`,
+  added by the fix round, for both kinds of recovery: a commit that takes the
+  folder over and then throws without running the check gives
+  `LockStolenException` with exactly one suppressed `ReplayFailed`, whose
+  `writing()` is true and whose cause is the commit's exception; the head is
+  unchanged, and the journal and temps are not cleared.
+- `aFailedCheckTheCommitReplacedWithItsOwnFailureFailsAsTheCheckWithThatFailureKept`,
+  added by the fix round: a commit that replaces the failed check's exception
+  with its own `IOException` still fails as the check, with the commit's
+  exception as its only suppressed exception.
+- `aCheckThatFailsWhileTheLeaseIsHeldAgainAtTheRecheckFailsAsItselfNotAsAFailedWrite`,
+  added by the second fix round: the commit releases the open's lease, runs
+  the check, which fails with the plain `IOException` of a lease no longer
+  held, acquires the folder again with the same lock manager (`tryAcquire`,
+  asserted to succeed) and rethrows the check's failure. The lease is held
+  again before `run` could re-check, so a gate that took the check's failure
+  for a failed write would pass that re-check, and only the classification by
+  step fails the open as the check: the gate's failure is that same exception,
+  not `ReplayFailed`, with no suppressed exception, and `project.daw` and the
+  evidence are unchanged.
+
+The fix round's two takeover cases above and its production-wiring case pin
+the re-check before a `ReplayFailed` leaves `run`. Four existing cases, which
+fail a recovery with the lease still held, keep expecting `ReplayFailed`:
+`failedReplayCommitPreservesHeadJournalAndTempsAndReleasesTheTargetLock`,
+`aReplayThatCannotStartIsDescribedBeforeTheChoiceAndChangesNothing`,
+`aRecoveryPointOverwrittenAfterTheChoiceFailsTheReplayAndWritesNothing` and
+`anInterruptedSaveChangedAfterTheChoiceIsNotPromoted`.
+
+A replay that rebuilds nothing can serialize to the head's own bytes, so the
+takeover tests count the replaces, or record the publishes, rather than rely
+on the head's bytes alone.
+
+The implementation pass's fault checks, as reported by its implementers, ran
+on Windows unless noted; each was restored with `cp -p` and `touch`,
+confirmed with `cmp`:
+
+- the read moved back inside the catch that calls a temp incomplete turned
+  `aNewerHeadTempThatCannotBeReadFailsInspectionAndIsKept` and
+  `anUnreadableNewerHeadTempFailsTheOpenBeforeAnyDialogAndIsKept` red (the app
+  test found the temp deleted), and the inspection test's POSIX branch red on
+  Linux (WSL);
+- a lenient decode (`new String(bytes, UTF_8)`) turned
+  `aNewerTempWhoseBytesAreNotUtf8IsIncompleteThoughALenientDecodeWouldReadIt`
+  red;
+- a refused document classified incomplete turned
+  `aNewerCompleteTempWithASchemaNewerThanThisBuildFailsInspectionAndIsKept`
+  red;
+- the gate handing the commit a no-op check turned five cases red: both
+  production-wiring cases, both gate-level takeover cases and the no-lease
+  case; the replay-takeover test stayed green, because the check after the
+  replay caught the takeover first;
+- the production commit without its check turned both production-wiring
+  cases red;
+- the check's failure wrapped as the write's `ReplayFailed` turned the same
+  five red, the production cases showing the read-only fallback's "Could not
+  write recovered project: Lock has been taken over …" ERROR;
+- the check after the replay removed turned the replay-takeover test red, on
+  its "no Interrupted save snapshot" assertion.
+
+The no-op-check fault's first run left the journal-replay cases green on the
+head's bytes alone, which is why the replace count and the publish list were
+added; its re-run turned all five red.
+
+Those fault checks ran before the fix round added the re-check in `run`. With
+it in place, when a check's failure is wrapped as the write's `ReplayFailed`,
+the re-check fails the open as the lock anyway, with the `ReplayFailed` as
+suppressed, so that fault's five cases stay green now. The fix round's
+verification ran the fault again, in `OpenRecoveryGateTest` and
+`EveryOpenDoorRunsRecoveryFirstTest`, and a variant that rethrows a
+`LockStolenException` as itself; as its prober reported, the five cases
+stayed green, and each fault turned one case red,
+`aFailedCheckTheCommitReplacedWithItsOwnFailureFailsAsTheCheckWithThatFailureKept`,
+through its assertion on the suppressed exception. The second fix round added
+`aCheckThatFailsWhileTheLeaseIsHeldAgainAtTheRecheckFailsAsItselfNotAsAFailedWrite`,
+which both faults also turn red, through the gate's failure itself (see that
+round's fault checks below).
+
+The fix round's fault checks, as reported by the implementer, ran on Windows;
+each was restored with `cp -p` and `touch`, confirmed with `cmp`, and the
+final run compiled after the last restore:
+
+- the re-check before a `ReplayFailed` leaves `run` removed turned five cases
+  red: both cases of
+  `aWriteThatFailsAfterATakeoverFailsTheOpenAsTheStolenLockWithTheFailedWriteKept`,
+  `aReplayThatFailsAfterATakeoverFailsTheOpenAsTheStolenLockWithTheFailedReplayKept`
+  and both cases of
+  `aTakeoverThatFailsTheRecoveredBackupFailsTheOpenAsTheLockNotAsTheReadOnlyFallback`,
+  the production cases showing the read-only fallback's "Could not write
+  recovered project: the backup could not be published; recovery evidence was
+  preserved; fallback is read-only; opened the last clean save" ERROR; the
+  four cases that keep expecting `ReplayFailed` stayed green;
+- the commit's own failure no longer kept as suppressed in `replaceHead` turned
+  `aFailedCheckTheCommitReplacedWithItsOwnFailureFailsAsTheCheckWithThatFailureKept`
+  red;
+- the head's time read inside a `try … catch (IOException) { continue; }`
+  turned `aCompleteHeadTempWithNoProjectFileBesideItFailsInspectionAndIsKept`
+  red;
+- a lenient decode (`new String(bytes, UTF_8)`) in `readUnchanged` turned
+  `anInterruptedSaveThatIsNotStrictUtf8IsRefusedAtItsPromotion` red;
+- the first complete temp winning, and in a second run the last, each turned
+  `theNewestCompleteNewerTempIsTheCandidate` red, the first choosing the
+  `0000000000000000` temp and the second the `2222222222222222` temp.
+
+The second fix round's fault checks, as reported by the implementer, ran on
+Windows; each was restored with `cp -p` and `touch`, confirmed with `cmp`, and
+the final run compiled after the last restore:
+
+- `replaceHead` with no record of the check's failure, handing the commit
+  `lock::verifyHeld` and wrapping every `IOException` from the commit as
+  `ReplayFailed(failure, true)`, turned two cases red:
+  `aCheckThatFailsWhileTheLeaseIsHeldAgainAtTheRecheckFailsAsItselfNotAsAFailedWrite`,
+  whose open failed as a `ReplayFailed`, and
+  `aFailedCheckTheCommitReplacedWithItsOwnFailureFailsAsTheCheckWithThatFailureKept`;
+- the same, but rethrowing a `LockStolenException` as itself, turned the same
+  two red;
+- the first complete temp winning turned the cases of
+  `theNewestCompleteNewerTempIsTheCandidate` whose newest is
+  `1111111111111111` or `2222222222222222` red, and the last complete temp
+  winning turned those whose newest is `0000000000000000` or
+  `1111111111111111` red;
+- a lenient decode (`new String(bytes, UTF_8)`) of the recovery point
+  (`JournalReplayer.java:280`) turned
+  `aCertifiedRecoveryPointWhoseBytesAreNotUtf8RollsTheReplayBack` red: the
+  replay no longer threw.
+
+These are checked by code review only; no test of this round reaches them:
+
+- the second text through the controller: inspection's text is pinned, and it
+  leaves `OpenRecoveryGate.run` (:127) by the path the first text takes, which
+  the app test pins;
+- a commit that swallows a failed check: `Commit`'s contract is that the
+  failure propagates with nothing replaced (`OpenRecoveryGate.java:54-58`), and
+  the production commit keeps it; a commit that broke it would still meet the
+  check after the commit (:150) before the clears.
+
+Known limits: in the H1 entry above, "Evidence that cannot be read before the
+dialog" gained a head temp newer than `project.daw` that cannot be read, a
+complete interrupted save this build refuses, and a checkpoint or session base
+that cannot be read, which is passed over, or described as changed, instead of
+failing the open;
+"Duplicate copies after a refused commit" gained a takeover after the copies
+were made; the category "More than one interrupted save" was added; and the
+category this resolution first added as "Ownership checks are not atomic with
+the write" was renamed "Ownership checks are not atomic with the step after
+them" and widened to a takeover just after a failed recovery's last lease
+check, to the save's wider gap, and to the lock's own heartbeat and release.
+Stories 383 (a takeover as another refused commit), 384 (the ungated path's
+replace with no lease check) and 389 (a Hub scan reuses inspection's three
+outcomes) record ownership notes. The verification of this resolution found
+adjacent hazards, and the studio engineer ruled their owners:
+
+- Story 393 (new) owns a save's lease check after its render and immediately
+  before its head write, and a stolen-lock failure text that stays true once
+  the save's backup was written.
+- Story 394 (new) owns the project lock's heartbeat and release, which must
+  never overwrite or delete a lock that another session took over.
+- Story 395 (new) owns the Welcome screen's Discard recovery when another
+  session holds the project's lock: Discard must never take over a lock that
+  looks active, and it keeps the journal and points to Recover session instead.
+  This reverses one part of the review 5658601036 resolution above (the
+  `4382168542` row): Take Over of a fresh lock moves from Discard to Recover
+  session, where the lock is decided before the recovery dialog describes the
+  journal.
+- Story 390 now also owns keeping, as a snapshot, every complete head temp
+  newer than `project.daw` that a choice does not promote, older ones
+  included, and wording an inspection time read that fails with the file and
+  the reason instead of a bare path.
+- Story 389 now also owns a checkpoint or session base that cannot be read
+  when the recovery point is proved against it: the open fails, naming it,
+  instead of passing it over or describing it as changed.
+- Story 361 now also owns the migration roll-back's reload, which retires the
+  outgoing project before the gate runs, so a gate failure there leaves it
+  half abandoned.
+
+The Persistence Integrity design book is unchanged: it states neither where
+the open's lease is verified nor how an unfinished temp is classified.
+
+Evidence, from the build of record. The targeted runs that each pass's
+implementers reported are superseded by it and are not repeated here. It ran
+the whole default reactor, with no test selector and no `clean`, using this
+command:
+
+```
+mvn -B -o verify -Dmaven.test.failure.ignore=true -DskipNativeBuild=true -Dsnapshots.autoBaseline=false -Dsnapshots.update=false
+```
+
+With `-Dmaven.test.failure.ignore=true` a failing test does not fail the
+build, so each run's result is its test counts, not its `BUILD SUCCESS`. The
+full runs' counts are the managing agent's, read from the surefire
+`TEST-*.xml` reports each run wrote after its start. All times are on
+2026-10-27.
+
+- **Windows, final code.** Windows 10, Maven 3.10.0 and JDK 27+35, in the
+  working tree, from 12:06:44 to 12:23:24, with `BUILD SUCCESS`: **1,504
+  suites, 14,524 tests, zero failures, zero errors, 44 skipped**. By module
+  (suites/tests/failures/errors/skipped): SDK 165/1,348/0/0/2, acoustics
+  14/106/0/0/0, core 745/8,734/0/0/39, FX 2/29/0/0/0 and app 578/4,307/0/0/3.
+  One change followed it, an assertion description at
+  `OpenRecoveryGateTest.java:527`; the targeted runs below cover it.
+
+- **Windows, first full run**, on the code before the fourth fix round, from
+  11:33:26 to 11:49:02: 14,524 tests and one failure,
+  `ProjectSchemaParityContractTest.theWriterAndReaderFilesAreExactlyTheDeclaredOnes`,
+  with no other failure or error. The bullet "The persistence DOM-user
+  contract declares `RecoveryTemps`" above records its cause and its fix.
+
+- **Linux, CI-equivalent.** WSL Ubuntu 26.04, Maven 3.10.0 and JDK 27+35, in a
+  WSL ext4 copy of the tree, with the same command plus
+  `-DskipNoticesGeneration=true`, set up the way GitHub's Ubuntu runner is:
+  `ALSA_CONFIG_PATH` pointed at an empty file, `PULSE_SERVER` unset, and the
+  home folder's file cache kept warm. It ran on the code before the fourth fix
+  round, which is the final code apart from two test files,
+  `ProjectSchemaParityContractTest` and `OpenRecoveryGateTest`, from 11:50:24
+  to 12:19:35, with `BUILD SUCCESS`: **14,523 tests, two failures, zero
+  errors, 53 skipped**. By module (tests/failures/errors/skipped): SDK
+  1,348/0/0/2, acoustics 106/0/0/0, core 8,734/1/0/45, FX 29/0/0/0 and app
+  4,306/1/0/6.
+
+The Linux run's two failures:
+
+- The same `ProjectSchemaParityContractTest` failure, which the fourth fix
+  round fixed.
+
+- `MixerViewMeterFeedTest.refreshingWhileTheWindowIsHiddenReactivatesOnlyTheCurrentStrips`,
+  on "FX action completes". The test's helper posts its action with
+  `Platform.runLater` and waits 10 s on a latch for the FX application thread
+  to run it (`MixerViewMeterFeedTest.java:159`); that wait timed out in the
+  test (:435) and again in its tear-down (:225). The latch measures how soon
+  the FX thread runs a posted action, the thread the javafx-application-design
+  skill's §11 "Threading" says must never be blocked. This pull request does
+  not change the class, and changes no file whose name contains `Mixer` or
+  `Meter`. The WSL host was running another JavaFX system-test build at the
+  same time. Run alone in the same copy and environment, from 12:20:27 to
+  12:22:31, the class passed 13 of 13, and it passed 13 of 13 in both Windows
+  full runs. It is recorded as a load-induced FX-thread timeout, not a failure
+  of this change.
+
+On the final code, the two test files changed after the Linux full run were
+copied into the WSL copy, each compared byte for byte with the working tree,
+whose other changed Java files the copy already held byte for byte. In the
+same environment, with `-pl daw-app -am`, from 12:35:57 to 12:37:35,
+`OpenRecoveryGateTest` ran 37 tests and `ProjectSchemaParityContractTest` 20,
+with no failures, errors or skips (reports written at 12:37:35 and 12:36:59).
+On Windows, on the final tree, from 12:31:52 to 12:34:44, the same two classes
+ran 37 and 20 tests with no failures, errors or skips (12:34:43 and 12:33:40).
+The final pass's implementer read these two runs' counts from their fresh
+reports.
+
+The counts that differ by OS were checked class by class in the two full runs'
+reports. The app runs 4,307 tests on Windows and 4,306 on Linux because
+`ActiveProjectAliasTest`, which this round does not change, runs four cases on
+Windows and three on Linux:
+`junctionAliasCannotAcquireOrDiscardTheActiveProject` is
+`@EnabledOnOs(OS.WINDOWS)` (`ActiveProjectAliasTest.java:38-41`), so Windows
+runs its two `Action` cases and Linux reports the method as one skipped case.
+No other class's test count differs. The app skips three cases on Windows, the
+`@Disabled` snapshot tests whose goldens are captured on Linux CI, and six on
+Linux: the same three, that junction method,
+`PlatformMotionHintTest.windowsProbeReturnsAPresentResult`
+(`@EnabledOnOs(OS.WINDOWS)`, `PlatformMotionHintTest.java:39`) and
+`DefaultAudioEngineControllerTest.requestedJavaSoundHeadRecordsFromTheConfiguredInputNotItsOutputDevice`,
+whose assumption that Java Sound can head the ladder fails on that host
+(`DefaultAudioEngineControllerTest.java:2810`). Core skips 39 cases on Windows
+and 45 on Linux. Both skip 27: the ASIO streaming integration cases (2), the
+ASIO shim cases of `NativeLibraryDetectorTest` (2), the Ogg Vorbis and AAC
+codec cases, whose native libraries neither host has (22), and the opt-in
+strict DSP coverage check (1). Windows also skips 12: cases that need POSIX
+permissions (`AtomicFileWriterTest` 7, `ProjectLockManagerTest` 1,
+`SessionManagerTest` 1 and `JournalSessionRecoveryTest` 1) and the Linux
+path-form cases of `ProjectPathsTest` and
+`ProjectRelativePersistenceContractTest`, disabled on Windows (1 each). Linux
+also skips 18: the MP3 cases, because libmp3lame is not available there
+(`Mp3ExporterTest` 9, `DefaultAudioExporterTest` 1 and `ExportServiceTest` 1),
+and Windows cases (`AtomicFileWriterTest` 4, `MissingAssetSearchTest`'s
+junction case, and the Windows path-form cases of `ProjectPathsTest` and
+`ProjectRelativePersistenceContractTest`, 1 each). The SDK skips the same two
+`AsioFormatChangeShimTest` cases on both.
+
+Not run: the native build (`-DskipNativeBuild=true`), `jpackage`, and the
+remote GitHub CI (ubuntu-latest), which needs the user's push. Nothing was
+staged, committed or pushed, and no GitHub comment was made.

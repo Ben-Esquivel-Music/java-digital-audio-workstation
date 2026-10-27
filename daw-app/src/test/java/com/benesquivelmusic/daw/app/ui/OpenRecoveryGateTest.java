@@ -28,6 +28,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 class OpenRecoveryGateTest {
     @TempDir Path workspace;
     private final AtomicInteger decisions = new AtomicInteger();
+    /** The open's target lease, as {@link #recoverEverything} handed it to the gate. */
+    private final AtomicReference<ProjectLockManager> openLease = new AtomicReference<>();
 
     private Path project(String name) throws IOException {
         Path folder = Files.createDirectories(workspace.resolve(name));
@@ -60,10 +62,10 @@ class OpenRecoveryGateTest {
             decisions.incrementAndGet();
             assertThat(Thread.currentThread().isVirtual()).isTrue();
             return choice;
-        }, (head, content) -> {
+        }, (head, content, beforeReplace) -> {
             if (original != null) assertThat(Files.readAllBytes(segment)).isEqualTo(original);
-            new AtomicFileWriter().writeString(head, content,
-                    AtomicFileWriter.ReplacePermission.TARGET, AtomicFileWriter.ReplaceOption.FOLLOW_LINK_TO_DAW_FILE);
+            beforeReplace.verify();
+            replaceHead(head, content);
         });
         manager.setRecoveryGate((directory, readOnly, lock) -> result.set(gate.run(directory, readOnly, lock)));
         worker(() -> { try (ProjectManager.PreparedOpen ignored = manager.prepareOpen(folder)) { return null; } });
@@ -141,7 +143,7 @@ class OpenRecoveryGateTest {
         Path outgoing = manager.createProject("Outgoing", workspace).projectPath();
         ProjectMetadata current = manager.getCurrentProject();
         byte[] oldLock = Files.readAllBytes(outgoing.resolve(ProjectLockManager.LOCK_FILE_NAME));
-        OpenRecoveryGate gate = new OpenRecoveryGate(manager, () -> true, _ -> RecoveryChoice.CANCEL, (_, _) -> { });
+        OpenRecoveryGate gate = new OpenRecoveryGate(manager, () -> true, _ -> RecoveryChoice.CANCEL, (_, _, _) -> { });
         manager.setRecoveryGate((path, readOnly, lease) -> gate.run(path, readOnly, lease));
         try {
             assertThatThrownBy(() -> worker(() -> manager.prepareOpen(incoming))).hasCauseInstanceOf(OpenRecoveryGate.Cancelled.class);
@@ -168,7 +170,7 @@ class OpenRecoveryGateTest {
         OpenRecoveryGate gate = new OpenRecoveryGate(manager, () -> true, _ -> {
             order.add("recovery");
             return RecoveryChoice.CHECKPOINT_ONLY;
-        }, (_, _) -> { });
+        }, (_, _, _) -> { });
         manager.setRecoveryGate((path, readOnly, lease) -> { order.add("scan"); gate.run(path, readOnly, lease); });
         worker(() -> { try (ProjectManager.PreparedOpen ignored = manager.prepareOpen(folder)) { return null; } });
         assertThat(order).containsExactly("conflict", "scan", "recovery");
@@ -195,7 +197,7 @@ class OpenRecoveryGateTest {
         foreign.forceAcquire(folder);
         ProjectManager manager = new ProjectManager(new CheckpointManager(AutoSaveConfig.DEFAULT.withEnabled(false)));
         manager.setLockConflictHandler((_, _) -> LockConflictResolution.OPEN_READ_ONLY);
-        OpenRecoveryGate gate = new OpenRecoveryGate(manager, () -> true, _ -> { throw new AssertionError("read-only choice"); }, (_, _) -> { });
+        OpenRecoveryGate gate = new OpenRecoveryGate(manager, () -> true, _ -> { throw new AssertionError("read-only choice"); }, (_, _, _) -> { });
         manager.setRecoveryGate((path, readOnly, lease) -> gate.run(path, readOnly, lease));
         try {
             worker(() -> { try (ProjectManager.PreparedOpen lease = manager.prepareOpen(folder)) {
@@ -267,12 +269,16 @@ class OpenRecoveryGateTest {
         byte[] segment = Files.readAllBytes(folder.resolve("journal/segment-000.bin"));
         String head = Files.readString(folder.resolve("project.daw"));
         ProjectManager manager = new ProjectManager(new CheckpointManager(AutoSaveConfig.DEFAULT.withEnabled(false)));
-        OpenRecoveryGate gate = new OpenRecoveryGate(manager, () -> true, _ -> RecoveryChoice.REPLAY_ALL, (_, _) -> {
+        OpenRecoveryGate gate = new OpenRecoveryGate(manager, () -> true, _ -> RecoveryChoice.REPLAY_ALL, (_, _, beforeReplace) -> {
             assertThat(Files.readAllBytes(folder.resolve("journal/segment-000.bin"))).isEqualTo(segment);
+            beforeReplace.verify();
             throw new IOException("atomic replacement refused");
         });
         manager.setRecoveryGate((path, readOnly, lock) -> gate.run(path, readOnly, lock));
-        assertThatThrownBy(() -> worker(() -> manager.prepareOpen(folder))).hasCauseInstanceOf(IOException.class);
+        assertThatThrownBy(() -> worker(() -> manager.prepareOpen(folder))).cause()
+                .as("a write that fails after the lease check passed is the write's failure")
+                .isInstanceOfSatisfying(OpenRecoveryGate.ReplayFailed.class, failed -> assertThat(failed.writing()).isTrue())
+                .hasMessage("atomic replacement refused");
         assertThat(Files.readString(folder.resolve("project.daw"))).isEqualTo(head);
         assertThat(Files.readAllBytes(folder.resolve("journal/segment-000.bin"))).isEqualTo(segment);
         assertThat(temp).exists();
@@ -474,6 +480,211 @@ class OpenRecoveryGateTest {
         assertThat(temp).exists();
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"journal replay", "interrupted save"})
+    void aTakeoverBeforeTheReplaceFailsTheOpenAsTheStolenLockWithNothingReplacedOrCleared(String recovery) throws Exception {
+        Path folder = project("Taken over");
+        Path temp;
+        if (recovery.equals("journal replay")) {
+            crash(folder);
+            temp = Files.writeString(folder.resolve(".notes.json.0123456789abcdef.tmp"), "{} ");
+        } else {
+            temp = interruptedSave(folder, "Interrupted save");
+        }
+        byte[] head = Files.readAllBytes(folder.resolve("project.daw"));
+        Evidence before = Evidence.of(folder, temp);
+        AtomicInteger replaces = new AtomicInteger();
+        ProjectLockManager foreign = anotherSession();
+        try {
+            Throwable thrown = catchThrowable(() -> recoverEverything(folder, (target, content, beforeReplace) -> {
+                foreign.forceAcquire(folder);
+                beforeReplace.verify();
+                replaceHead(target, content);
+                replaces.incrementAndGet();
+            }, plan -> new JournalReplayer().recover(plan)));
+            assertThat(thrown).cause().as("the lost lease, never a failed write and its read-only fallback")
+                    .isInstanceOf(LockStolenException.class)
+                    .hasMessage("Lock has been taken over by other engineer@other studio");
+            // A replayed head can serialize to the head's own bytes, so the replace itself is counted.
+            assertThat(replaces).as("the head was not replaced").hasValue(0);
+            assertThat(Files.readAllBytes(folder.resolve("project.daw"))).isEqualTo(head);
+            assertThat(Evidence.of(folder, temp)).as("the journal and the temps are not cleared").isEqualTo(before);
+        } finally { foreign.release(); }
+    }
+
+    @Test void aLeaseNoLongerHeldBeforeTheReplaceFailsAsItselfNotAsAFailedWrite() throws Exception {
+        Path folder = project("Released");
+        crash(folder);
+        byte[] head = Files.readAllBytes(folder.resolve("project.daw"));
+        Evidence before = Evidence.of(folder);
+        AtomicInteger replaces = new AtomicInteger();
+        Throwable thrown = catchThrowable(() -> recoverEverything(folder, (target, content, beforeReplace) -> {
+            openLease.get().release();
+            beforeReplace.verify();
+            replaceHead(target, content);
+            replaces.incrementAndGet();
+        }, plan -> new JournalReplayer().recover(plan)));
+        assertThat(thrown).cause().as("a lease check's plain IOException, not ReplayFailed")
+                .isNotInstanceOf(OpenRecoveryGate.ReplayFailed.class)
+                .hasMessage("This session holds no project lock (NONE); it does not write the project folder");
+        assertThat(replaces).as("the head was not replaced").hasValue(0);
+        assertThat(Files.readAllBytes(folder.resolve("project.daw"))).isEqualTo(head);
+        assertThat(Evidence.of(folder)).isEqualTo(before);
+    }
+
+    @Test void aTakeoverDuringTheReplayFailsTheOpenBeforeTheInterruptedSaveIsCopiedOrTheHeadBackedUp() throws Exception {
+        Path folder = project("Journal base");
+        crash(folder);
+        Path temp = interruptedSave(folder, "Interrupted save");
+        byte[] head = Files.readAllBytes(folder.resolve("project.daw"));
+        Evidence before = Evidence.of(folder, temp);
+        Path backup = folder.resolve("project.daw.recovered.bak");
+        AtomicInteger replays = new AtomicInteger();
+        ProjectLockManager foreign = anotherSession();
+        try {
+            Throwable thrown = catchThrowable(() -> recoverEverything(folder, (target, content, beforeReplace) -> {
+                Files.copy(target, backup); // as the production commit backs the head up first
+                beforeReplace.verify();
+                replaceHead(target, content);
+            }, plan -> {
+                RecoveryResult replayed = new JournalReplayer().recover(plan);
+                replays.incrementAndGet();
+                try { foreign.forceAcquire(folder); }
+                catch (IOException failure) { throw new java.io.UncheckedIOException(failure); }
+                return replayed;
+            }));
+            assertThat(replays).as("the takeover came after the lease check that follows the choice").hasValue(1);
+            assertThat(thrown).cause().isInstanceOf(LockStolenException.class)
+                    .hasMessage("Lock has been taken over by other engineer@other studio");
+            assertThat(files(folder.resolve("snapshots"))).as("no Interrupted save snapshot").isEmpty();
+            assertThat(backup).as("no backup").doesNotExist();
+            assertThat(Files.readAllBytes(folder.resolve("project.daw"))).isEqualTo(head);
+            assertThat(Evidence.of(folder, temp)).isEqualTo(before);
+        } finally { foreign.release(); }
+    }
+
+    /** A takeover can be what made the replay fail, so the lock wins over the failed replay's read-only fallback. */
+    @Test void aReplayThatFailsAfterATakeoverFailsTheOpenAsTheStolenLockWithTheFailedReplayKept() throws Exception {
+        Path folder = project("Journal base");
+        crash(folder);
+        Path temp = interruptedSave(folder, "Interrupted save");
+        byte[] head = Files.readAllBytes(folder.resolve("project.daw"));
+        Evidence before = Evidence.of(folder, temp);
+        Path backup = folder.resolve("project.daw.recovered.bak");
+        JournalRecoveryException replayFailure =
+                new JournalRecoveryException("Journal replay rolled back", new IOException("a segment vanished"));
+        ProjectLockManager foreign = anotherSession();
+        try {
+            Throwable thrown = catchThrowable(() -> recoverEverything(folder, (target, content, beforeReplace) -> {
+                Files.copy(target, backup); // as the production commit backs the head up first
+                beforeReplace.verify();
+                replaceHead(target, content);
+            }, plan -> {
+                try { foreign.forceAcquire(folder); }
+                catch (IOException failure) { throw new java.io.UncheckedIOException(failure); }
+                throw replayFailure;
+            }));
+            assertThat(thrown).cause().as("the lost lease, never the failed replay's read-only fallback")
+                    .isInstanceOf(LockStolenException.class)
+                    .hasMessage("Lock has been taken over by other engineer@other studio");
+            assertThat(List.of(thrown.getCause().getSuppressed())).as("the failed replay, kept for the log")
+                    .singleElement().isInstanceOfSatisfying(OpenRecoveryGate.ReplayFailed.class, failed -> {
+                        assertThat(failed.writing()).isFalse();
+                        assertThat(failed.getCause()).isSameAs(replayFailure);
+                    });
+            assertThat(files(folder.resolve("snapshots"))).as("no Interrupted save snapshot").isEmpty();
+            assertThat(backup).as("no backup").doesNotExist();
+            assertThat(Files.readAllBytes(folder.resolve("project.daw"))).isEqualTo(head);
+            assertThat(Evidence.of(folder, temp)).isEqualTo(before);
+        } finally { foreign.release(); }
+    }
+
+    /** A takeover can be what made the write fail before its lease check, so the lock wins over the failed write. */
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"journal replay", "interrupted save"})
+    void aWriteThatFailsAfterATakeoverFailsTheOpenAsTheStolenLockWithTheFailedWriteKept(String recovery) throws Exception {
+        Path folder = project("Taken over");
+        Path temp;
+        if (recovery.equals("journal replay")) {
+            crash(folder);
+            temp = Files.writeString(folder.resolve(".notes.json.0123456789abcdef.tmp"), "{} ");
+        } else {
+            temp = interruptedSave(folder, "Interrupted save");
+        }
+        byte[] head = Files.readAllBytes(folder.resolve("project.daw"));
+        Evidence before = Evidence.of(folder, temp);
+        IOException writeFailure = new IOException("the backup could not be published");
+        ProjectLockManager foreign = anotherSession();
+        try {
+            Throwable thrown = catchThrowable(() -> recoverEverything(folder, (_, _, _) -> {
+                foreign.forceAcquire(folder);
+                throw writeFailure; // before the commit's own lease check
+            }, plan -> new JournalReplayer().recover(plan)));
+            assertThat(thrown).cause().as("the lost lease, never a failed write and its read-only fallback")
+                    .isInstanceOf(LockStolenException.class)
+                    .hasMessage("Lock has been taken over by other engineer@other studio");
+            assertThat(List.of(thrown.getCause().getSuppressed())).as("the failed write, kept for the log")
+                    .singleElement().isInstanceOfSatisfying(OpenRecoveryGate.ReplayFailed.class, failed -> {
+                        assertThat(failed.writing()).isTrue();
+                        assertThat(failed.getCause()).isSameAs(writeFailure);
+                    });
+            assertThat(Files.readAllBytes(folder.resolve("project.daw"))).isEqualTo(head);
+            assertThat(Evidence.of(folder, temp)).as("the journal and the temps are not cleared").isEqualTo(before);
+        } finally { foreign.release(); }
+    }
+
+    @Test void aFailedCheckTheCommitReplacedWithItsOwnFailureFailsAsTheCheckWithThatFailureKept() throws Exception {
+        Path folder = project("Released");
+        crash(folder);
+        byte[] head = Files.readAllBytes(folder.resolve("project.daw"));
+        Evidence before = Evidence.of(folder);
+        IOException commitsOwn = new IOException("the commit's own account of the refusal");
+        Throwable thrown = catchThrowable(() -> recoverEverything(folder, (_, _, beforeReplace) -> {
+            openLease.get().release();
+            try { beforeReplace.verify(); }
+            catch (IOException refused) { throw commitsOwn; }
+        }, plan -> new JournalReplayer().recover(plan)));
+        assertThat(thrown).cause().isNotInstanceOf(OpenRecoveryGate.ReplayFailed.class)
+                .hasMessage("This session holds no project lock (NONE); it does not write the project folder");
+        assertThat(List.of(thrown.getCause().getSuppressed())).as("the commit's failure, kept for the log")
+                .containsExactly(commitsOwn);
+        assertThat(Files.readAllBytes(folder.resolve("project.daw"))).isEqualTo(head);
+        assertThat(Evidence.of(folder)).isEqualTo(before);
+    }
+
+    /**
+     * A check that fails, its lease held again before anything could check it once more, still fails
+     * the open as that check: the step decides. A gate that took it for a failed write would re-check
+     * before reporting it, find the lease held, and show the read-only fallback.
+     */
+    @Test void aCheckThatFailsWhileTheLeaseIsHeldAgainAtTheRecheckFailsAsItselfNotAsAFailedWrite() throws Exception {
+        Path folder = project("Held again");
+        crash(folder);
+        byte[] head = Files.readAllBytes(folder.resolve("project.daw"));
+        Evidence before = Evidence.of(folder);
+        AtomicReference<IOException> checkFailure = new AtomicReference<>();
+        AtomicReference<ProjectLockManager.AcquisitionResult> heldAgain = new AtomicReference<>();
+        Throwable thrown = catchThrowable(() -> recoverEverything(folder, (_, _, beforeReplace) -> {
+            ProjectLockManager lease = openLease.get();
+            lease.release();
+            try { beforeReplace.verify(); }
+            catch (IOException refused) {
+                checkFailure.set(refused);
+                heldAgain.set(lease.tryAcquire(folder));
+                throw refused;
+            }
+        }, plan -> new JournalReplayer().recover(plan)));
+        assertThat(checkFailure.get()).as("the check failed")
+                .hasMessage("This session holds no project lock (NONE); it does not write the project folder");
+        assertThat(heldAgain.get().wasAcquired()).as("the lease is held again, so a re-check would pass").isTrue();
+        assertThat(thrown).cause().as("the check's own failure, never a failed write and its read-only fallback")
+                .isSameAs(checkFailure.get())
+                .isNotInstanceOf(OpenRecoveryGate.ReplayFailed.class);
+        assertThat(thrown.getCause().getSuppressed()).isEmpty();
+        assertThat(Files.readAllBytes(folder.resolve("project.daw"))).isEqualTo(head);
+        assertThat(Evidence.of(folder)).isEqualTo(before);
+    }
+
     /** A chooser that may touch the disk; it runs after the plan is built and before the choice acts. */
     @FunctionalInterface private interface Chooser { RecoveryChoice choose(RecoverySummary summary) throws IOException; }
 
@@ -484,11 +695,35 @@ class OpenRecoveryGateTest {
             decisions.incrementAndGet();
             try { return chooser.choose(summary); }
             catch (IOException failure) { throw new java.io.UncheckedIOException(failure); }
-        }, (head, content) -> new AtomicFileWriter().writeString(head, content,
-                AtomicFileWriter.ReplacePermission.TARGET, AtomicFileWriter.ReplaceOption.FOLLOW_LINK_TO_DAW_FILE));
+        }, (head, content, beforeReplace) -> {
+            beforeReplace.verify();
+            replaceHead(head, content);
+        });
         manager.setRecoveryGate((directory, readOnly, lock) -> result.set(gate.run(directory, readOnly, lock)));
         worker(() -> { try (ProjectManager.PreparedOpen ignored = manager.prepareOpen(folder)) { return null; } });
         return result.get();
+    }
+
+    /** Recover everything on {@code folder} through a prepared open, with {@code commit} and {@code replay}. */
+    private void recoverEverything(Path folder, OpenRecoveryGate.Commit commit, OpenRecoveryGate.Replay replay) throws Exception {
+        ProjectManager manager = new ProjectManager(new CheckpointManager(AutoSaveConfig.DEFAULT.withEnabled(false)));
+        OpenRecoveryGate gate = new OpenRecoveryGate(manager, () -> true, _ -> RecoveryChoice.REPLAY_ALL, commit, replay);
+        manager.setRecoveryGate((directory, readOnly, lock) -> {
+            openLease.set(lock);
+            gate.run(directory, readOnly, lock);
+        });
+        worker(() -> { try (ProjectManager.PreparedOpen ignored = manager.prepareOpen(folder)) { return null; } });
+    }
+
+    /** Replaces {@code head} as the production commit does once its lease check has passed. */
+    private static void replaceHead(Path head, String content) throws IOException {
+        new AtomicFileWriter().writeString(head, content,
+                AtomicFileWriter.ReplacePermission.TARGET, AtomicFileWriter.ReplaceOption.FOLLOW_LINK_TO_DAW_FILE);
+    }
+
+    /** A second session on another machine, which takes the folder over. */
+    private static ProjectLockManager anotherSession() {
+        return new ProjectLockManager(java.time.InstantSource.system(), "other engineer", "other studio", 4242L);
     }
 
     /**

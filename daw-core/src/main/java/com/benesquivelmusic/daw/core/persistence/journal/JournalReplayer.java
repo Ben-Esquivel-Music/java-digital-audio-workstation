@@ -6,8 +6,6 @@ import com.benesquivelmusic.daw.core.persistence.UnreadProjectItem;
 import com.benesquivelmusic.daw.core.project.DawProject;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -279,7 +277,7 @@ public final class JournalReplayer {
         if (sha256.isPresent() && !JournalState.sha256(bytes).equals(sha256.get())) {
             throw new IOException("The recovery point changed after the recovery was planned: " + checkpointPath);
         }
-        String xml = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString();
+        String xml = ProjectDeserializer.decodeUtf8(bytes);
         DawProject project = deserializer.deserialize(xml, ctx.projectDirectory());
         List<UnreadProjectItem> unreadItems = deserializer.getUnreadItems();
         project.setMetadata(project.getMetadata().withPath(ctx.projectDirectory()));

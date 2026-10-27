@@ -74,6 +74,8 @@ import java.awt.geom.Rectangle2D;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -395,6 +397,24 @@ public final class ProjectDeserializer {
     DawProject deserialize(Document document, Path projectDirectory) {
         resetForLoad(projectDirectory);
         return migrateAndParse(document);
+    }
+
+    /**
+     * Decodes a project document's bytes as strict UTF-8, as
+     * {@link Files#readString(Path)} reads {@code project.daw}: malformed or
+     * unmappable input throws instead of becoming U+FFFD replacement
+     * characters. Shared by {@link RecoveryTemps#inspect}, which calls an
+     * interrupted save complete only if its bytes decode here, and by that
+     * save's promotion ({@code RecoveryPlan.NewerHead.readUnchanged}), so a
+     * temp the inspection calls complete is one the promotion can read; the
+     * journal replay reads its recovery point with it too.
+     *
+     * @param bytes the document's bytes
+     * @return the document's text
+     * @throws CharacterCodingException if {@code bytes} are not strict UTF-8
+     */
+    public static String decodeUtf8(byte[] bytes) throws CharacterCodingException {
+        return StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString();
     }
 
     /**

@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.persistence.journal;
 
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
+import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
 import com.benesquivelmusic.daw.core.persistence.backup.BackupRetentionPolicyStore;
 import com.benesquivelmusic.daw.core.project.DawProject;
@@ -14,6 +15,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
+import java.nio.charset.MalformedInputException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.FileSystemException;
@@ -514,6 +516,42 @@ class JournalSessionRecoveryTest {
         Files.writeString(context.journalDirectory().resolve(JournalState.BASE_FILE), xml("Changed baseline"));
         assertThatThrownBy(() -> new JournalReplayer().recover(context)).isInstanceOf(JournalRecoveryException.class);
         assertThat(JournalState.records(context)).isNotEmpty();
+    }
+
+    /**
+     * The recovery point is certified by its SHA-256 alone, so replay decodes it strictly: bytes that
+     * are not UTF-8 roll the replay back, never load with U+FFFD in their place.
+     */
+    @Test void aCertifiedRecoveryPointWhoseBytesAreNotUtf8RollsTheReplayBack() throws Exception {
+        ProjectContext context = context("Session start");
+        String captured = xml("Captured XX");
+        int at = captured.indexOf("XX");
+        assertThat(at).isPositive();
+        byte[] bytes = captured.getBytes(StandardCharsets.UTF_8);
+        int offset = captured.substring(0, at).getBytes(StandardCharsets.UTF_8).length;
+        bytes[offset] = (byte) 0xC3; // a lead byte whose continuation is missing: '(' follows it
+        bytes[offset + 1] = (byte) 0x28;
+        assertThat(new ProjectDeserializer().deserialize(new String(bytes, StandardCharsets.UTF_8), folder).getName())
+                .as("a lenient decode substitutes U+FFFD and reads the project").contains("\uFFFD");
+        Path checkpoint = Files.write(Files.createDirectories(folder.resolve("checkpoints"))
+                .resolve("checkpoint-001-20261025T080000.daw"), bytes);
+        try (JournalWriter writer = new JournalWriter(context, JournalConfig.DEFAULT, true, null)) {
+            writer.start();
+            writer.offer("MixerEvent.GainChanged", UUID.randomUUID(), null, NOW);
+            writer.onCheckpointSucceeded(writer.captureSequence(), checkpoint, NOW);
+            writer.offer("MixerEvent.MuteChanged", UUID.randomUUID(), null, NOW);
+        }
+        assertThat(recoveryPoint(context).file()).as("its digest matches these bytes, so the plan certifies it")
+                .isEqualTo(checkpoint);
+        byte[] head = Files.readAllBytes(context.projectFile());
+
+        assertThatThrownBy(() -> new JournalReplayer().recover(context))
+                .isInstanceOf(JournalRecoveryException.class)
+                .hasMessage("recovery rolled back")
+                .hasCauseExactlyInstanceOf(MalformedInputException.class);
+        assertThat(Files.readAllBytes(context.projectFile())).as("nothing was written").isEqualTo(head);
+        assertThat(Files.readAllBytes(checkpoint)).isEqualTo(bytes);
+        assertThat(JournalState.needsRecovery(context)).isTrue();
     }
 
     @Test void publicationFenceCannotBeOvertakenByAStalledOrOverflowingAsyncSubscriber() throws Exception {

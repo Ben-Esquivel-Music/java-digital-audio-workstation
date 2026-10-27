@@ -17,7 +17,10 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.MalformedInputException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -369,7 +372,32 @@ class RecoveryPlanTest {
         assertThatThrownBy(() -> new JournalReplayer().recover(plan)).isInstanceOf(IllegalArgumentException.class);
     }
 
+    /**
+     * The promotion decodes as strictly as the inspection that called the save complete: bytes that
+     * are not UTF-8 are refused, never written to the head with U+FFFD in their place.
+     */
+    @Test
+    void anInterruptedSaveThatIsNotStrictUtf8IsRefusedAtItsPromotion() throws Exception {
+        byte[] bytes = withInvalidUtf8(xml("Interrupted MARK"), "MARK");
+        Path temp = Files.write(folder.resolve(TEMP_NAME), bytes);
+        Files.setLastModifiedTime(temp, FileTime.from(NOW.plusSeconds(30)));
+        RecoveryPlan.NewerHead save = new RecoveryPlan.NewerHead(temp, NOW.plusSeconds(30), bytes.length);
+
+        assertThatThrownBy(save::readUnchanged).isInstanceOf(MalformedInputException.class);
+    }
+
     // ---- fixtures -----------------------------------------------------------
+
+    /** {@code xml} as UTF-8, with {@code mark} replaced by a lead byte that lacks its continuation. */
+    private static byte[] withInvalidUtf8(String xml, String mark) {
+        int at = xml.indexOf(mark);
+        assertThat(at).isPositive();
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        bytes.writeBytes(xml.substring(0, at).getBytes(StandardCharsets.UTF_8));
+        bytes.writeBytes(new byte[] {(byte) 0xC3, (byte) 0x28});
+        bytes.writeBytes(xml.substring(at + mark.length()).getBytes(StandardCharsets.UTF_8));
+        return bytes.toByteArray();
+    }
 
     /**
      * (a) a verified capture of checkpoint #1 with two mutations before and one after it, and an
