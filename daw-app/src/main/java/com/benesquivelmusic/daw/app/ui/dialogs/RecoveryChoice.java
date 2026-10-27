@@ -9,14 +9,16 @@ package com.benesquivelmusic.daw.app.ui.dialogs;
 public enum RecoveryChoice {
 
     /**
-     * Replay the whole write-ahead journal on top of the newest checkpoint —
-     * the primary, "I want my work back" path.
+     * Recover everything: load the recovery point the dialog names and apply
+     * the journaled changes replay can rebuild, or promote a newer interrupted
+     * save, backing up {@code project.daw} first when there is one.
      */
     REPLAY_ALL,
 
     /**
-     * Open only the newest clean checkpoint and discard the journal — the
-     * conservative "give me the last known-good save" path.
+     * Restore checkpoint only: open the last clean save ({@code project.daw})
+     * and, when journaled persistence is on, delete the journal; refused, with
+     * nothing deleted, when there is no {@code project.daw}.
      */
     CHECKPOINT_ONLY,
 

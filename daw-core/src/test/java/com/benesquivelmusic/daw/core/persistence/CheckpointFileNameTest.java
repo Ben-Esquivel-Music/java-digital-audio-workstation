@@ -173,10 +173,11 @@ class CheckpointFileNameTest {
             assertThat(recorder.events(CheckpointEvent.Failed.class)).isEmpty();
             assertThat(checkpointNames(projectDir)).as("the prune counted them and deleted the first")
                     .containsExactlyElementsOf(kept);
-            assertThat(new RecoveryScanner().scan(ProjectContext.forProject(projectDir)))
-                    .hasValueSatisfying(summary -> {
-                        assertThat(summary.checkpointFileName()).isEqualTo(written.get(2));
-                        assertThat(summary.checkpointIndex()).isEqualTo(3);
+            assertThat(new RecoveryScanner().newestCheckpoint(ProjectContext.forProject(projectDir).checkpointDirectory()))
+                    .hasValueSatisfying(newest -> {
+                        assertThat(newest.getFileName().toString()).isEqualTo(written.get(2));
+                        assertThat(CheckpointFileName.parse(newest.getFileName().toString()).orElseThrow().index())
+                                .isEqualTo(3);
                     });
             assertThat(new SessionManager().history(projectDir)).flatExtracting(WorkingSession::checkpointIds)
                     .containsExactlyElementsOf(kept);

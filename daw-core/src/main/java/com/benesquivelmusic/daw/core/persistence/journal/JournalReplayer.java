@@ -6,29 +6,36 @@ import com.benesquivelmusic.daw.core.persistence.UnreadProjectItem;
 import com.benesquivelmusic.daw.core.project.DawProject;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ExecutionException;
+import java.util.function.BiConsumer;
 
 /**
  * Story 298 — the structured, rollback-safe crash-recovery replay
  * (Design Book §4.6.1 / §5.3).
  *
- * <p>{@link #recover(ProjectContext)} fans three independent inputs out as
- * sibling subtasks of a shutdown-on-failure {@link DawScope} — verify segment
- * checksums, load the newest checkpoint into a <em>fresh</em>
- * {@link DawProject}, and read the journal records — then joins them. The
- * {@code DawScope} (a non-preview reimplementation of JEP 505 on virtual
- * threads) guarantees that the first failing subtask makes
+ * <p>{@link #recover(RecoveryPlan)} replays the plan the recovery dialog
+ * described: it loads the plan's recovery point into a <em>fresh</em>
+ * {@link DawProject} and applies exactly the plan's journaled changes (the
+ * mutation records after the point's capture boundary). Two independent
+ * inputs fan out as sibling subtasks of a shutdown-on-failure
+ * {@link DawScope} — the strict checksum verification of every segment, and
+ * the load of the recovery point after its SHA-256 is verified again — then
+ * join. The {@code DawScope} (a non-preview reimplementation of JEP 505 on
+ * virtual threads) guarantees that the first failing subtask makes
  * {@link DawScope#joinAll()} throw and interrupts the survivors, so the merge
- * step runs <strong>only when all three inputs are valid</strong>. Because the
- * merge happens on a fresh project assembled after the join, a corrupt segment
- * or checkpoint rolls the whole recovery back via
- * {@link JournalRecoveryException} without ever touching a live project.</p>
+ * step runs <strong>only when both inputs are valid</strong>. Because the
+ * merge happens on a fresh project assembled after the join, a corrupt
+ * segment, or a recovery point that changed after the plan described it,
+ * rolls the whole recovery back via {@link JournalRecoveryException} without
+ * ever touching a live project.</p>
  *
  * <h2>No {@code ThreadLocal}</h2>
  * <p>The per-recovery {@link ProjectContext} is threaded into each fork by
@@ -36,19 +43,26 @@ import java.util.concurrent.ExecutionException;
  * in place of a thread-bound slot.</p>
  *
  * <h2>Apply fidelity</h2>
- * <p>{@link #applyRecords} is a clean, extensible dispatch on the record
- * {@code type} tag. Be honest about its reach: most current {@link
+ * <p>{@link #applyRecords} dispatches each record through one per-type rule,
+ * {@link #rebuilds(String)}, which the {@link RecoverySummary}'s rebuilt count
+ * also uses. Be honest about its reach: most current {@link
  * com.benesquivelmusic.daw.sdk.event.DawEvent DawEvent}s carry only an entity
  * id and a timestamp (no before/after payload — see {@code DawEvent}'s
- * "notification, not a state-bearing delta" contract), so faithful
- * per-mutation state reconstruction is bounded by event richness and is, for
- * now, intentionally minimal (the records are counted and dispatched but most
- * leaf types carry no reconstructable delta). The structural guarantee this
- * story delivers — <em>atomic, structured, rollback-safe replay onto a
- * checkpoint with no half-applied state</em> — does not depend on per-type
- * fidelity, and the dispatch is trivially extended as events gain payloads.</p>
+ * "notification, not a state-bearing delta" contract), and the journal records
+ * them with no payload, so no type is rebuilt today: the records are counted
+ * and dispatched, and the recovered project is the recovery point. The
+ * structural guarantee this story delivers — <em>atomic, structured,
+ * rollback-safe replay onto a verified recovery point with no half-applied
+ * state</em> — does not depend on per-type fidelity, and a type is rebuilt as
+ * soon as its delta joins {@link #DELTAS}.</p>
  */
 public final class JournalReplayer {
+
+    /**
+     * The per-type deltas replay applies: a record type listed here changes the recovered
+     * project. Empty: no journaled event family carries a reconstructable delta yet.
+     */
+    private static final Map<String, BiConsumer<DawProject, JournalRecord>> DELTAS = Map.of();
 
     private final ProjectDeserializer deserializer;
     private final RecoveryScanner scanner;
@@ -62,7 +76,8 @@ public final class JournalReplayer {
      * Creates a replayer with explicit collaborators (test seam).
      *
      * @param deserializer the project deserializer
-     * @param scanner      the recovery scanner used to build the summary
+     * @param scanner      the recovery scanner that builds the plan
+     *                     {@link #recover(ProjectContext)} replays
      */
     public JournalReplayer(ProjectDeserializer deserializer, RecoveryScanner scanner) {
         this.deserializer = Objects.requireNonNull(deserializer, "deserializer must not be null");
@@ -70,28 +85,71 @@ public final class JournalReplayer {
     }
 
     /**
-     * Recovers a project by structured replay: the newest checkpoint in
-     * {@code ctx.checkpointDirectory()} is loaded and every well-formed record
-     * across {@code ctx.journalDirectory()}'s segments is replayed onto it.
+     * Whether replaying a record of {@code type} changes the recovered project: the one rule
+     * {@link #applyRecords} applies and the {@link RecoverySummary.Changes#rebuilt()} count uses.
      *
-     * @param ctx the project context
-     * @return the recovery result
-     * @throws JournalRecoveryException if there is no checkpoint to recover
-     *                                  from, or if any recovery subtask fails
-     *                                  (the recovery is then rolled back)
+     * @param type a mutation record's type tag
+     * @return {@code true} if replay rebuilds the change into the recovered project
      */
-    public RecoveryResult recover(ProjectContext ctx) {
-        Objects.requireNonNull(ctx, "ctx must not be null");
-        try {
-            JournalState.ReplayBase base = JournalState.replayBase(ctx);
-            return recover(ctx, base.file(), listSegments(ctx), base.sequence());
-        } catch (IOException failure) {
-            throw new JournalRecoveryException("Cannot establish the session replay base", failure);
-        }
+    static boolean rebuilds(String type) {
+        return DELTAS.containsKey(type);
     }
 
     /**
-     * Recovers using an explicit checkpoint and segment set (test overload).
+     * Recovers a project from the journal as it is now: the plan
+     * {@link RecoveryScanner#replayPlan(ProjectContext)} builds, replayed by
+     * {@link #recover(RecoveryPlan)}.
+     *
+     * @param ctx the project context
+     * @return the recovery result
+     * @throws JournalRecoveryException if the evidence cannot be read, there is
+     *                                  no recovery point to recover from, or any
+     *                                  recovery subtask fails (the recovery is
+     *                                  then rolled back)
+     */
+    public RecoveryResult recover(ProjectContext ctx) {
+        Objects.requireNonNull(ctx, "ctx must not be null");
+        RecoveryPlan plan;
+        try {
+            plan = scanner.replayPlan(ctx);
+        } catch (IOException failure) {
+            throw new JournalRecoveryException("Cannot establish the session replay base", failure);
+        }
+        return recover(plan);
+    }
+
+    /**
+     * Replays a journal plan: loads its recovery point, after verifying that the
+     * file still has the SHA-256 the plan recorded, into a fresh project and
+     * applies exactly its journaled changes, while every segment passes the
+     * strict checksum read again.
+     *
+     * @param plan the plan the recovery dialog described
+     * @return the recovery result
+     * @throws IllegalArgumentException if the plan promotes an interrupted save
+     *                                  instead of replaying a journal
+     * @throws JournalRecoveryException if the plan has no recovery point or
+     *                                  found a damaged segment (that one is
+     *                                  named in the message), the recovery
+     *                                  point changed after the plan was built,
+     *                                  or any recovery subtask fails (the
+     *                                  recovery is then rolled back)
+     */
+    public RecoveryResult recover(RecoveryPlan plan) {
+        Objects.requireNonNull(plan, "plan must not be null");
+        if (!(plan.recovery() instanceof RecoveryPlan.ReplayJournal journal)) {
+            throw new IllegalArgumentException("Only a journal plan replays; an interrupted save is promoted as written");
+        }
+        RecoveryPlan.Available base = switch (journal.base()) {
+            case RecoveryPlan.Unavailable unavailable -> throw cannotStart(unavailable, plan.context());
+            case RecoveryPlan.Available available -> available;
+        };
+        return replay(plan.context(), base.file(), Optional.of(base.sha256()), plan.segments(), journal.mutations());
+    }
+
+    /**
+     * Recovers using an explicit checkpoint and segment set, replaying every
+     * mutation record in them (test overload).
      *
      * @param ctx            the project context (threaded into each fork)
      * @param checkpointPath the checkpoint file to load
@@ -99,38 +157,61 @@ public final class JournalReplayer {
      * @return the recovery result
      * @throws JournalRecoveryException if any subtask fails (rolled back)
      */
-    public RecoveryResult recover(ProjectContext ctx, Path checkpointPath, List<Path> segmentPaths) {
-        return recover(ctx, checkpointPath, segmentPaths, -1L);
-    }
-
-    private RecoveryResult recover(ProjectContext ctx, Path checkpointPath, List<Path> segmentPaths, long captureSequence) {
+    RecoveryResult recover(ProjectContext ctx, Path checkpointPath, List<Path> segmentPaths) {
         Objects.requireNonNull(ctx, "ctx must not be null");
         Objects.requireNonNull(checkpointPath, "checkpointPath must not be null");
-        Objects.requireNonNull(segmentPaths, "segmentPaths must not be null");
-        List<Path> segments = List.copyOf(segmentPaths);
+        List<Path> segments = List.copyOf(Objects.requireNonNull(segmentPaths, "segmentPaths must not be null"));
+        List<JournalRecord> mutations;
+        try {
+            mutations = RecoveryScanner.readAllSorted(segments).stream().filter(record -> !record.isControl()).toList();
+        } catch (IOException failure) {
+            throw new JournalRecoveryException("recovery rolled back", failure);
+        }
+        return replay(ctx, checkpointPath, Optional.empty(), segments, mutations);
+    }
 
+    /**
+     * The failure of a replay that cannot start. A damaged segment is the reason itself: the
+     * recovery point is intact, so the message names the segment, not the base.
+     */
+    private static JournalRecoveryException cannotStart(RecoveryPlan.Unavailable unavailable, ProjectContext ctx) {
+        String why = describe(unavailable, ctx);
+        if (unavailable.reason() instanceof RecoverySummary.SegmentDamaged) {
+            return new JournalRecoveryException(why, new IOException(why));
+        }
+        return new JournalRecoveryException("Cannot establish the session replay base", new IOException(why));
+    }
+
+    private static String describe(RecoveryPlan.Unavailable base, ProjectContext ctx) {
+        Path sessionBase = ctx.journalDirectory().resolve(JournalState.BASE_FILE);
+        return switch (base.reason()) {
+            case RecoverySummary.BaseMissing _ -> "The session's replay base is missing: " + sessionBase;
+            case RecoverySummary.BaseChanged _ -> "The session's replay base has changed: " + sessionBase;
+            case RecoverySummary.SegmentDamaged damaged -> "journal segment failed checksum verification: "
+                    + ctx.journalDirectory().resolve(damaged.segmentFileName());
+            case RecoverySummary.NoBase _ -> "No replay base exists";
+        };
+    }
+
+    private RecoveryResult replay(ProjectContext ctx, Path baseFile, Optional<String> sha256, List<Path> segments,
+                                  List<JournalRecord> mutations) {
         try (DawScope scope = DawScope.openShutdownOnFailure("project-recover")) {
             // Each lambda captures `ctx` explicitly — the no-ThreadLocal seam.
             DawScope.Subtask<Void> checksum = scope.fork("checksum",
                     () -> { verifyChecksums(ctx, segments); return null; });
             DawScope.Subtask<LoadedCheckpoint> base = scope.fork("load-checkpoint",
-                    () -> loadCheckpoint(ctx, checkpointPath));
-            DawScope.Subtask<List<JournalRecord>> recs = scope.fork("replay-segment",
-                    () -> readRecords(ctx, segments));
+                    () -> loadCheckpoint(ctx, baseFile, sha256));
 
             scope.joinAll();   // throws ExecutionException if ANY fork failed
 
-            // All three inputs are valid — merge onto the FRESH project only now.
+            // Both inputs are valid — merge onto the FRESH project only now.
             LoadedCheckpoint loaded = base.resultNow();
             DawProject recovered = loaded.project();
-            List<JournalRecord> records = recs.resultNow().stream()
-                    .filter(record -> record.sequence() > captureSequence).toList();
-            int applied = applyRecords(recovered, records);
+            int applied = applyRecords(recovered, mutations);
 
-            RecoverySummary summary = buildSummary(ctx, checkpointPath, segments, records);
             // Touch the checksum result so its successful completion is observed.
             checksum.resultNow();
-            return new RecoveryResult(recovered, summary, applied, loaded.unreadItems());
+            return new RecoveryResult(recovered, applied, loaded.unreadItems());
         } catch (ExecutionException e) {
             Throwable cause = e.getCause() != null ? e.getCause() : e;
             throw new JournalRecoveryException("recovery rolled back", cause);
@@ -147,8 +228,10 @@ public final class JournalReplayer {
      * corrupt segment whose tail fails CRC after some valid records is fine
      * (that is normal truncation); but a segment that is entirely unreadable,
      * or that fails to fully decode where bytes remain, fails the recovery so
-     * the structured scope rolls back. The {@code ctx} argument is the
-     * explicitly-threaded context (no {@link ThreadLocal}).
+     * the structured scope rolls back. {@link RecoveryScanner} describes a
+     * plan with a segment that fails here as one whose replay cannot start.
+     * The {@code ctx} argument is the explicitly-threaded context (no
+     * {@link ThreadLocal}).
      */
     private void verifyChecksums(ProjectContext ctx, List<Path> segments) throws IOException {
         Objects.requireNonNull(ctx, "ctx must not be null");
@@ -171,26 +254,32 @@ public final class JournalReplayer {
 
     /**
      * Loads {@code checkpointPath} into a fresh {@link DawProject}. Throws if
-     * the checkpoint is missing or cannot be deserialised — which fails the
-     * recovery and rolls it back. The {@code ctx} argument is the
-     * explicitly-threaded context (no {@link ThreadLocal}); its
-     * {@link ProjectContext#projectDirectory()} is the base the checkpoint's
-     * project-relative clip references resolve against (story 323) — a
-     * checkpoint lives in {@code <project>/checkpoints/} but its references
-     * are relative to {@code <project>/}. The same directory is stamped on the
-     * recovered project's metadata (mirroring
+     * the file is missing, no longer has the SHA-256 the plan recorded for it
+     * ({@code sha256}; the bytes checked are the bytes deserialised), or cannot
+     * be deserialised — which fails the recovery and rolls it back. The
+     * {@code ctx} argument is the explicitly-threaded context (no
+     * {@link ThreadLocal}); its {@link ProjectContext#projectDirectory()} is
+     * the base the file's project-relative clip references resolve against
+     * (story 323) — a checkpoint lives in {@code <project>/checkpoints/} but its
+     * references are relative to {@code <project>/}. The same directory is
+     * stamped on the recovered project's metadata (mirroring
      * {@code ProjectManager.openProject}): the references the deserializer
      * resolved are absolute in memory, and a serializer can only write them
      * project-relative again when the project knows its directory. The saved
      * items the read could not honour as written are taken with it, read right
      * after the load in this subtask.
      */
-    private LoadedCheckpoint loadCheckpoint(ProjectContext ctx, Path checkpointPath) throws IOException {
+    private LoadedCheckpoint loadCheckpoint(ProjectContext ctx, Path checkpointPath, Optional<String> sha256)
+            throws IOException {
         Objects.requireNonNull(ctx, "ctx must not be null");
         if (!Files.exists(checkpointPath)) {
             throw new IOException("checkpoint file not found: " + checkpointPath);
         }
-        String xml = Files.readString(checkpointPath);
+        byte[] bytes = Files.readAllBytes(checkpointPath);
+        if (sha256.isPresent() && !JournalState.sha256(bytes).equals(sha256.get())) {
+            throw new IOException("The recovery point changed after the recovery was planned: " + checkpointPath);
+        }
+        String xml = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString();
         DawProject project = deserializer.deserialize(xml, ctx.projectDirectory());
         List<UnreadProjectItem> unreadItems = deserializer.getUnreadItems();
         project.setMetadata(project.getMetadata().withPath(ctx.projectDirectory()));
@@ -201,27 +290,16 @@ public final class JournalReplayer {
     private record LoadedCheckpoint(DawProject project, List<UnreadProjectItem> unreadItems) {
     }
 
-    /**
-     * Reads every well-formed record across {@code segments}, sorted by
-     * sequence. The {@code ctx} argument is the explicitly-threaded context
-     * (no {@link ThreadLocal}).
-     */
-    private List<JournalRecord> readRecords(ProjectContext ctx, List<Path> segments)
-            throws IOException {
-        Objects.requireNonNull(ctx, "ctx must not be null");
-        return RecoveryScanner.readAllSorted(segments);
-    }
-
     // ---- deterministic merge ----------------------------------------------
 
     /**
      * Best-effort, extensible apply of {@code records} (already sorted by
      * sequence) onto {@code project}. See the class Javadoc's "Apply fidelity"
-     * note: most current event records carry only identity + timestamp, so the
-     * dispatch counts and routes records but reconstructs no per-mutation state
-     * for the payload-free leaf types. Checkpoint markers are skipped.
+     * note: a record changes the project only when {@link #rebuilds(String)}
+     * says its type does; every other record is counted and dispatched as a
+     * no-op state advance. Session (control) records are skipped.
      *
-     * @return the number of records applied (i.e. dispatched, excluding markers)
+     * @return the number of records applied (i.e. dispatched, excluding session records)
      */
     int applyRecords(DawProject project, List<JournalRecord> records) {
         Objects.requireNonNull(project, "project must not be null");
@@ -237,73 +315,14 @@ public final class JournalReplayer {
     }
 
     /**
-     * Applies a single record. Dispatches on the family prefix of the type
-     * tag; payload-free families are accepted as no-op-state advances (the
-     * record's existence is the recovery signal). Extend the branches as
-     * events gain reconstructable payloads.
+     * Applies a single record through the one per-type rule: a type whose
+     * delta is known changes the project; any other type, known family or
+     * unknown / future tag, is accepted as a no-op state advance (the record's
+     * existence is the recovery signal; forward compatibility).
      */
     private void applyOne(DawProject project, JournalRecord record) {
-        String type = record.type();
-        // Family-level dispatch — ready to be specialised per leaf type as
-        // payloads arrive. Today these are intentionally non-mutating because
-        // the source events carry no before/after delta.
-        if (type.startsWith("MixerEvent.")) {
-            return;
-        } else if (type.startsWith("TrackEvent.")) {
-            return;
-        } else if (type.startsWith("ClipEvent.")) {
-            return;
-        } else if (type.startsWith("AutomationEvent.")) {
-            return;
-        } else if (type.startsWith("PluginEvent.")) {
-            return;
-        } else if (type.startsWith("TransportEvent.")) {
-            return;
-        } else if (type.startsWith("ProjectEvent.")) {
-            return;
-        }
-        // Unknown / future type tags are tolerated (forward compatibility).
-    }
-
-    // ---- summary + discovery helpers --------------------------------------
-
-    private RecoverySummary buildSummary(ProjectContext ctx, Path checkpointPath,
-                                         List<Path> segments, List<JournalRecord> records) {
-        try {
-            return scanner.scan(ctx).orElseGet(() -> minimalSummary(checkpointPath, segments, records));
-        } catch (IOException e) {
-            return minimalSummary(checkpointPath, segments, records);
-        }
-    }
-
-    private static RecoverySummary minimalSummary(Path checkpointPath, List<Path> segments,
-                                                  List<JournalRecord> records) {
-        List<String> segmentNames = new ArrayList<>();
-        for (Path s : segments) {
-            segmentNames.add(s.getFileName().toString());
-        }
-        String lastType = records.isEmpty() ? "" : records.getLast().type();
-        var lastTime = records.isEmpty() ? null : records.getLast().timestamp();
-        return new RecoverySummary(
-                -1, null, checkpointPath.getFileName().toString(),
-                lastType, lastTime, records.size(),
-                java.time.Duration.ZERO, segmentNames, 0L, List.of());
-    }
-
-    private Optional<Path> newestCheckpointPath(ProjectContext ctx) {
-        try {
-            return scanner.findNewestCheckpoint(ctx.checkpointDirectory())
-                    .map(RecoveryScanner.Checkpoint::path);
-        } catch (IOException e) {
-            return Optional.empty();
-        }
-    }
-
-    private static List<Path> listSegments(ProjectContext ctx) {
-        try {
-            return RecoveryScanner.listSegments(ctx.journalDirectory());
-        } catch (IOException e) {
-            return List.of();
+        if (rebuilds(record.type())) {
+            DELTAS.get(record.type()).accept(project, record);
         }
     }
 }

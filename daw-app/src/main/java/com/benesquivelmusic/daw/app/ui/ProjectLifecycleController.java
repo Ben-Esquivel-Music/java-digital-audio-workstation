@@ -394,7 +394,7 @@ final class ProjectLifecycleController {
      * dismisses the Welcome window once the recovery may begin (story 331: a
      * refused Recover leaves the window up). The default
      * ({@link #beginRecovery(Path, Runnable)}) scans the project off the FX
-     * thread and, if a journal is present, shows the {@link RecoveryDialog}.
+     * thread and, when a recovery decision is owed, shows the {@link RecoveryDialog}.
      * Field + setter ({@link #setRecoverAction(BiConsumer)}), no ctor change
      * (the story-296 seam shape).
      */
@@ -504,9 +504,7 @@ final class ProjectLifecycleController {
                     retiredOutgoing = true;
                 }
                 projectManager.openProject(folder, prepared); // PARSE only; target lock and recovery already resolved
-                OpenRecoveryGate.Result result = recoveryResult;
-                OpenDoor actualDoor = result.applied() >= 0
-                        ? new OpenDoor.JournalReplay(result.applied(), result.unread()) : selectedDoor;
+                OpenDoor actualDoor = recoveryResult.door(selectedDoor);
                 PreparedLoad loaded = callOnFx(() -> {
                     if (refuseLateLoadWhileATakeIsRecordingOrBeingWritten(
                             "The recovery decision for " + folder + " was applied")) return null;
@@ -1426,7 +1424,7 @@ final class ProjectLifecycleController {
                 });
             } catch (RuntimeException | Error failure) {
                 postFx(() -> {
-                    notificationBar.show(NotificationLevel.ERROR, "Project journal could not start: " + failureReason(failure));
+                    notificationBar.show(NotificationLevel.ERROR, "New project created; journaled persistence is paused until this project is reopened. " + failureReason(failure));
                     finishReplacement(attempt);
                 });
             }
@@ -3326,8 +3324,9 @@ final class ProjectLifecycleController {
      * <ul>
      *   <li>no summary / no journal → just open the project normally;</li>
      *   <li>otherwise show the {@link RecoveryDialog} and branch on the
-     *       {@link RecoveryChoice}: {@code REPLAY_ALL} replays the journal onto
-     *       the newest checkpoint and opens the recovered state;
+     *       {@link RecoveryChoice}: {@code REPLAY_ALL} loads the journal's
+     *       verified recovery point (JournalReplayer.recover) and opens the
+     *       recovered state;
      *       {@code CHECKPOINT_ONLY} opens the project as-is; {@code INSPECT_EVENTS}
      *       lists the captured event types and leaves the project unopened;
      *       {@code CANCEL} does nothing.</li>
@@ -3344,6 +3343,11 @@ final class ProjectLifecycleController {
      * thrown on a worker leaves it pending. Recover asked while another
      * switch is pending is refused with that switch's INFO, before the
      * recording and take refusal.</p>
+     *
+     * <p>Without the open recovery gate (test-only; production always
+     * installs it) this path's choices do not match every sentence of the
+     * dialog, which describes the gated choices; a future story retires
+     * it.</p>
      *
      * <p>Package-private so a test can drive it directly.</p>
      *
@@ -3396,7 +3400,8 @@ final class ProjectLifecycleController {
         Optional<RecoverySummary> summary;
         try {
             beforeRecoveryWork.accept(RECOVERY_SCAN_WORKER);
-            summary = new RecoveryScanner().scan(ctx);
+            summary = new RecoveryScanner().plan(ctx, new com.benesquivelmusic.daw.core.persistence.RecoveryTemps(
+                    List.of(), null), true).map(com.benesquivelmusic.daw.core.persistence.journal.RecoveryPlan::summary);
         } catch (IOException e) {
             LOG.log(Level.WARNING, "Recovery scan failed for " + projectDir, e);
             postFx(() -> afterTheRecoveryWorker(() -> openLastCleanSaveAfterFailedScan(projectDir)));
@@ -3455,8 +3460,8 @@ final class ProjectLifecycleController {
      */
     private void presentRecovery(Path projectDir, RecoverySummary summary) {
         try {
-            if (summary == null || !summary.hasJournal()) {
-                // Nothing to replay — open the last clean state normally.
+            if (summary == null) {
+                // No recovery decision is owed — open the last clean state normally.
                 afterTheRecoveryWorker(() -> whenNoAppWriteIsPending(RECOVER_SESSION_DOOR,
                         this::refuseWhileATakeIsRecordingOrBeingWritten, () -> loadProjectFromPath(projectDir)));
                 return;
@@ -3468,8 +3473,9 @@ final class ProjectLifecycleController {
                 // takes over in the FX step the wait ends in.
                 case REPLAY_ALL -> afterTheRecoveryWorker(() -> whenNoAppWriteIsPending(RECOVER_SESSION_DOOR,
                         () -> false, () -> replayThenOpen(projectDir)));
-                // "discards the captured changes" per the dialog — delete the journal
-                // before opening so the next launch does not re-offer recovery.
+                // Per the dialog ("Restore checkpoint only opens the last clean save and
+                // deletes the journal"), delete the journal before opening so the next
+                // launch does not re-offer recovery.
                 case CHECKPOINT_ONLY -> discardJournalThenLoad(projectDir);
                 // Inspect / Cancel do not open a project. The Recover action already
                 // dismissed the Welcome launch window, so re-present it rather than
@@ -3537,7 +3543,8 @@ final class ProjectLifecycleController {
     }
 
     /**
-     * Replays the journal onto the newest checkpoint on a virtual thread,
+     * Replays the journal from its verified recovery point
+     * (JournalReplayer.recover) on a virtual thread,
      * which then atomically rewrites {@code project.daw} with the recovered
      * state (backing up the prior file first, mirroring
      * {@code ProjectManager.writeSiblingBackup}'s {@code .bak} naming); then,
@@ -3555,7 +3562,7 @@ final class ProjectLifecycleController {
 
     /**
      * The worker half of {@link #replayThenOpen}, off the FX thread: replays
-     * the journal onto the newest checkpoint, rewrites {@code project.daw}
+     * the journal from its verified recovery point, rewrites {@code project.daw}
      * with the recovered project and deletes the journal; then, on the FX
      * thread, opens it ({@link #openRecoveredProject}) with the saved items
      * the replay's read of the checkpoint could not honour as written, which
@@ -3653,7 +3660,8 @@ final class ProjectLifecycleController {
                 + projectFile;
         whenNoAppWriteIsPending(RECOVER_SESSION_DOOR, written,
                 () -> refuseLateLoadWhileATakeIsRecordingOrBeingWritten(written),
-                () -> loadProjectFromPath(projectDir, new OpenDoor.JournalReplay(applied, replayUnread)));
+                // The ungated path is test-only and retired by a future story; its announcement is not corrected here.
+                () -> loadProjectFromPath(projectDir, new OpenDoor.JournalReplay(applied, 0, replayUnread)));
     }
 
     /**
@@ -3733,23 +3741,13 @@ final class ProjectLifecycleController {
 
     /**
      * Minimal {@code INSPECT_EVENTS} surface (story 298): an informational dialog
-     * listing the distinct event types and the replayable record count, leaving
-     * the project unopened so the user can decide their next step.
+     * worded from the summary only ({@link RecoveryDialog#inspectEventsText}) —
+     * the changes journaled after the recovery point, the journal's segment-file
+     * count and the change types, never a session record — leaving the project
+     * unopened so the user can decide their next step.
      */
     private void showInspectEvents(RecoverySummary summary) {
-        StringBuilder body = new StringBuilder();
-        body.append(summary.replayableEventCount())
-                .append(" replayable record(s) across ")
-                .append(summary.segmentFileNames().size())
-                .append(" segment(s).\n\nEvent types:\n");
-        if (summary.eventTypes().isEmpty()) {
-            body.append("  (none)");
-        } else {
-            for (String type : summary.eventTypes()) {
-                body.append("  • ").append(type).append('\n');
-            }
-        }
-        DawgDialog.info("Captured events", body.toString()).showAndWait();
+        DawgDialog.info("Captured events", RecoveryDialog.inspectEventsText(summary)).showAndWait();
     }
 
     /**

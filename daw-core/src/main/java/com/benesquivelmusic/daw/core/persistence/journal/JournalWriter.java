@@ -1,13 +1,17 @@
 package com.benesquivelmusic.daw.core.persistence.journal;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -43,7 +47,24 @@ import java.util.concurrent.locks.ReentrantLock;
  *       {@code await}) rather than {@code synchronized.wait}, so it never
  *       pins a carrier thread.</li>
  *   <li>All blocking I/O (segment append + fsync) happens on the writer
- *       virtual thread, outside any {@code synchronized} block.</li>
+ *       virtual thread, outside any {@code synchronized} block — except
+ *       {@link #start()}'s, which runs on the starting worker (never the FX
+ *       thread): it writes and reads back the session base and fsyncs the
+ *       {@code $session-start} record before the writer thread exists.</li>
+ *   <li>{@link #start()} cleans up after a failure: the writer thread is
+ *       started last, so a start that throws has no thread to stop; it
+ *       releases its segment, removes the journal evidence it can and leaves
+ *       the writer closed.</li>
+ *   <li>{@link #start()} publishes the writer thread, and {@link #close()} and
+ *       {@link #sealAndClose(Instant)} snapshot it, under the writer's
+ *       monitor, so a close or a seal that runs during a start either joins
+ *       the thread or makes the start fail; a seal that finds no thread is a
+ *       close and seals nothing.</li>
+ *   <li>An enabled writer accepts records only once {@link #start()} has
+ *       published its writer thread; an earlier {@link #offer} throws
+ *       {@link IllegalStateException}, so {@link #close()},
+ *       {@link #sealAndClose(Instant)} and {@link #forceFlush()} never meet a
+ *       record that no started session owns.</li>
  *   <li>{@link #close()} flushes and fsyncs every remaining record and
  *       closes the segment <em>before</em> it flips the terminal
  *       {@code running} flag — side effects are published before terminal
@@ -111,6 +132,8 @@ public final class JournalWriter implements AutoCloseable {
     private final List<String> segmentNames = new ArrayList<>();
     private final ReentrantLock segmentNamesLock = new ReentrantLock();
 
+    // Guarded by this writer's monitor: start() publishes it, offer() reads it,
+    // close() and sealAndClose() snapshot it.
     private Thread writerThread;
 
     /**
@@ -152,36 +175,156 @@ public final class JournalWriter implements AutoCloseable {
     // ---- lifecycle --------------------------------------------------------
 
     /**
-     * Starts the writer thread and opens {@code segment-000.bin}. A no-op if
-     * journaling is disabled (no {@code journal/} directory is created) or if
-     * already started.
+     * Starts the session: writes and verifies the session base, opens
+     * {@code segment-000.bin}, makes the {@code $session-start} record that
+     * certifies the base durable, and only then starts the writer thread. A
+     * no-op if journaling is disabled (no {@code journal/} directory is
+     * created) or if already started.
      *
-     * @throws IOException if the journal directory or first segment cannot be
-     *                     created
+     * <p>A start that throws holds no channel and no thread, and discards
+     * anything buffered. It then removes the journal evidence it made: the
+     * segment it opened is deleted, and the base it wrote and verified is
+     * deleted once that segment is confirmed gone, so a {@code $session-start}
+     * never outlives its base. What it cannot remove stays, and is inert: a
+     * segment it could not delete keeps the base beside it (the next gated
+     * open at most offers a recovery with no changes), and a base that failed
+     * its read-back is certified by no record (the next start replaces it, and
+     * the next gated open clears it). A start refused by a prior session's
+     * evidence touches neither that journal's segments nor its base. Either
+     * way the writer is then closed: {@link #offer} and a later
+     * {@code start()} throw {@link IllegalStateException}, and
+     * {@link #close()} and {@link #sealAndClose(Instant)} do nothing.</p>
+     *
+     * @throws IOException if the journal directory, the session base or the
+     *                     first segment cannot be created, the base does not
+     *                     read back as written, a prior session's journal has
+     *                     not passed recovery, or the {@code $session-start}
+     *                     record cannot be made durable
+     * @throws IllegalStateException if this writer is closed, an earlier start
+     *                     failed, or a close, or a seal (which is then a
+     *                     close), ran during this start (a close
+     *                     that released the segment before the
+     *                     {@code $session-start} record was written makes this
+     *                     start throw that record's {@link IOException} instead)
      */
     public void start() throws IOException {
         if (!enabled) {
             return;
         }
+        if (stopping || closed) {
+            throw new IllegalStateException("Journal writer is closed");
+        }
         if (!startGuard.compareAndSet(false, true)) {
             return;
         }
-        Files.createDirectories(ctx.journalDirectory());
-        for (java.nio.file.Path prior : RecoveryScanner.listSegments(ctx.journalDirectory())) {
-            if (Files.size(prior) > 0L) throw new IOException("Prior journal must pass recovery before a new session starts: " + prior);
+        boolean verifiedBase = false;
+        try {
+            Files.createDirectories(ctx.journalDirectory());
+            for (Path prior : RecoveryScanner.listSegments(ctx.journalDirectory())) {
+                if (Files.size(prior) > 0L) throw new IOException("Prior journal must pass recovery before a new session starts: " + prior);
+            }
+            Optional<String> baseHash = JournalState.saveBase(ctx);
+            verifiedBase = baseHash.isPresent();
+            openSegment(0);
+            if (baseHash.isPresent()) {
+                appendSessionStart(baseHash.get());
+            }
+            Thread thread = Thread.ofVirtual()
+                    .name("daw-journal-writer")
+                    .unstarted(this::writerLoop);
+            // Published under the monitor in which close() and sealAndClose() set `stopping`
+            // and snapshot the thread: a close that ran during this start makes it fail here
+            // instead of leaving a writer thread that no close can stop.
+            synchronized (this) {
+                if (stopping) throw new IllegalStateException("Journal writer is closed");
+                running = true;
+                thread.start();
+                writerThread = thread;
+            }
+        } catch (IOException | RuntimeException | Error failure) {
+            abandonStart(failure, verifiedBase);
+            throw failure;
         }
-        JournalState.saveBase(ctx);
-        openSegment(0);
-        running = true;
-        writerThread = Thread.ofVirtual()
-                .name("daw-journal-writer")
-                .unstarted(this::writerLoop);
-        writerThread.start();
-        if (Files.exists(ctx.projectFile())) {
-            offer(JournalRecord.SESSION_START_TYPE, null,
-                    JournalState.hash(ctx.journalDirectory().resolve(JournalState.BASE_FILE)).getBytes(java.nio.charset.StandardCharsets.UTF_8),
-                    ctx.requestedAt());
+    }
+
+    /**
+     * Appends the {@code $session-start} record and fsyncs it through the
+     * {@link JournalSegment.Syncer} on the starting thread, before the writer
+     * thread exists, so a journal that reports ready already has its
+     * provenance on disk and a failing project drive is reported at open. A
+     * control record: it is never counted as a durable mutation.
+     */
+    private void appendSessionStart(String baseHash) throws IOException {
+        appendLock.lock();
+        try {
+            segment.appendGroup(List.of(new JournalRecord(sequence.getAndIncrement(), ctx.requestedAt(),
+                    JournalRecord.SESSION_START_TYPE, null, baseHash.getBytes(StandardCharsets.UTF_8))));
+        } catch (IOException notDurable) {
+            throw new IOException("The journal could not write its first record to disk ("
+                    + JournalState.reason(notDurable) + "): " + segment.path(), notDurable);
+        } finally {
+            appendLock.unlock();
         }
+    }
+
+    /**
+     * Undoes a failed {@link #start()} in the order that keeps a
+     * {@code $session-start} from ever outliving its base. Buffered work is
+     * discarded, never drained, though none can exist: {@link #offer} refuses
+     * records until a start publishes its thread, which a failed start never does.
+     * The segment this start opened is closed, then deleted; the base this
+     * start wrote is deleted only once that segment is confirmed absent, and
+     * kept otherwise. Delete failures are attached to {@code failure} as
+     * suppressed; the {@code journal/} directory stays. The terminal flag is
+     * set last.
+     *
+     * @param failure      the start's failure, which receives any delete failure
+     * @param verifiedBase whether this start's session base was written and
+     *                     passed its read-back
+     */
+    private void abandonStart(Throwable failure, boolean verifiedBase) {
+        synchronized (this) { stopping = true; }
+        running = false;
+        discardBufferedWork();
+        Path firstSegment = ctx.journalDirectory().resolve(segmentName(0));
+        if (segment != null) {
+            segment.close();
+            deleteLeftover(firstSegment, failure);
+        }
+        if (verifiedBase && Files.notExists(firstSegment, LinkOption.NOFOLLOW_LINKS)) {
+            deleteLeftover(ctx.journalDirectory().resolve(JournalState.BASE_FILE), failure);
+        }
+        segmentNamesLock.lock();
+        try {
+            segmentNames.clear();
+        } finally {
+            segmentNamesLock.unlock();
+        }
+        closed = true;
+    }
+
+    private void discardBufferedWork() {
+        queue.clear();
+        overflowLock.lock();
+        try {
+            overflow.clear();
+            overflowBytes = 0L;
+        } finally {
+            overflowLock.unlock();
+        }
+    }
+
+    private static void deleteLeftover(Path file, Throwable failure) {
+        try {
+            Files.deleteIfExists(file);
+        } catch (IOException | RuntimeException notDeleted) {
+            failure.addSuppressed(notDeleted);
+        }
+    }
+
+    /** {@return the writer thread, once a {@link #start()} has started it} Test-visible. */
+    synchronized Optional<Thread> writerThread() {
+        return Optional.ofNullable(writerThread);
     }
 
     /** {@return {@code true} if journaling is enabled for this writer} */
@@ -218,6 +361,9 @@ public final class JournalWriter implements AutoCloseable {
      * @param payload  opaque extra bytes (may be {@code null}/empty)
      * @param ts       wall-clock instant of the mutation
      * @return the outcome (never a drop)
+     * @throws IllegalStateException if this enabled writer has not started (no
+     *                     {@code start()} has published its thread, including a
+     *                     start still running), or a close has begun
      */
     public OfferResult offer(String type, UUID entityId, byte[] payload, Instant ts) {
         Objects.requireNonNull(type, "type must not be null");
@@ -242,10 +388,18 @@ public final class JournalWriter implements AutoCloseable {
      * {@link Backpressure#UNRESPONSIVE} once. Either way the record is
      * buffered and the writer thread is signalled.</p>
      *
+     * <p>An enabled writer accepts records only from the moment its
+     * {@link #start()} has published the writer thread until a
+     * {@link #close()} or {@link #sealAndClose(Instant)} begins; outside that
+     * window it refuses rather than queue a record no writer thread owns.</p>
+     *
      * @param record the record to journal (its {@code sequence} is used as-is;
      *               prefer {@link #offer(String, UUID, byte[], Instant)} which
      *               stamps a fresh sequence)
      * @return the outcome (never a drop)
+     * @throws IllegalStateException if this enabled writer has not started (no
+     *               {@code start()} has published its thread, including a start
+     *               still running), or a close has begun
      */
     public synchronized OfferResult offer(JournalRecord record) {
         Objects.requireNonNull(record, "record must not be null");
@@ -253,6 +407,9 @@ public final class JournalWriter implements AutoCloseable {
         if (!enabled) {
             return OfferResult.DISABLED;
         }
+        // Only a start that published its writer thread owns a segment and a drain: a record accepted
+        // before then would be drained by close() into no segment, or into the one a failing start deletes.
+        if (writerThread == null) throw new IllegalStateException("Journal writer has not started");
         sequence.accumulateAndGet(record.sequence() + 1L, Math::max);
         if (queue.offer(record)) {
             signalWork();
@@ -297,11 +454,15 @@ public final class JournalWriter implements AutoCloseable {
      * fresh segment (the new checkpoint subsumes the prior segment) and resets
      * the since-checkpoint counter to 0. The actual segment swap happens on
      * the writer thread once the in-flight batch is durable.
+     *
+     * @throws IllegalStateException if this enabled writer has not started;
+     *                               nothing is changed
      */
     public void onCheckpointSucceeded() {
         if (!enabled) {
             return;
         }
+        synchronized (this) { if (writerThread == null) throw new IllegalStateException("Journal writer has not started"); }
         checkpointBoundary = captureSequence();
         durableMutations.headSet(checkpointBoundary, true).clear();
         publishQueuedCount();
@@ -312,9 +473,16 @@ public final class JournalWriter implements AutoCloseable {
     /** The publication fence at a model capture; no disk access. */
     public long captureSequence() { return sequence.get() - 1L; }
 
-    /** A successful checkpoint retires only mutations represented by its capture. */
+    /**
+     * A successful checkpoint retires only mutations represented by its capture.
+     *
+     * @throws IllegalStateException if this enabled writer has not started;
+     *                               nothing is changed
+     */
     public void onCheckpointSucceeded(long capturedSequence, java.nio.file.Path checkpoint, Instant time) throws IOException {
         if (!enabled) return;
+        // Checked under the monitor and released before appendLock is taken, so a refused call changes nothing.
+        synchronized (this) { if (writerThread == null) throw new IllegalStateException("Journal writer has not started"); }
         appendLock.lock();
         try {
             checkpointBoundary = Math.max(checkpointBoundary, capturedSequence);
@@ -553,8 +721,12 @@ public final class JournalWriter implements AutoCloseable {
 
     // ---- segment helpers --------------------------------------------------
 
+    private static String segmentName(int index) {
+        return String.format(Locale.ROOT, "segment-%03d.bin", index);
+    }
+
     private void openSegment(int index) throws IOException {
-        String name = String.format(Locale.ROOT, "segment-%03d.bin", index);
+        String name = segmentName(index);
         // Open first; only publish the new segment + index once the open
         // succeeds, so a failed open leaves the writer pointing at the still-open
         // current segment rather than a half-rotated/closed one.
@@ -597,14 +769,32 @@ public final class JournalWriter implements AutoCloseable {
 
     // ---- close ------------------------------------------------------------
 
-    /** Drains and fsyncs all edits before the final fsynced seal; any failure leaves an unsealed session. */
+    /**
+     * Drains and fsyncs all edits before the final fsynced seal; any failure leaves an unsealed session.
+     *
+     * <p>A writer whose thread was never started (it never started, or its
+     * start is still running) has no session to seal: this is then
+     * {@link #close()}, which writes no record, and a start still running
+     * fails as it does when a close runs during it (see {@link #start()}).</p>
+     */
     public void sealAndClose(Instant time) throws IOException {
         if (!enabled || closed) return;
-        synchronized (this) { stopping = true; }
+        Thread t;
+        synchronized (this) {
+            stopping = true;
+            t = writerThread;
+        }
+        if (t == null) {
+            // No writer thread was published, so no session started and there is nothing to seal.
+            // `stopping` is already set under the monitor, so a start still running fails at its
+            // re-check and abandons its own segment, exactly as for close().
+            close();
+            return;
+        }
         running = false;
         signalWork();
         try {
-            if (writerThread != null) writerThread.join();
+            t.join();
             drainUntilEmpty();
             if (closeFailure != null) throw closeFailure;
             appendLock.lock();
@@ -639,12 +829,17 @@ public final class JournalWriter implements AutoCloseable {
         // Stop accepting new background work, but keep the segment open so the
         // final drain can publish its side effects first. `stopping` is set
         // before the join so a writer thread wedged in appendWithRetry on a
-        // failing disk gives up rather than hanging the join.
-        synchronized (this) { stopping = true; }
+        // failing disk gives up rather than hanging the join. The thread is
+        // snapshotted in the same block: a start that has not published it yet
+        // sees `stopping` and fails instead.
+        Thread t;
+        synchronized (this) {
+            stopping = true;
+            t = writerThread;
+        }
         running = false;
         signalWork();
 
-        Thread t = this.writerThread;
         if (t != null) {
             try {
                 t.join();

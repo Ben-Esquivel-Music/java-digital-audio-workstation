@@ -21,7 +21,7 @@ For a studio engineer this means a crash still costs everything since the last c
 - **The recovery gate (book §4.7) runs on every open path** — Welcome ▸ Continue, Hub ▸ Open, File ▸ Open, archive restore, and the Recover tile all execute the same gate on a virtual thread (FX never scans) **before** the journal coordinator's open/rotation hooks. The Welcome Recover tile remains as an explicit entry to the same gate, no longer the only one.
 - **Crash detection becomes the session seal, not a timing heuristic** (book §3.2): a final sealed journal record — fsync-ordered, written when a session's journal closes cleanly (project switch and in-app project close now; the app-exit write lands with story 333's protocol). Absence of a seal, or records after the last checkpoint marker, classifies the project as a recovery candidate — regardless of how fresh the leftover lock looks. The 10-minute lock-staleness window and the Welcome-only entry point are retired as *detection*; lock staleness is demoted to an informational fact for the conflict dialog.
 - **Rotation never discards un-replayed records.** Journal rotation is forbidden while un-replayed records from a prior session exist; rotation keys off the applied recovery decision (replay committed or discard chosen), never off the first checkpoint of the new session.
-- **The recovery decision table (book §5.5) is implemented as specified**: absent journal → plain open with the gate logging degraded lock-heuristic mode; sealed → plain open with stale-segment rotation; unsealed with trailing records → the story-298 `RecoveryDialog` (Replay all / Checkpoint only / Inspect / Cancel — reused untouched); unsealed but lock held fresh by another live session → conflict dialog first, gate re-runs after lock resolution.
+- **The recovery decision table (book §5.5) is implemented as specified**: absent journal → plain open with the gate logging degraded lock-heuristic mode; sealed → plain open with stale-segment rotation; unsealed with trailing records → the story-298 `RecoveryDialog` (Replay all / Checkpoint only / Inspect / Cancel — the four choices and their labels reused; the dialog body and, when the last clean save is newer than the recovery point, the default button changed in PR 988 round 3); unsealed but lock held fresh by another live session → conflict dialog first, gate re-runs after lock resolution.
 - **The open contract's ordering holds** (book §5.3): step 2 RECOVER strictly precedes step 6 JOURNAL — precisely the inversion of today's `loadProjectFromPath`, whose journal-open hook lets the first checkpoint destroy the evidence.
 - **The gate handles the temps of story 331's writer** (story 331, rulings M1–M3). On a writable open with the project lock held, the recovery gate:
   1. handles every `AtomicFileWriter` temp of `project.daw`'s real file, any number of them, not one. When `project.daw` is a symbolic link (story 331, ruling M3), these temps sit beside the link's final target and are named after it (`.<target name>.<16 hex>.tmp`);
@@ -52,7 +52,7 @@ For a studio engineer this means a crash still costs everything since the last c
 
 ## Non-Goals
 
-- **The recovery dialog, scanner, replay, and discard-then-load flows** — story 298 (landed); this story changes their reachability and activation, not their behaviour. The re-present-Welcome flow on Inspect/Cancel (`ProjectLifecycleController.java:1248-1312`) is kept as is.
+- **The recovery dialog, scanner, replay, and discard-then-load flows** — story 298 (landed); this story changes their reachability and activation, not their behaviour. The re-present-Welcome flow on Inspect/Cancel (`ProjectLifecycleController.java:1248-1312`) is kept as is. PR 988 round 3 is a scoped exception: the choices, their labels and the Inspect/Cancel flow are untouched, but the dialog body, the plan-based replay, Restore checkpoint only's refusal without `project.daw`, the interrupted-save retention and, as an interim step, the default button when the last clean save is newer than the recovery point changed.
 - **Atomic commit of the replayed head** — replay commits through the shared atomic-replace writer landed by story 331 (Stage 3 prerequisite).
 - **The app-exit seal write and the exit protocol** — story 333 owns the close-request handler, `closeProject()`, and the exit-side SEAL step; this story lands the seal record format, its clean-close writers on the project-switch/close paths, and its reader (the gate).
 - **Journal writer internals and back-pressure** — `PROJECT_MANAGER_DESIGN_BOOK.md` §6.3 (existing, keep).
@@ -138,8 +138,10 @@ checks the final `.daw` target's siblings, restricted to that target's name.
 Complete project XML newer than the head is recovery evidence. Temp-only Replay
 promotes that document atomically. When both a newer complete temp and an
 unsealed journal exist, their capture order cannot be inferred: the gate keeps
-the temp byte-for-byte in `snapshots/recovered-head-<request-id>.daw`, logs its
-path, and replays the journal from its verified base. It cleans exact temps only
+the temp byte-for-byte as an "Interrupted save" snapshot (`SnapshotStore`; its
+file is `snapshots/<yyyyMMdd-HHmmss>-interrupted-save.daw`), logs its path, and
+replays the journal from its verified base; Restore checkpoint only keeps it the
+same way. It cleans exact temps only
 after the decision succeeds and emits one INFO count; near-miss names remain.
 
 Read-only opens perform no recovery mutation, temp cleanup, journal creation or
@@ -469,3 +471,567 @@ cases, one opt-in strict DSP coverage check and three disabled cross-platform
 snapshot cases whose reports cite Linux-golden/font-metric differences.
 Remote Ubuntu CI was not rerun. No changes were staged, committed or pushed;
 GitHub review discussions were not modified.
+
+### PR 988 review — H1 recovery dialog summary, local resolution, 2026-10-26
+
+[Review 5660245105](https://github.com/Ben-Esquivel-Music/java-digital-audio-workstation/pull/988#pullrequestreview-5660245105)
+on commit `c01a897f` raised two findings, H1 (comment `4383435911`, High) and
+M1 (comment `4383435942`, Medium), and
+[CI run 40415778437](https://github.com/Ben-Esquivel-Music/java-digital-audio-workstation/actions/runs/40415778437)
+failed on the same commit. This section and the two after it record their
+local resolution, which the Goals and Non-Goals above call PR 988 round 3: an
+implementation pass, a verification pass, and a fix round for what the
+verification found. Java 27 agents made the code changes, and the studio
+engineer ruled every design question and every verification finding. The
+`javafx-application-design` skill (§11 "Threading", §14 "Accessibility,
+internationalization, and quality", §15 "Anti-patterns to call out"), the
+`research-daw` skill (lesson 1 "Modular Architecture (SDK + Core + App)") and
+the Persistence Integrity design book's §3.2, §4.7, §5.3, §5.5, §6.1, §6.2 and
+§6.4 shaped the changes. `daw-core` reads the recovery evidence and computes
+its facts on the open's virtual-thread worker; `daw-app` words those facts:
+the dialog's rows and sentences, on the FX thread, and the open announcement
+come from `Messages.properties`, while the Restore checkpoint only refusal,
+the copy-failure text and the journal-start failure are still literals in
+code (story 382's extension moves them to the bundle); and the failures this
+round adds reach the user through surfaces that already existed: the recovery
+dialog, the failed-replay ERROR, the open announcement and `Open failed: …`.
+
+H1 found that the dialog's summary came from `RecoveryScanner.scan`, which named
+the newest checkpoint on disk and counted every journal record, while Recover
+everything replayed from the verified base after its capture boundary. The
+dialog now describes what each choice does:
+
+- **One plan per gated open.** `OpenRecoveryGate.run` builds one `RecoveryPlan`
+  (`RecoveryScanner.plan`) on its virtual-thread worker, after the read-only
+  return, so the gate still reads and changes no recovery evidence on a
+  read-only open. The dialog
+  renders `plan.summary()`, and Recover everything executes that same plan
+  instance. Replay re-checks the recovery point's SHA-256 against the bytes it
+  then deserializes and re-reads every segment strictly; the promotion of an
+  interrupted save re-checks the temp's size and last-modified time
+  (`RecoveryPlan.NewerHead.readUnchanged`). A mismatch takes the existing
+  `ReplayFailed` path: nothing is written, the evidence is kept, and the last
+  clean save opens read-only. `RecoveryScanner.scan` and
+  `RecoveryResult.summary()` were removed.
+- **The recovery point is replay's.** The plan picks it as replay does: the
+  highest hash-verified checkpoint capture, else the session base its
+  `$session-start` certifies, else, for an older version's journal with no
+  provenance, `project.daw`, else the newest checkpoint. Its changes are the
+  mutation records after that point's capture boundary. Session records
+  (`$session-start`, `$checkpoint`, `$session-seal`) are never counted as
+  changes; the technical detail lists them on its "Session records:" row.
+- **Rows and explanation.** The rows are, in order, "Last clean save:"
+  (`project.daw`'s time, the file Restore checkpoint only opens), "Recovery
+  point:" (the file Recover everything starts from and its time, the
+  interrupted save it promotes, or "Unavailable: <reason>"), "Changes after it:"
+  and "Last journaled event:". The label "Unsaved work to replay:" is retired.
+  Below the rows, an explanation joins independent sentences in a fixed order,
+  each only when it applies: the head relation, one sentence on what Recover
+  everything does, the changes it will not rebuild, one sentence on what
+  Restore checkpoint only does, that a checkpoint recovery point is not
+  deleted, and what happens to an interrupted save. Every label, figure,
+  sentence and Inspect events body this round added or changed is a
+  `recoveryDialog.*` or `inspectEvents.*` key in `Messages.properties`,
+  formatted at `Locale.ROOT` with plural-aware counts shown without grouping;
+  times use `yyyy-MM-dd HH:mm` in the system zone. The title ("Recover unsaved
+  work"), the header ("This project did not close cleanly"), the four button
+  labels with their `ButtonData`, the result converter and Inspect events'
+  "Captured events" title are unchanged literals.
+- **The head relation.** For every journal recovery point the plan compares
+  `project.daw` with it: IDENTICAL when their SHA-256 digests match, HEAD_OLDER
+  only when `project.daw` was last modified strictly before the recovery point
+  was made, HEAD_NEWER otherwise, and MISSING when there is no `project.daw`.
+  HEAD_NEWER leads the explanation with "The last clean save was made after the
+  recovery point: Recover everything replaces it with an older version of the
+  project." IDENTICAL, with nothing rebuilt, leads with "The recovery point is
+  identical to the last clean save, so both choices open the same project."
+- **Journaled changes are not rebuilt.** This is story 298's replay limit,
+  unchanged: no event family has a delta replay can apply (the delta map in
+  `JournalReplayer` is empty), so Recover everything yields the recovery point.
+  The summary's rebuilt count uses the same per-type rule replay applies
+  (`JournalReplayer.rebuilds`). Whenever changes are not rebuilt, the dialog
+  says "This version cannot rebuild journaled changes, so the N changes
+  summarized under Inspect events… will not be in the recovered project.", and
+  no sentence says that Recover everything replays changes. After such a
+  replay the open announcement is the WARNING "Recovered the project from its
+  recovery point; the N journaled changes after it could not be rebuilt" ("the
+  journaled change after it" for one) rather than a SUCCESS that counts them as
+  recovered; the gate takes that count from the same plan
+  (`OpenDoor.JournalReplay.notRebuilt`). A promoted interrupted save is
+  announced at SUCCESS as "Recovered an interrupted save", never as zero
+  journal changes.
+- **Restore checkpoint only opens `project.daw`, not the recovery point.** The
+  explanation says so, for example "Restore checkpoint only opens the last
+  clean save and deletes the journal.", or that it keeps the journal when
+  journaled persistence is off. When there is no `project.daw`, the dialog says
+  "Restore checkpoint only cannot open this project because project.daw is
+  missing; the journal is kept if you choose it.", and the gate refuses that
+  choice before deleting anything: the user reads "Open failed: project.daw is
+  missing, so Restore checkpoint only cannot open this project; the journal was
+  kept".
+- **An interrupted save is never deleted without a copy.** An interrupted save
+  is a complete atomic-writer temp of `project.daw` that is newer than it.
+  Before a choice deletes it without making it the project, the gate keeps it,
+  before deleting anything, through
+  `SnapshotStore.createSnapshotFromFile(temp, <project>/snapshots, "Interrupted save")`:
+  its file is `snapshots/<yyyyMMdd-HHmmss>-interrupted-save.daw` (with a
+  `-<n>` suffix when that name is taken); `SnapshotStore` names it
+  "interrupted save" ("interrupted save <n>" with the suffix), the Snapshots
+  browser lists it by that file name and its size, and the gate logs the
+  temp's path and the snapshot's.
+  Restore checkpoint only keeps it, alone or beside a journal. Recover
+  everything keeps it beside a journal whose replay can start (after the
+  replay, before the commit), promotes it when no journal decision is owed
+  (after backing `project.daw` up as `project.daw.recovered.<stamp>.bak`), and
+  leaves it in place when the replay cannot start. The
+  `recovered-head-<request-id>.daw` name is gone. A copy that fails aborts the
+  decision with nothing deleted, and the user reads "Open failed: The
+  interrupted save <temp name> could not be copied to <project>\snapshots
+  (<reason>); nothing was deleted", where the reason follows the stage-reason
+  rule (`JournalState.reason`: a `FileSystemException`'s reason, any other
+  failure's message, or the failure's type when there is none), never a bare
+  path; for example "(FileAlreadyExistsException)" when a file named
+  `snapshots` is in the way. The explanation's last sentence
+  says which choices keep it, in a file whose name contains
+  "interrupted-save"; when the save sits beside a journal it also says when the
+  save was written and that it is newer than the last clean save, and when the
+  replay cannot start it adds that Recover everything leaves it in place.
+- **A replay that cannot start is described before the choice.** The plan
+  types the reason: the session's base is missing, it has changed, a journal
+  segment is damaged (named), or there is no base to start from. A damaged
+  segment is reported this way even when the recovery point itself verified.
+  The rows read "Unavailable: <reason>" and "N changes (cannot be replayed)",
+  and the explanation opens with "Recover everything cannot replay this
+  journal: <reason>. If you choose it, the journal is kept and the last clean
+  save opens read-only." If it is chosen anyway, the failed-replay ERROR names
+  a damaged segment: "Recovery failed (journal segment failed checksum
+  verification: <path of the segment>; recovery evidence was preserved;
+  fallback is read-only); opened the last clean save instead". The other
+  reasons still read "Cannot establish the session replay base" there (story
+  385).
+- **Inspect events** shows "N changes journaled after the recovery point; the
+  journal has M segment files." and then the distinct change types, never a
+  session record type; when the replay cannot start it says why, and for a
+  promoted interrupted save it says that no journaled change is part of the
+  recovery. Choosing it still cancels a gated open, as before.
+- **The default button is an interim safety step.** When the summary is a
+  replay whose last clean save is newer than its recovery point (HEAD_NEWER),
+  Restore checkpoint only is the default (Enter) button and Recover everything
+  is not, so Enter never replaces a newer save with an older project; in every
+  other case Recover everything stays the default. The labels, their
+  `ButtonData`, the title and the header are unchanged. The step is interim:
+  Recover everything still replaces a newer save when it is chosen, and story
+  387 retires the rule once it cannot.
+
+The rebuilt count's shared rule is checked by code review only: while no family
+has a delta, no test can tell `RecoveryPlan`'s use of `JournalReplayer.rebuilds`
+apart from a hard-coded 0. Story 387 adds the test that a type with a delta
+counts as rebuilt.
+
+#### Known limits
+
+These are categories, each named with examples; none is a closed list.
+
+- **Replay fidelity.** No journaled change is rebuilt in this version, for
+  example a mixer change journaled after the recovery point, so Recover
+  everything yields the recovery point; the dialog and the announcement say so
+  (story 387).
+- **Recovery prompts after a session that saved its work.** Detection owes a
+  decision for any change journaled after the highest checkpoint marker's
+  capture boundary, sealed or not, and with autosave off a save writes no
+  marker. So, for example, an autosave-off session that saved its edits reopens
+  into the recovery dialog after a project switch, an in-app close or a quit.
+  The interim default button keeps Enter from replacing that save (stories 387
+  and 389).
+- **The literal title and header.** "Recover unsaved work" and "This project
+  did not close cleanly" are shown even after a sealed close that still owes a
+  decision (the story 382 extension).
+- **Duplicate copies after a refused commit.** A Recover everything whose
+  commit is refused, for example because `project.daw` is read-only, keeps the
+  journal and any interrupted save, so each retry adds another
+  `project.daw.recovered.*.bak` and, when an interrupted save sits beside the
+  journal, another identical "Interrupted save" snapshot. Nothing is lost
+  (story 383).
+- **The ungated, test-only recovery path.** Production always installs the
+  gate (`MainController` calls `enableRecoveryGate`), but the path used without
+  it shows the new dialog while acting on its own reading of the evidence: for
+  example, its Restore checkpoint only deletes `journal/` before a load that
+  may find no `project.daw`, and its failed replay opens the last clean save
+  writable (story 384).
+- **Evidence that cannot be read before the dialog.** For example, an older
+  version's journal with no `project.daw` whose newest checkpoint cannot be
+  read, or a complete head temp beside a missing `project.daw` (story 390): the
+  open fails with `Open failed: …` before any dialog, and nothing is deleted.
+- **The read-only-fallback wording.** The failed-replay and refused-write
+  ERRORs give no next step, the base reasons other than a damaged segment
+  still read "Cannot establish the session replay base", and, for example, a
+  `project.daw` link to a file that is not a project opens read-only as an
+  "Untitled" project that the ERROR calls the last clean save (story 385).
+
+#### Evidence
+
+The fix round's final targeted run on Windows (JDK 27+35, Maven 3.10.0) was one
+Maven process over 35 test classes, the 29 classes of the snapshot the
+verification pass reviewed plus six more. It passed 362 tests with no failures
+or errors; the one skip is `JournalSessionRecoveryTest`'s POSIX-only T1 (M1
+entry below). The counts come from that run's fresh surefire XML. Among them,
+`RecoveryPlanTest` (33 tests) pins the plan, the head relation, the typed
+reasons, the rebuilt count and replay's re-checks; `OpenRecoveryGateTest` (28)
+pins one plan per open, the interrupted-save snapshot and its failed copy,
+Restore checkpoint only without `project.daw`, evidence changed after the
+choice, and a replay that cannot start because the session base is missing or
+changed or a segment is damaged; `RecoveryDialogOptionsTest` (34),
+`RecoveryDialogStringsTest` and `RecoveryInspectEventsTextTest` pin the rows,
+the sentences, the default button and the bundle values; and
+`OpenAnnouncementTest` and `EveryOpenDoorRunsRecoveryFirstTest` pin the
+announcements, including a temp-only Recover everything through the gate.
+Each of these fault checks turned its test red on Windows and was then
+restored byte for byte: the default-button swap removed; one message for every
+reason a replay cannot start; the announcement built without the not-rebuilt
+count; a head relation that calls a save made at the recovery point's own
+instant older; the plan built before the read-only return; and the temp-only
+announcement mapped back to a journal replay.
+
+On Linux (WSL Ubuntu, Temurin 27+35, Maven 3.9.12, on a copy of the tree), the
+snapshot the verification pass reviewed passed twice: 293 tests in 29 classes,
+none failing, erroring or skipped. The fix round's code passed there twice
+too: 362 tests in 35 classes, none failing, erroring or skipped, with T1
+running; and the plan built before the read-only return turned
+`OpenRecoveryGateTest` red there as well (`IOException: Is a directory`). A
+final pass after a second verification then tightened two tests' assertions
+(the failed copy of an interrupted save, and the segment test of the M1 entry
+below), added a null check to `RecoveryScanner`'s evidence record and
+corrected Javadoc. That final code passed the same 35 classes on Windows (362
+tests, the one skip T1) and twice on Linux (362 tests, none failing, erroring
+or skipped, with T1 and the segment test's POSIX branch running).
+
+### PR 988 review 4383435942 (M1) — local resolution, 2026-10-26
+
+M1 found that when the session base's hash could not be read after
+`JournalWriter.start()` had started the writer thread,
+`ProjectJournalCoordinator.openFor` dropped the failed writer without closing
+it, leaving the thread and its open segment behind. A failed start now
+releases what it acquired and removes the journal evidence it can, and the
+coordinator ends whatever it started:
+
+- **A gated disk open whose journal cannot start is still refused**, through
+  `openForRequired`, which throws an `IllegalStateException`, "Journaled
+  persistence could not start for <project folder>: <reason>", with the
+  failure as its cause; the user reads it after "Open failed: ". Opening
+  writable with journaling paused instead is story 386.
+- **A leftover session base is replaced, not repaired.** `start()` first
+  refuses any non-empty prior segment and leaves it untouched. Only then is a
+  leftover `journal/session-base.daw` deleted, never recursively: a non-empty
+  directory refuses, an empty one is removed like a file, and a link goes as a
+  link. The fresh base gets the directory's default permissions, so no odd
+  bits carry over.
+- **The base is verified before the session starts.** The `$session-start`
+  certifies the SHA-256 of the head's bytes as read into memory; the published
+  base is read back once, with no retry, and compared before the first segment
+  opens.
+- **`$session-start` is durable before the writer thread exists.** It is
+  appended and fsynced on the thread that starts the journal (a worker such as
+  the recovery worker or the New Project virtual thread, not the FX thread), so
+  a failing project drive is reported when the project opens.
+- **A failed start leaves a closed writer and removes what it made.** It holds
+  no channel and no thread, discards anything buffered, deletes the segment it
+  opened, and deletes the base it wrote and verified only once that segment is
+  confirmed gone, so a `$session-start` never outlives its base; delete
+  failures are attached as suppressed. What it cannot remove is inert: a
+  segment it could not delete keeps the base beside it, and a base that failed
+  its read-back is certified by no record. A start refused by a prior session's
+  evidence touches neither that journal's segments nor its base. Afterwards
+  `offer` and `start()` throw `IllegalStateException`, and `close()` and
+  `sealAndClose` do nothing. A `close()` that runs during a start either joins
+  the writer thread that start published or, when it comes first, makes the
+  start fail (with "Journal writer is closed", or with the start's own I/O
+  failure when the close released the segment before the `$session-start`
+  record was written), so no writer thread outlives the close: the start
+  publishes the thread, and `close()` takes it, under the writer's monitor. A
+  `sealAndClose` that finds no writer thread (the writer never started, or its
+  start is still running) has no session to seal: it is a `close()`, so it
+  writes no record and a start still running fails the same way. The
+  coordinator never seals such a writer, because it starts and closes journals
+  under one lifecycle lock and publishes a writer only after its start has
+  finished. An enabled writer accepts records only after its `start()` has
+  published the writer thread: an earlier `offer` (before any start, or while
+  one is still running) throws `IllegalStateException`, so a `close()` or
+  `sealAndClose` never writes a record into a segment that does not exist or
+  that a failing start deletes; either `onCheckpointSucceeded` on an enabled
+  writer that has not started throws the same exception and changes nothing.
+- **A recorder that cannot attach ends the session it started.** After a
+  successful `start()`, a recorder that fails to attach to the bus, with a
+  `RuntimeException` or with an `Error` (which is then rethrown), makes the
+  coordinator seal the session with `sealAndClose`, so the next open offers no
+  recovery for a session that recorded nothing. If the seal fails, a WARNING
+  is logged and the seal failure is attached to the original one. Under
+  `openForRequired` the caller's "Open failed: …" is the one surface; `openFor`
+  still shows "Journaled persistence could not start: <message>".
+- **A reason is never a bare path.** The `daw-core` stage messages, which
+  already end with the file, give their reason through `JournalState.reason`
+  (now public): a `FileSystemException`'s reason, any other failure's message,
+  or the failure's type when there is none, never the path; this is the rule
+  of daw-app's `RecordCoordinator.ioReason`. The coordinator's top-level reason
+  keeps the path: the failure's message, with the type added for a
+  `FileSystemException` that gives no reason, or the type alone when there is
+  no message.
+- **New Project says what happened.** When its journal cannot start, the
+  ERROR is "New project created; journaled persistence is paused until this
+  project is reopened. " followed by the reason, and the SUCCESS "New project
+  created" is withheld.
+
+The user-facing texts, exactly:
+
+- `The journal's session base cannot be read back (<reason>), so a crash in this session could not be recovered: <base path>`
+- `The journal's session base does not read back as written, so a crash in this session could not be recovered: <base path>`
+- `The journal could not write its first record to disk (<reason>): <segment path>`
+- `Journaled persistence could not start for <project folder>: <reason>`, read
+  after `Open failed: `, for example `Open failed: Journaled persistence could
+  not start for D:\Sessions\Song: The journal's session base cannot be read
+  back (AccessDeniedException), so a crash in this session could not be
+  recovered: D:\Sessions\Song\journal\session-base.daw`; the coordinator's own
+  reasons are `no event bus is available` and `a journal is already open for
+  <project folder>`
+- `New project created; journaled persistence is paused until this project is reopened. <reason>`
+- `Journaled persistence could not start: <message>`, from `openFor` only
+- `Journal writer is closed`, for developers only
+
+`JournalSessionRecoveryTest` covers a `$session-start` that cannot be made
+durable (through the `Syncer` seam), a start that fails before its segment
+opens, a closed writer that cannot start, a prior session's evidence left
+untouched, a segment that cannot be deleted
+(`aFailedStartWhoseSegmentCannotBeDeletedKeepsTheBaseItWrote`), a close during
+a start parked after its fsync
+(`aCloseThatRunsWhileAStartIsParkedAfterItsFsyncMakesTheStartFailAndLeavesNoWriterThread`)
+and the stage-reason rule
+(`aStageReasonIsTheFileSystemReasonOrTheMessageOrTheTypeAndNeverThePath`).
+`ProjectJournalCoordinatorTest` pins an obstructed journal directory's message
+and both recorder-failure surfaces: under `openForRequired` no notification of
+the coordinator's own, and under `openFor` exactly one ERROR, "Journaled
+persistence could not start: EventBus is closed", with the session sealed.
+`ProjectReplacementJournalSafetyTest` pins the New Project ERROR.
+
+T1, `aSessionBaseLeftWriteOnlyIsReplacedByOneTheReplayCanReadAndVerify`, is
+POSIX-only: it assumes POSIX permission bits and a base its user cannot read,
+so it is skipped on Windows. It ran and passed in every Linux (WSL) run of this
+round, and the GitHub CI's Ubuntu job runs it.
+
+The rule that a failed start keeps its base while its segment exists is pinned
+by `aFailedStartWhoseSegmentCannotBeDeletedKeepsTheBaseItWrote` on both
+branches. On Windows it makes the segment undeletable with the DOS read-only
+flag, and deleting the base anyway deletes it. On POSIX it removes write
+permission from the journal directory, and deleting the base anyway attaches a
+second suppressed failure where the test allows exactly one, the segment's.
+
+These are checked by code review only; no shipped test reaches them or tells
+them apart from a broken version:
+
+- `JournalState.saveBase`'s read-back branches, unreadable and mismatched (the
+  unreadable branch was seen red only in a fault the manager ran on a local WSL
+  copy, before its text was reworded);
+- `endUnrecordedSession`'s fallback to `close()` when the seal fails;
+- the coordinator's `Error` branch after a successful start;
+- `JournalSegment.open` closing its channel when `ch.size()` or the
+  constructor throws;
+- the coordinator's `close()` after a failed start;
+- the shared rebuilt rule (H1 entry above).
+
+Evidence: the final Windows run of the H1 entry passed these classes. In a
+separate fault batch on Windows, three fault checks turned their tests red
+and were restored: deleting the base while its segment exists, dropping the
+close-during-start re-check, and swapping the two recorder-failure surfaces.
+On Linux (WSL), deleting the base while its segment exists turned the POSIX
+branch red too. On Linux (WSL, as above), the implementation pass's M1 change
+passed twice, and the fix round's `daw-core`, journal-coordinator and test
+changes passed three times (140 tests in 15 classes), with T1, the
+close-during-start test and the segment test's POSIX branch running, not
+skipped.
+
+The close-out pass (2026-10-27) added six `JournalSessionRecoveryTest` cases
+for how a writer whose thread does not exist answers a seal, an offer or a
+checkpoint (the failed-start bullet above), and for a disabled writer's
+offer: a seal that runs while a start is parked after its fsync, and a seal
+of a writer that never started
+(`aSealThatRunsWhileAStartIsParkedAfterItsFsyncSealsNothingAndMakesTheStartFail`,
+`aSealOfAWriterThatNeverStartedWritesNoRecordAndClosesIt`); an offer refused
+before the writer thread exists, with no start and with a start parked after
+its fsync
+(`anEnabledWriterThatNeverStartedRefusesRecordsAndClosesWithoutTouchingTheDisk`,
+`anOfferWhileAStartIsParkedAfterItsFsyncIsRefusedAndOnlyLaterRecordsReachTheSession`);
+a disabled writer that answers a record offered to it directly with
+`DISABLED` (`aDisabledWriterReportsARecordOfferedDirectlyAsDisabledWithoutStarting`);
+and a refused checkpoint that publishes no queued count and takes no sequence
+number (`aCheckpointReportedToAnEnabledWriterThatNeverStartedIsRefusedAndChangesNothing`).
+On Windows four fault checks turned these tests red, each restored byte for
+byte afterwards:
+`sealAndClose` without its no-thread branch (and with its earlier null-checked
+join back) made the parked seal wait for the start and the never-started seal
+throw a `NullPointerException` (F-S); the offer guard deleted turned both
+offer tests red (F-O1); the offer guard moved above the disabled return turned
+the disabled-writer test red (F-O2); and both checkpoint checks moved after
+the queued count is published turned the refused-checkpoint test red (F-O3).
+One Windows Maven run of twelve journal and recovery classes in `daw-core` and
+`daw-app` then passed 153 tests with no failures or errors, the one skip T1,
+and the full-suite validation at the end of this story ran this code on
+Windows and on Linux.
+
+### CI 40415778437 — local resolution, 2026-10-26
+
+[CI run 40415778437](https://github.com/Ben-Esquivel-Music/java-digital-audio-workstation/actions/runs/40415778437)
+(Ubuntu, `xvfb-run --auto-servernum mvn -B clean verify`) failed two of the four
+`AppWritersFollowAProjectFileLinkTest` cases on commit `c01a897f`: both journal
+replay tests found a publish of `checkpoints/.checkpoint-order` they did not
+expect. On Windows all four passed. At `c01a897f` both tests called the
+ungated, test-only `replayJournal` directly, and its fallback after a refused
+write opens the last clean save writable.
+
+Production code is unchanged by this fix. A writable recovered open may revoke
+a ghost certification in `checkpoints/.checkpoint-order` while its checkpoints
+seed, on `daw-checkpoint-writer`, in no fixed order with the open's
+installation; a read-only fallback starts no checkpoint generation and revokes
+nothing. The tests now say so:
+
+- both journal replay tests drive the production recovery gate:
+  `enableRecoveryGate`, `beginRecovery`, and a `Window` listener that answers
+  the one recovery dialog "Recover everything", captures any failure for the
+  test to rethrow, and is removed in `finally`;
+- the refused-link test asserts that the last clean save opened read-only,
+  that no checkpoint generation started and no journal opened, and only then
+  that nothing was published; the segment, the verified base and the ordering
+  fact, with its ghost certification, stay byte-identical;
+- the success test captures the outgoing project's checkpoint generation before
+  `beginRecovery`, awaits `CheckpointEvent.Seeded` for a newer generation
+  (`SaveFlowFixture.awaitCheckpointsSeeded`), and only then asserts the
+  complete typed write sequence: the `project.daw.recovered.*.bak` backup and
+  the recovered `.daw` file on the gate's worker, then the ordering fact on
+  `daw-checkpoint-writer`, none on the FX thread;
+- `SaveFlowFixture.currentProjectIs` reads the current project once, so the
+  installation waits in this class and three others cannot dereference a
+  project the gate's worker has just cleared.
+
+The success test's announcement expectation changed with the H1 fix round: it
+now expects one WARNING, "Recovered the project from its recovery point; the 3
+journaled changes after it could not be rebuilt", and still no ERROR.
+
+Evidence: at `c01a897f` the two tests failed in three of three runs on Linux
+(WSL), at the same lines and with the same messages as the CI log; with this
+fix's test changes, before that announcement change, all four passed in five of
+five runs there. On Windows, four fault checks turned the tests red: the
+read-only fallback replaced by a writable lease that does not run the gate
+again, seeding that skips the ordering-fact compaction, the success test
+without the seeding wait (so the wait is load-bearing on Windows too), and a
+gate that clears the journal after a refused commit. The verification pass's
+prober also turned the success test red by letting the outgoing generation's
+`Seeded` satisfy the wait, and kept all four tests green with the checkpoint
+writer's seeding compaction delayed by 1.5 s, which emulates the Linux ordering
+on Windows and is not a Linux run. After the announcement change the class
+passed 4 of 4 in the final Windows run of the H1 entry and in each of two
+Linux (WSL) runs of the fix round's code.
+Confirmation on the GitHub CI's Ubuntu job needs the user's push and a new CI
+run; it is not recorded here.
+
+Full-suite validation of round 3 (the H1, M1 and CI 40415778437 entries
+above) ran the whole default reactor on the final tree, the close-out pass
+included, three times: once on Windows and twice on Linux. Every run used
+this command, which has no test selector and no `clean`:
+
+```
+mvn -B verify -Dmaven.test.failure.ignore=true -DskipNativeBuild=true -Dsnapshots.autoBaseline=false -Dsnapshots.update=false
+```
+
+With `-Dmaven.test.failure.ignore=true` a failing test does not fail the
+build, so each run's result is its test counts, not its `BUILD SUCCESS`.
+
+On Windows (Windows 10, Maven 3.10.0, Temurin JDK 27+35, in the working tree
+itself, from the repository root), the run started at 02:59:42 on 2026-10-27
+and finished at 03:13:32 (13:48 min) with `BUILD SUCCESS`, all six reactor
+modules SUCCESS, and the `daw-core` and `daw-app` JARs rebuilt (03:08:05 and
+03:13:12). Counted from the `TEST-*.xml` files newer than the run's start (the
+console totals agree; one older `daw-core` report, from a deleted verifier
+probe test, predates the run and is not counted), it ran **14,498 tests in
+1,503 suites: 14,454 passed, 44 skipped, zero failures and zero errors**. By
+module: SDK 1,348 tests (two skipped), acoustics 106, core 8,722 (39
+skipped), FX 29 and app 4,293 (three skipped), each with zero failures and
+zero errors. The 44 skips are, by category (class counts from the XML): ASIO
+shim and driver cases (`AsioFormatChangeShimTest` 2,
+`AsioEngineStreamingIntegrationTest` 1, `AsioStreamingIntegrationTest` 1);
+native codec libraries that are not present (`NativeLibraryDetectorTest` 2,
+`OggVorbisFileReaderTest` 4, `OggVorbisExporterTest` 8, `AacExporterTest` 8,
+`DefaultAudioExporterTest` 2); POSIX-only persistence cases
+(`AtomicFileWriterTest` 7, `JournalSessionRecoveryTest` 1, which is the M1
+entry's T1, `ProjectLockManagerTest` 1, `SessionManagerTest` 1) and cases
+disabled on Windows (`ProjectPathsTest` 1,
+`ProjectRelativePersistenceContractTest` 1); the opt-in strict DSP coverage
+check (`DspRegressionCoverageTest` 1); and three snapshot tests whose goldens
+are captured on Linux CI (`MasteringViewSnapshotTest`,
+`MixerViewSnapshotTest`, `TelemetrySetupPanelSnapshotTest`).
+
+On Linux (WSL Ubuntu, Maven 3.9.12, Temurin JDK 27+35, the JavaFX Headless
+platform the build configures), both runs used one WSL-native LF copy of HEAD
+`c01a897f` plus every changed code file; the 38 changed code files were
+checked hash-equal to the Windows tree after stripping CRs.
+
+- **The CI-equivalent run** was set up the way GitHub's Ubuntu runner is: no
+  ALSA default PCM (`ALSA_CONFIG_PATH` pointed at an empty file, and
+  `PULSE_SERVER` unset), and the home folder's file cache kept warm
+  (`find ~ -mindepth 2 -maxdepth 2` before the run and every 15 s during it,
+  because the runner's home folder is nearly empty). It ran from 02:53:54 to
+  02:59:25 on 2026-10-27 and ended with `BUILD SUCCESS`, all six modules run
+  and the `daw-app` JAR rebuilt (02:59:17): **14,497 tests: 14,444 passed, 53
+  skipped, zero failures and zero errors**. By module: SDK 1,348 (two
+  skipped), acoustics 106, core 8,722 (45 skipped), FX 29 and app 4,292 (six
+  skipped).
+- **The as-is run**, in this host's own environment, ran from 02:47:15 to
+  02:53:54 on 2026-10-27 and ended with `BUILD SUCCESS`, all six modules run:
+  **14,497 tests: 14,438 passed, 53 skipped, five failures and one error**. By
+  module: SDK 1,348 (five failures, two skipped), acoustics 106, core 8,722
+  (45 skipped), FX 29 and app 4,292 (one error, six skipped); acoustics, core
+  and FX had no failures or errors, and the app no failures.
+
+The app count is 4,292 on Linux and 4,293 on Windows because
+`ActiveProjectAliasTest` runs four cases on Windows and three on Linux, an
+OS-dependent count in a class this round does not change. Core's 45 skips on
+Linux are native codec and driver libraries not built in WSL (for example the
+MP3, Ogg and AAC exporters and reader, `DefaultAudioExporter`,
+`NativeLibraryDetector` and ASIO), seven cases disabled on Linux and the
+opt-in strict DSP check; the SDK's two and the app's six skips are the same
+counts as in the unchanged-HEAD control below and in GitHub's Ubuntu CI run
+on `c01a897f`.
+
+The six cases that did not pass in the as-is run passed in the CI-equivalent
+run, and neither cause is this change. A control run of unchanged HEAD
+`c01a897f`, in a separate WSL copy with the same JDK and flags
+(`mvn -B -pl daw-app -am test -o -Dmaven.test.failure.ignore=true …`), fails
+the same six and also the CI 40415778437 pair this round fixes: SDK 1,348
+(five failures, two skipped), acoustics 106, core 8,676 (45 skipped), FX 29
+and app 4,232 (two failures, `AppWritersFollowAProjectFileLinkTest` :173 and
+:143; one error; six skipped). GitHub's Ubuntu CI ran both classes green on
+`c01a897f`.
+
+- The five `JavaxSoundBackendTest` failures (lines 1030, 1427, 1648, 1323 and
+  1004) come from this host's ALSA configuration: its default PCM, served by
+  WSL's sound server, accepts the 192-channel open these five cases expect
+  every host to refuse; they build `new JavaxSoundBackend()`, so their open
+  of the default device reaches the host's real one. With no default PCM
+  (`ALSA_CONFIG_PATH` pointed at an empty file, as on GitHub's Ubuntu runner)
+  the class passes 57 of 57 on its own, and the CI-equivalent run had no SDK
+  failures. This is a test-hermeticity defect in a class this pull request
+  does not change; future story 391 owns it.
+- The error, `BrowserTabIndicatorTest.activeTabHasAccentUnderBarPreviousDoesNot`
+  (a `NullPointerException` at line 90), comes from a pre-existing production
+  defect: `BrowserPanel`'s constructor scans the user's home folder on the FX
+  thread, against the javafx-application-design skill's §11 "Threading". This
+  WSL home folder has 201 folders and 3,903 entries one level below them; with
+  a cold file cache the scan takes about 24 s, past the 5-second wait of the
+  test's FX helper, which ignores the timeout and returns no result. With a
+  warm cache the scan takes 15 ms, and the test passed in the CI-equivalent
+  run. Neither `BrowserPanel` nor the test is changed by this pull request;
+  future story 392 owns the defect.
+
+The net effect on Linux is that the CI pair goes green, core gains 46 tests
+and the app 60 (this round's new tests), and no failure is new.
+
+Native rebuilding (`-DskipNativeBuild=true`) and `jpackage` were skipped, and
+snapshot creation and updates were disabled. Remote GitHub CI (Ubuntu) was not
+rerun; that needs the user's push. Nothing was staged, committed or pushed,
+and no GitHub review discussion was modified.

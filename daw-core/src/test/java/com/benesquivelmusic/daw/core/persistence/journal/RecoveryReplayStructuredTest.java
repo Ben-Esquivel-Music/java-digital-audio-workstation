@@ -45,7 +45,6 @@ class RecoveryReplayStructuredTest {
         assertThat(result.appliedRecordCount())
                 .as("every non-marker journal record must be applied")
                 .isEqualTo(written.size());
-        assertThat(result.summary().replayableEventCount()).isEqualTo(written.size());
     }
 
     @Test

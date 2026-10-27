@@ -77,13 +77,19 @@ class JournalCaptureIntegrationTest {
                 assertThat(markers).hasSize(2);
                 assertThat(markers).extracting(JournalState::boundary).containsExactly(
                         immediate.point().journalSequence().orElseThrow(), delayed.point().journalSequence().orElseThrow());
-                assertThat(JournalState.replayBase(context).file()).isEqualTo(reverse ? immediateFile : delayedFile);
+                assertThat(recoveryPoint(context).file()).isEqualTo(reverse ? immediateFile : delayedFile);
                 assertThat(new JournalReplayer().recover(context).appliedRecordCount()).isEqualTo(1);
             } finally {
                 publishDelayed.countDown();
                 journal.drainWithoutSeal(null);
             }
         } finally { bus.close(); }
+    }
+
+    /** The recovery point a replay of {@code context}'s journal starts from. */
+    private static RecoveryPlan.Available recoveryPoint(ProjectContext context) throws IOException {
+        RecoveryPlan.ReplayJournal journal = (RecoveryPlan.ReplayJournal) new RecoveryScanner().replayPlan(context).recovery();
+        return (RecoveryPlan.Available) journal.base();
     }
 
     private Captured captureAfterSeek(SaveFlowFixture fixture, DefaultEventBus bus, long position) throws Exception {
@@ -245,7 +251,7 @@ class JournalCaptureIntegrationTest {
                 assertThat(replay.recoveredProject().getTracks()).extracting(track -> track.getName())
                         .contains("Before explicit checkpoint").doesNotContain("After explicit checkpoint");
                 assertThat(replay.appliedRecordCount()).isEqualTo(1);
-                assertThat(JournalState.replayBase(context).file().getParent()).isEqualTo(fixture.songA.resolve("checkpoints"));
+                assertThat(recoveryPoint(context).file().getParent()).isEqualTo(fixture.songA.resolve("checkpoints"));
             } finally { coordinator.drainWithoutSeal(null); bus.close(); }
         }
     }

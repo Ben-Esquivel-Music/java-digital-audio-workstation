@@ -57,6 +57,10 @@ These tests are binding acceptance criteria. They run headless, and none of them
 - Design references: Persistence Integrity design book §5.3 (the open contract) and §8 Stage 5 (lock lifecycle, story 333).
 - Cross-refs: story 329 (a failed open keeps the on-screen audio), story 333 (lock lifecycle), story 362 (the journal of an abandoned project).
 
+## Sibling: Story 386
+
+Story 386 (`docs/user-stories/future/386-a-disk-open-whose-journal-cannot-start-after-its-target-is-installed-opens-writable-with-journaling-paused.md`) is this story's sibling. This story owns failures before the target project is installed (the parse, the migration and the lock prompt), after which the project on screen stays the current one. Story 386 owns the open contract's step-6 JOURNAL failure after `prepareLoadedProject` has installed the target, which it opens writable with journaling paused. Both change the not-installed `finally` of `ProjectLifecycleController.beginGatedLoad`, toward different end states, so they must land in order, and whichever lands second re-runs the other's tests. This story's Motivation and code locators describe `loadProjectFromPath` as it was before story 332's `ProjectManager.PreparedOpen` flow, through which production's disk opens now go (`beginGatedLoad`); re-judge them against that flow before implementing either story. Story 362 is the journal-close sibling.
+
 ## Status
 
 - Deferred

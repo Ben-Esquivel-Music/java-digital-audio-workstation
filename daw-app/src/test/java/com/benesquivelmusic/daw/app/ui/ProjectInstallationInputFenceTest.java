@@ -216,8 +216,7 @@ class ProjectInstallationInputFenceTest {
             CountDownLatch targetInstalled = new CountDownLatch(1);
             AtomicBoolean heldOnce = new AtomicBoolean();
             doAnswer(invocation -> {
-                if (fixture.projectManager.getCurrentProject() != null
-                        && incoming.equals(fixture.projectManager.getCurrentProject().projectPath())
+                if (fixture.currentProjectIs(incoming)
                         && fixture.project.get() == outgoing && heldOnce.compareAndSet(false, true)) {
                     heldInstallation.set(invocation.getArgument(0));
                     targetInstalled.countDown();

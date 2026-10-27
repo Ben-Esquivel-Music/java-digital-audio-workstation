@@ -65,10 +65,10 @@ class OpenAnnouncementTest {
     void everyDoorKeepsItsOwnWordsAndAFailureDoorKeepsItsError() {
         MissingAssetsReport one = new MissingAssetsReport(List.of(row("a.wav", "1")), List.of());
 
-        assertThat(OpenAnnouncement.of(new OpenDoor.JournalReplay(1, List.of()), SONG, MissingAssetsReport.EMPTY,
+        assertThat(OpenAnnouncement.of(new OpenDoor.JournalReplay(1, 0, List.of()), SONG, MissingAssetsReport.EMPTY,
                 List.of())).isEqualTo(new OpenAnnouncement(NotificationLevel.SUCCESS,
                         "Recovered 1 change from the journal", false));
-        assertThat(OpenAnnouncement.of(new OpenDoor.JournalReplay(1200, List.of()), SONG, MissingAssetsReport.EMPTY,
+        assertThat(OpenAnnouncement.of(new OpenDoor.JournalReplay(1200, 0, List.of()), SONG, MissingAssetsReport.EMPTY,
                 List.of()).message())
                 .as("a count is shown without grouping, as before").isEqualTo("Recovered 1200 changes from the journal");
         assertThat(OpenAnnouncement.of(new OpenDoor.SnapshotRestore("Take 3's comp"), SONG, MissingAssetsReport.EMPTY,
@@ -306,13 +306,63 @@ class OpenAnnouncementTest {
                 item(UnreadProjectItem.Kind.MIDI_EFFECT_NOT_RECOGNIZED));
         List<UnreadProjectItem> reopenUnread = List.of(item(UnreadProjectItem.Kind.MIDI_EFFECT_NOT_RECOGNIZED));
 
-        assertThat(OpenAnnouncement.of(new OpenDoor.JournalReplay(2, replayUnread), SONG, MissingAssetsReport.EMPTY,
-                reopenUnread)).isEqualTo(new OpenAnnouncement(NotificationLevel.WARNING,
+        assertThat(OpenAnnouncement.of(new OpenDoor.JournalReplay(2, 0, replayUnread), SONG,
+                MissingAssetsReport.EMPTY, reopenUnread)).isEqualTo(new OpenAnnouncement(NotificationLevel.WARNING,
                         "Recovered 2 changes from the journal — 1 arpeggiator setting adjusted,"
                                 + " 1 MIDI effect not recognized (kept as saved)", false));
-        assertThat(OpenAnnouncement.of(new OpenDoor.JournalReplay(2, List.of()), SONG, MissingAssetsReport.EMPTY,
+        assertThat(OpenAnnouncement.of(new OpenDoor.JournalReplay(2, 0, List.of()), SONG, MissingAssetsReport.EMPTY,
                 reopenUnread)).isEqualTo(new OpenAnnouncement(NotificationLevel.SUCCESS,
                         "Recovered 2 changes from the journal", false));
+    }
+
+    @Test
+    void aJournalReplayThatCouldNotRebuildItsChangesIsAWarningThatSaysSoNeverASuccessThatCountsThemAsRecovered() {
+        assertThat(OpenAnnouncement.of(new OpenDoor.JournalReplay(3, 3, List.of()), SONG, MissingAssetsReport.EMPTY,
+                List.of())).isEqualTo(new OpenAnnouncement(NotificationLevel.WARNING,
+                        "Recovered the project from its recovery point; the 3 journaled changes after it could not"
+                                + " be rebuilt", false));
+        assertThat(OpenAnnouncement.of(new OpenDoor.JournalReplay(1, 1, List.of()), SONG, MissingAssetsReport.EMPTY,
+                List.of())).isEqualTo(new OpenAnnouncement(NotificationLevel.WARNING,
+                        "Recovered the project from its recovery point; the journaled change after it could not be"
+                                + " rebuilt", false));
+        assertThat(OpenAnnouncement.of(new OpenDoor.JournalReplay(3, 3, List.of()), SONG, MissingAssetsReport.EMPTY,
+                List.of()).message()).doesNotContain("from the journal");
+    }
+
+    @Test
+    void aJournalReplayThatCouldNotRebuildItsChangesIsQualifiedByItsOwnReadsItems() {
+        List<UnreadProjectItem> replayUnread = List.of(item(UnreadProjectItem.Kind.MIDI_NOTE_SKIPPED));
+        List<UnreadProjectItem> reopenUnread = List.of(item(UnreadProjectItem.Kind.MIXER_REFERENCE_REMOVED));
+
+        assertThat(OpenAnnouncement.of(new OpenDoor.JournalReplay(2, 2, replayUnread), SONG,
+                MissingAssetsReport.EMPTY, reopenUnread)).isEqualTo(new OpenAnnouncement(NotificationLevel.WARNING,
+                        "Recovered the project from its recovery point; the 2 journaled changes after it could not"
+                                + " be rebuilt — 1 MIDI note skipped", false));
+    }
+
+    @Test
+    void aPromotedInterruptedSaveIsAnnouncedAsItselfWithTheLoadsUnreadItemsNeverAsZeroJournalChanges() {
+        OpenDoor promoted = OpenRecoveryGate.Result.INTERRUPTED_SAVE.door(OpenDoor.PLAIN);
+        List<UnreadProjectItem> loadUnread = List.of(item(UnreadProjectItem.Kind.MIDI_NOTE_SKIPPED));
+
+        assertThat(promoted).isEqualTo(new OpenDoor.InterruptedSavePromotion());
+        assertThat(OpenAnnouncement.of(promoted, SONG, MissingAssetsReport.EMPTY, List.of()))
+                .isEqualTo(new OpenAnnouncement(NotificationLevel.SUCCESS, "Recovered an interrupted save", false));
+        assertThat(OpenAnnouncement.of(promoted, SONG, MissingAssetsReport.EMPTY, loadUnread))
+                .as("the promoted file is the one the load read, so the load's items qualify it")
+                .isEqualTo(new OpenAnnouncement(NotificationLevel.WARNING,
+                        "Recovered an interrupted save — 1 MIDI note skipped", false));
+        assertThat(OpenAnnouncement.of(promoted, SONG, MissingAssetsReport.EMPTY, loadUnread).message())
+                .doesNotContain("from the journal");
+
+        assertThat(new OpenRecoveryGate.Result(0, 0, List.of(), false).door(OpenDoor.PLAIN))
+                .as("a journal replay that applied nothing keeps its own door")
+                .isEqualTo(new OpenDoor.JournalReplay(0, 0, List.of()));
+        assertThat(new OpenRecoveryGate.Result(3, 3, List.of(), false).door(OpenDoor.PLAIN))
+                .as("a journal replay's door carries how many of its changes it could not rebuild")
+                .isEqualTo(new OpenDoor.JournalReplay(3, 3, List.of()));
+        assertThat(OpenRecoveryGate.Result.PLAIN.door(OpenDoor.PLAIN)).as("nothing recovered: the selected door")
+                .isSameAs(OpenDoor.PLAIN);
     }
 
     /** An unread item of {@code kind} standing for one saved item, where its kind lives. */

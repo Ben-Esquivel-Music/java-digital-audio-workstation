@@ -9,6 +9,7 @@ import com.benesquivelmusic.daw.core.session.SessionManager;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
@@ -175,6 +176,11 @@ class OpenRecoveryGateTest {
     @Test void readOnlyLeaseDoesNotTouchJournalTempsOrAnActiveManifestOlderThanFourHours() throws Exception {
         Path folder = project("Song");
         crash(folder);
+        // A directory named like a segment: reading the journal fails on it, so a read-only open that
+        // built a plan would fail, while one that reads nothing opens.
+        Path segmentDirectory = Files.createDirectory(folder.resolve("journal/segment-001.bin"));
+        byte[] segment = Files.readAllBytes(folder.resolve("journal/segment-000.bin"));
+        byte[] sessionBase = Files.readAllBytes(folder.resolve("journal").resolve(JournalState.BASE_FILE));
         Path temp = Files.writeString(folder.resolve(".project.daw.0123456789abcdef.tmp"), xml("Temp"));
         SessionManager sessions = new SessionManager();
         sessions.openSession(folder, Instant.now().minusSeconds(6 * 3600));
@@ -196,6 +202,9 @@ class OpenRecoveryGateTest {
                 assertThat(lease.readOnly()).isTrue(); return null;
             } });
             assertThat(temp).exists();
+            assertThat(segmentDirectory).isDirectory().isEmptyDirectory();
+            assertThat(Files.readAllBytes(folder.resolve("journal/segment-000.bin"))).isEqualTo(segment);
+            assertThat(Files.readAllBytes(folder.resolve("journal").resolve(JournalState.BASE_FILE))).isEqualTo(sessionBase);
             assertThat(sessions.history(folder)).hasSize(1).allMatch(session -> session.isActive());
             for (int i = 0; i < manifests.size(); i++) assertThat(Files.readString(manifests.get(i))).isEqualTo(before.get(i));
         } finally { foreign.release(); }
@@ -268,6 +277,266 @@ class OpenRecoveryGateTest {
         assertThat(Files.readAllBytes(folder.resolve("journal/segment-000.bin"))).isEqualTo(segment);
         assertThat(temp).exists();
         assertThat(folder.resolve(ProjectLockManager.LOCK_FILE_NAME)).doesNotExist();
+    }
+
+    @Test void theChooserSeesTheVerifiedRecoveryPointTheReplayUsesNotTheNewestCheckpoint() throws Exception {
+        Path folder = project("Saved head");
+        capturedJournal(folder);
+        AtomicReference<RecoverySummary> seen = new AtomicReference<>();
+        OpenRecoveryGate.Result result = gateWith(folder, true, summary -> { seen.set(summary); return RecoveryChoice.REPLAY_ALL; });
+        assertThat(seen.get().recovery()).isInstanceOfSatisfying(RecoverySummary.Replay.class, replay -> {
+            assertThat(replay.baseKind()).isEqualTo(RecoverySummary.BaseKind.CHECKPOINT_CAPTURE);
+            assertThat(replay.checkpointIndex()).hasValue(1);
+            assertThat(replay.changes().count()).isEqualTo(1);
+            assertThat(replay.changes().types()).containsExactly("ClipEvent.Moved");
+        });
+        assertThat(result.applied()).isEqualTo(1);
+        assertThat(result.promotedInterruptedSave()).isFalse();
+        assertThat(result.door(OpenDoor.PLAIN)).as("the change the dialog said cannot be rebuilt is announced as such")
+                .isEqualTo(new OpenDoor.JournalReplay(1, 1, List.of()));
+        assertThat(Files.readString(folder.resolve("project.daw"))).contains("Captured base");
+    }
+
+    @Test void aTempOnlyRecoveryIsDescribedAsPromotingTheInterruptedSave() throws Exception {
+        Path folder = project("Clean head");
+        Files.writeString(Files.createDirectories(folder.resolve("checkpoints")).resolve("checkpoint-004-20261025T090000.daw"),
+                xml("Checkpoint four"));
+        Path temp = interruptedSave(folder, "Interrupted save");
+        Instant writtenAt = Files.getLastModifiedTime(temp).toInstant();
+        AtomicReference<RecoverySummary> seen = new AtomicReference<>();
+        OpenRecoveryGate.Result result = gateWith(folder, true, summary -> { seen.set(summary); return RecoveryChoice.REPLAY_ALL; });
+        assertThat(seen.get().recovery())
+                .isEqualTo(new RecoverySummary.PromoteNewerHead(writtenAt, temp.getFileName().toString()));
+        assertThat(result.promotedInterruptedSave()).isTrue();
+        assertThat(result.applied()).isZero();
+        assertThat(OpenAnnouncement.of(result.door(OpenDoor.PLAIN), folder, MissingAssetsReport.EMPTY, List.of()))
+                .as("announced as the interrupted save, never as 0 journal changes")
+                .isEqualTo(new OpenAnnouncement(NotificationLevel.SUCCESS, "Recovered an interrupted save", false));
+        assertThat(Files.readString(folder.resolve("project.daw"))).contains("Interrupted save");
+        assertThat(temp).doesNotExist();
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"missing", "changed", "damaged"})
+    void aReplayThatCannotStartIsDescribedBeforeTheChoiceAndChangesNothing(String damage) throws Exception {
+        Path folder = project("Session head");
+        ProjectContext context = ProjectContext.forProject(folder);
+        try (JournalWriter writer = new JournalWriter(context, JournalConfig.DEFAULT, true, null)) {
+            writer.start();
+            writer.offer("MixerEvent.GainChanged", UUID.randomUUID(), null, Instant.now());
+            writer.offer("TrackEvent.Renamed", UUID.randomUUID(), null, Instant.now());
+            writer.forceFlush();
+        }
+        Path base = context.journalDirectory().resolve(JournalState.BASE_FILE);
+        Path segment = context.journalDirectory().resolve("segment-000.bin");
+        RecoverySummary.CannotReplay expected = switch (damage) {
+            case "missing" -> {
+                Files.delete(base);
+                yield new RecoverySummary.BaseMissing();
+            }
+            case "changed" -> {
+                Files.writeString(base, xml("Changed baseline"));
+                yield new RecoverySummary.BaseChanged();
+            }
+            default -> {
+                flipAByteInsideTheSecondFrame(context, segment);
+                yield new RecoverySummary.SegmentDamaged("segment-000.bin");
+            }
+        };
+        Path temp = interruptedSave(folder, "Interrupted save");
+        Path notes = Files.writeString(folder.resolve(".notes.json.0123456789abcdef.tmp"), "{} ");
+        byte[] head = Files.readAllBytes(folder.resolve("project.daw"));
+        Evidence before = Evidence.of(folder, temp, notes);
+        AtomicReference<RecoverySummary> seen = new AtomicReference<>();
+        Throwable thrown = catchThrowable(() -> gateWith(folder, true, summary -> {
+            seen.set(summary);
+            return RecoveryChoice.REPLAY_ALL;
+        }));
+        assertThat(thrown).hasCauseInstanceOf(OpenRecoveryGate.ReplayFailed.class);
+        if (damage.equals("damaged")) {
+            assertThat(thrown.getCause()).as("the damaged segment is named")
+                    .hasMessage("journal segment failed checksum verification: " + segment);
+        }
+        assertThat(seen.get().recovery()).isInstanceOfSatisfying(RecoverySummary.ReplayFails.class,
+                fails -> assertThat(fails.reason()).isEqualTo(expected));
+        assertThat(Evidence.of(folder, temp, notes)).isEqualTo(before);
+        assertThat(folder.resolve("snapshots")).doesNotExist();
+        assertThat(Files.readAllBytes(folder.resolve("project.daw"))).isEqualTo(head);
+    }
+
+    /** Flips one byte inside the second frame of {@code segment}, so a complete record mid-segment fails its checksum. */
+    private static void flipAByteInsideTheSecondFrame(ProjectContext context, Path segment) throws IOException {
+        byte[] bytes = Files.readAllBytes(segment);
+        int corruptAt = JournalState.records(context).getFirst().serializedSize() + 6;
+        assertThat(bytes.length).isGreaterThan(corruptAt);
+        bytes[corruptAt] ^= (byte) 0xFF;
+        Files.write(segment, bytes);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            "false, true, CHECKPOINT_ONLY",
+            "false, false, CHECKPOINT_ONLY",
+            "true, true, REPLAY_ALL",
+            "true, true, CHECKPOINT_ONLY"})
+    void theInterruptedSaveIsKeptAsAnInterruptedSaveSnapshotBeforeAnythingIsDeleted(boolean owedJournal, boolean enabled,
+            RecoveryChoice choice) throws Exception {
+        Path folder = project("Clean head");
+        if (owedJournal || !enabled) crash(folder);
+        Path temp = interruptedSave(folder, "Interrupted save");
+        byte[] saved = Files.readAllBytes(temp);
+        Evidence journal = Evidence.of(folder);
+        try (Logs logs = new Logs(RecoveryTemps.class)) {
+            gateWith(folder, enabled, _ -> choice);
+            assertThat(logs.lines.stream().filter(line -> line.contains("Handled 1 atomic-writer temp"))).hasSize(1);
+        }
+        assertThat(files(folder.resolve("snapshots"))).singleElement().satisfies(snapshot ->
+                assertThat(Files.readAllBytes(snapshot)).isEqualTo(saved));
+        assertThat(new com.benesquivelmusic.daw.core.persistence.snapshot.SnapshotStore()
+                .listSnapshotDirectory(folder.resolve("snapshots")))
+                .singleElement().satisfies(snapshot -> assertThat(snapshot.name()).isEqualTo("interrupted save"));
+        assertThat(temp).doesNotExist();
+        try (java.util.stream.Stream<Path> paths = Files.walk(folder)) {
+            assertThat(paths.filter(Files::isRegularFile)
+                    .filter(path -> AtomicFileWriter.publishedNameOf(path.getFileName().toString()).isPresent())).isEmpty();
+        }
+        if (!enabled) assertThat(Evidence.of(folder)).as("the opted-out journal is kept").isEqualTo(journal);
+    }
+
+    @Test void aFailedCopyOfTheInterruptedSaveAbortsRestoreCheckpointOnlyWithNothingDeleted() throws Exception {
+        Path folder = project("Clean head");
+        crash(folder);
+        Path temp = interruptedSave(folder, "Interrupted save");
+        Path blocker = Files.writeString(folder.resolve("snapshots"), "a file where the snapshots folder belongs");
+        Evidence before = Evidence.of(folder, temp, blocker);
+        assertThatThrownBy(() -> gateWith(folder, true, _ -> RecoveryChoice.CHECKPOINT_ONLY))
+                .cause().isInstanceOf(IOException.class).isNotInstanceOf(OpenRecoveryGate.ReplayFailed.class)
+                .as("it names the interrupted save, where it could not be copied, why (the failure's type, never its path), and that nothing was deleted")
+                .hasMessage("The interrupted save .project.daw.0123456789abcdef.tmp could not be copied to "
+                        + folder.resolve("snapshots") + " (FileAlreadyExistsException); nothing was deleted")
+                .hasCauseInstanceOf(FileAlreadyExistsException.class);
+        assertThat(Evidence.of(folder, temp, blocker)).isEqualTo(before);
+    }
+
+    @Test void restoreCheckpointOnlyWithoutAProjectFileKeepsTheJournalAndRecoverEverythingStillRecovers() throws Exception {
+        Path folder = Files.createDirectories(workspace.resolve("Legacy"));
+        Path checkpoints = Files.createDirectories(folder.resolve("checkpoints"));
+        Files.writeString(checkpoints.resolve("checkpoint-002-20261025T090000.daw"), xml("Older checkpoint"));
+        Files.writeString(checkpoints.resolve("checkpoint-003-20261025T100000.daw"), xml("Newest checkpoint"));
+        try (JournalWriter writer = new JournalWriter(ProjectContext.forProject(folder), JournalConfig.DEFAULT, true, null)) {
+            writer.start();
+            writer.offer("MixerEvent.GainChanged", UUID.randomUUID(), null, Instant.now());
+            writer.offer("TrackEvent.Renamed", UUID.randomUUID(), null, Instant.now());
+            writer.forceFlush();
+        }
+        Evidence before = Evidence.of(folder);
+        assertThatThrownBy(() -> gateWith(folder, true, _ -> RecoveryChoice.CHECKPOINT_ONLY))
+                .cause().isInstanceOf(IOException.class)
+                .hasMessage("project.daw is missing, so Restore checkpoint only cannot open this project; the journal was kept");
+        assertThat(Evidence.of(folder)).isEqualTo(before);
+        assertThat(folder.resolve("project.daw")).doesNotExist();
+
+        assertThat(gateWith(folder, true, _ -> RecoveryChoice.REPLAY_ALL).applied()).isEqualTo(2);
+        assertThat(Files.readString(folder.resolve("project.daw"))).contains("Newest checkpoint");
+        assertThat(JournalState.records(ProjectContext.forProject(folder))).isEmpty();
+    }
+
+    @Test void aRecoveryPointOverwrittenAfterTheChoiceFailsTheReplayAndWritesNothing() throws Exception {
+        Path folder = project("Saved head");
+        Path captured = capturedJournal(folder);
+        String head = Files.readString(folder.resolve("project.daw"));
+        assertThatThrownBy(() -> gateWith(folder, true, _ -> {
+            Files.writeString(captured, xml("Replaced while the dialog was open"));
+            return RecoveryChoice.REPLAY_ALL;
+        })).hasCauseInstanceOf(OpenRecoveryGate.ReplayFailed.class);
+        assertThat(Files.readString(folder.resolve("project.daw"))).isEqualTo(head);
+        assertThat(JournalState.records(ProjectContext.forProject(folder))).isNotEmpty();
+        assertThat(JournalState.needsRecovery(ProjectContext.forProject(folder))).isTrue();
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {true, false})
+    void anInterruptedSaveChangedAfterTheChoiceIsNotPromoted(boolean sizeChanged) throws Exception {
+        Path folder = project("Clean head");
+        Path temp = interruptedSave(folder, "Interrupted save");
+        String head = Files.readString(folder.resolve("project.daw"));
+        assertThatThrownBy(() -> gateWith(folder, true, _ -> {
+            FileTime described = Files.getLastModifiedTime(temp);
+            if (sizeChanged) {
+                Files.writeString(temp, xml("Interrupted save, rewritten"));
+                Files.setLastModifiedTime(temp, described);
+            } else {
+                Files.setLastModifiedTime(temp, FileTime.from(described.toInstant().plusSeconds(1)));
+            }
+            return RecoveryChoice.REPLAY_ALL;
+        })).hasCauseInstanceOf(OpenRecoveryGate.ReplayFailed.class);
+        assertThat(Files.readString(folder.resolve("project.daw"))).isEqualTo(head);
+        assertThat(temp).exists();
+    }
+
+    /** A chooser that may touch the disk; it runs after the plan is built and before the choice acts. */
+    @FunctionalInterface private interface Chooser { RecoveryChoice choose(RecoverySummary summary) throws IOException; }
+
+    private OpenRecoveryGate.Result gateWith(Path folder, boolean enabled, Chooser chooser) throws Exception {
+        ProjectManager manager = new ProjectManager(new CheckpointManager(AutoSaveConfig.DEFAULT.withEnabled(false)));
+        AtomicReference<OpenRecoveryGate.Result> result = new AtomicReference<>();
+        OpenRecoveryGate gate = new OpenRecoveryGate(manager, () -> enabled, summary -> {
+            decisions.incrementAndGet();
+            try { return chooser.choose(summary); }
+            catch (IOException failure) { throw new java.io.UncheckedIOException(failure); }
+        }, (head, content) -> new AtomicFileWriter().writeString(head, content,
+                AtomicFileWriter.ReplacePermission.TARGET, AtomicFileWriter.ReplaceOption.FOLLOW_LINK_TO_DAW_FILE));
+        manager.setRecoveryGate((directory, readOnly, lock) -> result.set(gate.run(directory, readOnly, lock)));
+        worker(() -> { try (ProjectManager.PreparedOpen ignored = manager.prepareOpen(folder)) { return null; } });
+        return result.get();
+    }
+
+    /**
+     * An unsealed journal whose verified capture is checkpoint #1, with two changes before it and
+     * one after, beside an unrelated, newer checkpoint #5.
+     */
+    private Path capturedJournal(Path folder) throws IOException {
+        Path checkpoints = Files.createDirectories(folder.resolve("checkpoints"));
+        Path captured = Files.writeString(checkpoints.resolve("checkpoint-001-20261025T090000.daw"), xml("Captured base"));
+        Files.writeString(checkpoints.resolve("checkpoint-005-20261025T110000.daw"), xml("Stale unrelated five"));
+        try (JournalWriter writer = new JournalWriter(ProjectContext.forProject(folder), JournalConfig.DEFAULT, true, null)) {
+            writer.start();
+            writer.offer("MixerEvent.GainChanged", UUID.randomUUID(), null, Instant.now());
+            writer.offer("TrackEvent.Renamed", UUID.randomUUID(), null, Instant.now());
+            writer.onCheckpointSucceeded(writer.captureSequence(), captured, Instant.now());
+            writer.offer("ClipEvent.Moved", UUID.randomUUID(), null, Instant.now());
+            writer.forceFlush();
+        }
+        return captured;
+    }
+
+    /** A complete save of project.daw that did not finish: a head temp newer than the head. */
+    private static Path interruptedSave(Path folder, String name) throws IOException {
+        Files.setLastModifiedTime(folder.resolve("project.daw"), FileTime.from(Instant.now().minusSeconds(100)));
+        return Files.writeString(folder.resolve(".project.daw.0123456789abcdef.tmp"), xml(name));
+    }
+
+    private static List<Path> files(Path directory) throws IOException {
+        if (!Files.isDirectory(directory)) return List.of();
+        try (java.util.stream.Stream<Path> entries = Files.list(directory)) {
+            return entries.filter(Files::isRegularFile).toList();
+        }
+    }
+
+    /** The bytes of the journal's segments and session base, and of {@code others}, keyed by path. */
+    private record Evidence(java.util.Map<Path, List<Byte>> bytes) {
+        static Evidence of(Path folder, Path... others) throws IOException {
+            java.util.Map<Path, List<Byte>> bytes = new java.util.TreeMap<>();
+            List<Path> paths = new ArrayList<>(files(folder.resolve("journal")));
+            paths.addAll(List.of(others));
+            for (Path path : paths) {
+                byte[] content = Files.readAllBytes(path);
+                List<Byte> boxed = new ArrayList<>(content.length);
+                for (byte value : content) boxed.add(value);
+                bytes.put(path, boxed);
+            }
+            return new Evidence(bytes);
+        }
     }
 
     private static final class Logs implements AutoCloseable {

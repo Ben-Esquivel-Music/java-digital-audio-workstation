@@ -105,9 +105,15 @@ class ProjectReplacementJournalSafetyTest {
                 fixture.lifecycle().onNewProject();
             });
             fixture.awaitOnFx(() -> !fixture.lifecycle().isProjectInstallationPending(), "failed journal cleaned up");
-            assertThat(fixture.notifications()).extracting(NotificationEntry::message)
-                    .noneMatch(message -> message.equals("New project created"))
-                    .anyMatch(message -> message.contains("journal unavailable"));
+            List<NotificationEntry> shown = fixture.notifications();
+            assertThat(shown).extracting(NotificationEntry::message)
+                    .noneMatch(message -> message.equals("New project created"));
+            assertThat(shown)
+                    .filteredOn(entry -> entry.level() == NotificationLevel.ERROR && entry.message().startsWith(
+                            "New project created; journaled persistence is paused until this project is reopened."))
+                    .singleElement()
+                    .extracting(NotificationEntry::message).asString()
+                    .contains("journal unavailable");
         }
     }
 

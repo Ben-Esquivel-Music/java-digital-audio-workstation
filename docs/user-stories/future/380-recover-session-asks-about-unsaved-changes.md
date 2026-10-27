@@ -45,6 +45,10 @@ These tests are binding acceptance criteria. They run headless, and none of them
 - Design references: Persistence Integrity design book §4.7 (the recovery gate), §5.3 (the open contract).
 - Cross-refs: story 298, story 331, story 332.
 
+## Sequencing With Story 384
+
+Production never takes the path this story's code locators name. `MainController` always calls `enableRecoveryGate`, so Recover Session runs `beginRecovery` → `whenNoAppWriteIsPending` → `loadProjectFromPath` → `beginGatedLoad`, and the plan, the dialog's choice and the replay all happen inside `OpenRecoveryGate.run`, which `ProjectManager.prepareOpen` calls on the open's worker. `scanForRecovery`, `presentRecovery`, `openRecoveredProject`, `openLastCleanSaveAfterFailedScan`, `openLastCleanSaveAfterRecoveredWriteFailed` and `openLastCleanSaveAfterFailedReplay` exist only on the ungated path, which story 384 (`docs/user-stories/future/384-retire-the-ungated-recovery-path.md`) removes. Implement this story after story 384, or first re-point its code locators and its binding tests at the gated path; either way the prompts belong on the gated path, the one users reach.
+
 ## Status
 
 - Deferred

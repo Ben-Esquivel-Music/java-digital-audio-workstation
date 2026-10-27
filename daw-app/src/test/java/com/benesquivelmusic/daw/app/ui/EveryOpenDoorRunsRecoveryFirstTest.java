@@ -283,8 +283,7 @@ class EveryOpenDoorRunsRecoveryFirstTest {
                             }));
                     fixture.lifecycle().beginRecovery(incoming);
                 });
-                fixture.awaitOnFx(() -> fixture.projectManager.getCurrentProject() != null
-                        && incoming.equals(fixture.projectManager.getCurrentProject().projectPath())
+                fixture.awaitOnFx(() -> fixture.currentProjectIs(incoming)
                         && !fixture.lifecycle().isProjectInstallationPending(), "read-only last-head fallback");
                 if (answerFailure.get() != null) throw new AssertionError(answerFailure.get());
                 assertThat(fixture.projectManager.isReadOnly()).isTrue();
@@ -390,8 +389,7 @@ class EveryOpenDoorRunsRecoveryFirstTest {
             }
             fixture.awaitOnFx(() -> journalOpens.get() > 0 || failure.get() != null, "recovery then journal-open");
             if (failure.get() != null) throw new AssertionError("dialog invariant failed", failure.get());
-            fixture.awaitOnFx(() -> fixture.projectManager.getCurrentProject() != null
-                    && target.get().equals(fixture.projectManager.getCurrentProject().projectPath())
+            fixture.awaitOnFx(() -> fixture.currentProjectIs(target.get())
                     && !fixture.lifecycle().isProjectInstallationPending(), "completed UI installation");
             assertThat(dialogs).hasValue(1);
             assertThat(journalOpens).hasValue(1);
@@ -399,6 +397,58 @@ class EveryOpenDoorRunsRecoveryFirstTest {
             runOnFx(() -> Window.getWindows().removeListener(observer));
             if (liveJournal.get() != null) liveJournal.get().close();
             preferences.removeNode();
+        }
+    }
+
+    @Test void aTempOnlyRecoverEverythingThroughTheGateIsAnnouncedAsTheInterruptedSave() throws Exception {
+        try (SaveFlowFixture fixture = new SaveFlowFixture(workspace, AutoSaveConfig.DEFAULT)) {
+            Path incoming = fixture.anotherProjectOnDisk("Interrupted");
+            Path head = incoming.resolve("project.daw");
+            assertThat(JournalState.needsRecovery(ProjectContext.forProject(incoming))).as("no journal decision is owed")
+                    .isFalse();
+            DawProject newer = new DawProject("Interrupted", AudioFormat.CD_QUALITY);
+            newer.createAudioTrack("Written by the interrupted save");
+            Path temp = Files.writeString(incoming.resolve(".project.daw.0123456789abcdef.tmp"),
+                    new ProjectSerializer().serialize(newer));
+            Files.setLastModifiedTime(temp, java.nio.file.attribute.FileTime.from(
+                    Files.getLastModifiedTime(head).toInstant().plusSeconds(60)));
+            byte[] saved = Files.readAllBytes(temp);
+            AtomicReference<Throwable> answerFailure = new AtomicReference<>();
+            ListChangeListener<Window> answerRecovery = change -> {
+                while (change.next()) for (Window window : change.getAddedSubList()) {
+                    if (window instanceof Stage stage && "Recover unsaved work".equals(stage.getTitle())) {
+                        Platform.runLater(() -> {
+                            try {
+                                Node root = stage.getScene().getRoot();
+                                DialogPane pane = root instanceof DialogPane direct ? direct : (DialogPane) root.lookup(".dialog-pane");
+                                javafx.scene.control.ButtonType choice = pane.getButtonTypes().stream()
+                                        .filter(type -> "Recover everything".equals(type.getText())).findFirst().orElseThrow();
+                                ((Button) pane.lookupButton(choice)).fire();
+                            } catch (Throwable failure) { answerFailure.set(failure); stage.hide(); }
+                        });
+                    }
+                }
+            };
+            try {
+                runOnFx(() -> {
+                    Window.getWindows().addListener(answerRecovery);
+                    fixture.lifecycle().enableRecoveryGate(() -> true, () -> () -> { }, _ -> { });
+                    fixture.lifecycle().beginRecovery(incoming);
+                });
+                fixture.awaitOnFx(() -> answerFailure.get() != null
+                        || fixture.currentProjectIs(incoming)
+                        && !fixture.lifecycle().isProjectInstallationPending()
+                        && !fixture.shown.getEntries().isEmpty(), "the promoted interrupted save installed and announced");
+                if (answerFailure.get() != null) throw new AssertionError("the recovery dialog could not be answered", answerFailure.get());
+            } finally { runOnFx(() -> Window.getWindows().removeListener(answerRecovery)); }
+            assertThat(fixture.notifications()).as("the one open announcement").singleElement().satisfies(entry -> {
+                assertThat(entry.level()).isEqualTo(NotificationLevel.SUCCESS);
+                assertThat(entry.message()).isEqualTo("Recovered an interrupted save");
+            });
+            assertThat(fixture.notifications()).extracting(NotificationEntry::message)
+                    .noneMatch(message -> message.contains("from the journal") || message.contains("could not be rebuilt"));
+            assertThat(Files.readAllBytes(head)).as("project.daw holds the interrupted save").isEqualTo(saved);
+            assertThat(temp).doesNotExist();
         }
     }
 

@@ -11,6 +11,7 @@ import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
 import com.benesquivelmusic.daw.core.persistence.ProjectLockManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
+import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
 import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
 import com.benesquivelmusic.daw.core.persistence.archive.ArchiveOptions;
 import com.benesquivelmusic.daw.core.persistence.archive.ProjectArchiver;
@@ -38,6 +39,7 @@ import java.time.InstantSource;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.OptionalLong;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -248,6 +250,16 @@ final class SaveFlowFixture implements AutoCloseable {
         return onFx(() -> List.copyOf(shown.getEntries()));
     }
 
+    /**
+     * Whether {@code directory} is the current project. Reads the current
+     * project once: an open's worker may retire it concurrently, so a second
+     * read could find none.
+     */
+    boolean currentProjectIs(Path directory) {
+        ProjectMetadata current = projectManager.getCurrentProject();
+        return current != null && directory.equals(current.projectPath());
+    }
+
     /** The names of the strip operations shown now. */
     List<String> operationNames() throws Exception {
         return onFx(() -> progress.getOperations().stream().map(ProjectOperationProgress.NamedOperation::name)
@@ -303,6 +315,31 @@ final class SaveFlowFixture implements AutoCloseable {
             assertThat(System.nanoTime() - deadline < 0).as("%s within %s", what, GUARD).isTrue();
             Thread.sleep(5);
         }
+    }
+
+    /**
+     * Waits, through {@link #awaitOnFx} and so bounded by {@link #GUARD},
+     * until a checkpoint generation newer than {@code afterGeneration} runs
+     * and has reported its {@link CheckpointEvent.Seeded seeding}. Seeded
+     * fires on the checkpoint writer after seeding's ordering-fact
+     * compaction and stray-temp cleanup, each of which publishes or deletes
+     * synchronously on that writer, so every publish the seeding made is in
+     * {@link #publishes} once the event is in {@link #checkpointEvents}.
+     * The caller captures {@code afterGeneration} — the outgoing project's
+     * running generation — before the action that opens the next project,
+     * so the outgoing generation's own Seeded never satisfies the wait, and
+     * calls this only once that open's installation finished. A read-only
+     * open starts no generation, so its test never waits here.
+     *
+     * @param afterGeneration the generation that ran before the open
+     */
+    void awaitCheckpointsSeeded(long afterGeneration) throws Exception {
+        awaitOnFx(() -> {
+            OptionalLong running = checkpoints.runningGeneration();
+            return running.isPresent() && running.getAsLong() > afterGeneration
+                    && checkpointEvents.stream().anyMatch(event -> event instanceof CheckpointEvent.Seeded seeded
+                            && seeded.generation() == running.getAsLong());
+        }, "the seeding of a checkpoint generation after generation " + afterGeneration);
     }
 
     @Override

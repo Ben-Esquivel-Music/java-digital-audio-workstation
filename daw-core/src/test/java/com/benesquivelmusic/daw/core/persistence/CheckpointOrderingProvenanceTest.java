@@ -27,7 +27,8 @@ class CheckpointOrderingProvenanceTest {
     }
 
     private String newest() throws IOException {
-        return new RecoveryScanner().scan(ProjectContext.forProject(folder)).orElseThrow().checkpointFileName();
+        return new RecoveryScanner().newestCheckpoint(ProjectContext.forProject(folder).checkpointDirectory())
+                .orElseThrow().getFileName().toString();
     }
 
     private CheckpointManager manager(String time) {

@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.core.persistence.journal.Backpressure;
 import com.benesquivelmusic.daw.core.persistence.journal.JournalConfig;
 import com.benesquivelmusic.daw.core.persistence.journal.JournalEventRecorder;
 import com.benesquivelmusic.daw.core.persistence.journal.JournalListener;
+import com.benesquivelmusic.daw.core.persistence.journal.JournalState;
 import com.benesquivelmusic.daw.core.persistence.journal.JournalWriter;
 import com.benesquivelmusic.daw.core.persistence.journal.ProjectContext;
 import com.benesquivelmusic.daw.core.session.SessionManager;
@@ -15,13 +16,16 @@ import com.benesquivelmusic.daw.core.session.WorkingSession;
 import com.benesquivelmusic.daw.sdk.event.EventBus;
 
 import java.io.IOException;
+import java.nio.file.FileSystemException;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.time.InstantSource;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -198,74 +202,154 @@ public final class ProjectJournalCoordinator {
         }
         lifecycleLock.lock();
         try {
-            if (writer != null) {
-                // A journal is already open; the caller is responsible for
-                // closing the prior project's journal before opening the next
-                // (or using reopenFor(...), which does both under the lock).
-                return;
-            }
-            EventBus bus = busSupplier.get();
-            if (bus == null) {
-                LOG.warning("No EventBus available; journaled persistence not started for " + projectDir);
-                return;
-            }
-            ProjectContext ctx = ProjectContext.forProject(projectDir, clock);
-            JournalWriter newWriter = new JournalWriter(ctx, JournalConfig.DEFAULT, true, newListener());
-            try {
-                newWriter.start();
-            } catch (IOException e) {
-                LOG.log(Level.WARNING, "Failed to start journal writer for " + projectDir, e);
-                return;
-            }
-            JournalEventRecorder newRecorder;
-            try { newRecorder = new JournalEventRecorder(bus, newWriter, clock).start(); }
-            catch (RuntimeException failure) {
-                newWriter.close();
-                LOG.log(Level.WARNING, "Journal publication observation is unavailable", failure);
-                FxDispatcher.runOnFx(dispatcher, () -> notifications.show(NotificationLevel.ERROR,
-                        "Journaled persistence could not start: " + failure.getMessage()));
-                return;
-            }
-            java.util.OptionalLong journalGeneration = checkpointManager.runningGeneration();
-            Runnable captureRemoval = checkpointManager.observeJournalSequence(newWriter::captureSequence);
-            Runnable listener = checkpointManager.addEventListener(event -> {
-                if (event instanceof com.benesquivelmusic.daw.core.persistence.CheckpointEvent.Written written
-                        && journalGeneration.isPresent() && written.generation() == journalGeneration.getAsLong()
-                        && journalGeneration.equals(checkpointManager.runningGeneration())
-                        && written.file().getParent().equals(projectDir.resolve("checkpoints"))) {
-                    if (written.journalSequence().isPresent()) {
-                        long boundary = written.journalSequence().getAsLong();
-                        try { newWriter.onCheckpointSucceeded(boundary, written.file(), clock.instant()); }
-                        catch (IOException failure) { LOG.log(Level.WARNING, "Could not record checkpoint capture boundary", failure); }
-                    }
-                }
-            });
-
-            this.writer = newWriter;
-            this.recorder = newRecorder;
-            this.rotationListener = listener;
-            this.captureListener = captureRemoval;
-            this.openProjectDir = projectDir;
-            // Seed the Journal cell to a clean state for the freshly-opened project.
-            progress.setJournalEventsQueued(0);
-            progress.setJournalBackpressure(ProjectOperationProgress.JournalBackpressure.NORMAL);
-            LOG.info(() -> "Journaled persistence started for " + projectDir);
+            open(projectDir, this::showRecorderFailure);
         } finally {
             lifecycleLock.unlock();
         }
     }
 
-    /** Opens the journal and requires readiness before a guarded project installation completes. */
+    /**
+     * Opens the journal and requires readiness before a guarded project installation completes.
+     * A no-op when journaled persistence is disabled.
+     *
+     * @param projectDir the project root; must not be {@code null}
+     * @throws IllegalStateException if the enabled journal could not start, with the message
+     *                               {@code "Journaled persistence could not start for <dir>: <reason>"}
+     *                               and the failure as its cause; the caller's notification is
+     *                               the one surface, so the coordinator posts none of its own
+     */
     public void openForRequired(Path projectDir) {
         Objects.requireNonNull(projectDir, "projectDir must not be null");
         lifecycleLock.lock();
         try {
-            openFor(projectDir);
-            if (Boolean.TRUE.equals(journaledPersistenceEnabled.get())
-                    && (writer == null || !projectDir.equals(openProjectDir))) {
-                throw new IllegalStateException("Journaled persistence could not start for " + projectDir);
+            if (!Boolean.TRUE.equals(journaledPersistenceEnabled.get())) {
+                return;
+            }
+            Optional<Exception> failure = open(projectDir, _ -> { });
+            if (failure.isPresent()) {
+                throw new IllegalStateException("Journaled persistence could not start for " + projectDir + ": "
+                        + reason(failure.get()), failure.get());
             }
         } finally { lifecycleLock.unlock(); }
+    }
+
+    /**
+     * Opens the journal for {@code projectDir}; the caller holds the lifecycle lock.
+     *
+     * @param projectDir             the project root
+     * @param recorderFailureSurface shows a recorder that could not attach to the bus
+     * @return why no journal is open for {@code projectDir} afterwards; empty when one is
+     */
+    private Optional<Exception> open(Path projectDir, Consumer<RuntimeException> recorderFailureSurface) {
+        if (writer != null) {
+            // A journal is already open; the caller is responsible for
+            // closing the prior project's journal before opening the next
+            // (or using reopenFor(...), which does both under the lock).
+            return projectDir.equals(openProjectDir) ? Optional.empty()
+                    : Optional.of(new IllegalStateException("a journal is already open for " + openProjectDir));
+        }
+        EventBus bus = busSupplier.get();
+        if (bus == null) {
+            LOG.warning("No EventBus available; journaled persistence not started for " + projectDir);
+            return Optional.of(new IllegalStateException("no event bus is available"));
+        }
+        ProjectContext ctx = ProjectContext.forProject(projectDir, clock);
+        JournalWriter newWriter = new JournalWriter(ctx, JournalConfig.DEFAULT, true, newListener());
+        try {
+            newWriter.start();
+        } catch (IOException | RuntimeException failure) {
+            // A failed start() released what it acquired and removed the
+            // journal evidence it could (JournalWriter.start); close() is the
+            // safety net for a writer whose start is not failure-atomic. Never
+            // sealAndClose(): a session that did not start must not be sealed.
+            try { newWriter.close(); }
+            catch (RuntimeException notClosed) { failure.addSuppressed(notClosed); }
+            LOG.log(Level.WARNING, "Failed to start journal writer for " + projectDir, failure);
+            return Optional.of(failure);
+        }
+        JournalEventRecorder newRecorder;
+        try { newRecorder = new JournalEventRecorder(bus, newWriter, clock).start(); }
+        catch (RuntimeException failure) {
+            endUnrecordedSession(newWriter, failure);
+            LOG.log(Level.WARNING, "Journal publication observation is unavailable", failure);
+            recorderFailureSurface.accept(failure);
+            return Optional.of(failure);
+        }
+        catch (Error failure) {
+            endUnrecordedSession(newWriter, failure);
+            throw failure;
+        }
+        java.util.OptionalLong journalGeneration = checkpointManager.runningGeneration();
+        Runnable captureRemoval = checkpointManager.observeJournalSequence(newWriter::captureSequence);
+        Runnable listener = checkpointManager.addEventListener(event -> {
+            if (event instanceof com.benesquivelmusic.daw.core.persistence.CheckpointEvent.Written written
+                    && journalGeneration.isPresent() && written.generation() == journalGeneration.getAsLong()
+                    && journalGeneration.equals(checkpointManager.runningGeneration())
+                    && written.file().getParent().equals(projectDir.resolve("checkpoints"))) {
+                if (written.journalSequence().isPresent()) {
+                    long boundary = written.journalSequence().getAsLong();
+                    try { newWriter.onCheckpointSucceeded(boundary, written.file(), clock.instant()); }
+                    catch (IOException failure) { LOG.log(Level.WARNING, "Could not record checkpoint capture boundary", failure); }
+                }
+            }
+        });
+
+        this.writer = newWriter;
+        this.recorder = newRecorder;
+        this.rotationListener = listener;
+        this.captureListener = captureRemoval;
+        this.openProjectDir = projectDir;
+        // Seed the Journal cell to a clean state for the freshly-opened project.
+        progress.setJournalEventsQueued(0);
+        progress.setJournalBackpressure(ProjectOperationProgress.JournalBackpressure.NORMAL);
+        LOG.info(() -> "Journaled persistence started for " + projectDir);
+        return Optional.empty();
+    }
+
+    /**
+     * Ends a session whose recorder never attached to the bus. The session
+     * started durably and recorded nothing (no recorder, no checkpoint
+     * listener yet), so a seal is truthful, and it keeps the next open from
+     * offering to recover a session with no work in it. If the seal fails the
+     * writer is closed unsealed and the seal failure is attached to
+     * {@code failure}.
+     */
+    private void endUnrecordedSession(JournalWriter started, Throwable failure) {
+        try {
+            started.sealAndClose(clock.instant());
+        } catch (IOException | RuntimeException notSealed) {
+            LOG.log(Level.WARNING, "Journal session with no recorder could not be sealed; closing it unsealed", notSealed);
+            failure.addSuppressed(notSealed);
+            // sealAndClose's finally has already closed the segment and marked
+            // the writer closed, so this close() is a no-op guard that keeps the
+            // fallback if that ever changes.
+            started.close();
+        }
+    }
+
+    private void showRecorderFailure(RuntimeException failure) {
+        FxDispatcher.runOnFx(dispatcher, () -> notifications.show(NotificationLevel.ERROR,
+                "Journaled persistence could not start: " + failure.getMessage()));
+    }
+
+    /**
+     * Why the journal could not start, for a notification that names no file
+     * otherwise: the failure's message; for a {@link FileSystemException} that
+     * gives no reason (its message is only the file), that message with its
+     * type added; its type alone when there is no message. Unlike
+     * {@code RecordCoordinator.ioReason} and {@link JournalState#reason}, it
+     * keeps the path.
+     */
+    private static String reason(Exception failure) {
+        String message = failure.getMessage();
+        String simpleName = failure.getClass().getSimpleName();
+        String type = simpleName.isEmpty() ? failure.getClass().getName() : simpleName;
+        if (message == null || message.isBlank()) return type;
+        if (failure instanceof FileSystemException fileSystemFailure
+                && (fileSystemFailure.getReason() == null || fileSystemFailure.getReason().isBlank())) {
+            return message + ": " + type;
+        }
+        return message;
     }
 
     /**

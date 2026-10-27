@@ -460,8 +460,7 @@ class RecoverSessionIsTheOnePendingSwitchTest {
     }
 
     private void awaitTheOpenProject(Path expected) throws Exception {
-        fixture.awaitOnFx(() -> fixture.projectManager.getCurrentProject() != null
-                && expected.equals(fixture.projectManager.getCurrentProject().projectPath()),
+        fixture.awaitOnFx(() -> fixture.currentProjectIs(expected),
                 "the recovery opened " + expected.getFileName());
     }
 
