@@ -20,6 +20,7 @@ import java.util.stream.Stream;
 
 import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.BACKUP;
 import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.CHECKPOINT;
+import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.HEAD;
 import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.await;
 import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.failed;
 import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.saved;
@@ -69,7 +70,7 @@ class SaveBackupDurabilityTest {
     void theOwedBackupIsPublishedWithoutReplacingBeforeTheHeadIsReplaced() throws IOException {
         saved(manager, manager.getCurrentDawProject());
 
-        List<Publish> fileWrites = mover.publishes(CHECKPOINT.negate());
+        List<Publish> fileWrites = mover.publishes(BACKUP.or(HEAD));
         assertThat(fileWrites).as("the backup, then the head").hasSize(2);
         assertThat(fileWrites.getFirst().name()).matches("project\\.daw\\.v\\d+\\.\\d{8}-\\d{6}\\.bak");
         assertThat(fileWrites.getFirst().options()).as("a move that never replaces (NEVER)").isEmpty();
@@ -78,6 +79,15 @@ class SaveBackupDurabilityTest {
                 .containsExactly(StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         assertThat(Files.readAllBytes(fileWrites.getFirst().target())).as("the backup holds the original")
                 .isEqualTo(original);
+        List<Publish> checkpoints = mover.publishes(CHECKPOINT);
+        assertThat(checkpoints).as("the save publishes one checkpoint after its head").hasSize(1);
+        Path orderingFact = directory.resolve("checkpoints").resolve(CheckpointOrder.FILE_NAME);
+        assertThat(mover.publishes()).extracting(Publish::target)
+                .as("the backup and head precede certification and the checkpoint, with no other writes")
+                .containsExactly(fileWrites.getFirst().target(), fileWrites.getLast().target(), orderingFact,
+                        checkpoints.getFirst().target());
+        assertThat(CheckpointOrder.read(orderingFact.getParent()))
+                .containsExactly(checkpoints.getFirst().name());
     }
 
     @Test
@@ -93,7 +103,14 @@ class SaveBackupDurabilityTest {
                 .isEqualTo(original);
         assertThat(backups()).isEmpty();
         assertThat(tempsIn(directory)).as("no temp is left beside it").isEmpty();
-        assertThat(mover.publishes(CHECKPOINT.negate())).as("the head was not written").isEmpty();
+        assertThat(mover.publishes(HEAD.or(BACKUP))).as("neither the refused backup nor the head was published").isEmpty();
+        Path safetyCheckpoint = outcome.safetyCheckpoint().orElseThrow();
+        Path orderingFact = directory.resolve("checkpoints").resolve(CheckpointOrder.FILE_NAME);
+        assertThat(mover.publishes()).extracting(Publish::target)
+                .as("only certification and the failed save's safety copy were published")
+                .containsExactly(orderingFact, safetyCheckpoint);
+        assertThat(CheckpointOrder.read(orderingFact.getParent())).containsExactly(safetyCheckpoint.getFileName().toString());
+        assertThat(tempsIn(orderingFact.getParent())).as("the safety copy and its certification leave no temp").isEmpty();
 
         mover.stopFailing();
         saved(manager, project);

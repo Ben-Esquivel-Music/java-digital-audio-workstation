@@ -28,8 +28,8 @@ import java.util.UUID;
  * action's apply, its undo, and its redo (story 283), subscribing here
  * captures <em>apply + undo + redo</em> uniformly without any special-casing.</p>
  *
- * <p>The handler runs on {@link com.benesquivelmusic.daw.sdk.event.DispatchMode#ON_CALLER_THREAD
- * ON_CALLER_THREAD} and forwards to the journal's non-blocking
+ * <p>The handler observes synchronous control-thread publication through
+ * {@link EventBus#onPublication} and forwards to the journal's non-blocking
  * {@link JournalWriter#offer}, so it never blocks the publisher and never
  * throws out of the bus callback.</p>
  */
@@ -67,7 +67,7 @@ public final class JournalEventRecorder implements AutoCloseable {
             return this;
         }
         started = true;
-        this.subscription = bus.on(DawEvent.class, this::onEvent);
+        this.subscription = bus.onPublication(DawEvent.class, this::onEvent);
         return this;
     }
 
@@ -76,7 +76,8 @@ public final class JournalEventRecorder implements AutoCloseable {
         return started;
     }
 
-    private void onEvent(DawEvent event) {
+    private synchronized void onEvent(DawEvent event) {
+        if (closed) return;
         try {
             Instant ts = effectiveTimestamp(event);
             String type = typeTag(event);
@@ -145,7 +146,7 @@ public final class JournalEventRecorder implements AutoCloseable {
      * Closes the bus subscription. Idempotent.
      */
     @Override
-    public void close() {
+    public synchronized void close() {
         if (closed) {
             return;
         }

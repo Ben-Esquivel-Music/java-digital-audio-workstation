@@ -90,7 +90,8 @@ class CheckpointPruneOrderTest {
                     .containsExactlyInAnyOrderElementsOf(own.subList(Math.max(0, own.size() - 2), own.size()));
         }
         assertThat(manager.getCheckpointFiles()).extracting(file -> file.getFileName().toString())
-                .as("the display order is still the stamps'").containsExactly(own.get(4), own.get(3));
+                .as("certified checkpoints follow capture-independent monotonic index order")
+                .containsExactly(own.get(3), own.get(4));
     }
 
     /** Plants checkpoints an earlier run, or a synced folder, left. */

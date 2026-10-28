@@ -128,7 +128,8 @@ class CheckpointWithAutosaveDisabledTest {
         IOException diskFull = new IOException("the disk is full");
         start(new AutoSaveConfig(INTERVAL, 10, false), new AtomicFileWriter(AtomicFileWriter.TEMP_CHANNEL_OPENER,
                 (temp, target, options) -> {
-                    throw diskFull;
+                    if (CheckpointFileName.parse(target.getFileName().toString()).isPresent()) throw diskFull;
+                    AtomicFileWriter.FILE_SYSTEM_MOVER.move(temp, target, options);
                 }));
 
         CompletableFuture<Path> failed = manager.writeCheckpoint(document(5), 5, CheckpointOrigin.USER);
@@ -166,7 +167,7 @@ class CheckpointWithAutosaveDisabledTest {
 
     @Test
     void aCheckpointAfterASaveIsRefusedAtTheCallWithoutWaitingBehindAHeldWrite() throws Exception {
-        start(new AutoSaveConfig(INTERVAL, 10, false), holdingTheFirstPublish());
+        start(new AutoSaveConfig(INTERVAL, 10, false), holdingTheFirstCheckpointPublish());
         CompletableFuture<Path> held = manager.writeCheckpoint(document(1), 1, CheckpointOrigin.USER);
         awaitMoveEntered();
         List<Recorder.Call> callsBefore = recorder.calls();
@@ -192,7 +193,7 @@ class CheckpointWithAutosaveDisabledTest {
     @Test
     void aCheckpointAfterASaveThatReachesTheWriterAfterAutosaveIsDisabledWritesNothing() throws Exception {
         AutoSaveConfig enabled = new AutoSaveConfig(INTERVAL, 10, true);
-        start(enabled, holdingTheFirstPublish());
+        start(enabled, holdingTheFirstCheckpointPublish());
         CompletableFuture<Path> held = manager.writeCheckpoint(document(1), 1, CheckpointOrigin.USER);
         awaitMoveEntered();
         CompletableFuture<Path> afterSave = manager.writeCheckpoint(document(2), 2, CheckpointOrigin.AFTER_SAVE);
@@ -259,7 +260,7 @@ class CheckpointWithAutosaveDisabledTest {
             });
         }
         AutoSaveConfig enabled = new AutoSaveConfig(SHORT_INTERVAL, 10, true);
-        start(enabled, holdingTheFirstPublish());
+        start(enabled, holdingTheFirstCheckpointPublish());
         manager.setCaptureSource(owner, source);
         CompletableFuture<Path> held = manager.writeCheckpoint(document(1), 1, CheckpointOrigin.USER);
         awaitMoveEntered();
@@ -383,11 +384,12 @@ class CheckpointWithAutosaveDisabledTest {
         return manager.writeCheckpoint(document(revision), revision, origin).get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
     }
 
-    /** A writer whose first publish waits inside the atomic write until the test releases it. */
-    private AtomicFileWriter holdingTheFirstPublish() {
+    /** A writer whose first checkpoint publish waits inside its atomic write until released. */
+    private AtomicFileWriter holdingTheFirstCheckpointPublish() {
         AtomicBoolean holdTheFirstPublish = new AtomicBoolean(true);
         return new AtomicFileWriter(AtomicFileWriter.TEMP_CHANNEL_OPENER, (temp, target, options) -> {
-            if (holdTheFirstPublish.compareAndSet(true, false)) {
+            if (CheckpointFileName.parse(target.getFileName().toString()).isPresent()
+                    && holdTheFirstPublish.compareAndSet(true, false)) {
                 moveEntered.countDown();
                 try {
                     if (!moveReleased.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {

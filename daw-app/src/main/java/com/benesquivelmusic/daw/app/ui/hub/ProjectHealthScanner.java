@@ -121,7 +121,7 @@ public final class ProjectHealthScanner {
         HealthBadge health = (backupSchemaVersion >= 0) ? HealthBadge.MIGRATED : HealthBadge.HEALTHY;
         int missingAssetCount = 0;          // Stage 2
         int sessionCount = -1;              // Stage 2 — no sessions/ yet
-        boolean recoverable = lockPresent && lockStale;
+        boolean recoverable = isRecoverable(projectDir, clock);
 
         return new ProjectScanResult(
                 projectDir, name, lastOpened, diskUsage, sessionCount, health,
@@ -164,17 +164,24 @@ public final class ProjectHealthScanner {
     }
 
     /**
-     * Cheap synchronous recover classification — a single small lock-file read
-     * (NOT a tree walk). Used by the Welcome view to place a card in the
-     * "Recover" group vs the "Continue" group deterministically.
+     * Worker-only recovery classification from journal seals and capture points.
+     * A project without a journal retains the lock-heuristic fallback.
      *
      * @param projectDir the project directory; must not be {@code null}
      * @param clock      the clock for the stale comparison; must not be {@code null}
-     * @return {@code true} when a stale lock is present (did not exit cleanly)
+     * @return whether recovery evidence exists, including an unreadable journal
      */
     public static boolean isRecoverable(Path projectDir, InstantSource clock) {
         Objects.requireNonNull(projectDir, "projectDir must not be null");
         Objects.requireNonNull(clock, "clock must not be null");
+        if (java.nio.file.Files.isDirectory(projectDir.resolve("journal"))) {
+            try {
+                return com.benesquivelmusic.daw.core.persistence.journal.JournalState.needsRecovery(
+                        com.benesquivelmusic.daw.core.persistence.journal.ProjectContext.forProject(projectDir, clock));
+            } catch (IOException | RuntimeException unreadable) {
+                return true; // unreadable evidence is never silently classified clean
+            }
+        }
         return ProjectLockManager.peekLock(projectDir)
                 .map(l -> ProjectLockManager.isStale(l, clock.instant()))
                 .orElse(false);

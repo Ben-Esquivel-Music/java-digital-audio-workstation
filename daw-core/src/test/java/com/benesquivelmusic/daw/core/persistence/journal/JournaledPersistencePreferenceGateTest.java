@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.persistence.journal;
 
+import com.benesquivelmusic.daw.core.persistence.RecoveryTemps;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -43,9 +45,9 @@ class JournaledPersistencePreferenceGateTest {
                 .as("a disabled writer must not create the journal/ directory")
                 .isFalse();
 
-        Optional<RecoverySummary> summary = new RecoveryScanner().scan(ctx);
-        assertThat(summary)
-                .as("with no checkpoint and no journal, the scan must be empty")
+        Optional<RecoveryPlan> plan = new RecoveryScanner().plan(ctx, new RecoveryTemps(List.of(), null), true);
+        assertThat(plan)
+                .as("with no checkpoint and no journal, nothing is owed")
                 .isEmpty();
     }
 
@@ -73,10 +75,15 @@ class JournaledPersistencePreferenceGateTest {
                 .as("segment-000.bin must contain every offered record")
                 .hasSize(count);
 
-        Optional<RecoverySummary> summary = new RecoveryScanner().scan(ctx);
-        assertThat(summary).isPresent();
-        assertThat(summary.orElseThrow().replayableEventCount()).isEqualTo(count);
-        assertThat(summary.orElseThrow().segmentFileNames()).contains("segment-000.bin");
+        RecoverySummary summary = new RecoveryScanner().plan(ctx, new RecoveryTemps(List.of(), null), true)
+                .orElseThrow().summary();
+        assertThat(summary.recovery())
+                .as("with no project.daw and no checkpoint there is nothing to replay onto")
+                .isInstanceOfSatisfying(RecoverySummary.ReplayFails.class, fails -> {
+                    assertThat(fails.reason()).isEqualTo(new RecoverySummary.NoBase());
+                    assertThat(fails.changes().count()).isEqualTo(count);
+                });
+        assertThat(summary.segmentFileNames()).contains("segment-000.bin");
     }
 
     private static void waitUntilQueued(JournalWriter writer, int n) throws InterruptedException {

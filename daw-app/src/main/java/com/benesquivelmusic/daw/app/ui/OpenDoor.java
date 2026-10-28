@@ -25,8 +25,8 @@ import java.util.Objects;
  * placeholders twice.</p>
  */
 sealed interface OpenDoor permits OpenDoor.Plain, OpenDoor.ArchiveRestore, OpenDoor.JournalReplay,
-        OpenDoor.RecoveredWriteFailed, OpenDoor.FailedReplayFallback, OpenDoor.MigrationRollback,
-        OpenDoor.SnapshotRestore {
+        OpenDoor.InterruptedSavePromotion, OpenDoor.RecoveredWriteFailed, OpenDoor.FailedReplayFallback,
+        OpenDoor.MigrationRollback, OpenDoor.SnapshotRestore {
 
     /** The plain door: Open, a recent project, the Hub, Welcome, a recovery with nothing to replay. */
     Plain PLAIN = new Plain();
@@ -56,22 +56,38 @@ sealed interface OpenDoor permits OpenDoor.Plain, OpenDoor.ArchiveRestore, OpenD
     }
 
     /**
-     * A journal replay whose recovered changes were written to {@code project.daw}.
+     * A journal replay whose recovered project was written to {@code project.daw}.
      *
-     * @param appliedChanges the number of recovered changes
+     * @param appliedChanges the journaled changes the replay dispatched, rebuilt or not
+     * @param notRebuilt     how many of them replay could not rebuild into the recovered project
      * @param replayUnread   the saved items the replay's read of its checkpoint
      *                       could not honour as written
      *                       ({@code RecoveryResult.unreadItems()}); copied
      */
-    record JournalReplay(int appliedChanges, List<UnreadProjectItem> replayUnread) implements OpenDoor {
+    record JournalReplay(int appliedChanges, int notRebuilt, List<UnreadProjectItem> replayUnread)
+            implements OpenDoor {
         public JournalReplay {
+            if (notRebuilt < 0) {
+                throw new IllegalArgumentException("notRebuilt must be >= 0: " + notRebuilt);
+            }
             replayUnread = List.copyOf(Objects.requireNonNull(replayUnread, "replayUnread must not be null"));
         }
     }
 
     /**
-     * A journal replay whose recovered project could not be written, so the
-     * last clean save is opened instead.
+     * Recover everything made an interrupted save the project: a complete
+     * save of {@code project.daw} that did not finish, newer than it, written
+     * as {@code project.daw} as it is. No journaled change is part of it, and
+     * the file is not re-serialized, so the load's own read is the one whose
+     * unread items the announcement counts.
+     */
+    record InterruptedSavePromotion() implements OpenDoor {
+    }
+
+    /**
+     * A recovery (a journal replay, or the promotion of an interrupted save)
+     * whose recovered project could not be written, so the last clean save is
+     * opened instead.
      *
      * @param failure why the write failed
      */
@@ -82,8 +98,9 @@ sealed interface OpenDoor permits OpenDoor.Plain, OpenDoor.ArchiveRestore, OpenD
     }
 
     /**
-     * A journal replay that failed and was rolled back, so the last clean
-     * save is opened instead.
+     * A recovery that failed and was rolled back (a journal replay that could
+     * not run, or an interrupted save that changed after it was described),
+     * so the last clean save is opened instead.
      *
      * @param failure why the replay failed
      */

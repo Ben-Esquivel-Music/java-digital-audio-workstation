@@ -95,8 +95,8 @@ class JournalAppendFsyncRotationTest {
         // Durability: read every record back across all segments.
         long persisted = totalPersisted(ctx.journalDirectory());
         assertThat(persisted)
-                .as("every offered record (plus the post-checkpoint one) must be durable")
-                .isEqualTo(recordCount + 1);
+                .as("every offered record, the durable checkpoint marker and the post-checkpoint edit survive")
+                .isEqualTo(recordCount + 2);
     }
 
     /**

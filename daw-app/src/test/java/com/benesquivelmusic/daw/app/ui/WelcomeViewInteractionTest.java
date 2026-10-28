@@ -91,6 +91,7 @@ class WelcomeViewInteractionTest {
                 () -> {})));            // onImportDawproject
 
         WelcomeView view = viewRef.get();
+        WelcomeTestSupport.awaitClassification(view);
         assertThat(view).isNotNull();
         assertThat(view.continuePaths()).containsExactly(cleanDir);
         assertThat(view.continueCards()).hasSize(1);
@@ -134,6 +135,7 @@ class WelcomeViewInteractionTest {
                 () -> {}, _ -> {}, _ -> {}, _ -> {}, () -> {}, () -> {}, () -> {})));
 
         WelcomeView view = viewRef.get();
+        WelcomeTestSupport.awaitClassification(view);
         assertThat(view).isNotNull();
         assertThat(view.recoverPaths()).containsExactly(crashedA, crashedB);
 

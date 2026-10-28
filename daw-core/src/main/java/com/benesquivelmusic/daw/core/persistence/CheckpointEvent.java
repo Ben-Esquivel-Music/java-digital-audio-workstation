@@ -5,6 +5,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 
 /**
  * A checkpoint fact a {@link CheckpointManager} reports to its event
@@ -63,15 +64,22 @@ public sealed interface CheckpointEvent permits CheckpointEvent.Seeded, Checkpoi
      * @param origin       why it was written
      * @param file         the checkpoint file
      * @param revision     the edit revision it holds
+     * @param journalSequence the journal boundary observed at that particular model capture, if available
      */
-    record Written(long generation, String checkpointId, CheckpointOrigin origin, Path file, long revision)
+    record Written(long generation, String checkpointId, CheckpointOrigin origin, Path file, long revision,
+                   OptionalLong journalSequence)
             implements CheckpointEvent {
+
+        public Written(long generation, String checkpointId, CheckpointOrigin origin, Path file, long revision) {
+            this(generation, checkpointId, origin, file, revision, OptionalLong.empty());
+        }
 
         /** @throws NullPointerException if an object component is {@code null} */
         public Written {
             Objects.requireNonNull(checkpointId, "checkpointId must not be null");
             Objects.requireNonNull(origin, "origin must not be null");
             Objects.requireNonNull(file, "file must not be null");
+            Objects.requireNonNull(journalSequence, "journalSequence must not be null");
         }
     }
 

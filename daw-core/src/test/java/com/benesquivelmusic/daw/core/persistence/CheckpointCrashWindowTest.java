@@ -4,7 +4,6 @@ import com.benesquivelmusic.daw.core.persistence.CheckpointTestSupport.CountingC
 import com.benesquivelmusic.daw.core.persistence.CheckpointTestSupport.Recorder;
 import com.benesquivelmusic.daw.core.persistence.journal.ProjectContext;
 import com.benesquivelmusic.daw.core.persistence.journal.RecoveryScanner;
-import com.benesquivelmusic.daw.core.persistence.journal.RecoverySummary;
 import com.benesquivelmusic.daw.core.session.SessionManager;
 import com.benesquivelmusic.daw.core.session.WorkingSession;
 
@@ -64,6 +63,10 @@ class CheckpointCrashWindowTest {
         IOException crash = new IOException("the process died after the temp was forced");
         AtomicFileWriter crashing = new AtomicFileWriter(AtomicFileWriter.TEMP_CHANNEL_OPENER,
                 (temp, target, options) -> {
+                    if (CheckpointFileName.parse(target.getFileName().toString()).isEmpty()) {
+                        AtomicFileWriter.FILE_SYSTEM_MOVER.move(temp, target, options);
+                        return;
+                    }
                     assertThat(temp).as("the forced temp is complete when the crash comes").hasContent(document(3));
                     throw crash;
                 });
@@ -96,6 +99,10 @@ class CheckpointCrashWindowTest {
         List<List<CopyOption>> attempts = new CopyOnWriteArrayList<>();
         AtomicFileWriter refusing = new AtomicFileWriter(AtomicFileWriter.TEMP_CHANNEL_OPENER,
                 (temp, target, options) -> {
+                    if (CheckpointFileName.parse(target.getFileName().toString()).isEmpty()) {
+                        AtomicFileWriter.FILE_SYSTEM_MOVER.move(temp, target, options);
+                        return;
+                    }
                     attempts.add(List.of(options));
                     throw Arrays.asList(options).contains(StandardCopyOption.ATOMIC_MOVE) ? notAtomic
                             : fallbackFailure;
@@ -127,17 +134,17 @@ class CheckpointCrashWindowTest {
     void aTornCheckpointTempIsListedByNoReader() throws Exception {
         Files.writeString(checkpoints.resolve(TORN_TEMP), "<daw-project version=\"2\"><tracks>");
 
-        Optional<RecoverySummary> recovery = new RecoveryScanner(ZoneId.of("UTC"))
-                .scan(ProjectContext.forProject(projectDir));
+        Optional<Path> recovery = new RecoveryScanner(ZoneId.of("UTC"))
+                .newestCheckpoint(ProjectContext.forProject(projectDir).checkpointDirectory());
         List<WorkingSession> history = new SessionManager().history(projectDir);
         CheckpointManager manager = CheckpointTestSupport.manager(new AutoSaveConfig(Duration.ofHours(1), 10, true),
                 new AtomicFileWriter(), new CountingClock(), Files::delete, CheckpointManager.STOP_WAIT);
         manager.start(projectDir).get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
         manager.stop();
 
-        assertThat(recovery).hasValueSatisfying(summary -> {
-            assertThat(summary.checkpointFileName()).isEqualTo(NEWER);
-            assertThat(summary.checkpointIndex()).isEqualTo(2);
+        assertThat(recovery).hasValueSatisfying(newest -> {
+            assertThat(newest.getFileName().toString()).isEqualTo(NEWER);
+            assertThat(CheckpointFileName.parse(newest.getFileName().toString()).orElseThrow().index()).isEqualTo(2);
         });
         assertThat(history).flatExtracting(WorkingSession::checkpointIds).containsExactly(OLDER, NEWER);
         assertThat(manager.getCheckpointFiles()).extracting(path -> path.getFileName().toString())

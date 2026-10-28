@@ -175,8 +175,9 @@ record OpenAnnouncement(NotificationLevel level, String message, boolean offersR
         return switch (door) {
             case OpenDoor.ArchiveRestore archive -> archive.archiveUnread();
             case OpenDoor.JournalReplay replay -> replay.replayUnread();
-            case OpenDoor.Plain _, OpenDoor.RecoveredWriteFailed _, OpenDoor.FailedReplayFallback _,
-                 OpenDoor.MigrationRollback _, OpenDoor.SnapshotRestore _ -> unreadItems;
+            case OpenDoor.Plain _, OpenDoor.InterruptedSavePromotion _, OpenDoor.RecoveredWriteFailed _,
+                 OpenDoor.FailedReplayFallback _, OpenDoor.MigrationRollback _, OpenDoor.SnapshotRestore _ ->
+                    unreadItems;
         };
     }
 
@@ -250,12 +251,19 @@ record OpenAnnouncement(NotificationLevel level, String message, boolean offersR
         return joined;
     }
 
-    /** What the door did, as its clean announcement says it. */
+    /**
+     * What the door did, as its clean announcement says it. A journal replay
+     * that could not rebuild some of its changes says so, as the recovery
+     * dialog did, instead of counting them as recovered.
+     */
     private static String doorText(OpenDoor door, Path projectDirectory) {
         return switch (door) {
             case OpenDoor.Plain _ -> ProjectAudioText.text("projectOpen.plain", subject(projectDirectory));
             case OpenDoor.ArchiveRestore archive -> ProjectAudioText.text("projectOpen.archive", archive.projectName());
+            case OpenDoor.JournalReplay replay when replay.notRebuilt() > 0 ->
+                    ProjectAudioText.count("projectOpen.journal.notRebuilt", replay.notRebuilt());
             case OpenDoor.JournalReplay replay -> ProjectAudioText.count("projectOpen.journal", replay.appliedChanges());
+            case OpenDoor.InterruptedSavePromotion _ -> ProjectAudioText.text("projectOpen.interruptedSave");
             case OpenDoor.RecoveredWriteFailed failed ->
                     ProjectAudioText.text("projectOpen.recoveredWriteFailed", failed.failure());
             case OpenDoor.FailedReplayFallback failed ->
@@ -266,13 +274,17 @@ record OpenAnnouncement(NotificationLevel level, String message, boolean offersR
         };
     }
 
-    /** The level of the door's announcement when nothing is missing. */
+    /**
+     * The level of the door's announcement when nothing is missing: a journal
+     * replay with changes it could not rebuild is a WARNING, never a SUCCESS.
+     */
     private static NotificationLevel cleanLevel(OpenDoor door) {
         return switch (door) {
             case OpenDoor.RecoveredWriteFailed _, OpenDoor.FailedReplayFallback _ -> NotificationLevel.ERROR;
             case OpenDoor.SnapshotRestore _ -> NotificationLevel.INFO;
+            case OpenDoor.JournalReplay replay when replay.notRebuilt() > 0 -> NotificationLevel.WARNING;
             case OpenDoor.Plain _, OpenDoor.ArchiveRestore _, OpenDoor.JournalReplay _,
-                 OpenDoor.MigrationRollback _ -> NotificationLevel.SUCCESS;
+                 OpenDoor.InterruptedSavePromotion _, OpenDoor.MigrationRollback _ -> NotificationLevel.SUCCESS;
         };
     }
 

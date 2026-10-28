@@ -142,7 +142,7 @@ class CheckpointCaptureFailureReachesTheStripTest {
                         + " projectOperationProgress, projectManager.getCheckpointManager(), notificationBar,")
                 .as("and the autosave captures the live project through the FX post")
                 .contains("checkpointStatusRemoval = wireAutosave(projectManager.getCheckpointManager(),"
-                        + " this::postFx, () -> project, checkpointStatus);")
+                        + " this::postFx, () -> project, checkpointStatus, this::projectActionsAllowed);")
                 .contains("snapshotsController.setCheckpointStatus(checkpointStatus);");
         assertThat(methodBody(code, "private void postFx(Runnable work)"))
                 .as("the FX post is the dispatcher's un-keyed one")

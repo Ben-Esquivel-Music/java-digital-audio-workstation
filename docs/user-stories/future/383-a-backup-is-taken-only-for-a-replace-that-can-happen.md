@@ -42,6 +42,25 @@ These tests are binding acceptance criteria. They run headless, and none of them
 - Story 331's rulings: G10 and H2 (the read-only refusal), H1b (refuse before the pack: the model here), M3 (the link guard), F10 (a failed backup fails the save and keeps the backup owed).
 - Cross-refs: story 330 (the degraded-open backup), story 331, story 373 (the roll-back's own copies).
 
+## Extension: The Recovery Gate's Interrupted-Save Retention (Story 332)
+
+Story 332's PR 988 review round 3 added a second copy taken before a replace that can still be refused. When Recover everything replays a journal beside a complete interrupted save (an atomic-writer temp of `project.daw` newer than it), `OpenRecoveryGate.recoverEverything` replays first, then keeps the interrupted save as an "Interrupted save" snapshot (`keepInterruptedSave`, through `SnapshotStore.createSnapshotFromFile`), and only then commits the recovered project through `writeRecoveredProjectFile`. A refused commit throws `ReplayFailed` before the gate clears the journal and cleans the temps, so the journal and the temp are both kept, as story 332 rules. The next writable open plans again and copies the same temp again. After N refused attempts, `snapshots/` holds N identical "Interrupted save" snapshots beside this story's N `project.daw.recovered.*.bak` files. Nothing is lost, but snapshots are never deleted automatically (Persistence Integrity design book §3.2), so the copies stay until the user removes them.
+
+Goals and acceptance:
+
+1. The gate's retention copy follows this story's rule: it is not taken for a commit that will be refused, or it is skipped when `snapshots/` already holds a byte-identical "Interrupted save" snapshot of the same temp. The Resolution states which, and why.
+2. A Recover everything beside an owed journal, refused twice because `project.daw` is read-only, leaves at most one "Interrupted save" snapshot, byte-identical to the temp, and the temp and the journal are still there.
+3. When the commit succeeds, the interrupted save is still kept before anything is deleted, as story 332 requires; Restore checkpoint only keeps it as it does today.
+
+Tests, binding as above (headless, none assuming a non-Windows environment):
+
+- **Refused twice**: a complete newer temp beside an unsealed journal, `project.daw` read-only (the DOS read-only flag on Windows; mode 0444 on POSIX, assuming the file then reads as not writable), Recover everything twice through the gate: at most one file in `snapshots/` whose name contains "interrupted-save", byte-identical to the temp; no `project.daw.recovered.*.bak`; the temp and `journal/` unchanged.
+- **Kept on success**: the same with a writable `project.daw`: exactly one interrupted-save snapshot, and the temp is gone.
+
+A takeover is another refused commit. Since story 332's resolution of PR 988 review 5666358306, the gate verifies the open's lease after the replay, before it copies the interrupted save (`OpenRecoveryGate.java:180`), and `writeRecoveredProjectFile` verifies it again after its backup, immediately before the replace (`ProjectLifecycleController.java:3719`). When another session takes the folder over between those two checks, the commit is refused with a `LockStolenException`, not `ReplayFailed`: the open fails, the journal and the temp are kept, and the "Interrupted save" snapshot and the `project.daw.recovered.*.bak` stay in the new holder's folder. The new holder's gate then plans again, and its Recover everything or Restore checkpoint only copies the same temp again. Of the two rules goal 1 allows, the byte-identical-snapshot dedupe is what keeps that second copy from being added; a refusal asked before the copy cannot, because the takeover comes after the question and the new holder's commit is not refused. When the Resolution moves the refusal questions before the copy, the lease question belongs among them, and the check immediately before the replace stays, because a takeover can still come during the copy.
+
+Code locators: `OpenRecoveryGate` (`recoverEverything`, `keepInterruptedSave`, `INTERRUPTED_SAVE_SNAPSHOT`), `ProjectLifecycleController.writeRecoveredProjectFile`, `SnapshotStore.createSnapshotFromFile`, `OpenRecoveryGateTest` (`theInterruptedSaveIsKeptAsAnInterruptedSaveSnapshotBeforeAnythingIsDeleted`). Found by the verification of story 332's PR 988 review round 3 and ruled by the studio engineer as the same defect class as this story's first criterion. Story 385 (`docs/user-stories/future/385-make-the-read-only-fallback-announcement-truthful-and-actionable.md`) rewords the `projectOpen.recoveredWriteFailed` ERROR that this story's Motivation quotes; whichever lands second updates the other's quote and tests. Cross-refs: story 332.
+
 ## Status
 
 - Deferred

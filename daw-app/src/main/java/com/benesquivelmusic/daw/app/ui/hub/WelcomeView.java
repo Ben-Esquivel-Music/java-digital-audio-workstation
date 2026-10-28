@@ -46,14 +46,10 @@ import java.util.function.Consumer;
  *   <li><b>Start</b> — four large tiles: New, Open, Restore archive, Import.</li>
  * </ol>
  *
- * <p>The "did not exit cleanly" split is computed <strong>synchronously</strong>
- * at construction via {@link ProjectHealthScanner#isRecoverable(Path, InstantSource)}
- * — a single cheap lock-file read per recent path, not a tree walk — so a card's
- * Recover-vs-Continue placement is deterministic the instant the view is built
- * (the {@code WelcomeRecoverBeforeRecentTest} asserts placement with no
- * dispatcher pump). The Recover-scan reuses the existing {@code ProjectLockManager}
- * staleness APIs and invents no new crash flag (§4.1 note; story goal
- * "Recover-scan reuses existing lock APIs").</p>
+ * <p>A virtual thread classifies recent projects from their journal seal and
+ * capture boundaries. The dispatcher publishes the Recover and Continue groups
+ * together, preserving recent order; the FX thread never scans a journal.
+ * Projects without a journal retain the documented lock-heuristic fallback.</p>
  *
  * <h2>Size / health off the FX thread</h2>
  *
@@ -81,7 +77,7 @@ public final class WelcomeView extends BorderPane {
     private final FxDispatcher dispatcher;
     private final InstantSource clock;
 
-    // ── classified inputs (computed once, synchronously, at construction) ──────
+    // Classified on a worker and published together on the FX thread.
     private final List<Path> recoverPaths = new ArrayList<>();
     private final List<Path> continuePaths = new ArrayList<>();
     private final List<ProjectCard> continueCards = new ArrayList<>();
@@ -143,8 +139,6 @@ public final class WelcomeView extends BorderPane {
                 WelcomeView.class.getResource("welcome-view.css"),
                 "welcome-view.css not on classpath").toExternalForm());
 
-        classify(recentPaths == null ? List.of() : recentPaths);
-
         buildRecoverSection(onRecoverProject, onDiscardRecovery);
         buildContinueSection(onOpenProject);
         VBox startSection = buildStartSection(
@@ -159,6 +153,8 @@ public final class WelcomeView extends BorderPane {
         setBottom(buildFooter());
 
         startDiskScan();
+        startClassification(recentPaths == null ? List.of() : List.copyOf(recentPaths),
+                onOpenProject, onRecoverProject, onDiscardRecovery);
     }
 
     /**
@@ -183,21 +179,30 @@ public final class WelcomeView extends BorderPane {
     // ── classification ─────────────────────────────────────────────────────────
 
     /**
-     * Splits the recent paths into Recover (stale-lock → did not exit cleanly)
-     * and Continue, synchronously and in order. A single cheap lock-file read per
-     * path keeps placement deterministic for the test.
+     * Splits recent paths on a virtual worker and publishes both groups in order.
      */
-    private void classify(List<Path> recentPaths) {
-        for (Path path : recentPaths) {
-            if (path == null) {
-                continue;
+    private void startClassification(List<Path> recentPaths, Consumer<Path> open,
+                                     Consumer<Path> recover, Consumer<Path> discard) {
+        Thread worker = Thread.ofVirtual().name("daw-welcome-recovery-scan").unstarted(() -> {
+            List<Path> recoverable = new ArrayList<>();
+            List<Path> continuable = new ArrayList<>();
+            for (Path path : recentPaths) {
+                if (path == null) continue;
+                if (ProjectHealthScanner.isRecoverable(path, clock)) recoverable.add(path);
+                else continuable.add(path);
             }
-            if (ProjectHealthScanner.isRecoverable(path, clock)) {
-                recoverPaths.add(path);
-            } else {
-                continuePaths.add(path);
-            }
-        }
+            dispatcher.onFx(() -> {
+                recoverPaths.addAll(recoverable);
+                continuePaths.addAll(continuable);
+                recoverSection.getChildren().clear();
+                continueSection.getChildren().clear();
+                continueCards.clear();
+                buildRecoverSection(recover, discard);
+                buildContinueSection(open);
+            });
+        });
+        pendingScans.add(worker);
+        worker.start();
     }
 
     // ── Recover region ───────────────────────────────────────────────────────

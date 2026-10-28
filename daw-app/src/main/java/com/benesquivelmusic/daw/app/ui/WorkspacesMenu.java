@@ -36,6 +36,11 @@ public final class WorkspacesMenu {
     private final Supplier<String> nameSupplier;
     private final Consumer<String> exportRequest;
     private final Runnable importRequest;
+    private java.util.function.BooleanSupplier actionsAllowed = () -> true;
+
+    void setActionsAllowed(java.util.function.BooleanSupplier allowed) {
+        actionsAllowed = Objects.requireNonNull(allowed);
+    }
 
     /**
      * Creates a new builder.
@@ -104,7 +109,9 @@ public final class WorkspacesMenu {
         for (Workspace ws : all) {
             MenuItem exportWs = new MenuItem(ws.name());
             String wsName = ws.name();
-            exportWs.setOnAction(_ -> exportRequest.accept(wsName));
+            exportWs.setOnAction(_ -> {
+                if (actionsAllowed.getAsBoolean()) exportRequest.accept(wsName);
+            });
             exportMenu.getItems().add(exportWs);
         }
         if (all.isEmpty()) {
@@ -132,7 +139,9 @@ public final class WorkspacesMenu {
                     keyBindings.getBinding(action);
             binding.ifPresent(mi::setAccelerator);
         }
-        mi.setOnAction(_ -> handler.run());
+        mi.setOnAction(_ -> {
+            if (actionsAllowed.getAsBoolean()) handler.run();
+        });
         return mi;
     }
 }

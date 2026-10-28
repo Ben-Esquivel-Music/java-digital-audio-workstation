@@ -460,8 +460,7 @@ class RecoverSessionIsTheOnePendingSwitchTest {
     }
 
     private void awaitTheOpenProject(Path expected) throws Exception {
-        fixture.awaitOnFx(() -> fixture.projectManager.getCurrentProject() != null
-                && expected.equals(fixture.projectManager.getCurrentProject().projectPath()),
+        fixture.awaitOnFx(() -> fixture.currentProjectIs(expected),
                 "the recovery opened " + expected.getFileName());
     }
 
@@ -487,7 +486,7 @@ class RecoverSessionIsTheOnePendingSwitchTest {
 
     /**
      * A saved project on disk with a checkpoint of one track, "Vocals" (the
-     * newest, so a recovery replays onto it), and a journal of
+     * verified session-start base holds the same document), and a journal of
      * {@link #JOURNALED_CHANGES} changes after it.
      */
     private Path aProjectWithACheckpointAndAJournal(String name) throws IOException {
@@ -500,11 +499,19 @@ class RecoverSessionIsTheOnePendingSwitchTest {
         for (Path written : SaveFlowFixture.checkpointFiles(directory)) {
             Files.delete(written);
         }
+        String checkpointXml = new ProjectSerializer().serialize(checkpointed);
         Files.writeString(context.checkpointDirectory().resolve("checkpoint-999-20260101T000000.daw"),
-                new ProjectSerializer().serialize(checkpointed), StandardCharsets.UTF_8);
+                checkpointXml, StandardCharsets.UTF_8);
         ByteArrayOutputStream frames = new ByteArrayOutputStream();
+        Files.createDirectories(context.journalDirectory());
+        Path base = Files.writeString(context.journalDirectory().resolve(
+                com.benesquivelmusic.daw.core.persistence.journal.JournalState.BASE_FILE), checkpointXml);
+        byte[] baseHash = com.benesquivelmusic.daw.core.persistence.journal.JournalState.hash(base)
+                .getBytes(StandardCharsets.UTF_8);
+        new JournalRecord(0L, Instant.EPOCH, JournalRecord.SESSION_START_TYPE, null, baseHash)
+                .writeTo(java.nio.channels.Channels.newChannel(frames));
         for (int sequence = 0; sequence < JOURNALED_CHANGES; sequence++) {
-            ByteBuffer frame = JournalRecord.ofMutation(sequence, Instant.ofEpochMilli(1_000L + sequence),
+            ByteBuffer frame = JournalRecord.ofMutation(sequence + 1L, Instant.ofEpochMilli(1_000L + sequence),
                     "MixerEvent.MuteChanged", UUID.randomUUID(), null).toBuffer();
             byte[] bytes = new byte[frame.remaining()];
             frame.get(bytes);

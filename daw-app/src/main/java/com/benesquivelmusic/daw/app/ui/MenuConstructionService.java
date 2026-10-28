@@ -52,6 +52,11 @@ final class MenuConstructionService {
 
     private final DawMenuBarController.MenuActions host;
     private final KeyBindingManager keyBindingManager;
+    private java.util.function.BooleanSupplier projectActionsAllowed = () -> true;
+
+    void setProjectActionsAllowed(java.util.function.BooleanSupplier allowed) {
+        projectActionsAllowed = Objects.requireNonNull(allowed);
+    }
 
     MenuConstructionService(DawMenuBarController.MenuActions host,
                             KeyBindingManager keyBindingManager) {
@@ -477,7 +482,9 @@ final class MenuConstructionService {
             Optional<KeyCombination> binding = keyBindingManager.getBinding(action);
             binding.ifPresent(item::setAccelerator);
         }
-        item.setOnAction(_ -> handler.run());
+        item.setOnAction(_ -> {
+            if (action == DawAction.STOP || projectActionsAllowed.getAsBoolean()) handler.run();
+        });
         return item;
     }
 }

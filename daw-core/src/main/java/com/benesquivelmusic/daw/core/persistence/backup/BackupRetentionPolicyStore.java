@@ -152,7 +152,7 @@ public final class BackupRetentionPolicyStore {
 
     /** Serializes a policy to JSON. Visible for testing. */
     public static String toJson(BackupRetentionPolicy p) {
-        return """
+        return String.format(java.util.Locale.ROOT, """
                 {
                   "keepRecent": %d,
                   "keepHourly": %d,
@@ -161,7 +161,7 @@ public final class BackupRetentionPolicyStore {
                   "maxAgeSeconds": %d,
                   "maxBytes": %d
                 }
-                """.formatted(
+                """,
                 p.keepRecent(),
                 p.keepHourly(),
                 p.keepDaily(),

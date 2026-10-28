@@ -83,7 +83,11 @@ class ProjectSchemaParityContractTest {
             "renders the document ProjectSerializer.capture built and rewrites the values of the asset-reference"
             + " attributes the serializer wrote and recorded (Attr.setValue through a remap); it creates no"
             + " element and names no attribute, so every name the document holds is the serializer's, which"
-            + " the writer guard scans");
+            + " the writer guard scans",
+            "RecoveryTemps.java",
+            "parses an interrupted save only to tell a torn one (not well-formed) from one this build refuses,"
+            + " and hands the Document to ProjectDeserializer; it creates no element and asks the Document for"
+            + " no name itself");
 
     /** Writes whose names the source guard cannot read, each with why the contract still covers them. */
     static final List<PersistenceSourceScan.DynamicWriteSite> DYNAMIC_WRITE_SITES = List.of(

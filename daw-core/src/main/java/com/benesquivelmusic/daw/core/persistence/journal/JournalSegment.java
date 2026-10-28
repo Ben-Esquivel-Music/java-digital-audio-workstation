@@ -76,7 +76,8 @@ final class JournalSegment implements AutoCloseable {
      * @param path   the segment file path
      * @param syncer the fsync implementation (real by default)
      * @return an open segment
-     * @throws IOException if the channel cannot be opened
+     * @throws IOException if the channel cannot be opened or its size read; the channel is then
+     *                     closed again, so a failed open holds nothing
      */
     static JournalSegment open(Path path, Syncer syncer) throws IOException {
         Objects.requireNonNull(path, "path must not be null");
@@ -89,8 +90,17 @@ final class JournalSegment implements AutoCloseable {
                 StandardOpenOption.CREATE,
                 StandardOpenOption.WRITE,
                 StandardOpenOption.APPEND);
-        long initialSize = ch.size();
-        return new JournalSegment(path, ch, syncer, initialSize);
+        try {
+            long initialSize = ch.size();
+            return new JournalSegment(path, ch, syncer, initialSize);
+        } catch (IOException | RuntimeException | Error failure) {
+            try {
+                ch.close();
+            } catch (IOException notClosed) {
+                failure.addSuppressed(notClosed);
+            }
+            throw failure;
+        }
     }
 
     /**
@@ -194,7 +204,19 @@ final class JournalSegment implements AutoCloseable {
         if (!Files.exists(file)) {
             return List.of();
         }
-        byte[] bytes = Files.readAllBytes(file);
+        return decode(Files.readAllBytes(file));
+    }
+
+    /**
+     * {@link #readAll(Path)} over a segment's bytes already in memory, so a
+     * reader that also needs {@link #decodeStrict(byte[], Path)} reads the
+     * file once.
+     *
+     * @param bytes the segment file's bytes
+     * @return the well-formed records up to the first torn / short /
+     *         CRC-failed frame, in file order
+     */
+    static List<JournalRecord> decode(byte[] bytes) {
         ByteBuffer buf = ByteBuffer.wrap(bytes);
         List<JournalRecord> records = new ArrayList<>();
         while (buf.remaining() >= 4) {
@@ -225,7 +247,19 @@ final class JournalSegment implements AutoCloseable {
         if (!Files.exists(file)) {
             return List.of();
         }
-        byte[] bytes = Files.readAllBytes(file);
+        return decodeStrict(Files.readAllBytes(file), file);
+    }
+
+    /**
+     * {@link #readAllStrict(Path)} over a segment's bytes already in memory.
+     *
+     * @param bytes the segment file's bytes
+     * @param file  the segment file, named in the failure
+     * @return the durably-persisted records up to a clean torn tail
+     * @throws IOException if a complete frame fails to decode (mid-file
+     *                     corruption)
+     */
+    static List<JournalRecord> decodeStrict(byte[] bytes, Path file) throws IOException {
         ByteBuffer buf = ByteBuffer.wrap(bytes);
         List<JournalRecord> records = new ArrayList<>();
         while (buf.remaining() >= 4) {

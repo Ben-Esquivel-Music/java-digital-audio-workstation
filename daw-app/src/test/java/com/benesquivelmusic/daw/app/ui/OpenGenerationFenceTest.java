@@ -19,6 +19,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static com.benesquivelmusic.daw.app.ui.OpenProjectFixture.onFx;
 import static com.benesquivelmusic.daw.app.ui.OpenProjectFixture.runOnFx;
@@ -76,10 +78,19 @@ class OpenGenerationFenceTest {
     void songAsLateCompletionsAfterNewProjectApplyNothing() throws Exception {
         AudioClip clipA = openHeld(songA);
         Path newProjects = Files.createDirectories(workspace.resolve("new"));
-        runOnFx(() -> {
-            fixture.lifecycle().setNewProjectLocationPrompt(() -> newProjects);
-            fixture.lifecycle().onNewProject();
-        });
+        CountDownLatch newProjectReady = new CountDownLatch(1);
+        java.util.function.Consumer<NotificationEntry> readyListener = entry -> {
+            if (entry != null && "New project created".equals(entry.message())) newProjectReady.countDown();
+        };
+        try {
+            runOnFx(() -> {
+                fixture.shown.addListener(readyListener);
+                fixture.lifecycle().setNewProjectLocationPrompt(() -> newProjects);
+                fixture.lifecycle().onNewProject();
+            });
+            assertThat(newProjectReady.await(OpenProjectFixture.GUARD.toMillis(), TimeUnit.MILLISECONDS))
+                    .as("New completed its initial XML save before the old decodes were released").isTrue();
+        } finally { fixture.shown.removeListener(readyListener); }
 
         fixture.releaseDecodesAndPulse();
 

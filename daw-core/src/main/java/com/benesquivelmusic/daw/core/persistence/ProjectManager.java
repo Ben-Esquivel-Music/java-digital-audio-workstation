@@ -144,7 +144,7 @@ public final class ProjectManager {
     private final RecentProjectsStore recentProjectsStore;
     private final ProjectSerializer serializer = new ProjectSerializer();
     private final ProjectDeserializer deserializer;
-    private final ProjectLockManager lockManager;
+    private volatile ProjectLockManager lockManager;
     private final AtomicFileWriter fileWriter;
     private final Duration checkpointWait;
 
@@ -152,6 +152,14 @@ public final class ProjectManager {
     private volatile DawProject currentDawProject;
     private volatile LockConflictHandler lockConflictHandler;
     private volatile boolean readOnly;
+    @FunctionalInterface
+    public interface RecoveryGate {
+        void beforeParse(Path directory, boolean readOnly, ProjectLockManager lock) throws IOException;
+    }
+    private volatile RecoveryGate recoveryGate = (_, _, _) -> { };
+
+    /** Installed by the application open pipeline; invoked after lock negotiation, before parsing or checkpoints. */
+    public void setRecoveryGate(RecoveryGate gate) { recoveryGate = Objects.requireNonNull(gate); }
 
     /**
      * The save generation of the open project — what its backup owes, where
@@ -287,7 +295,7 @@ public final class ProjectManager {
         // A checkpoint is written only while this session holds the project
         // lock and it is still ours (story 331): a stolen lock fails the
         // checkpoint visibly, and a session that holds none writes nothing.
-        checkpointManager.setWriteGuard(lockManager::verifyHeld);
+        checkpointManager.setWriteGuard(() -> this.lockManager.verifyHeld());
     }
 
     /**
@@ -449,42 +457,45 @@ public final class ProjectManager {
      * @throws IOException if the project cannot be read
      */
     public ProjectMetadata openProject(Path projectDirectory) throws IOException {
+        return openProject(projectDirectory, null);
+    }
+
+    public ProjectMetadata openProject(Path projectDirectory, PreparedOpen supplied) throws IOException {
         Objects.requireNonNull(projectDirectory, "projectDirectory must not be null");
         // The project is being replaced: its checkpoints end before anything here can fail.
         checkpointManager.stop();
 
         Path projectFile = projectDirectory.resolve(PROJECT_FILE_NAME);
         if (!Files.exists(projectFile)) {
+            if (supplied != null) supplied.close();
             throw new IOException("Project file not found: " + projectFile);
         }
 
-        // Resolve any pre-existing lock before reading the project file so the
-        // user can cancel the open without side effects.
-        ProjectLockManager.AcquisitionResult result = lockManager.tryAcquire(projectDirectory);
-        boolean openedReadOnly = false;
-        if (!result.wasAcquired()) {
-            LockConflictHandler handler = lockConflictHandler;
-            LockConflictResolution decision = (handler != null && result.existingLock() != null)
-                    ? handler.resolve(result.existingLock(), result.stale())
-                    : LockConflictResolution.CANCEL;
-            switch (decision) {
-                case CANCEL -> throw new ProjectLockedException(
-                        "Project is already open by " + describe(result.existingLock()),
-                        result.existingLock(), result.stale());
-                case OPEN_READ_ONLY -> {
-                    lockManager.openReadOnly(projectDirectory);
-                    openedReadOnly = true;
-                }
-                case TAKE_OVER -> lockManager.forceAcquire(projectDirectory);
+        try (PreparedOpen prepared = supplied != null ? supplied : prepareOpen(projectDirectory)) {
+            if (!prepared.directory().equals(projectDirectory)) {
+                throw new IOException("Prepared open belongs to another project");
             }
+            PreparedProject loaded = readProject(projectDirectory, projectFile);
+            recordRecentProject(projectDirectory);
+            ProjectLockManager accepted = prepared.transferFrom(lockManager);
+            saveTarget = null;
+            lockManager = accepted;
+            currentProject = loaded.metadata();
+            currentDawProject = loaded.project();
+            lastMigrationReport = loaded.migration();
+            lastMissingAssets = loaded.missingAssets();
+            lastUnreadItems = loaded.unreadItems();
+            readOnly = prepared.readOnly();
+            recentProjects.put(projectDirectory.toString(), currentProject);
+            saveTarget = readOnly ? SaveTarget.readOnly(projectDirectory, loaded.backup())
+                    : SaveTarget.writable(projectDirectory, loaded.backup(),
+                            checkpointManager.startGeneration(projectDirectory));
+            return currentProject;
         }
-        if (!openedReadOnly && lockManager.status() == LockStatus.HELD) {
-            lockManager.startHeartbeat();
-        }
+    }
 
+    private PreparedProject readProject(Path projectDirectory, Path projectFile) throws IOException {
         String content = Files.readString(projectFile);
-
-        PendingBackup owed;
         if (content.strip().startsWith("<?xml") || content.strip().startsWith("<daw-project")) {
             // Project-relative clip references (story 323) resolve against
             // the directory the project file lives in.
@@ -493,39 +504,99 @@ public final class ProjectManager {
             dawProject.setMetadata(metadata);
             dawProject.markClean();
             MigrationReport migration = deserializer.getLastMigrationReport();
-            owed = PendingBackup.at(migration, deserializer.losesSavedContent());
-            // The open project's saves are fenced from here; the new target follows its checkpoint generation.
-            saveTarget = null;
-            currentDawProject = dawProject;
-            currentProject = metadata;
-            lastMigrationReport = migration;
-            lastMissingAssets = MissingAssetsReport.atOpen(
-                    dawProject, deserializer.getMissingFiles(), projectDirectory);
-            lastUnreadItems = deserializer.getUnreadItems();
+            return new PreparedProject(metadata, dawProject, migration,
+                    PendingBackup.at(migration, deserializer.losesSavedContent()),
+                    MissingAssetsReport.atOpen(dawProject, deserializer.getMissingFiles(), projectDirectory),
+                    deserializer.getUnreadItems());
         } else {
             ProjectMetadata metadata = parseProjectFile(content, projectDirectory);
-            owed = PendingBackup.NONE;
-            saveTarget = null;
-            currentProject = metadata;
-            currentDawProject = null;
-            lastMigrationReport = MigrationReport.noOp(
-                    com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION);
-            // The deserializer did not run: its missing-files and unread-items
-            // lists are the previous open's, and this file has nothing to report.
-            lastMissingAssets = MissingAssetsReport.EMPTY;
-            lastUnreadItems = List.of();
+            return new PreparedProject(metadata, null, MigrationReport.noOp(
+                    com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION),
+                    PendingBackup.NONE, MissingAssetsReport.EMPTY, List.of());
+        }
+    }
+
+    private record PreparedProject(ProjectMetadata metadata, DawProject project, MigrationReport migration,
+                                   PendingBackup backup, MissingAssetsReport missingAssets,
+                                   List<UnreadProjectItem> unreadItems) { }
+
+    /** A target lease; closing an unapplied open never touches the outgoing project. */
+    public static final class PreparedOpen implements AutoCloseable {
+        private final Path directory;
+        private final ProjectLockManager lock;
+        private final boolean readOnly;
+        private boolean consumed;
+
+        private PreparedOpen(Path directory, ProjectLockManager lock, boolean readOnly) {
+            this.directory = directory;
+            this.lock = lock;
+            this.readOnly = readOnly;
         }
 
-        readOnly = openedReadOnly;
-        recentProjects.put(projectDirectory.toString(), currentProject);
-        recordRecentProject(projectDirectory);
-        if (openedReadOnly) {
-            saveTarget = SaveTarget.readOnly(projectDirectory, owed);
-        } else {
-            saveTarget = SaveTarget.writable(projectDirectory, owed,
-                    checkpointManager.startGeneration(projectDirectory));
+        public Path directory() { return directory; }
+        public ProjectLockManager lock() { return lock; }
+        public boolean readOnly() { return readOnly; }
+
+        private synchronized ProjectLockManager transferFrom(ProjectLockManager retired) throws IOException {
+            if (consumed) throw new IOException("The prepared project lease has already been closed or transferred");
+            if (!readOnly) lock.verifyHeld();
+            if (retired != lock) retired.close();
+            consumed = true;
+            return lock;
         }
-        return currentProject;
+
+        @Override
+        public synchronized void close() throws IOException {
+            if (!consumed) {
+                consumed = true;
+                lock.close();
+            }
+        }
+    }
+
+    public PreparedOpen prepareOpen(Path directory) throws IOException {
+        PreparedOpen prepared = prepareLockedAccess(directory);
+        try {
+            recoveryGate.beforeParse(directory, prepared.readOnly(), prepared.lock());
+            return prepared;
+        } catch (IOException | RuntimeException | Error failure) {
+            try { prepared.close(); } catch (IOException release) { failure.addSuppressed(release); }
+            throw failure;
+        }
+    }
+
+    /** Negotiates an independent target lease without scanning or applying recovery. */
+    public PreparedOpen prepareLockedAccess(Path directory) throws IOException {
+        return acquireTarget(directory, lockManager.fork());
+    }
+
+    /** Recovery failed after its lock decision: the last saved head may be inspected without changing evidence. */
+    public PreparedOpen prepareReadOnlyOpen(Path directory) {
+        ProjectLockManager target = lockManager.fork();
+        target.openReadOnly(directory);
+        return new PreparedOpen(directory, target, true);
+    }
+
+    private PreparedOpen acquireTarget(Path directory, ProjectLockManager target) throws IOException {
+        boolean readOnly = false;
+        try {
+            ProjectLockManager.AcquisitionResult result = target.tryAcquire(directory);
+            if (!result.wasAcquired()) {
+                LockConflictResolution choice = lockConflictHandler != null && result.existingLock() != null
+                        ? lockConflictHandler.resolve(result.existingLock(), result.stale()) : LockConflictResolution.CANCEL;
+                switch (choice) {
+                    case CANCEL -> throw new ProjectLockedException("Project is already open by " + describe(result.existingLock()),
+                            result.existingLock(), result.stale());
+                    case OPEN_READ_ONLY -> { target.openReadOnly(directory); readOnly = true; }
+                    case TAKE_OVER -> target.forceAcquire(directory);
+                }
+            }
+            if (!readOnly) target.startHeartbeat();
+            return new PreparedOpen(directory, target, readOnly);
+        } catch (IOException | RuntimeException | Error failure) {
+            try { target.close(); } catch (IOException release) { failure.addSuppressed(release); }
+            throw failure;
+        }
     }
 
     private static String describe(ProjectLock lock) {
@@ -613,7 +684,8 @@ public final class ProjectManager {
             project.setMetadata(touched);
             currentDawProject = project;
             long revision = project.getEditRevision();
-            job = new SaveJob(target, project, touched, revision, serializer.capture(project));
+            CheckpointManager.Capture capture = checkpointManager.captureStarted(revision);
+            job = new SaveJob(target, project, touched, capture, serializer.capture(project));
         } catch (Throwable notCaptured) {
             LOG.log(Level.WARNING, notCaptured, () -> "The project in " + target.projectDirectory()
                     + " could not be captured for its save; nothing was written");
@@ -776,7 +848,7 @@ public final class ProjectManager {
         saveTarget = null;
         checkpointManager.stop();
         try {
-            lockManager.release();
+            lockManager.close();
         } catch (IOException ignored) {
             // best-effort cleanup
         }
@@ -824,7 +896,7 @@ public final class ProjectManager {
         saveTarget = null;
         checkpointManager.stop();
         try {
-            lockManager.release();
+            lockManager.close();
         } catch (IOException ignored) {
             // best-effort cleanup
         }
@@ -1177,7 +1249,7 @@ public final class ProjectManager {
         if (headCause instanceof LockStolenException || target != saveTarget || checkpoints.isEmpty()) {
             return new SaveOutcome.Failed(headCause, Optional.empty());
         }
-        CompletableFuture<Path> copy = checkpointManager.writeCheckpoint(checkpoints.get(), xml, job.revision(),
+        CompletableFuture<Path> copy = checkpointManager.writeCheckpoint(checkpoints.get(), xml, job.capture(),
                 CheckpointOrigin.SAFETY_COPY);
         try {
             Path safety = copy.get(checkpointWait.toNanos(), TimeUnit.NANOSECONDS);
@@ -1227,7 +1299,7 @@ public final class ProjectManager {
             return Optional.empty();
         }
         CompletableFuture<Path> checkpoint = checkpointManager.writeCheckpoint(checkpoints.get(), xml,
-                job.revision(), CheckpointOrigin.AFTER_SAVE);
+                job.capture(), CheckpointOrigin.AFTER_SAVE);
         try {
             return Optional.of(checkpoint.get(checkpointWait.toNanos(), TimeUnit.NANOSECONDS));
         } catch (ExecutionException notWritten) {
@@ -1456,16 +1528,16 @@ public final class ProjectManager {
         private final SaveTarget target;
         private final DawProject project;
         private final ProjectMetadata metadata;
-        private final long revision;
+        private final CheckpointManager.Capture capture;
         private final ProjectDocument document;
         final List<CompletableFuture<SaveOutcome>> waiters = new ArrayList<>();
 
-        SaveJob(SaveTarget target, DawProject project, ProjectMetadata metadata, long revision,
+        SaveJob(SaveTarget target, DawProject project, ProjectMetadata metadata, CheckpointManager.Capture capture,
                 ProjectDocument document) {
             this.target = target;
             this.project = project;
             this.metadata = metadata;
-            this.revision = revision;
+            this.capture = capture;
             this.document = document;
         }
 
@@ -1482,8 +1554,10 @@ public final class ProjectManager {
         }
 
         long revision() {
-            return revision;
+            return capture.revision();
         }
+
+        CheckpointManager.Capture capture() { return capture; }
 
         ProjectDocument document() {
             return document;

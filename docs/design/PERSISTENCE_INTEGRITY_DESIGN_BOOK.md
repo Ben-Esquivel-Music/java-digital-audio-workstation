@@ -483,8 +483,9 @@ seal**.
                         │                                │ timestamped file)       │ interval of work              │ browser, recovery
   journal/segment-*.bin │ every undoable mutation        │ append + fsync          │ losing anything between       │ recovery scan
                         │ (default ON, §2.5)             │                         │ checkpoints                   │ (§4.7)
-  snapshots/*.daw       │ user-named save (story 299)    │ atomic replace; never   │ losing a milestone            │ user, Hub
-                        │                                │ auto-deleted            │                               │
+  snapshots/*.daw       │ user-named save (story 299);   │ atomic replace; never   │ losing a milestone, or an     │ user, Hub
+                        │ the recovery gate keeps an     │ auto-deleted            │ interrupted save a recovery   │
+                        │ "Interrupted save" (§4.7)      │                         │ decision would delete         │
   .project.lock         │ heartbeat every 2 s            │ mtime refresh           │ concurrent sessions           │ conflict dialog,
                         │                                │                         │                               │ health scan
   SESSION SEAL          │ final record of the exit       │ journal append + fsync, │ misclassifying a crash as a   │ recovery gate
@@ -765,7 +766,7 @@ defined demolition condition; this paragraph is the record of that intent.
 |---|---|---|---|
 | absent (opted off / new project) | n/a | none | plain open; gate logs degraded mode |
 | present, sealed, nothing after last checkpoint | yes | none | plain open; stale segments rotate |
-| present, records after last checkpoint | no | Replay all / Checkpoint only / Inspect / Cancel (PM book §4.6.1) | replay commits via §4.1 then normal open; discard deletes journal then opens; Inspect/Cancel re-present Welcome (existing flow, keep) |
+| present, records after last checkpoint | no | Replay all / Checkpoint only / Inspect / Cancel (PM book §4.6.1) | replay commits via §4.1 then normal open; discard deletes journal then opens (refused, with nothing deleted, when `project.daw` is missing; a newer complete temp is first kept as an "Interrupted save" snapshot); Inspect/Cancel re-present Welcome (existing flow, keep) |
 | present, unsealed, lock held **fresh** by another live session | no | conflict dialog first (lock wins) | recovery gate re-runs after lock resolution |
 
 ### 5.6 The settings-truth table (story 335)

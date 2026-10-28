@@ -65,6 +65,7 @@ public final class DefaultEventBus implements EventBus {
     private final OverflowStrategy defaultStrategy;
     private final ExecutorService dispatcher;
     private final List<Sub<?>> subs = new CopyOnWriteArrayList<>();
+    private final List<PublicationObserver<?>> publicationObservers = new CopyOnWriteArrayList<>();
     private final Metrics metrics = new Metrics();
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
@@ -141,6 +142,10 @@ public final class DefaultEventBus implements EventBus {
             return;
         }
         metrics.recordPublished(event.getClass());
+        for (PublicationObserver<?> observer : publicationObservers) {
+            try { observer.accept(event); }
+            catch (RuntimeException failure) { LOG.log(Level.WARNING, "Publication observer failed", failure); }
+        }
         OverflowStrategy strategy = strategyFor(event.getClass());
         for (Sub<?> sub : subs) {
             sub.tryEnqueue(event, strategy);
@@ -163,6 +168,34 @@ public final class DefaultEventBus implements EventBus {
             c = c.getSuperclass();
         }
         return defaultStrategy;
+    }
+
+    @Override
+    public <E extends BusEvent> Subscription onPublication(Class<E> type, Consumer<? super E> handler) {
+        if (closed.get()) throw new IllegalStateException("EventBus is closed");
+        PublicationObserver<E> observer = new PublicationObserver<>(Objects.requireNonNull(type), Objects.requireNonNull(handler));
+        publicationObservers.add(observer);
+        if (closed.get()) {
+            publicationObservers.remove(observer);
+            throw new IllegalStateException("EventBus is closed");
+        }
+        return () -> publicationObservers.remove(observer);
+    }
+
+    // Identity equality on purpose, as with Sub: each onPublication call is its own registration, so
+    // remove(observer) takes out exactly that one even when another call registered an equal type and handler.
+    private static final class PublicationObserver<E extends BusEvent> {
+        private final Class<E> type;
+        private final Consumer<? super E> handler;
+
+        PublicationObserver(Class<E> type, Consumer<? super E> handler) {
+            this.type = type;
+            this.handler = handler;
+        }
+
+        void accept(BusEvent event) {
+            if (type.isInstance(event)) handler.accept(type.cast(event));
+        }
     }
 
     @Override
@@ -240,6 +273,7 @@ public final class DefaultEventBus implements EventBus {
                 s.cancel();
             }
             subs.clear();
+            publicationObservers.clear();
             dispatcher.shutdownNow();
         }
     }

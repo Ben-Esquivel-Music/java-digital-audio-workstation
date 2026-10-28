@@ -181,6 +181,7 @@ class HubAndWelcomeOpenWhileTakeIsWrittenTest {
         });
         WelcomeView welcome = presented.get();
         assertThat(welcome).as("fixture: the Welcome screen was presented").isNotNull();
+        WelcomeTestSupport.awaitClassification(welcome);
         cardScans.addAll(welcome.pendingScans());
         int songBIndex = welcome.continuePaths().indexOf(songB);
         assertThat(songBIndex).as("fixture: Song B is a Continue card").isNotNegative();

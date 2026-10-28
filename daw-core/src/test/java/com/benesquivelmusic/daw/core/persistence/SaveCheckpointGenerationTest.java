@@ -132,7 +132,8 @@ class SaveCheckpointGenerationTest {
         manager.abandonProject();
         manager.openProject(first);
         Map<String, String> before = checkpointsIn(first);
-        assertThat(before).as("fixture: the first save's checkpoint, seeded by the new generation").hasSize(1);
+        assertThat(before).as("fixture: the first save's checkpoint and ordering fact, seeded by the new generation")
+                .hasSize(2).containsKey(CheckpointOrder.FILE_NAME);
         int writtenBefore = recorder.events(CheckpointEvent.Written.class).size();
         head.release();
 
@@ -188,16 +189,16 @@ class SaveCheckpointGenerationTest {
     }
 
     /**
-     * An open held in its recent-projects write — after it fenced the old
-     * saves, before it starts the new project's checkpoints — while the old
+     * An open held in its recent-projects write — after it ended the old
+     * checkpoint generation, before accepting the target lease — while the old
      * project's head write is held. This depends on {@code openProject}'s
      * code order: it ends the old project's checkpoints first, before
      * anything that can fail (story 331), and records the recent project
      * before it starts the new generation; the fixture checks below fail if
-     * that order changes. Since the old generation has ended by then, the
-     * save's checkpoint would be refused by its binding to that generation
-     * even without the write path's own re-check of the save target, which
-     * refuses it first: this test cannot tell the two apart. The re-check
+     * that order changes. The outgoing model and lease stay installed until
+     * preparation succeeds; a preferences failure must preserve both. Since
+     * the old generation has ended, the save's checkpoint is refused by its
+     * generation binding even while the save target remains installed. The re-check
      * still matters where the fence comes before the stop:
      * {@code abandonProject} and {@code closeProject}.
      */
@@ -205,6 +206,7 @@ class SaveCheckpointGenerationTest {
     void aSaveWhoseProjectAnOpenIsReplacingRequestsNoCheckpointOnceTheOpenBegan() throws Exception {
         Path second = SaveTestSupport.projectOnDisk(manager, "Second", tempDir);
         Path first = manager.createProject("First", tempDir).projectPath();
+        ProjectLockManager outgoingLease = manager.getLockManager();
         Gate head = hold(mover.holdNext(HEAD));
         CompletableFuture<SaveOutcome> pending = manager.save(project("First"));
         head.awaitReached();
@@ -212,8 +214,10 @@ class SaveCheckpointGenerationTest {
 
         CompletableFuture<ProjectMetadata> opening = openOnAnotherThread(second);
         recentsWrite.awaitReached();
-        assertThat(manager.getCurrentProject().projectPath()).as("fixture: the open replaced the project")
-                .isEqualTo(second);
+        assertThat(manager.getCurrentProject().projectPath()).as("preparation preserves the outgoing project")
+                .isEqualTo(first);
+        assertThat(manager.getLockManager()).isSameAs(outgoingLease);
+        outgoingLease.verifyHeld();
         assertThat(manager.getCheckpointManager().runningGeneration())
                 .as("fixture: the open ended the old project's checkpoints and has not started the new one's")
                 .isEmpty();
@@ -221,11 +225,14 @@ class SaveCheckpointGenerationTest {
         head.release();
 
         assertWrittenWithoutACheckpoint(await(pending), "First");
-        assertThat(checkpointNames(first)).as("no checkpoint once the session holds the next project's lock")
+        assertThat(checkpointNames(first)).as("the ended outgoing generation accepts no checkpoint")
                 .isEmpty();
         assertNoCheckpointWasReported();
         recentsWrite.release();
         assertThat(await(opening).projectPath()).isEqualTo(second);
+        assertThat(manager.getCurrentProject().projectPath()).isEqualTo(second);
+        manager.getLockManager().verifyHeld();
+        assertThat(ProjectLockManager.peekLock(first)).isEmpty();
     }
 
     private static void assertWrittenWithoutACheckpoint(SaveOutcome outcome, String name) {

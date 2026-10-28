@@ -6,6 +6,9 @@ import com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
+import com.benesquivelmusic.daw.core.persistence.journal.JournalRecord;
+import com.benesquivelmusic.daw.core.persistence.journal.JournalState;
+import com.benesquivelmusic.daw.core.persistence.journal.ProjectContext;
 import com.benesquivelmusic.daw.core.session.SessionManager;
 import com.benesquivelmusic.daw.core.session.WorkingSession;
 import com.benesquivelmusic.daw.sdk.event.EventBus;
@@ -19,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -32,6 +36,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Story 298 — focused tests for {@link ProjectJournalCoordinator}: the
@@ -47,8 +52,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * getters without needing a realized scene. The few model reads that go through
  * the dispatcher are pumped via {@link FxDispatcher#pulse()} which the test
  * drives directly. The {@link NotificationBar} is a JavaFX node, so it is built
- * once on the FX thread (the toolkit extension); the tests never trigger the
- * UNRESPONSIVE notification path that would touch it.</p>
+ * once on the FX thread (the toolkit extension), with a history log the tests
+ * read back after a FIFO marker through the dispatcher; the tests never trigger
+ * the UNRESPONSIVE notification path.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class ProjectJournalCoordinatorTest {
@@ -62,6 +68,7 @@ class ProjectJournalCoordinatorTest {
     private SessionManager sessionManager;
     private EventBus bus;
     private NotificationBar notifications;
+    private final NotificationHistoryService shown = new NotificationHistoryService();
     private final AtomicBoolean enabled = new AtomicBoolean(false);
 
     @BeforeEach
@@ -73,7 +80,12 @@ class ProjectJournalCoordinatorTest {
         // ON_CALLER_THREAD delivery is the journal recorder's mode; no UI executor needed.
         bus = DefaultEventBus.builder().build();
         AtomicReference<NotificationBar> barRef = new AtomicReference<>();
-        runOnFxThread(() -> barRef.set(new NotificationBar()));
+        runOnFxThread(() -> {
+            NotificationBar bar = new NotificationBar();
+            bar.setAnimated(false);
+            bar.setHistoryService(shown);
+            barRef.set(bar);
+        });
         notifications = barRef.get();
     }
 
@@ -107,6 +119,74 @@ class ProjectJournalCoordinatorTest {
         // No journal/ directory is created when disabled.
         assertThat(Files.exists(projectDir.resolve("journal"))).isFalse();
         coordinator.closeCurrent(null); // idempotent no-op
+    }
+
+    @Test
+    void requiredStartupReportsARealJournalDirectoryFailure() throws Exception {
+        enabled.set(true);
+        Path journal = Files.writeString(projectDir.resolve("journal"), "directory is obstructed");
+        ProjectJournalCoordinator coordinator = newCoordinator();
+        assertThatThrownBy(() -> coordinator.openForRequired(projectDir))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageStartingWith("Journaled persistence could not start for " + projectDir + ": ")
+                .hasMessageContaining(journal.toString())
+                .hasMessageContaining("FileAlreadyExistsException")
+                .hasRootCauseInstanceOf(FileAlreadyExistsException.class);
+        assertThat(coordinator.isOpen()).isFalse();
+        assertThat(Files.readString(journal)).isEqualTo("directory is obstructed");
+    }
+
+    @Test
+    void requiredStartupWhoseRecorderCannotAttachSealsTheSessionItStarted() throws Exception {
+        enabled.set(true);
+        Files.writeString(projectDir.resolve("project.daw"), "<project name=\"Head\"/>");
+        bus.close(); // closed, but the supplier still hands it out
+        ProjectJournalCoordinator coordinator = newCoordinator();
+        assertThatThrownBy(() -> coordinator.openForRequired(projectDir))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("EventBus is closed");
+        flushFxThroughTheDispatcher();
+        assertThat(shown.getEntries()).as("the caller's 'Open failed' is the one surface").isEmpty();
+        assertThat(coordinator.isOpen()).isFalse();
+        ProjectContext context = ProjectContext.forProject(projectDir);
+        assertThat(JournalState.needsRecovery(context))
+                .as("a session that recorded nothing never comes back as a recovery prompt")
+                .isFalse();
+        List<JournalRecord> records = JournalState.records(context);
+        assertThat(records.isEmpty() || records.getLast().isSessionSeal())
+                .as("the journal is absent or ends in a seal: %s", records)
+                .isTrue();
+    }
+
+    @Test
+    void aRecorderThatCannotAttachThroughOpenForIsReportedOnceAndSealsTheSession() throws Exception {
+        enabled.set(true);
+        Files.writeString(projectDir.resolve("project.daw"), "<project name=\"Head\"/>");
+        bus.close(); // closed, but the supplier still hands it out
+        ProjectJournalCoordinator coordinator = newCoordinator();
+
+        coordinator.openFor(projectDir);
+        flushFxThroughTheDispatcher();
+
+        assertThat(shown.getEntries()).singleElement().satisfies(entry -> {
+            assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
+            assertThat(entry.message()).isEqualTo("Journaled persistence could not start: EventBus is closed");
+        });
+        assertThat(coordinator.isOpen()).isFalse();
+        assertThat(JournalState.needsRecovery(ProjectContext.forProject(projectDir))).isFalse();
+    }
+
+    @Test
+    void requiredStartupHonoursOptOutButRejectsMissingEventBusAndNullTarget() {
+        ProjectJournalCoordinator coordinator = newCoordinator();
+        coordinator.openForRequired(projectDir);
+        assertThat(coordinator.isOpen()).isFalse();
+        enabled.set(true);
+        bus.close();
+        bus = null;
+        assertThatThrownBy(() -> coordinator.openForRequired(projectDir)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> coordinator.openForRequired(null)).isInstanceOf(NullPointerException.class);
+        assertThat(coordinator.isOpen()).isFalse();
     }
 
     @Test
@@ -189,6 +269,16 @@ class ProjectJournalCoordinatorTest {
                 .isEqualTo(ProjectOperationProgress.JournalBackpressure.NORMAL);
 
         coordinator.closeCurrent(null);
+    }
+
+    /**
+     * Runs a marker through the coordinator's dispatcher and waits for it: the dispatcher posts
+     * in FIFO order, so every notification posted before the marker has been shown.
+     */
+    private void flushFxThroughTheDispatcher() throws Exception {
+        CountDownLatch marker = new CountDownLatch(1);
+        FxDispatcher.runOnFx(dispatcher, marker::countDown);
+        assertThat(marker.await(5, TimeUnit.SECONDS)).as("the FIFO marker ran on the FX thread").isTrue();
     }
 
     private static void runOnFxThread(Runnable action) throws Exception {

@@ -234,9 +234,31 @@ public final class CheckpointManager {
     private final InstantSource clock;
     private final FileDeleter deleter;
     private final Duration stopWait;
+    private final Executor writerExecutor;
 
     private final List<AutoSaveListener> listeners = new CopyOnWriteArrayList<>();
     private final List<Consumer<CheckpointEvent>> eventListeners = new CopyOnWriteArrayList<>();
+    @FunctionalInterface interface DirectoryReader { DirectoryStream<Path> open(Path directory) throws IOException; }
+    private DirectoryReader directoryReader = Files::newDirectoryStream;
+    void setDirectoryReader(DirectoryReader reader) { directoryReader = Objects.requireNonNull(reader); }
+    private final AtomicReference<java.util.function.LongSupplier> journalSequenceSource = new AtomicReference<>();
+
+    /** The revision and optional journal boundary of one immutable model capture. */
+    public record Capture(long revision, OptionalLong journalSequence) {
+        public Capture { Objects.requireNonNull(journalSequence, "journalSequence must not be null"); }
+    }
+
+    /** Called on the model owner immediately before its immutable capture. */
+    public Capture captureStarted(long revision) {
+        java.util.function.LongSupplier source = journalSequenceSource.get();
+        return new Capture(revision, source == null ? OptionalLong.empty() : OptionalLong.of(source.getAsLong()));
+    }
+
+    /** Installs the current journal's publication fence; removing an old registration leaves a newer one intact. */
+    public Runnable observeJournalSequence(java.util.function.LongSupplier source) {
+        journalSequenceSource.set(Objects.requireNonNull(source));
+        return () -> journalSequenceSource.compareAndSet(source, null);
+    }
     private volatile BackupRetentionPolicy retentionPolicy;
     private volatile CaptureSource captureSource;
     private volatile WriteGuard writeGuard = () -> { };
@@ -295,11 +317,19 @@ public final class CheckpointManager {
      */
     CheckpointManager(AutoSaveConfig config, AtomicFileWriter fileWriter, InstantSource clock, FileDeleter deleter,
                       Duration stopWait) {
+        this(config, fileWriter, clock, deleter, stopWait,
+                task -> Thread.ofVirtual().name("daw-checkpoint-writer").start(task));
+    }
+
+    /** A controlled writer executor pins publication ordering without relying on thread scheduling in tests. */
+    CheckpointManager(AutoSaveConfig config, AtomicFileWriter fileWriter, InstantSource clock, FileDeleter deleter,
+                      Duration stopWait, Executor writerExecutor) {
         this.config = Objects.requireNonNull(config, "config must not be null");
         this.fileWriter = Objects.requireNonNull(fileWriter, "fileWriter must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.deleter = Objects.requireNonNull(deleter, "deleter must not be null");
         this.stopWait = Objects.requireNonNull(stopWait, "stopWait must not be null");
+        this.writerExecutor = Objects.requireNonNull(writerExecutor, "writerExecutor must not be null");
     }
 
     /**
@@ -338,9 +368,16 @@ public final class CheckpointManager {
                 stop();
             }
             Session started = new Session(generations.incrementAndGet(), projectDirectory, newScheduler());
-            // Queued before the generation is published: no request reaches the writer ahead of its seeding.
-            submit(new SeedJob(started));
-            session = started;
+            stateLock.lock();
+            try {
+                // A caller that observes this generation cannot queue a write ahead of its seeding;
+                // a fast writer cannot report its facts before listeners can observe it running.
+                session = started;
+                enqueueLocked(new SeedJob(started));
+            } finally {
+                stateLock.unlock();
+            }
+            ensureDrain();
             return new Generation(started);
         }
     }
@@ -504,6 +541,12 @@ public final class CheckpointManager {
      * @throws IllegalArgumentException if {@code origin} is {@link CheckpointOrigin#SCHEDULED}
      */
     public CompletableFuture<Path> writeCheckpoint(String xml, long revision, CheckpointOrigin origin) {
+        return writeCheckpoint(xml, new Capture(revision, OptionalLong.empty()), origin);
+    }
+
+    /** Writes bytes with the journal boundary captured with those bytes, never with their later submission. */
+    public CompletableFuture<Path> writeCheckpoint(String xml, Capture capture, CheckpointOrigin origin) {
+        Objects.requireNonNull(capture, "capture must not be null");
         Objects.requireNonNull(xml, "xml must not be null");
         requireARequestOrigin(origin);
         Session current = session;
@@ -513,7 +556,7 @@ public final class CheckpointManager {
                     "Checkpoints are not running: no project directory is open for checkpoints"));
             return notRunning;
         }
-        return request(current, xml, revision, origin);
+        return request(current, xml, capture, origin);
     }
 
     /**
@@ -540,10 +583,15 @@ public final class CheckpointManager {
      */
     CompletableFuture<Path> writeCheckpoint(Generation generation, String xml, long revision,
                                             CheckpointOrigin origin) {
+        return writeCheckpoint(generation, xml, new Capture(revision, OptionalLong.empty()), origin);
+    }
+
+    CompletableFuture<Path> writeCheckpoint(Generation generation, String xml, Capture capture,
+                                            CheckpointOrigin origin) {
         Objects.requireNonNull(generation, "generation must not be null");
         Objects.requireNonNull(xml, "xml must not be null");
         requireARequestOrigin(origin);
-        return request(generation.session, xml, revision, origin);
+        return request(generation.session, xml, capture, origin);
     }
 
     private static void requireARequestOrigin(CheckpointOrigin origin) {
@@ -559,7 +607,7 @@ public final class CheckpointManager {
      * dropped, its future completed exceptionally, when {@code bound} has
      * ended ({@link #submit}).
      */
-    private CompletableFuture<Path> request(Session bound, String xml, long revision, CheckpointOrigin origin) {
+    private CompletableFuture<Path> request(Session bound, String xml, Capture capture, CheckpointOrigin origin) {
         CompletableFuture<Path> result = new CompletableFuture<>();
         bound.firstTick.set(SeedMatch.NONE);
         if (isAutomatic(origin) && !config.enabled()) {
@@ -567,7 +615,7 @@ public final class CheckpointManager {
             result.completeExceptionally(autosaveDisabled(bound, origin));
             return result;
         }
-        submit(new WriteJob(bound, origin, revision, () -> xml, result));
+        submit(new WriteJob(bound, origin, capture, () -> xml, result));
         return result;
     }
 
@@ -833,6 +881,10 @@ public final class CheckpointManager {
             if (ticking.ended || !config.enabled()) {
                 return;
             }
+            if (!source.isAvailable()) {
+                rearm(ticking, CheckpointEvent.RearmReason.SKIPPED);
+                return;
+            }
             long revision = source.revision();
             Checkpointed done = ticking.checkpointed;
             if (done != null && done.revision() == revision) {
@@ -845,9 +897,10 @@ public final class CheckpointManager {
                 handedToWriter = true;
                 return;
             }
+            Capture capture = captureStarted(revision);
             CheckpointSource.Renderer renderer = Objects.requireNonNull(source.capture(),
                     "the capture returned no renderer");
-            submit(new WriteJob(ticking, CheckpointOrigin.SCHEDULED, revision, renderer, new CompletableFuture<>()));
+            submit(new WriteJob(ticking, CheckpointOrigin.SCHEDULED, capture, renderer, new CompletableFuture<>()));
             handedToWriter = true;
         } catch (Throwable failure) {
             submit(new CaptureFailure(ticking, failure));
@@ -869,9 +922,7 @@ public final class CheckpointManager {
         try {
             accepted = !owner.ended;
             if (accepted) {
-                owner.heldJobs++;
-                heldJobsOfEveryGeneration++;
-                queue.add(job);
+                enqueueLocked(job);
             }
         } finally {
             stateLock.unlock();
@@ -883,14 +934,20 @@ public final class CheckpointManager {
         }
     }
 
+    /** Registers a held job in submission order. Caller holds {@link #stateLock}. */
+    private void enqueueLocked(WriterJob job) {
+        job.session().heldJobs++;
+        heldJobsOfEveryGeneration++;
+        queue.add(job);
+    }
+
     /** Starts the writer's virtual thread unless one is draining the queue. */
     private void ensureDrain() {
         if (!draining.compareAndSet(false, true)) {
             return;
         }
         try {
-            Thread.ofVirtual().name("daw-checkpoint-writer")
-                    .start(() -> ScopedValue.where(WRITING, this).run(this::drain));
+            writerExecutor.execute(() -> ScopedValue.where(WRITING, this).run(this::drain));
         } catch (Throwable notStarted) {
             draining.set(false);
             LOG.log(Level.SEVERE, notStarted, () -> "The checkpoint writer could not start; its queued jobs fail");
@@ -1175,8 +1232,16 @@ public final class CheckpointManager {
     private void seed(Session seeding) {
         try {
             List<Path> strayTemps = new ArrayList<>();
-            if (Files.isDirectory(seeding.checkpointDirectory)) {
-                try (DirectoryStream<Path> entries = Files.newDirectoryStream(seeding.checkpointDirectory)) {
+            try {
+                seeding.certified.addAll(CheckpointOrder.read(seeding.checkpointDirectory));
+            } catch (IOException invalidFact) {
+                LOG.log(Level.WARNING, "Checkpoint ordering fact is unavailable; using legacy stamp order", invalidFact);
+            }
+            if (!Files.notExists(seeding.checkpointDirectory)) {
+                if (!Files.readAttributes(seeding.checkpointDirectory, java.nio.file.attribute.BasicFileAttributes.class).isDirectory()) {
+                    throw new IOException("Checkpoints path is not a directory: " + seeding.checkpointDirectory);
+                }
+                try (DirectoryStream<Path> entries = directoryReader.open(seeding.checkpointDirectory)) {
                     for (Path entry : entries) {
                         String name = entry.getFileName().toString();
                         Optional<CheckpointFileName> checkpoint = CheckpointFileName.parse(name);
@@ -1189,6 +1254,12 @@ public final class CheckpointManager {
                     }
                 }
             }
+            seeding.certificationEligible = true;
+            Set<String> present = new HashSet<>();
+            seeding.index.keySet().forEach(name -> present.add(name.fileName()));
+            seeding.certified.stream().filter(name -> !present.contains(name))
+                    .forEach(seeding.deletedCertifications::add);
+            compactCertifications(seeding);
             seeding.publishView();
             seeding.firstTick.compareAndSet(SeedMatch.UNSEEDED, seedMatchOf(seeding));
             deleteStrayTemps(seeding, strayTemps);
@@ -1313,7 +1384,12 @@ public final class CheckpointManager {
      */
     private void recordWritten(Session target, String id, WriteJob job, Published published) {
         Path file = published.file();
-        target.checkpointed = new Checkpointed(job.revision(), file);
+        Checkpointed previous = target.checkpointed;
+        if (previous == null || previous.capture().journalSequence().isEmpty()
+                || (job.capture().journalSequence().isPresent()
+                    && job.capture().journalSequence().getAsLong() >= previous.capture().journalSequence().getAsLong())) {
+            target.checkpointed = new Checkpointed(job.capture(), file);
+        }
         try {
             target.index.put(published.name(), file);
             target.publishView();
@@ -1322,7 +1398,7 @@ public final class CheckpointManager {
                     + " but could not join the index of " + target.projectDirectory
                     + "; the next start counts it");
         }
-        notifyWritten(target, id, job.origin(), file, job.revision());
+        notifyWritten(target, id, job.origin(), file, job.capture());
         prune(target, file);
         job.result().complete(file);
         rearm(target, CheckpointEvent.RearmReason.WRITTEN);
@@ -1366,7 +1442,17 @@ public final class CheckpointManager {
         }
         try {
             Files.createDirectories(target.checkpointDirectory);
+            Set<String> covered = new HashSet<>(target.certified);
+            covered.removeAll(target.deletedCertifications);
+            if (target.certificationEligible) covered.add(published.name().fileName());
+            else covered.remove(published.name().fileName());
+            recordCertifications(target, covered);
             fileWriter.writeString(published.file(), content);
+        } catch (IOException | RuntimeException | Error failure) {
+            if (Files.notExists(published.file(), LinkOption.NOFOLLOW_LINKS)) {
+                target.deletedCertifications.add(published.name().fileName());
+            }
+            throw failure;
         } finally {
             target.publishing = null;
         }
@@ -1374,12 +1460,42 @@ public final class CheckpointManager {
         return published;
     }
 
+    private void recordCertifications(Session target, Set<String> covered) throws IOException {
+        if (!covered.equals(target.certified)) {
+            CheckpointOrder.record(target.checkpointDirectory, covered, fileWriter);
+            List<Map.Entry<CheckpointFileName, Path>> existing = new ArrayList<>(target.index.entrySet());
+            target.index.clear();
+            target.certified.clear();
+            target.certified.addAll(covered);
+            existing.forEach(entry -> target.index.put(entry.getKey(), entry.getValue()));
+        }
+        target.deletedCertifications.clear();
+    }
+
+    private void compactCertifications(Session target) {
+        if (target.deletedCertifications.isEmpty()) return;
+        Set<String> covered = new HashSet<>(target.certified);
+        covered.removeAll(target.deletedCertifications);
+        if (covered.equals(target.certified)) {
+            target.deletedCertifications.clear();
+            return;
+        }
+        try {
+            writeGuard.check();
+            recordCertifications(target, covered);
+        } catch (IOException failure) {
+            LOG.log(Level.WARNING, "Could not compact checkpoint ordering metadata; the next write retries", failure);
+        }
+    }
+
     /**
      * Deletes checkpoints until the cap holds (rulings F5, H4, J1): the
      * seeded ones first, oldest first by {@link CheckpointFileName#ORDER};
      * then this generation's own writes, oldest written first.
      * {@code written} — the checkpoint just written — and the file holding
-     * the last checkpointed revision are never deleted. A file whose delete
+     * the greatest captured journal boundary are never deleted. An older
+     * capture completing late may therefore retain one extra checkpoint
+     * until a newer capture supersedes both protected files. A file whose delete
      * throws — any {@link Throwable}, an {@link Error} too — is skipped and
      * marked refused, and the pass goes on: a refused file stays in the index
      * and on disk, and the cap counts the index less its refused files. Each
@@ -1410,6 +1526,7 @@ public final class CheckpointManager {
             Optional<CheckpointFileName> retry = pruning.refusedDeletes.isEmpty()
                     ? Optional.empty()
                     : Optional.of(pruning.refusedDeletes.getFirst());
+            Set<CheckpointFileName> attempted = new HashSet<>();
             for (Map.Entry<CheckpointFileName, Path> candidate : pruneOrder(pruning)) {
                 if (pruning.index.size() - pruning.refusedDeletes.size() <= cap || !mayStillPrune(pruning)) {
                     break;
@@ -1420,12 +1537,15 @@ public final class CheckpointManager {
                 if (spared.contains(candidate.getValue()) || (retried && !retry.equals(Optional.of(name)))) {
                     continue;
                 }
+                attempted.add(name);
                 if (deleteOrRefuse(pruning, candidate.getValue(), name, cap, retried)) {
                     pruning.index.remove(name);
                     pruning.refusedDeletes.remove(name);
+                    pruning.deletedCertifications.add(name.fileName());
                 }
             }
-            applyRetentionPolicy(pruning);
+            applyRetentionPolicy(pruning, spared, attempted);
+            if (mayStillPrune(pruning)) compactCertifications(pruning);
         } catch (Throwable failure) {
             LOG.log(Level.WARNING, failure, () -> "Pruning the checkpoints of " + pruning.projectDirectory
                     + " failed; it is retried after the next checkpoint");
@@ -1495,23 +1615,33 @@ public final class CheckpointManager {
      * the index. Best effort, as before story 331 (story 335 delivers the
      * policy to this directory).
      */
-    private void applyRetentionPolicy(Session pruning) {
+    private void applyRetentionPolicy(Session pruning, Set<Path> spared, Set<CheckpointFileName> attempted) {
         BackupRetentionPolicy policy = this.retentionPolicy;
         if (policy == null || pruning.ended) {
             return;
         }
         BackupRetentionService.Plan plan;
         try {
-            plan = new BackupRetentionService(policy).prune(pruning.checkpointDirectory);
+            List<BackupRetentionService.Snapshot> snapshots = new ArrayList<>();
+            for (Path file : pruning.index.values()) {
+                if (Files.isRegularFile(file)) snapshots.add(new BackupRetentionService.Snapshot(file,
+                        Files.getLastModifiedTime(file).toInstant(), Files.size(file)));
+            }
+            plan = BackupRetentionService.plan(snapshots, policy, clock.instant());
         } catch (IOException ignored) {
             // best-effort cleanup
             return;
         }
-        Set<Path> kept = new HashSet<>();
-        for (BackupRetentionService.Snapshot snapshot : plan.kept()) {
-            kept.add(snapshot.path());
+        for (BackupRetentionService.Snapshot snapshot : plan.discarded()) {
+            if (!mayStillPrune(pruning)) break;
+            CheckpointFileName name = CheckpointFileName.parse(snapshot.path().getFileName().toString()).orElseThrow();
+            if (spared.contains(snapshot.path()) || attempted.contains(name)) continue;
+            if (deleteOrRefuse(pruning, snapshot.path(), name, config.maxCheckpoints(), pruning.refusedDeletes.contains(name))) {
+                pruning.index.remove(name);
+                pruning.refusedDeletes.remove(name);
+                pruning.deletedCertifications.add(name.fileName());
+            }
         }
-        pruning.index.values().removeIf(path -> !kept.contains(path));
     }
 
     /**
@@ -1528,7 +1658,7 @@ public final class CheckpointManager {
             if (done == null || done.revision() != job.revision()) {
                 Path head = ticking.projectDirectory.resolve(ProjectManager.PROJECT_FILE_NAME);
                 if (isIdentical(head, job.newest())) {
-                    ticking.checkpointed = new Checkpointed(job.revision(), job.newest());
+                    ticking.checkpointed = new Checkpointed(new Capture(job.revision(), OptionalLong.empty()), job.newest());
                 } else {
                     LOG.fine(() -> head + " changed since the checkpoints of " + ticking.projectDirectory
                             + " were seeded; the next tick checkpoints it");
@@ -1574,14 +1704,15 @@ public final class CheckpointManager {
     }
 
     private void notifyWritten(Session notifying, String checkpointId, CheckpointOrigin origin, Path file,
-                               long revision) {
+                               Capture capture) {
         for (AutoSaveListener listener : listeners) {
             if (notifying.ended) {
                 return;
             }
             isolated(listener, "onAfterCheckpoint", () -> listener.onAfterCheckpoint(checkpointId));
         }
-        fire(notifying, new CheckpointEvent.Written(notifying.generation, checkpointId, origin, file, revision));
+        fire(notifying, new CheckpointEvent.Written(notifying.generation, checkpointId, origin, file,
+                capture.revision(), capture.journalSequence()));
     }
 
     private void notifyFailed(Session notifying, String checkpointId, CheckpointOrigin origin, Throwable cause) {
@@ -1619,7 +1750,8 @@ public final class CheckpointManager {
     }
 
     /** The last revision this generation checkpointed, and the file that holds it. */
-    private record Checkpointed(long revision, Path file) {
+    private record Checkpointed(Capture capture, Path file) {
+        long revision() { return capture.revision(); }
     }
 
     /** A checkpoint just written: the name its index and stamp were allocated as, and its file. */
@@ -1673,7 +1805,10 @@ public final class CheckpointManager {
         volatile IndexView view = IndexView.EMPTY;
 
         /** Writer-confined: the checkpoint files of the directory by {@link CheckpointFileName#ORDER}. */
-        final TreeMap<CheckpointFileName, Path> index = new TreeMap<>(CheckpointFileName.ORDER);
+        final Set<String> certified = new HashSet<>();
+        final Set<String> deletedCertifications = new HashSet<>();
+        boolean certificationEligible;
+        final TreeMap<CheckpointFileName, Path> index = new TreeMap<>(CheckpointOrder.comparator(certified));
 
         /** Writer-confined: the highest index seeded or written. */
         long highestIndex;
@@ -1740,8 +1875,9 @@ public final class CheckpointManager {
     }
 
     /** Renders and writes one checkpoint of {@code revision}. */
-    private record WriteJob(Session session, CheckpointOrigin origin, long revision,
+    private record WriteJob(Session session, CheckpointOrigin origin, Capture capture,
                             CheckpointSource.Renderer content, CompletableFuture<Path> result) implements WriterJob {
+        long revision() { return capture.revision(); }
     }
 
     /** A first tick that seeding matched: re-checks the head and records the revision as checkpointed. */

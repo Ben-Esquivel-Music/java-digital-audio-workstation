@@ -57,6 +57,29 @@ These tests are binding acceptance criteria. They run headless, and none of them
 - Design references: Persistence Integrity design book §5.3 (the open contract) and §8 Stage 5 (lock lifecycle, story 333).
 - Cross-refs: story 329 (a failed open keeps the on-screen audio), story 333 (lock lifecycle), story 362 (the journal of an abandoned project).
 
+## Sibling: Story 386
+
+Story 386 (`docs/user-stories/future/386-a-disk-open-whose-journal-cannot-start-after-its-target-is-installed-opens-writable-with-journaling-paused.md`) is this story's sibling. This story owns failures before the target project is installed (the parse, the migration and the lock prompt), after which the project on screen stays the current one. Story 386 owns the open contract's step-6 JOURNAL failure after `prepareLoadedProject` has installed the target, which it opens writable with journaling paused. Both change the not-installed `finally` of `ProjectLifecycleController.beginGatedLoad`, toward different end states, so they must land in order, and whichever lands second re-runs the other's tests. This story's Motivation and code locators describe `loadProjectFromPath` as it was before story 332's `ProjectManager.PreparedOpen` flow, through which production's disk opens now go (`beginGatedLoad`); re-judge them against that flow before implementing either story. Story 362 is the journal-close sibling.
+
+## Extension: The Migration Roll-Back's Reload (Story 332)
+
+Since story 332's `ProjectManager.PreparedOpen` flow, a disk open prepares the target's lease and runs the recovery gate before it retires the outgoing project (`ProjectLifecycleController.beginGatedLoad`: "target lease leaves outgoing project intact"). A gate failure on those doors therefore leaves the outgoing project current. The migration roll-back's reload is the exception. Its folder is the open project's own, and `ProjectLockManager` holds one lease per folder. So the `OpenDoor.MigrationRollback` branch of `beginGatedLoad` closes the outgoing journal, verifies the lease, clears the journal and calls `ProjectManager.abandonProject()`, all before `prepareOpen` runs the gate. Any failure from that point until the target is installed ends with one `Open failed: …` ERROR and leaves the half-abandoned state this story's Motivation describes. Such failures include a lease check of the gate that fails, a newer head temp that cannot be read or that this build refuses (`RecoveryTemps.inspect`, since story 332's resolution of PR 988 review 5666358306), an interrupted save that cannot be copied, and a parse or migration failure. In that state the pre-roll-back model is on screen, with no current project, no lease and no journal, while `project.daw` already holds the backup that the roll-back copied over it. Found by the verification of story 332's PR 988 review 5666358306.
+
+Goals and acceptance:
+
+1. A roll-back reload that fails before its target is installed leaves a coherent state, not a half-abandoned one. The Resolution chooses one of two end states and says why. In the first, the outgoing project stays current under its own lease with journaling resumed, and the ERROR says that `project.daw` now holds the rolled-back file, so a Save would replace it. In the second, the outgoing project is fully retired, so no model is on screen that the project manager does not own, and the ERROR says that the roll-back was copied, that the reopen failed, and why.
+2. The failure changes nothing on disk: the rolled-back `project.daw`, the evidence the gate refused and, once story 373 lands, its pre-roll-back copies stay byte-identical.
+
+Tests, binding as above (headless; none assumes a non-Windows environment):
+
+- **Roll-back reload refused by the gate**:
+  - Open a schema-1 project and save it, which writes `project.daw.v1.<stamp>.bak`.
+  - Place a head temp that cannot be read beside `project.daw`, with its last-modified time set ahead so that it is newer than the rolled-back file. Make it unreadable by removing the owner's read permission on POSIX or adding a DENY `READ_DATA` entry for its owner on Windows; skip where it stays readable.
+  - Roll back on that backup (`rollbackMigration(projectDir, report, backup)`).
+  - Assert: one `Open failed: The interrupted save … could not be read …` ERROR; `getCurrentProject()`, the lease, the journal and the on-screen model agree with the chosen end state; `project.daw` equals the backup; the temp is byte-identical.
+
+Code locators: `ProjectLifecycleController.beginGatedLoad` (its `OpenDoor.MigrationRollback` branch and the not-installed `finally`), `rollBackNow`, `ProjectManager.prepareOpen` and `abandonProject`. Story 373 reworks Roll back (its pre-roll-back copies and Undo), and whichever of the two stories lands second re-runs the other's tests.
+
 ## Status
 
 - Deferred

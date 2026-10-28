@@ -448,8 +448,16 @@ public final class MainController {
      * instance — reused across project opens to avoid constructing a new store on
      * every history refresh.
      */
-    private final com.benesquivelmusic.daw.core.session.SessionManager sessionManager =
-            new com.benesquivelmusic.daw.core.session.SessionManager();
+    private final com.benesquivelmusic.daw.core.session.SessionManager sessionManager;
+
+    public MainController() {
+        this(new com.benesquivelmusic.daw.core.session.SessionManager());
+    }
+
+    MainController(com.benesquivelmusic.daw.core.session.SessionManager sessionManager) {
+        this.sessionManager = java.util.Objects.requireNonNull(sessionManager);
+    }
+
     /**
      * The currently open {@link com.benesquivelmusic.daw.core.session.WorkingSession};
      * {@code null} until the first project with an on-disk directory is loaded.
@@ -782,6 +790,7 @@ public final class MainController {
 
     /** Routes an undo/redo intent (button, menu, or shortcut) to the existing handlers (§2.8). */
     private void dispatchHistoryCommand(HistoryCommand command) {
+        if (!projectActionsAllowed()) return;
         switch (command) {
             case UndoCommand _ -> onUndo();
             case RedoCommand _ -> onRedo();
@@ -797,7 +806,21 @@ public final class MainController {
      * always reaches the CURRENT epoch's handler.
      */
     private void dispatchTransportCommand(TransportCommand command) {
+        if (!(command instanceof StopTransportCommand) && !projectActionsAllowed()) return;
         command.execute(transportController);
+    }
+
+    private boolean projectActionsAllowed() {
+        return projectLifecycleController == null || !projectLifecycleController.isProjectInstallationPending();
+    }
+
+    /** Floating content keeps its own disable state while the installation fence disables its parent. */
+    javafx.scene.Parent createFloatingProjectRoot(Node content) {
+        javafx.scene.layout.StackPane container = new javafx.scene.layout.StackPane(content);
+        if (projectLifecycleController != null) {
+            container.disableProperty().bind(projectLifecycleController.projectInstallationPendingProperty());
+        }
+        return container;
     }
 
     /**
@@ -835,9 +858,21 @@ public final class MainController {
     static Runnable wireAutosave(CheckpointManager checkpoints, java.util.concurrent.Executor fxOwner,
                                  java.util.function.Supplier<DawProject> project,
                                  com.benesquivelmusic.daw.app.ui.status.CheckpointStatusListener status) {
+        return wireAutosave(checkpoints, fxOwner, project, status, () -> true);
+    }
+
+    static Runnable wireAutosave(CheckpointManager checkpoints, java.util.concurrent.Executor fxOwner,
+                                 java.util.function.Supplier<DawProject> project,
+                                 com.benesquivelmusic.daw.app.ui.status.CheckpointStatusListener status,
+                                 java.util.function.BooleanSupplier captureAllowed) {
         com.benesquivelmusic.daw.core.persistence.ProjectSerializer serializer =
                 new com.benesquivelmusic.daw.core.persistence.ProjectSerializer();
         checkpoints.setCaptureSource(fxOwner, new com.benesquivelmusic.daw.core.persistence.CheckpointSource() {
+            @Override
+            public boolean isAvailable() {
+                return captureAllowed.getAsBoolean();
+            }
+
             @Override
             public long revision() {
                 return project.get().getEditRevision();
@@ -915,13 +950,13 @@ public final class MainController {
                 projectOperationProgress, projectManager.getCheckpointManager(), notificationBar,
                 dispatcher(), java.time.InstantSource.system(), java.time.ZoneId.systemDefault());
         checkpointStatusRemoval = wireAutosave(projectManager.getCheckpointManager(), this::postFx,
-                () -> project, checkpointStatus);
+                () -> project, checkpointStatus, this::projectActionsAllowed);
         if (snapshotsController != null) {
             snapshotsController.setCheckpointStatus(checkpointStatus);
         }
 
         // Story 298 — the write-ahead-journal coordinator. Reads the "Use
-        // journaled persistence" preference at open time (default OFF), the live
+        // journaled persistence" preference at open time (default ON), the live
         // EventBus as the change source, registers its checkpoint-rotation
         // listener, and seals the journal segments into the manifest on close
         // (the session to seal is captured on the FX thread and handed to the
@@ -1155,6 +1190,7 @@ public final class MainController {
                         this::whenProjectMayCloseForSnapshotRestore,
                         this::applySnapshotRestoredProject),
                 dispatcher());
+        snapshotsController.setProjectActionsAllowed(this::projectActionsAllowed);
         toolbarStateStore = new ToolbarStateStore(prefs);
         keyBindingManager = new KeyBindingManager(prefs.node("keybindings"));
 
@@ -1437,7 +1473,7 @@ public final class MainController {
                             // coordinator folds the journal segments into it.
                             com.benesquivelmusic.daw.core.session.WorkingSession journalSession = activeSession;
                             Thread.ofVirtual().name("daw-journal-close")
-                                    .start(() -> projectJournalCoordinator.closeCurrent(journalSession));
+                                    .start(() -> projectJournalCoordinator.drainWithoutSeal(journalSession));
                         }
                         // Project Manager Design Book §3.3 — seal the active
                         // working session on clean shutdown. The write is I/O,
@@ -1892,6 +1928,15 @@ public final class MainController {
         // project; passing the captured value avoids reading activeSession from
         // a background thread. A no-op when journaled persistence is disabled.
         if (projectJournalCoordinator != null && projectLifecycleController != null) {
+            projectLifecycleController.enableRecoveryGate(
+                    () -> settingsModel != null && settingsModel.isUseJournaledPersistence(),
+                    () -> {
+                        Path journalDirectory = projectJournalCoordinator.currentProjectDirectory();
+                        com.benesquivelmusic.daw.core.session.WorkingSession outgoing =
+                                Objects.equals(journalDirectory, activeSessionProjectDir) ? activeSession : null;
+                        projectJournalCoordinator.detachFromBus();
+                        return () -> projectJournalCoordinator.closeCurrentFor(journalDirectory, outgoing);
+                    }, projectJournalCoordinator::openForRequired);
             projectLifecycleController.setJournalOpenHook(projectDir -> {
                 com.benesquivelmusic.daw.core.session.WorkingSession outgoing = activeSession;
                 Thread.ofVirtual().name("daw-journal-reopen")
@@ -2132,7 +2177,10 @@ public final class MainController {
      *                    for display-only refreshes (e.g. toggling the dock)
      *                    that must not mutate session state.
      */
+    private volatile long sessionRefreshGeneration;
+
     private void refreshSessionManager(boolean openSession) {
+        long sessionGeneration = openSession ? ++sessionRefreshGeneration : sessionRefreshGeneration;
         if (sessionManagerDock == null) {
             return;
         }
@@ -2146,14 +2194,25 @@ public final class MainController {
             return;
         }
         java.nio.file.Path projectDir = current.projectPath();
+        boolean writableSession = openSession && !projectManager.isReadOnly();
+        com.benesquivelmusic.daw.core.persistence.ProjectLockManager sessionLease = projectManager.getLockManager();
+        com.benesquivelmusic.daw.core.persistence.ProjectLock sessionLock = sessionLease.currentLock().orElse(null);
+        if (openSession && !writableSession) {
+            activeSession = null;
+            activeSessionProjectDir = null;
+        }
         Thread.ofVirtual().name("daw-session-manager").start(() -> {
             com.benesquivelmusic.daw.core.session.WorkingSession opened = null;
             java.util.List<com.benesquivelmusic.daw.core.session.WorkingSession> history;
             java.util.List<com.benesquivelmusic.daw.core.snapshot.SnapshotEntry> snapshots;
             try {
-                if (openSession) {
+                if (writableSession && sessionLock != null && sessionGeneration == sessionRefreshGeneration
+                        && projectManager.getCurrentProject() != null
+                        && projectDir.equals(projectManager.getCurrentProject().projectPath())
+                        && !projectManager.isReadOnly()) {
                     com.benesquivelmusic.daw.core.session.SessionManager.SessionOpenResult result =
-                            sessionManager.openSession(projectDir, java.time.Instant.now());
+                            sessionLease.withHeldLease(sessionLock,
+                                    () -> sessionManager.openSession(projectDir, java.time.Instant.now()));
                     opened = result.current();
                 }
                 history = sessionManager.history(projectDir);
@@ -2176,6 +2235,8 @@ public final class MainController {
             java.util.List<com.benesquivelmusic.daw.core.session.WorkingSession> result = history;
             java.util.List<com.benesquivelmusic.daw.core.snapshot.SnapshotEntry> snapshotResult = snapshots;
             postFx(() -> {
+                if (sessionGeneration != sessionRefreshGeneration || projectManager.getCurrentProject() == null
+                        || !projectDir.equals(projectManager.getCurrentProject().projectPath())) return;
                 if (newActiveSession != null) {
                     activeSession = newActiveSession;
                     activeSessionProjectDir = projectDir;
@@ -2428,6 +2489,7 @@ public final class MainController {
 
     private void replacePluginProject(DawProject next) {
         DawProject previous = project;
+        if (previous != next && atmosAbStage != null) atmosAbStage.close();
         project = next;
         if (pluginViewController != null) pluginViewController.reconcileGraph();
         if (inspectorDrawer != null) inspectorDrawer.refreshInserts();
@@ -2865,7 +2927,7 @@ public final class MainController {
                     @Override public void onOpenSnapshots() {
                         if (snapshotsController != null) snapshotsController.openBrowser();
                     }
-                });
+                }, this::projectActionsAllowed);
         createCommandPaletteView();
     }
 
@@ -3329,6 +3391,7 @@ public final class MainController {
                 // Story 329 (D15) — "Relink Missing Assets…" is enabled while the
                 // open's report has rows; the owner's change listener re-syncs it.
                 () -> projectLifecycleController != null && projectLifecycleController.hasUnresolvedAssets());
+        menuBarController.setProjectActionsAllowed(this::projectActionsAllowed);
         javafx.scene.control.MenuBar bar = menuBarController.build();
         // Wire the per-user Workspaces menu (Save Current as… / Switch to…).
         // The WorkspaceManager seeds the six default workspaces on first run
@@ -3346,6 +3409,7 @@ public final class MainController {
                 this::promptWorkspaceName,
                 this::exportWorkspaceWithChooser,
                 this::importWorkspaceWithChooser);
+        menuBuilder.setActionsAllowed(this::projectActionsAllowed);
         javafx.scene.control.Menu workspacesMenu = menuBuilder.build();
         // Insert before the last (Help) menu so Help stays right-most.
         var menus = bar.getMenus();
@@ -4392,9 +4456,7 @@ public final class MainController {
                     stage.initOwner(rootPane.getScene().getWindow());
                 }
                 detachFromParent(content);
-                javafx.scene.Scene scene = new javafx.scene.Scene(
-                        content instanceof javafx.scene.Parent p ? p
-                                : new javafx.scene.layout.StackPane(content));
+                javafx.scene.Scene scene = new javafx.scene.Scene(createFloatingProjectRoot(content));
                 // Apply the active theme + register for live re-theming so
                 // the floating panel inherits root-pane styling instead of
                 // showing the default JavaFX white background.
@@ -4559,9 +4621,9 @@ public final class MainController {
     // applyLoopAndRulerGrid().
     @FXML private void onSkipBack() { dispatchTransportCommand(new SkipBackCommand()); }
     @FXML private void onSkipForward() { dispatchTransportCommand(new SkipForwardCommand()); }
-    @FXML private void onToggleMetronome() { metronomeController.onToggleMetronome(); }
-    @FXML private void onAddAudioTrack() { trackCreationController.onAddAudioTrack(); }
-    @FXML private void onAddMidiTrack() { trackCreationController.onAddMidiTrack(); }
+    @FXML private void onToggleMetronome() { if (projectActionsAllowed()) metronomeController.onToggleMetronome(); }
+    @FXML private void onAddAudioTrack() { if (projectActionsAllowed()) trackCreationController.onAddAudioTrack(); }
+    @FXML private void onAddMidiTrack() { if (projectActionsAllowed()) trackCreationController.onAddMidiTrack(); }
 
     // ── Lane folding (Issue 568) ────────────────────────────────────────────
     private void onToggleFoldFocusedTrack() {
@@ -4672,6 +4734,7 @@ public final class MainController {
     @FXML private void onManagePlugins() { pluginViewController.onManagePlugins(pluginRegistry); }
 
     @FXML private void onUndo() {
+        if (!projectActionsAllowed()) return;
         if (undoManager.undo()) {
             // The project is marked dirty by the per-generation
             // UndoHistoryDirtyBinder (rebuildViewModels) on the UNDONE change.
@@ -4683,6 +4746,7 @@ public final class MainController {
     }
 
     @FXML private void onRedo() {
+        if (!projectActionsAllowed()) return;
         if (undoManager.redo()) {
             // Dirty via UndoHistoryDirtyBinder on the REDONE change.
             status("Redo: " + undoManager.undoDescription(), DawIcon.REDO);
@@ -4821,6 +4885,7 @@ public final class MainController {
      * avoids conflicts with the main view-navigation center pane.
      */
     void onOpenImmersiveAb() {
+        if (!projectActionsAllowed()) return;
         if (atmosAbStage != null) {
             atmosAbStage.toFront();
             atmosAbStage.requestFocus();
@@ -4830,7 +4895,7 @@ public final class MainController {
                 project.getReferenceTrackManager());
         atmosAbStage = new Stage(javafx.stage.StageStyle.UTILITY);
         atmosAbStage.setTitle("Immersive A/B — QC");
-        javafx.scene.Scene scene = new javafx.scene.Scene(atmosAbView);
+        javafx.scene.Scene scene = new javafx.scene.Scene(createFloatingProjectRoot(atmosAbView));
         ThemeManager.getDefault().applyTo(scene);
         atmosAbStage.setScene(scene);
         atmosAbStage.setMinWidth(600);
@@ -5012,6 +5077,7 @@ public final class MainController {
      * {@link com.benesquivelmusic.daw.core.reference.ReferenceTrackManager}.
      */
     void onImmersiveAbToggle() {
+        if (!projectActionsAllowed()) return;
         if (atmosAbView != null) {
             atmosAbView.toggleAb();
         } else {

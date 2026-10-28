@@ -108,6 +108,7 @@ class WelcomeWindowStaysUpWhenItsActionIsRefusedTest {
             });
             fixture.lifecycle().showWelcome();
         });
+        WelcomeTestSupport.awaitClassification(welcome);
         assertThat(welcome.recoverPaths()).as("fixture: Song C is a recover row").containsExactly(songC);
         assertThat(welcome.continuePaths()).as("fixture: Song B is a Continue card").contains(songB);
         assertThat(onFx(welcomeStage::isShowing)).as("fixture: the Welcome window shows").isTrue();

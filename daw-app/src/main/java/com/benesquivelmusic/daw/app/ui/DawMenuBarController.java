@@ -273,6 +273,10 @@ public final class DawMenuBarController {
         return menuBar;
     }
 
+    void setProjectActionsAllowed(BooleanSupplier allowed) {
+        constructionService.setProjectActionsAllowed(allowed);
+    }
+
     /**
      * Synchronizes menu item enabled/disabled states with the current
      * project state. Call this whenever the project state changes
