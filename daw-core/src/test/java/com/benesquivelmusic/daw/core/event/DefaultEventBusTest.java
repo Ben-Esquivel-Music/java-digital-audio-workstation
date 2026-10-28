@@ -9,14 +9,18 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -268,5 +272,72 @@ class DefaultEventBusTest {
         bus = DefaultEventBus.builder().build();
         assertThatThrownBy(() -> bus.publish(null))
                 .isInstanceOf(NullPointerException.class);
+    }
+
+    // Publication observers run inside publish(), so the onPublication tests read
+    // their results as soon as publish() returns, with no latch or polling.
+
+    @Test
+    void closingOneOfTwoEqualPublicationRegistrationsTwiceLeavesTheOtherDelivering() {
+        bus = DefaultEventBus.builder().build();
+        AtomicInteger deliveries = new AtomicInteger();
+        Consumer<TransportEvent.Started> handler = ev -> deliveries.incrementAndGet();
+        EventBus.Subscription first = bus.onPublication(TransportEvent.Started.class, handler);
+        EventBus.Subscription second = bus.onPublication(TransportEvent.Started.class, handler);
+
+        bus.publish(newStarted(1));
+        assertThat(deliveries.get()).isEqualTo(2);
+
+        first.close();
+        first.close();
+        bus.publish(newStarted(2));
+        assertThat(deliveries.get())
+                .as("closing one handle twice must not detach the other registration")
+                .isEqualTo(3);
+
+        second.close();
+        bus.publish(newStarted(3));
+        assertThat(deliveries.get()).isEqualTo(3);
+    }
+
+    @Test
+    void closingAPublicationHandleRemovesExactlyItsOwnRegistration() {
+        bus = DefaultEventBus.builder().build();
+        List<String> calls = new ArrayList<>();
+        Consumer<TransportEvent.Started> repeated = ev -> calls.add("h");
+        bus.onPublication(TransportEvent.Started.class, repeated);
+        bus.onPublication(TransportEvent.Started.class, ev -> calls.add("x"));
+        EventBus.Subscription laterRepeat = bus.onPublication(TransportEvent.Started.class, repeated);
+
+        laterRepeat.close();
+        bus.publish(newStarted(1));
+
+        // Removing the first equal registration instead would deliver [x, h].
+        assertThat(calls).containsExactly("h", "x");
+    }
+
+    @Test
+    void closingAPublicationHandleAfterTheBusClosesReturnsNormally() {
+        bus = DefaultEventBus.builder().build();
+        EventBus.Subscription handle = bus.onPublication(TransportEvent.Started.class, ev -> {});
+        bus.close();
+
+        // Journal shutdown closes its recorder's handle before sealing the writer;
+        // a throw here would skip the seal.
+        assertThatCode(handle::close).doesNotThrowAnyException();
+    }
+
+    @Test
+    void aThrowingPublicationObserverDoesNotStopLaterObservers() {
+        bus = DefaultEventBus.builder().build();
+        AtomicInteger deliveries = new AtomicInteger();
+        bus.onPublication(TransportEvent.Started.class, ev -> {
+            throw new IllegalStateException("observer failure");
+        });
+        bus.onPublication(TransportEvent.Started.class, ev -> deliveries.incrementAndGet());
+
+        bus.publish(newStarted(1));
+
+        assertThat(deliveries.get()).isEqualTo(1);
     }
 }

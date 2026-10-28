@@ -182,7 +182,17 @@ public final class DefaultEventBus implements EventBus {
         return () -> publicationObservers.remove(observer);
     }
 
-    private record PublicationObserver<E extends BusEvent>(Class<E> type, Consumer<? super E> handler) {
+    // Identity equality on purpose, as with Sub: each onPublication call is its own registration, so
+    // remove(observer) takes out exactly that one even when another call registered an equal type and handler.
+    private static final class PublicationObserver<E extends BusEvent> {
+        private final Class<E> type;
+        private final Consumer<? super E> handler;
+
+        PublicationObserver(Class<E> type, Consumer<? super E> handler) {
+            this.type = type;
+            this.handler = handler;
+        }
+
         void accept(BusEvent event) {
             if (type.isInstance(event)) handler.accept(type.cast(event));
         }

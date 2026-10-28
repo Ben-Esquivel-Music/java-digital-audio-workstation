@@ -117,6 +117,19 @@ public interface EventBus {
      * Observes publication before it returns. Handlers must only enqueue immutable
      * data and must never do I/O. Persistence uses this fence so a later model
      * capture cannot overtake an event waiting on a delivery worker.
+     *
+     * <p>Each call is an independent registration, even for an equal handler and
+     * type, and closing its handle removes exactly that registration. A publish
+     * already in progress when the handle is closed may still call the handler.</p>
+     *
+     * @param type    the event type to filter by
+     * @param handler the callback to invoke for each matching event
+     * @param <E>     the event type
+     * @return a handle that, when closed, removes this registration
+     * @throws UnsupportedOperationException if this bus does not support publication
+     *         observation (the default implementation)
+     * @throws IllegalStateException if this bus supports publication observation and
+     *         has been closed
      */
     default <E extends BusEvent> Subscription onPublication(Class<E> type, Consumer<? super E> handler) {
         throw new UnsupportedOperationException("Synchronous publication observation is unavailable");
@@ -133,7 +146,9 @@ public interface EventBus {
 
     /**
      * Cancellable handle returned by the {@code on(...)} convenience
-     * subscriptions. Closing the handle is idempotent.
+     * subscriptions and by {@link #onPublication}. Closing a handle ends
+     * only the registration made by the call that returned it; closing it
+     * again ends no registration.
      */
     interface Subscription extends AutoCloseable {
         @Override void close();
