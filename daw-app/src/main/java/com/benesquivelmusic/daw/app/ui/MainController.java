@@ -221,7 +221,8 @@ public final class MainController {
      * controller watched at that transition; the bridge looks nothing up at
      * delivery. Built and subscribed in {@link #initialize()} right after
      * the controller is built, over the {@link #dispatcher()} of that
-     * moment; cancelled in the window teardown.
+     * moment; cancelled by the window's disposal
+     * ({@link #disposeWindowLifetime()}).
      */
     private EngineStateBridge engineStateBridge;
     /** Per-track CPU budget enforcer wired into the engine (story 129 UI). */
@@ -289,7 +290,7 @@ public final class MainController {
     // ── Story 293: view-model layer (Control Synchronization Design Book §4.3/§4.4) ──
     // The VMs make the controls reactive subscribers to the core model's neutral
     // change signals (stories 290-292), retiring the imperative update*/refresh*/sync*
-    // methods. Rebuilt per project load by rebuildViewModels(); disposed on hide.
+    // methods. Rebuilt per project load by rebuildViewModels(); disposed by the window's disposal.
     private HistoryVM historyVM;
     private HistoryControlBinder historyBinder;
     private TransportVM transportVM;
@@ -304,7 +305,7 @@ public final class MainController {
     private com.benesquivelmusic.daw.app.ui.status.SessionStatusDiskScanner diskScanner;
     /** Story 331 — turns checkpoint outcomes and re-arms into the strip's checkpoint state. */
     private com.benesquivelmusic.daw.app.ui.status.CheckpointStatusListener checkpointStatus;
-    /** Story 331 — detaches {@link #checkpointStatus} from the checkpoint manager; run on hide. */
+    /** Story 331 — detaches {@link #checkpointStatus} from the checkpoint manager; run by the window's disposal. */
     private Runnable checkpointStatusRemoval;
     /** Start of the current working session (since project open/new); §3.3, drives the Session cell elapsed. */
     private java.time.Instant sessionStartInstant;
@@ -478,6 +479,50 @@ public final class MainController {
      * journal-open hook.
      */
     private com.benesquivelmusic.daw.app.ui.status.ProjectJournalCoordinator projectJournalCoordinator;
+    /**
+     * Story 333 — the working session {@link #refreshSessionManager} is opening
+     * off the FX thread, or {@code null}: recorded before its worker starts,
+     * completed once the session is open, so a journal end prepared before
+     * the open reached the FX thread still folds the segments into it. FX
+     * thread.
+     */
+    private SessionJournalEnding.SessionOpening sessionOpening;
+    /**
+     * Story 333 — the shared tail of every close of the open folder: the
+     * closing checkpoint, the journal's end and the release
+     * ({@link #createSaveAsFlow()}); Save As closes the folder it copied
+     * through it.
+     */
+    private ProjectFolderCloser projectFolderCloser;
+    /**
+     * Story 333 — File ▸ Save As… ({@link #createSaveAsFlow()}), installed on
+     * the lifecycle controller.
+     */
+    private SaveAsFlow saveAsFlow;
+    /**
+     * Story 333 — the App-Exit Protocol (Persistence Integrity book §4.8,
+     * §5.4): every close of the open project goes through it — the window's
+     * close box, File ▸ Exit and File ▸ Close Project, from the menu, their
+     * shortcuts or the palette (Control Synchronization book §2.8). Built by
+     * {@link #createExitCoordinator()}; installed on the window by
+     * {@link #installPrimaryStage}. FX thread.
+     */
+    private ExitCoordinator exitCoordinator;
+    /** Story 333 — the primary stage, remembered by {@link #installPrimaryStage}. FX thread. */
+    private Stage primaryStage;
+    /**
+     * Story 333 — the hand-off of the window's disposal
+     * ({@link #disposeWindowLifetime()}) once it started: the disposal runs
+     * once. FX thread.
+     */
+    private java.util.concurrent.CompletionStage<Void> windowLifetimeDisposal;
+    /**
+     * Story 333 — whether the window's lifetime has begun ending: set by
+     * {@link #disposeWindowLifetime()} before any of its steps runs, and
+     * never cleared. Read by the autosave's capture gate
+     * ({@link #autosaveCaptureAllowed()}). FX thread.
+     */
+    private boolean windowLifetimeEnding;
     /**
      * Story 287 — single eager {@link TelemetryView}. Its
      * {@code getSetupPanel()} is registered as {@code PANEL_TELEMETRY} and
@@ -810,8 +855,52 @@ public final class MainController {
         command.execute(transportController);
     }
 
-    private boolean projectActionsAllowed() {
+    /**
+     * Whether no project is being installed now: the correctness gate of
+     * what must not read a project the window is replacing. Its consumers
+     * are the autosave's capture gate ({@link #autosaveCaptureAllowed()}),
+     * which also says no once the window's lifetime began ending, and
+     * {@link #projectActionsAllowed()}, whose first half it is. FX thread.
+     */
+    private boolean noProjectInstallationPending() {
         return projectLifecycleController == null || !projectLifecycleController.isProjectInstallationPending();
+    }
+
+    /**
+     * Story 333 — the autosave's capture gate; its one consumer is the
+     * scheduled checkpoint ({@link #wireTheWindowsAutosave()}): a tick may
+     * capture the open project unless a project is being installed
+     * ({@link #noProjectInstallationPending()}) or the window's lifetime has
+     * begun ending ({@link #windowLifetimeEnding}). It is not an input gate:
+     * while a close waits on disk work and the window is input-inert, ticks
+     * keep capturing — a tick is not user input, and it is the only
+     * state-bearing recovery point of unsaved edits while a take or a save
+     * is waited for (ruling 4 Q4). From DISPOSE on it says no, for good:
+     * DISPOSE retires the open project's plug-ins and empties its insert
+     * lists without an edit, and after a Quit anyway nothing ends the
+     * checkpoint generation, so a capture after it would write the newest
+     * checkpoint of the project with every insert gone (the app-fix-2
+     * review S1). FX thread.
+     *
+     * @return whether a scheduled checkpoint may capture the project now
+     */
+    private boolean autosaveCaptureAllowed() {
+        return !windowLifetimeEnding && noProjectInstallationPending();
+    }
+
+    /**
+     * Whether a project action may run now: not while a project is being
+     * installed ({@link #noProjectInstallationPending()}), and not while the
+     * window is input-inert because a close of the open project waits on
+     * disk work (story 333, design §1.5) — which also fences a programmatic
+     * transport command. An input gate: its consumers are the menus, the
+     * accelerators, the palette, the transport commands and the snapshot
+     * actions, which read it when they fire; Stop and Exit pass whatever it
+     * says. The autosave's capture gate ({@link #autosaveCaptureAllowed()})
+     * is not among them (ruling 4 Q4). FX thread.
+     */
+    private boolean projectActionsAllowed() {
+        return noProjectInstallationPending() && (exitCoordinator == null || !exitCoordinator.isWindowInert());
     }
 
     /** Floating content keeps its own disable state while the installation fence disables its parent. */
@@ -844,29 +933,26 @@ public final class MainController {
      * the FX thread's un-keyed dispatcher post, and renders and writes the
      * capture on its own writer, never reading the model there: the
      * capture source's revision is the project's edit revision, its clean
-     * flag the project's, and its capture {@code serializer.capture(project)}
-     * handing over the document's renderer. {@code status} receives every
-     * checkpoint outcome and re-arm. Package-private so a test wires a real
-     * checkpoint manager exactly as {@code createSessionStatusStrip} does.
+     * flag the project's, and its capture the project manager's capture of
+     * the open project ({@link ProjectManager#captureOpenProject}: with a
+     * Save As copy's former roots, story 333) handing over the document's
+     * renderer. {@code status} receives every checkpoint outcome and re-arm.
+     * Package-private so a test wires a real checkpoint manager exactly as
+     * {@code createSessionStatusStrip} does.
      *
-     * @param checkpoints the checkpoint manager
-     * @param fxOwner     runs each capture on the FX thread
-     * @param project     the live project, read on the FX thread
-     * @param status      the strip's checkpoint-status listener
+     * @param projectManager the project manager, whose checkpoints are wired
+     * @param fxOwner        runs each capture on the FX thread
+     * @param project        the live project, read on the FX thread
+     * @param status         the strip's checkpoint-status listener
+     * @param captureAllowed whether a capture may run now: not while a project is installed, nor once the
+     *                       window's lifetime began ending (the application's {@link #autosaveCaptureAllowed()})
      * @return removes {@code status} again (run when the window is torn down)
      */
-    static Runnable wireAutosave(CheckpointManager checkpoints, java.util.concurrent.Executor fxOwner,
-                                 java.util.function.Supplier<DawProject> project,
-                                 com.benesquivelmusic.daw.app.ui.status.CheckpointStatusListener status) {
-        return wireAutosave(checkpoints, fxOwner, project, status, () -> true);
-    }
-
-    static Runnable wireAutosave(CheckpointManager checkpoints, java.util.concurrent.Executor fxOwner,
+    static Runnable wireAutosave(ProjectManager projectManager, java.util.concurrent.Executor fxOwner,
                                  java.util.function.Supplier<DawProject> project,
                                  com.benesquivelmusic.daw.app.ui.status.CheckpointStatusListener status,
                                  java.util.function.BooleanSupplier captureAllowed) {
-        com.benesquivelmusic.daw.core.persistence.ProjectSerializer serializer =
-                new com.benesquivelmusic.daw.core.persistence.ProjectSerializer();
+        CheckpointManager checkpoints = projectManager.getCheckpointManager();
         checkpoints.setCaptureSource(fxOwner, new com.benesquivelmusic.daw.core.persistence.CheckpointSource() {
             @Override
             public boolean isAvailable() {
@@ -885,10 +971,26 @@ public final class MainController {
 
             @Override
             public Renderer capture() throws java.io.IOException {
-                return serializer.capture(project.get())::toXml;
+                return projectManager.captureOpenProject(project.get())::toXml;
             }
         });
         return checkpoints.addEventListener(status);
+    }
+
+    /**
+     * Story 333 (ruling 4 Q4, the app-fix-2 review S1) — wires the window's
+     * autosave ({@link #wireAutosave}) over the live project and the strip's
+     * checkpoint-status listener, its capture gate
+     * {@link #autosaveCaptureAllowed()}: a close's input-inert window
+     * pauses no scheduled checkpoint, and from DISPOSE on none captures.
+     * Package-private so a partial controller's test reads the gate the
+     * application installs. FX thread.
+     *
+     * @return removes the strip's listener again (run when the window is disposed)
+     */
+    Runnable wireTheWindowsAutosave() {
+        return wireAutosave(projectManager, this::postFx, () -> project, checkpointStatus,
+                this::autosaveCaptureAllowed);
     }
 
     /**
@@ -949,8 +1051,7 @@ public final class MainController {
         checkpointStatus = new com.benesquivelmusic.daw.app.ui.status.CheckpointStatusListener(
                 projectOperationProgress, projectManager.getCheckpointManager(), notificationBar,
                 dispatcher(), java.time.InstantSource.system(), java.time.ZoneId.systemDefault());
-        checkpointStatusRemoval = wireAutosave(projectManager.getCheckpointManager(), this::postFx,
-                () -> project, checkpointStatus, this::projectActionsAllowed);
+        checkpointStatusRemoval = wireTheWindowsAutosave();
         if (snapshotsController != null) {
             snapshotsController.setCheckpointStatus(checkpointStatus);
         }
@@ -960,7 +1061,8 @@ public final class MainController {
         // EventBus as the change source, registers its checkpoint-rotation
         // listener, and seals the journal segments into the manifest on close
         // (the session to seal is captured on the FX thread and handed to the
-        // coordinator — see the journal-open hook + shutdown below). Telemetry
+        // coordinator — see the journal-open hook below, and the exit
+        // protocol's SEAL through the session journal ending). Telemetry
         // (queued count + back-pressure) flows onto the status model the Journal
         // cell binds to.
         projectJournalCoordinator =
@@ -1077,7 +1179,7 @@ public final class MainController {
         // Story 318 — the FX-pulse drain of the engine's metering tap bus
         // (book §4.3): every output level meter subscribes through this one
         // feed. Created right after the engine/binder so the displays built
-        // below can subscribe; disposed in setOnHidden. Null only in a
+        // below can subscribe; disposed by the window's disposal. Null only in a
         // pure-unit context with no dispatcher installed.
         FxDispatcher feedDispatcher = dispatcher();
         meterFeed = feedDispatcher == null ? null
@@ -1131,7 +1233,7 @@ public final class MainController {
         // transition, captured by the controller — is posted as-is to
         // whatever transport controller is current when it is delivered;
         // the subscriber never blocks (setEngineState offers with a drop
-        // handler). Cancelled in the window teardown below.
+        // handler). Cancelled by the window's disposal (disposeWindowLifetime).
         engineStateBridge = new EngineStateBridge(() -> transportController, dispatcher());
         engineStateBridge.subscribeTo(audioEngineController);
         // Story 316: install the blank-name default streaming provision
@@ -1236,6 +1338,7 @@ public final class MainController {
         // controller, which now reports save status through the model.
         createSessionStatusStrip();
         createProjectLifecycleController();
+        createExitCoordinator();
         createAnimationController();
         // Story 322 — the control wiring must exist BEFORE either surface builds
         // its strips (the MixerView below, the TrackStripController after it).
@@ -1350,156 +1453,16 @@ public final class MainController {
         selectionModel.setSelectionChangeListener(() -> {
             if (menuBarController != null) menuBarController.syncMenuState();
         });
+        // The scene's accelerators and contextual help. This listener fires
+        // when DawApplication builds the scene, before the stage shows it, so
+        // the scene has no window yet: the primary stage — its close request,
+        // the palette's owner — is installed by DawApplication through
+        // installPrimaryStage (story 333; the stage branch that stood here
+        // never ran).
         playButton.sceneProperty().addListener((_, _, scene) -> {
             if (scene != null) {
                 keyboardShortcutController.register(scene);
                 installContextualHelp(scene);
-                if (scene.getWindow() instanceof Stage primaryStage) {
-                    if (commandPaletteView != null) {
-                        commandPaletteView.setOwner(primaryStage);
-                    }
-                    primaryStage.setOnHidden(_ -> runWindowTeardown(() -> {
-                        // Story 329 (D21) — retire the open project's audio:
-                        // cancel its decodes and fence off anything in flight.
-                        if (projectLifecycleController != null) {
-                            projectLifecycleController.dispose();
-                        }
-                    }, () -> {
-                        // Story 293 — release the view-model layer (binders + VM
-                        // listeners + continuous channels) so nothing leaks on close.
-                        for (Runnable disposer : vmDisposers) { disposer.run(); }
-                        vmDisposers.clear();
-                        // Story 322 — and the mixer-control wiring generation.
-                        if (trackControlWiring != null) {
-                            trackControlWiring.dispose();
-                            trackControlWiring = null;
-                        }
-                    }, () -> {
-                        // Story 327 — end the DEVICE_LOST / reconnect bridge
-                        // before the engine is torn down.
-                        if (engineStateBridge != null) {
-                            engineStateBridge.cancel();
-                        }
-                    }, () -> {
-                        // Story 318 — detach every meter consumer (and the
-                        // feed's pulse participant) before the engine unbinds
-                        // the tap bus.
-                        if (meterFeed != null) {
-                            meterFeed.dispose();
-                        }
-                    }, () -> {
-                        // Story 314 — detach the engine from the project
-                        // (transport nulled first, killing playbackActive)
-                        // before the audio/engine teardown below.
-                        if (engineBinder != null) {
-                            engineBinder.unbind();
-                        }
-                    }, () -> {
-                        // Story 318 — end of the engine's life: stop it if it
-                        // is still running and CLOSE the metering tap bus.
-                        // unbind() only disposes the subscriptions and
-                        // publishes the empty snapshot; without this the
-                        // "daw-metering-analysis" thread is never joined and
-                        // outlives the window (story 319 attaches the first
-                        // analysis consumers that make it wake at 100 Hz).
-                        if (audioEngine != null) {
-                            audioEngine.shutdown();
-                        }
-                    }, this::disposeRenderQueue, () -> {
-                        if (pluginViewController != null) {
-                            pluginViewController.dispose();
-                            if (inspectorDrawer != null) inspectorDrawer.disposeInsertBinding();
-                            retirePluginProject(project);
-                        }
-                    }, () -> {
-                        if (pluginFaultUiController != null) {
-                            pluginFaultUiController.dispose();
-                        }
-                    }, () -> {
-                        if (pluginSupervisor != null) {
-                            pluginSupervisor.close();
-                        }
-                    }, () -> {
-                        if (backupRetentionController != null) {
-                            backupRetentionController.shutdown();
-                        }
-                    }, () -> {
-                        // Story 281 (review N5) — release the
-                        // selection-model listener wired by Workshop's
-                        // host controller, alongside the other lifetime-
-                        // scoped disposables.
-                        if (viewNavigationController != null) {
-                            viewNavigationController.dispose();
-                        }
-                    }, () -> {
-                        if (lockIndicatorTimeline != null) {
-                            lockIndicatorTimeline.stop();
-                            lockIndicatorTimeline = null;
-                        }
-                    }, () -> {
-                        // Story 295 — release the disk-scan scheduler thread.
-                        if (diskScanner != null) {
-                            diskScanner.stop();
-                        }
-                    }, () -> {
-                        // Story 331 — detach the strip's checkpoint-status listener.
-                        if (checkpointStatusRemoval != null) {
-                            checkpointStatusRemoval.run();
-                            checkpointStatusRemoval = null;
-                        }
-                    }, () -> {
-                        if (dockManifestModel != null) {
-                            dockManifestModel.dispose();
-                        }
-                    }, () -> {
-                        // Story 287 — stop AnimationTimers and free the
-                        // off-heap GpuCanvas surfaces of the analyzer
-                        // displays + telemetry view we now own (FX thread;
-                        // GpuCanvasView.dispose() is idempotent).
-                        disposeVisualizationDisplays();
-                    }, () -> {
-                        // Story 298 — close the write-ahead journal on shutdown,
-                        // BEFORE the EventBus closes (DawApplication's WINDOW_HIDDEN
-                        // handler closes the bus). Detach the recorder from the bus
-                        // synchronously here on the FX thread so no event is offered
-                        // after the bus tears down; the writer drain + session seal
-                        // (folding in the journal segments) is I/O, so it runs on a
-                        // virtual thread.
-                        boolean journalSealing = projectJournalCoordinator != null
-                                && projectJournalCoordinator.isOpen();
-                        if (journalSealing) {
-                            projectJournalCoordinator.detachFromBus();
-                            // Capture the session to seal on the FX thread; the
-                            // coordinator folds the journal segments into it.
-                            com.benesquivelmusic.daw.core.session.WorkingSession journalSession = activeSession;
-                            Thread.ofVirtual().name("daw-journal-close")
-                                    .start(() -> projectJournalCoordinator.drainWithoutSeal(journalSession));
-                        }
-                        // Project Manager Design Book §3.3 — seal the active
-                        // working session on clean shutdown. The write is I/O,
-                        // so it runs on a virtual thread. These are daemon
-                        // virtual threads: the JVM does not wait for them, and
-                        // an exit can end them mid-write (story 333's SEAL step
-                        // owns them). Only the save writer and the checkpoint
-                        // writer are waited for at exit (ruling M1). When the
-                        // journal coordinator is sealing (above) it already folds
-                        // the segments in and closes the session, so this plain
-                        // seal only runs when no journal was open.
-                        com.benesquivelmusic.daw.core.session.WorkingSession sessionToClose = activeSession;
-                        java.nio.file.Path sessionDir = activeSessionProjectDir;
-                        if (!journalSealing && sessionToClose != null && sessionDir != null) {
-                            Thread.ofVirtual().name("daw-session-close").start(() -> {
-                                try {
-                                    sessionManager.closeSession(sessionDir, sessionToClose,
-                                            java.time.Instant.now());
-                                } catch (java.io.IOException e) {
-                                    LOG.log(Level.WARNING,
-                                            "Failed to close working session on shutdown", e);
-                                }
-                            });
-                        }
-                    }));
-                }
             }
         });
         LOG.info("DAW initialized with studio quality format");
@@ -1522,6 +1485,322 @@ public final class MainController {
         // standard event dispatch chain in response.
         if (inspectorDrawer != null && rootPane != null) {
             inspectorDrawer.installSourceEventForwarding(rootPane);
+        }
+    }
+
+    // ── Story 333: the App-Exit Protocol's wiring ────────────────────────────
+
+    /**
+     * Story 333 — installs the primary stage, once, before it shows: its
+     * close box — and Alt+F4, and the system's Quit on macOS, which reach the
+     * stage as a close request — becomes the exit protocol's window door, the
+     * coordinator's event filter consuming every close request until the
+     * protocol decides (Persistence Integrity book §5.4), and the command
+     * palette is owned by it. Called by {@code DawApplication.start} after
+     * the FXML load, before the stage shows. The stage gets no hidden
+     * handler: its lifetime is disposed by the protocol, after RELEASE
+     * ({@link #disposeWindowLifetime()}). FX thread.
+     *
+     * @param stage the primary stage
+     * @throws IllegalStateException when another stage was installed before
+     */
+    public void installPrimaryStage(Stage stage) {
+        Objects.requireNonNull(stage, "stage must not be null");
+        if (primaryStage == stage) {
+            return;
+        }
+        if (primaryStage != null) {
+            throw new IllegalStateException("The primary stage is installed once");
+        }
+        primaryStage = stage;
+        if (exitCoordinator != null) {
+            exitCoordinator.installOn(stage);
+        }
+        if (commandPaletteView != null) {
+            commandPaletteView.setOwner(stage);
+        }
+    }
+
+    /**
+     * Story 333 — the application stops ({@code DawApplication.stop()}, the
+     * toolkit's end of the application, on the FX thread): the exit
+     * protocol's application-stop fallback when the protocol has not run, or,
+     * after it ran, the bounded wait for the audio engine's stop
+     * ({@link ExitCoordinator#applicationStopping()}; ruling R4, ruling 2
+     * OQ-3). Its waits are nested event loops, each bounded. Called once,
+     * before the event bus and the FX dispatcher are torn down.
+     */
+    public void applicationStopping() {
+        if (exitCoordinator != null) {
+            exitCoordinator.applicationStopping();
+        }
+    }
+
+    /**
+     * Story 333 — builds the exit protocol over the lifecycle controller, the
+     * open folder's closer and Save As ({@link #createSaveAsFlow()}): the
+     * close's transport stop and its take facts read the transport controller
+     * that is current at each call; DISPOSE is {@link #disposeWindowLifetime()},
+     * whose only caller it is; the terminal exit ends the toolkit after HIDE.
+     * After Close Project the Welcome window opens over the fresh Untitled
+     * project as at launch ({@link #showWelcomeIfNoProjectOpen()}, ruling
+     * R10). Called once, from {@link #initialize()}, right after the
+     * lifecycle controller, which builds the closer and Save As: a missing
+     * one fails the window's start here rather than leaving every door
+     * without its protocol (the stage-7 review N10).
+     */
+    private void createExitCoordinator() {
+        Objects.requireNonNull(projectLifecycleController, "the lifecycle controller is built first");
+        Objects.requireNonNull(projectFolderCloser, "the open folder's closer is built with the lifecycle controller");
+        Objects.requireNonNull(saveAsFlow, "Save As is built with the lifecycle controller");
+        ProjectClosePrompts prompts = projectLifecycleController.closePrompts();
+        exitCoordinator = new ExitCoordinator(new ExitCoordinator.Deps(projectLifecycleController, projectManager,
+                projectFolderCloser, saveAsFlow, ExitCoordinator.TakeFacts.of(() -> transportController),
+                () -> transportController != null && transportController.stopForClose(),
+                this::disposeWindowLifetime, javafx.application.Platform::exit, prompts, prompts,
+                () -> new ClosingProgressDialog(mainWindow()), projectOperationProgress, notificationBar,
+                new WindowInputFence(), CloseTimers.onFx(dispatcher()), System::nanoTime, dispatcher(),
+                ExitCoordinator.NestedLoops.PLATFORM, _ -> { }));
+        projectLifecycleController.setWelcomeAfterClose(this::showWelcomeIfNoProjectOpen);
+    }
+
+    /**
+     * Story 333 (ruling R10) — whether File ▸ Close Project has anything to
+     * close: a project folder is open, writable or read-only, or the
+     * in-memory project has unsaved changes. The one predicate the menu item
+     * and the palette's entry read, each time the menu syncs or the palette
+     * opens, so they are enabled together (Control Synchronization book
+     * §2.8). FX thread.
+     */
+    private boolean closeProjectAvailable() {
+        return exitCoordinator != null && exitCoordinator.closeProjectAvailable();
+    }
+
+    /**
+     * Story 333 — DISPOSE (Persistence Integrity book §5.4, step 6; design
+     * §1.7): the window's lifetime disposed — what the story calls the
+     * "{@code setOnHidden} disposal". No hidden handler ran it before this
+     * story (the primary-stage branch that would have installed one ran
+     * before the scene had a window), and none runs it now: its only caller
+     * is the exit protocol's coordinator — after RELEASE, or, when the
+     * toolkit ended without the protocol, in the application-stop fallback
+     * after its release or the steps it skipped. It runs once; a second call
+     * returns the first one's hand-off.
+     *
+     * <p>First, before any step and whatever a step then does, the autosave's
+     * capture gate shuts for good ({@link #windowLifetimeEnding}): no
+     * scheduled checkpoint captures the project these steps take apart — the
+     * plug-in step empties its insert lists without an edit, and after a
+     * Quit anyway the checkpoint generation runs on (the app-fix-2 review
+     * S1). A checkpoint captured before DISPOSE is written as usual.</p>
+     *
+     * <p>Its FX part, in this order: the open project's audio retired, the
+     * view models and the mixer-control wiring released, the device-state
+     * bridge cancelled, the meter consumers detached, the engine unbound
+     * from the project, the render queue's window closed, the plug-in views
+     * and the closed project's plug-ins retired, the plug-in fault UI, the
+     * view navigation, the lock indicator's timer, the strip's checkpoint
+     * listener, the dock manifest and the analyzer displays disposed — each
+     * run whatever the one before did — and last every other window hidden
+     * ({@link #hideEveryOtherWindow()}). The journal's end and the session
+     * manifest are not here: they are the protocol's SEAL.</p>
+     *
+     * <p>Then the hand-off, started also when the FX part failed: the render
+     * queue's persistence — first, so it never waits behind a driver's stop
+     * — the audio engine's stop, the end of the render queue's workers, the
+     * plug-in supervisor, the backup retention scheduler and the disk
+     * scanner, in that order, on the daemon
+     * {@code daw-engine-shutdown} thread
+     * ({@link ExitCoordinator#onTheEngineShutdownThread}), so a driver's slow
+     * stop never freezes the progress surface, which shows "Stopping audio…"
+     * meanwhile (ruling 2 OQ-3). What it stops is read here, on the FX
+     * thread. FX thread.</p>
+     *
+     * @return completes when the hand-off ended; HIDE waits for it at most
+     *         {@link ExitCoordinator#ENGINE_STOP_BOUND}, and the application's stop
+     *         at most {@link ExitCoordinator#ENGINE_STOP_AFTER_HIDE_BOUND} from its start
+     * @throws RuntimeException the FX part's first failure, after every other cleanup ran and the hand-off started
+     */
+    java.util.concurrent.CompletionStage<Void> disposeWindowLifetime() {
+        if (windowLifetimeDisposal != null) {
+            return windowLifetimeDisposal;
+        }
+        // The app-fix-2 review S1: no scheduled checkpoint captures the project the steps below take apart.
+        windowLifetimeEnding = true;
+        RenderQueue queueToPersist = renderQueue;
+        try {
+            runWindowTeardown(() -> {
+                // Story 329 (D21) — retire the open project's audio:
+                // cancel its decodes and fence off anything in flight.
+                if (projectLifecycleController != null) {
+                    projectLifecycleController.dispose();
+                }
+            }, () -> {
+                // Story 293 — release the view-model layer (binders + VM
+                // listeners + continuous channels) so nothing leaks on close.
+                for (Runnable disposer : vmDisposers) { disposer.run(); }
+                vmDisposers.clear();
+                // Story 322 — and the mixer-control wiring generation.
+                if (trackControlWiring != null) {
+                    trackControlWiring.dispose();
+                    trackControlWiring = null;
+                }
+            }, () -> {
+                // Story 327 — end the DEVICE_LOST / reconnect bridge
+                // before the engine is torn down.
+                if (engineStateBridge != null) {
+                    engineStateBridge.cancel();
+                }
+            }, () -> {
+                // Story 318 — detach every meter consumer (and the
+                // feed's pulse participant) before the engine unbinds
+                // the tap bus.
+                if (meterFeed != null) {
+                    meterFeed.dispose();
+                }
+            }, () -> {
+                // Story 314 — detach the engine from the project
+                // (transport nulled first, killing playbackActive)
+                // before the engine's stop, which the hand-off runs.
+                if (engineBinder != null) {
+                    engineBinder.unbind();
+                }
+            }, this::closeRenderQueueWindow, () -> {
+                if (pluginViewController != null) {
+                    pluginViewController.dispose();
+                    if (inspectorDrawer != null) inspectorDrawer.disposeInsertBinding();
+                    retirePluginProject(project);
+                }
+            }, () -> {
+                if (pluginFaultUiController != null) {
+                    pluginFaultUiController.dispose();
+                }
+            }, () -> {
+                // Story 281 (review N5) — release the
+                // selection-model listener wired by Workshop's
+                // host controller, alongside the other lifetime-
+                // scoped disposables.
+                if (viewNavigationController != null) {
+                    viewNavigationController.dispose();
+                }
+            }, () -> {
+                if (lockIndicatorTimeline != null) {
+                    lockIndicatorTimeline.stop();
+                    lockIndicatorTimeline = null;
+                }
+            }, () -> {
+                // Story 331 — detach the strip's checkpoint-status listener.
+                if (checkpointStatusRemoval != null) {
+                    checkpointStatusRemoval.run();
+                    checkpointStatusRemoval = null;
+                }
+            }, () -> {
+                if (dockManifestModel != null) {
+                    dockManifestModel.dispose();
+                }
+            }, () -> {
+                // Story 287 — stop AnimationTimers and free the
+                // off-heap GpuCanvas surfaces of the analyzer
+                // displays + telemetry view we now own (FX thread;
+                // GpuCanvasView.dispose() is idempotent).
+                disposeVisualizationDisplays();
+            }, this::hideEveryOtherWindow);
+        } finally {
+            renderQueue = null;
+            windowLifetimeDisposal = ExitCoordinator.onTheEngineShutdownThread(new EngineShutdown(audioEngine,
+                    queueToPersist, pluginSupervisor, backupRetentionController, diskScanner));
+        }
+        return windowLifetimeDisposal;
+    }
+
+    /**
+     * Story 333 — DISPOSE's hand-off ({@link #disposeWindowLifetime()}): what
+     * stops off the FX thread, read on it. Each stop runs whatever the one
+     * before did; the first failure is rethrown, later ones suppressed
+     * ({@link #runWindowTeardown}). On {@code daw-engine-shutdown}.
+     *
+     * @param audioEngine               the audio engine
+     * @param renderQueue               the render queue, or {@code null} when none was ever used
+     * @param pluginSupervisor          the plug-in invocation supervisor
+     * @param backupRetentionController the backup retention scheduler
+     * @param diskScanner               the strip's disk-space scanner
+     */
+    private record EngineShutdown(AudioEngine audioEngine, RenderQueue renderQueue,
+                                  PluginInvocationSupervisor pluginSupervisor,
+                                  BackupRetentionController backupRetentionController,
+                                  com.benesquivelmusic.daw.app.ui.status.SessionStatusDiskScanner diskScanner)
+            implements Runnable {
+
+        @Override
+        public void run() {
+            runWindowTeardown(() -> {
+                // Story 186 — persist the render queue first, so its state survives a restart even when the
+                // audio driver's stop below never returns (story 333, the studio engineer's stage-7 N2).
+                if (renderQueue != null) {
+                    try {
+                        renderQueue.persist();
+                    } catch (java.io.IOException e) {
+                        LOG.log(Level.WARNING, "Failed to persist render queue on shutdown", e);
+                    }
+                }
+            }, () -> {
+                // Story 318 — end of the engine's life: stop it if it
+                // is still running and CLOSE the metering tap bus.
+                // unbind() only disposes the subscriptions and
+                // publishes the empty snapshot; without this the
+                // "daw-metering-analysis" thread is never joined and
+                // outlives the window (story 319 attaches the first
+                // analysis consumers that make it wake at 100 Hz).
+                if (audioEngine != null) {
+                    audioEngine.shutdown();
+                }
+            }, () -> {
+                // Story 186 — then end the queue's workers (waited for up to 5 s).
+                if (renderQueue != null) {
+                    renderQueue.shutdown();
+                }
+            }, () -> {
+                if (pluginSupervisor != null) {
+                    pluginSupervisor.close();
+                }
+            }, () -> {
+                if (backupRetentionController != null) {
+                    backupRetentionController.shutdown();
+                }
+            }, () -> {
+                // Story 295 — release the disk-scan scheduler thread.
+                if (diskScanner != null) {
+                    diskScanner.stop();
+                }
+            });
+        }
+    }
+
+    /**
+     * Story 333 (ruling R12 #14) — the last of the window's disposal: every
+     * window still showing is hidden but the primary stage, which HIDE
+     * hides, and the close's own progress surface, which keeps painting
+     * until HIDE — the floating dock panels, the plug-in and insert editors,
+     * the Hub and Welcome windows, popups, the command palette, and the
+     * unowned plug-in fault log, render statistics and panner windows, which
+     * would otherwise keep the toolkit alive. A hide fires no close request, so no
+     * secondary window's own handler can hold up or veto the exit; a window
+     * whose own hidden handler throws is logged, and the windows after it
+     * are hidden still. FX thread.
+     */
+    private void hideEveryOtherWindow() {
+        javafx.stage.Window main = primaryStage != null ? primaryStage : mainWindow().orElse(null);
+        for (javafx.stage.Window window : List.copyOf(javafx.stage.Window.getWindows())) {
+            if (window == main || !window.isShowing()
+                    || (exitCoordinator != null && exitCoordinator.ownsWindow(window))) {
+                continue;
+            }
+            try {
+                window.hide();
+            } catch (RuntimeException failed) {
+                LOG.log(Level.WARNING, failed, () -> "A window's own handler failed while the application closed it;"
+                        + " the other windows close still");
+            }
         }
     }
 
@@ -1769,8 +2048,10 @@ public final class MainController {
      * Story 323 review — whether the CURRENT transport controller still has a
      * take being written to disk; read by {@link ProjectLifecycleController}
      * at every in-app door that replaces the open project, which it refuses
-     * while this is {@code true} (Recording Reliability book §5.2). Quitting
-     * the application does not ask (story 333). FX thread.
+     * while this is {@code true} (Recording Reliability book §5.2). The exit
+     * protocol reads the same controller's answer
+     * ({@code ExitCoordinator.TakeFacts.of}) and waits for the take before it
+     * saves, seals or releases anything (story 333, ruling R1). FX thread.
      */
     private boolean isTakeBeingWritten() {
         return transportController != null && transportController.isTakeBeingWritten();
@@ -1780,8 +2061,9 @@ public final class MainController {
      * Story 323 review — whether the CURRENT transport controller has a
      * recording in flight; read by {@link ProjectLifecycleController} at the
      * same doors as {@link #isTakeBeingWritten()}, which it refuses while
-     * this is {@code true} (Recording Reliability book §5.2). Quitting the
-     * application does not ask (story 333). FX thread.
+     * this is {@code true} (Recording Reliability book §5.2). The exit
+     * protocol reads the same controller's answer, a count-in included, and
+     * asks first whether to stop the take (story 333, ruling R1). FX thread.
      */
     private boolean isRecordingInFlight() {
         return transportController != null && transportController.isRecordingInFlight();
@@ -1907,6 +2189,9 @@ public final class MainController {
         // that is current at that moment.
         projectLifecycleController.setTakeBeingWrittenCheck(this::isTakeBeingWritten);
         projectLifecycleController.setRecordingInFlightCheck(this::isRecordingInFlight);
+        // Story 333 — New creates its project's folder off the FX thread, after the UI was rebuilt for the
+        // new project: the folder-dependent part of that rebuild follows once the folder exists.
+        projectLifecycleController.setProjectFolderChangedHook(this::projectFolderChanged);
         // Story 329 (D17) — a relink replaces a clip's audio, so the engine's
         // cached sample-rate conversions of the old audio are dropped. The
         // engine is built once, so its cache is captured once.
@@ -1930,13 +2215,7 @@ public final class MainController {
         if (projectJournalCoordinator != null && projectLifecycleController != null) {
             projectLifecycleController.enableRecoveryGate(
                     () -> settingsModel != null && settingsModel.isUseJournaledPersistence(),
-                    () -> {
-                        Path journalDirectory = projectJournalCoordinator.currentProjectDirectory();
-                        com.benesquivelmusic.daw.core.session.WorkingSession outgoing =
-                                Objects.equals(journalDirectory, activeSessionProjectDir) ? activeSession : null;
-                        projectJournalCoordinator.detachFromBus();
-                        return () -> projectJournalCoordinator.closeCurrentFor(journalDirectory, outgoing);
-                    }, projectJournalCoordinator::openForRequired);
+                    this::prepareDoorJournalClose, projectJournalCoordinator::openForRequired);
             projectLifecycleController.setJournalOpenHook(projectDir -> {
                 com.benesquivelmusic.daw.core.session.WorkingSession outgoing = activeSession;
                 Thread.ofVirtual().name("daw-journal-reopen")
@@ -1949,6 +2228,73 @@ public final class MainController {
                 refreshSessionManager(false);
             });
         }
+        createSaveAsFlow();
+    }
+
+    /**
+     * Story 333 — File ▸ Save As…: the journal ending over this controller's
+     * live session facts, the closer of the open folder, and the Save As
+     * flow over the lifecycle controller, installed on it. Nothing here
+     * opens a journal for a copy opened after Save As's Continue (ruling 2
+     * OQ-1, constraint 1): the flow opens the copy's journal itself, once,
+     * and only when it may.
+     */
+    private void createSaveAsFlow() {
+        if (projectJournalCoordinator == null || projectLifecycleController == null) {
+            return;
+        }
+        SessionJournalEnding journalEnding = new SessionJournalEnding(projectJournalCoordinator, sessionManager,
+                () -> activeSession, () -> activeSessionProjectDir, () -> sessionOpening,
+                this::currentProjectFolder, java.time.InstantSource.system());
+        projectFolderCloser = new ProjectFolderCloser(projectManager, projectJournalCoordinator, journalEnding,
+                () -> project, dispatcher());
+        java.util.function.Supplier<java.util.Optional<javafx.stage.Window>> owner = this::mainWindow;
+        saveAsFlow = new SaveAsFlow(new SaveAsFlow.Deps(projectManager,
+                projectLifecycleController.saveAsLifecycle(), projectFolderCloser,
+                projectLifecycleController.closePrompts(), SaveAsTargetPrompt.saveDialog(owner), notificationBar,
+                dispatcher(), () -> project, this::captureLayoutJsonForSave, CloseTimers.onFx(dispatcher()),
+                java.time.InstantSource.system(), java.time.ZoneId.systemDefault(), owner,
+                ProjectLifecycleController::workspaceRoot));
+        projectLifecycleController.setSaveAsFlow(saveAsFlow);
+    }
+
+    /**
+     * The doors' journal close (story 298; story 333, ruling 2 OQ-1,
+     * constraint 2), prepared on the FX thread when a door is about to
+     * replace the open project — the recorder detached from the bus, the
+     * outgoing session captured — and run where the door's worker runs the
+     * returned close. It ends the coordinator's journal only when that
+     * journal is the project manager's open folder's, the folder the door
+     * closes: another folder's journal is not this door's to seal (after Save
+     * As's Continue the coordinator may still hold the original's), so the
+     * close then does nothing — {@code closeCurrentFor(null, …)} returns at
+     * once, before the coordinator's lock. Package-private: a test runs it
+     * over a partial controller. FX thread.
+     *
+     * @return the journal close, to run off the FX thread
+     */
+    Runnable prepareDoorJournalClose() {
+        Path closingFolder = currentProjectFolder();
+        Path journalDirectory = projectJournalCoordinator.currentProjectDirectory();
+        Path journalOfTheFolder = closingFolder != null && closingFolder.equals(journalDirectory)
+                ? journalDirectory : null;
+        com.benesquivelmusic.daw.core.session.WorkingSession outgoing =
+                journalOfTheFolder != null && journalOfTheFolder.equals(activeSessionProjectDir) ? activeSession : null;
+        projectJournalCoordinator.detachFromBus();
+        return () -> projectJournalCoordinator.closeCurrentFor(journalOfTheFolder, outgoing);
+    }
+
+    /** The project manager's open folder, or {@code null}. */
+    private java.nio.file.Path currentProjectFolder() {
+        com.benesquivelmusic.daw.core.persistence.ProjectMetadata open =
+                projectManager == null ? null : projectManager.getCurrentProject();
+        return open == null ? null : open.projectPath();
+    }
+
+    /** The main window, when the UI is shown. */
+    private java.util.Optional<javafx.stage.Window> mainWindow() {
+        return java.util.Optional.ofNullable(rootPane == null || rootPane.getScene() == null ? null
+                : rootPane.getScene().getWindow());
     }
 
     /**
@@ -2164,6 +2510,45 @@ public final class MainController {
     }
 
     /**
+     * Story 333 — the open project's folder changed without a rebuild after it
+     * ({@code ProjectLifecycleController.setProjectFolderChangedHook}): New
+     * rebuilt the UI for its project, then created the project's folder off
+     * the FX thread. The folder-dependent part of {@link #handleProjectRebuild()}
+     * follows now that it exists: its {@code checkpoints/} and
+     * {@code snapshots/} are registered with the snapshot browser, a session
+     * of another folder is no longer this one's, its session manifest opens,
+     * and the labels, the lock indicator and the menus show the new folder's
+     * state. Save As's adoption of its copy runs it too. It opens no journal
+     * (story 333, ruling 2 OQ-1, constraint 1). FX thread.
+     */
+    private void projectFolderChanged() {
+        if (snapshotsController != null) {
+            snapshotsController.registerCurrentProjectDirectory();
+        }
+        clearSessionIfNotTheOpenFolder();
+        refreshSessionManager(true);
+        if (projectInfoLabel != null) {
+            applyProjectInfoLabels();
+        } else {
+            repaintLockIndicator();
+        }
+        syncMenuStateIfPresent();
+    }
+
+    /**
+     * Forgets {@link #activeSession} when it is no longer the open folder's
+     * (story 333, SKL-O1): a journal end of the open folder must never fold
+     * its segments into, or close, another folder's session. FX thread.
+     */
+    private void clearSessionIfNotTheOpenFolder() {
+        java.nio.file.Path open = currentProjectFolder();
+        if (activeSessionProjectDir != null && !activeSessionProjectDir.equals(open)) {
+            activeSession = null;
+            activeSessionProjectDir = null;
+        }
+    }
+
+    /**
      * Project Manager Design Book §3.3/§4.3 — optionally opens (or continues)
      * the working session for the just-loaded project, then repopulates the
      * Session Manager dock with its history. The manifest read/write is I/O, so
@@ -2201,6 +2586,14 @@ public final class MainController {
             activeSession = null;
             activeSessionProjectDir = null;
         }
+        // Story 333 (FEAS-S11) — a journal end prepared before this open reached the FX thread waits for it.
+        java.util.concurrent.CompletableFuture<java.util.Optional<com.benesquivelmusic.daw.core.session.WorkingSession>>
+                opening = new java.util.concurrent.CompletableFuture<>();
+        if (writableSession) {
+            sessionOpening = new SessionJournalEnding.SessionOpening(projectDir, sessionGeneration, opening);
+        } else {
+            opening.complete(java.util.Optional.empty());
+        }
         Thread.ofVirtual().name("daw-session-manager").start(() -> {
             com.benesquivelmusic.daw.core.session.WorkingSession opened = null;
             java.util.List<com.benesquivelmusic.daw.core.session.WorkingSession> history;
@@ -2219,6 +2612,8 @@ public final class MainController {
             } catch (java.io.IOException e) {
                 LOG.log(Level.WARNING, "Failed to load session history for " + projectDir, e);
                 history = java.util.List.of();
+            } finally {
+                opening.complete(java.util.Optional.ofNullable(opened));
             }
             try {
                 snapshots = snapshotsController == null
@@ -2235,6 +2630,9 @@ public final class MainController {
             java.util.List<com.benesquivelmusic.daw.core.session.WorkingSession> result = history;
             java.util.List<com.benesquivelmusic.daw.core.snapshot.SnapshotEntry> snapshotResult = snapshots;
             postFx(() -> {
+                if (sessionOpening != null && sessionOpening.opened() == opening) {
+                    sessionOpening = null;
+                }
                 if (sessionGeneration != sessionRefreshGeneration || projectManager.getCurrentProject() == null
                         || !projectDir.equals(projectManager.getCurrentProject().projectPath())) return;
                 if (newActiveSession != null) {
@@ -2491,6 +2889,13 @@ public final class MainController {
         DawProject previous = project;
         if (previous != next && atmosAbStage != null) atmosAbStage.close();
         project = next;
+        if (previous != next) {
+            // Ruling R10, for every door that replaces the project: the selection names the replaced project's
+            // clips, tracks and time range, so it never carries into the next one (the studio engineer's
+            // app-fix-2 review S2).
+            selectionModel.clearClipSelection();
+            selectionModel.clearSelection();
+        }
         if (pluginViewController != null) pluginViewController.reconcileGraph();
         if (inspectorDrawer != null) inspectorDrawer.refreshInserts();
         if (previous != null && previous != next) retirePluginProject(previous);
@@ -2834,6 +3239,10 @@ public final class MainController {
                     @Override public void onUndo() { MainController.this.onUndo(); }
                     @Override public void onRedo() { MainController.this.onRedo(); }
                     @Override public void onSaveProject() { projectLifecycleController.onSaveProject(); }
+                    @Override public void onSaveProjectAs() { projectLifecycleController.onSaveProjectAs(); }
+                    // Story 333 — the close protocol's doors: one intent with the window's close box (CS book §2.8).
+                    @Override public void onCloseProject() { exitCoordinator.request(new ExitCoordinator.CloseDoor.CloseProject()); }
+                    @Override public void onExit() { exitCoordinator.request(new ExitCoordinator.CloseDoor.FileExit()); }
                     @Override public void onNewProject() { projectLifecycleController.onNewProject(); }
                     @Override public void onOpenProject() { projectLifecycleController.onOpenProject(); }
                     @Override public void onImportSession() { projectLifecycleController.onImportSession(); }
@@ -2944,28 +3353,58 @@ public final class MainController {
         java.util.Map<DawAction, Runnable> handlers = keyboardShortcutController.buildActionHandlers();
         CommandPaletteRecentsStore recentsStore = new CommandPaletteRecentsStore();
         commandPaletteView = new CommandPaletteView(
-                () -> {
-                    java.util.List<CommandPaletteEntry> entries = new java.util.ArrayList<>();
-                    for (DawAction action : DawAction.values()) {
-                        if (action == DawAction.OPEN_COMMAND_PALETTE) {
-                            // Don't list the palette itself.
-                            continue;
-                        }
-                        Runnable h = handlers.get(action);
-                        if (h == null) continue;
-                        String shortcut = keyBindingManager == null ? ""
-                                : keyBindingManager.getDisplayText(action);
-                        entries.add(CommandPaletteEntry.of(
-                                action.name(),
-                                action.displayName(),
-                                shortcut,
-                                action.category().displayName(),
-                                null,
-                                h));
-                    }
-                    return entries;
-                },
+                () -> commandPaletteEntries(handlers, keyBindingManager, this::closeProjectAvailable),
                 recentsStore);
+    }
+
+    /**
+     * The Command Palette's entries, built each time it opens: one per action
+     * with a handler but the palette itself, its shortcut as the key bindings
+     * show it now. Close Project's entry is enabled exactly while the File
+     * menu's item is — the same {@code closeProjectAvailable} predicate — and
+     * only a disabled one carries its reason (story 333, ruling 2 OQ-2;
+     * Control Synchronization book §2.8). Package-private and static, so a
+     * test builds the entries the application builds. FX thread.
+     *
+     * @param handlers              the keyboard controller's handlers, the palette's actions
+     * @param keyBindingManager     the shortcuts shown, or {@code null} for none
+     * @param closeProjectAvailable whether Close Project has anything to close
+     * @return the entries
+     */
+    static java.util.List<CommandPaletteEntry> commandPaletteEntries(java.util.Map<DawAction, Runnable> handlers,
+            KeyBindingManager keyBindingManager, java.util.function.BooleanSupplier closeProjectAvailable) {
+        java.util.List<CommandPaletteEntry> entries = new java.util.ArrayList<>();
+        for (DawAction action : DawAction.values()) {
+            if (action == DawAction.OPEN_COMMAND_PALETTE) {
+                // Don't list the palette itself.
+                continue;
+            }
+            Runnable h = handlers.get(action);
+            if (h == null) continue;
+            String shortcut = keyBindingManager == null ? ""
+                    : keyBindingManager.getDisplayText(action);
+            if (action == DawAction.CLOSE_PROJECT) {
+                boolean available = closeProjectAvailable.getAsBoolean();
+                entries.add(new CommandPaletteEntry(
+                        action.name(),
+                        action.displayName(),
+                        shortcut,
+                        action.category().displayName(),
+                        available,
+                        available ? "" : ProjectCloseText.text("close.palette.unavailable"),
+                        null,
+                        h));
+                continue;
+            }
+            entries.add(CommandPaletteEntry.of(
+                    action.name(),
+                    action.displayName(),
+                    shortcut,
+                    action.category().displayName(),
+                    null,
+                    h));
+        }
+        return entries;
     }
 
     private void initializeNotificationBar() {
@@ -3286,6 +3725,10 @@ public final class MainController {
                     @Override public void onNewProject() { projectLifecycleController.onNewProject(); }
                     @Override public void onOpenProject() { projectLifecycleController.onOpenProject(); }
                     @Override public void onSaveProject() { projectLifecycleController.onSaveProject(); }
+                    @Override public void onSaveProjectAs() { projectLifecycleController.onSaveProjectAs(); }
+                    // Story 333 — the close protocol's doors: one intent with the window's close box (CS book §2.8).
+                    @Override public void onCloseProject() { exitCoordinator.request(new ExitCoordinator.CloseDoor.CloseProject()); }
+                    @Override public void onExit() { exitCoordinator.request(new ExitCoordinator.CloseDoor.FileExit()); }
                     @Override public void onRecentProjects() { projectLifecycleController.onRecentProjects(); }
                     @Override public void onImportSession() { projectLifecycleController.onImportSession(); }
                     @Override public void onExportSession() { projectLifecycleController.onExportSession(); }
@@ -3390,7 +3833,11 @@ public final class MainController {
                 () -> !project.getTracks().isEmpty(),
                 // Story 329 (D15) — "Relink Missing Assets…" is enabled while the
                 // open's report has rows; the owner's change listener re-syncs it.
-                () -> projectLifecycleController != null && projectLifecycleController.hasUnresolvedAssets());
+                () -> projectLifecycleController != null && projectLifecycleController.hasUnresolvedAssets(),
+                // Story 333 (ruling R10) — Close Project is enabled while there is
+                // something to close; the dirty listener, every rebuild and every
+                // folder change re-sync it, and the palette reads the same predicate.
+                this::closeProjectAvailable);
         menuBarController.setProjectActionsAllowed(this::projectActionsAllowed);
         javafx.scene.control.MenuBar bar = menuBarController.build();
         // Wire the per-user Workspaces menu (Save Current as… / Switch to…).
@@ -4449,9 +4896,9 @@ public final class MainController {
             if (stage == null) {
                 stage = new Stage();
                 stage.setTitle(displayNameFor(panelId));
-                // Own the floating window to the primary stage so it closes
-                // when the app exits (cascaded from MainController's
-                // setOnHidden lifetime cleanup on the primary Stage).
+                // Own the floating window to the primary stage, which it
+                // stays above; the window's disposal hides it when the app
+                // exits (story 333, disposeWindowLifetime).
                 if (rootPane.getScene() != null && rootPane.getScene().getWindow() != null) {
                     stage.initOwner(rootPane.getScene().getWindow());
                 }
@@ -5050,24 +5497,17 @@ public final class MainController {
     }
 
     /**
-     * Persist the queue and shut down its workers. Invoked from the
-     * primary stage's {@code setOnHidden} hook so the queue's state
-     * survives an app restart.
+     * Closes the queue view window, so the user cannot interact with a
+     * shutting-down queue. Run by the window's disposal
+     * ({@link #disposeWindowLifetime()}), whose hand-off then persists the
+     * queue — so its state survives an app restart — and shuts its workers
+     * down, off the FX thread (story 333: the shutdown waits up to 5 s for
+     * them). FX thread.
      */
-    private void disposeRenderQueue() {
-        // Close the queue view window first so the user cannot interact
-        // with a shutting-down queue.
+    private void closeRenderQueueWindow() {
         if (renderQueueStage != null) {
             renderQueueStage.close();
         }
-        if (renderQueue == null) return;
-        try {
-            renderQueue.persist();
-        } catch (java.io.IOException e) {
-            LOG.log(Level.WARNING, "Failed to persist render queue on shutdown", e);
-        }
-        renderQueue.shutdown();
-        renderQueue = null;
     }
 
     /**

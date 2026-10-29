@@ -110,8 +110,8 @@ class MigrationReportDialogClosesTest {
         pressRollBackWhenShown.set(true);
         AtomicReference<Boolean> showingWhenRolledBack = new AtomicReference<>();
 
-        // Bounded at the fixture's guard: a dialog that did not close never lets showIfNeeded return.
-        boolean shown = onFx(() -> MigrationReportDialog.showIfNeeded(sampleReport(), projectDirectory, () -> {
+        // Bounded at the fixture's guard: a dialog that did not close never lets showUnlessSuppressed return.
+        boolean shown = onFx(() -> MigrationReportDialog.showUnlessSuppressed(sampleReport(), projectDirectory, false, () -> {
             rollbacks.incrementAndGet();
             showingWhenRolledBack.set(migrationDialogShowing());
         }));

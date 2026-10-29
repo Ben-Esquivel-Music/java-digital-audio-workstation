@@ -843,7 +843,7 @@ then surface the cause via the notification seam (§6.3).
 | Settings apply requested | PREPARING, COUNT_IN, RECORDING | Prompt “Stop the take and apply?”; exact request is reserved before modal reentry; acceptance waits for all finalization/cleanup/publication | — | Decline changes no driver/runtime/persistence; pending edits stay dirty; failure clears only its owned reservation |
 | Settings apply awaits prior settlement | FINALIZING, ABORTED with resources pending | Wait for cleanup/readback/publication, without another Stop prompt | — | Prior outcome remains visible; no engine mutation before settlement |
 | Settings transaction active | any | controller-wide exclusion survives project replacement; off-FX worker waits outside the controller monitor | — | New Record refused until the configuration lease releases; separate settings workers serialize |
-| Project replace requested | PREPARING, COUNT_IN, RECORDING, FINALIZING, ABORTED with pending resources | Existing recording/writing project-door predicates refuse New/Open/Import/restore with WARNING | — | Take is published only into its original project; app exit remains story 333 |
+| Project replace requested | PREPARING, COUNT_IN, RECORDING, FINALIZING, ABORTED with pending resources | Existing recording/writing project-door predicates refuse New/Open/Import/restore with WARNING | — | Take is published only into its original project; the exits and Close Project wait the take out instead (story 333, below) |
 | MIDI device missing / open failure | starting | Per-track skip with visible track/cause WARNING; audio or ≥1 viable MIDI recorder required | — | All-MIDI failure is ABORTED guard failure; partial-open resources close; warnings reset for the next attempt |
 
 The PREPARING readiness and FINALIZING ownership introduced in stories 323/324 now live in
@@ -869,6 +869,26 @@ can never re-put a recorder over a live one (§1.3). Timestamp
 sentinel: when a device delivers timestamp -1 (permitted by the `javax.sound.midi` contract),
 event times fall back to monotonic time at receipt relative to that shared origin, so notes land where they were
 played instead of collapsing to column 0 (§1.8).
+
+As landed (story 333), the exit protocol's GUARD applies the take rule (ruling R1) at the window's
+close box, File ▸ Exit, File ▸ Close Project and the close-then-continue primitive. A recording in
+flight — `isRecordingInFlight()` or `isCountingIn()` on the current `TransportController` — asks
+first, “Recording in Progress”: Stop the take and close, or Keep recording, the default (Enter,
+Escape and the window's close box), which ends the close at GUARD, before any later step. On consent the close
+stops the transport with `TransportController.stopForClose()`: the take's ordinary Stop, with no
+post-roll entered and a running one ended now. That take, like any take still being written
+(`isTakeBeingWritten()`), is then waited out, never refused: the window is input-inert, after half a
+second the strip and the progress dialog show “Finishing take…”, the keep button (Don't quit, or
+Keep project open) ends the close and leaves the take to publish into the still-open project, and
+there is no Quit anyway during that wait. Only once the take's publication turn has run does GUARD
+ask about unsaved changes; the prompt says “Your changes include the take you just recorded.” only
+when a take the guard stopped or waited out published a clip. The application-stop fallback cannot
+ask: it stops the transport at once and, when it closes the project its own way, waits for the take
+in a nested event loop, within 30 seconds of the stop, past which it skips the closing checkpoint,
+the seal and the release, as after a crash (ruling R4). The in-app doors keep the refusal above
+(`ProjectLifecycleController.refuseWhileATakeIsRecordingOrBeingWritten`), and Close Project's
+rebuild of the window retires the outgoing `TransportController`
+(`MainController.createTransportController()`).
 
 ### 5.3 Segment lifecycle contract
 

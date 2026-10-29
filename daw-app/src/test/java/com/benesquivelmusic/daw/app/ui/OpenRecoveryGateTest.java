@@ -151,7 +151,7 @@ class OpenRecoveryGateTest {
             assertThat(Files.readAllBytes(outgoing.resolve(ProjectLockManager.LOCK_FILE_NAME))).isEqualTo(oldLock);
             assertThat(incoming.resolve(ProjectLockManager.LOCK_FILE_NAME)).doesNotExist();
             assertThat(JournalState.records(ProjectContext.forProject(incoming))).isNotEmpty();
-        } finally { manager.abandonProject(); }
+        } finally { manager.closeProject().join(); }
     }
     @Test void freshForeignLockResolvesBeforeTheGateReevaluatesEvidence() throws Exception {
         Path folder = project("Song");

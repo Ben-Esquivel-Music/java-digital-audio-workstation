@@ -30,6 +30,7 @@ import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 
 import javafx.animation.FadeTransition;
 import javafx.animation.PauseTransition;
+import javafx.beans.property.ReadOnlyBooleanProperty;
 import javafx.geometry.Pos;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
@@ -756,6 +757,34 @@ final class TransportController implements TransportIntentHandler {
         recordButton.setOpacity(1.0);
         recordButton.setStyle("");
         // Hide the REC indicator
+    }
+
+    /**
+     * Stops the transport for a close (story 333; the studio engineer's
+     * rulings R1, R2 and B2): a take in flight gets its ordinary Stop — its
+     * seal requested, the MIDI recorders stopped, a take being prepared
+     * cancelled — but no post-roll is entered, and one that is running ends
+     * now ({@link #finishPostRoll()}, with its {@code TransportEvent.Stopped}
+     * published on this turn), so the close's capture is taken of a stopped
+     * transport and nothing is journaled after it. Does nothing when the
+     * transport is already stopped and nothing records — never the
+     * double-stop rewind. FX thread; wait-free.
+     *
+     * @return whether the transport is now STOPPED and not in post-roll
+     */
+    boolean stopForClose() {
+        Transport transport = project.getTransport();
+        if (!transport.isInPostRoll()
+                && (transport.getState() != TransportState.STOPPED || isRecordingInFlight())) {
+            stop();
+        }
+        if (transport.isInPostRoll()) {
+            if (postRollTimer != null) {
+                postRollTimer.stop();
+            }
+            finishPostRoll();
+        }
+        return transport.getState() == TransportState.STOPPED && !transport.isInPostRoll();
     }
 
     /**
@@ -1720,6 +1749,8 @@ final class TransportController implements TransportIntentHandler {
     boolean isPreparingTake() { return recordCoordinator.isPreparingTake(); }
     boolean isCountingIn() { return recordCoordinator.isCountingIn(); }
     boolean isTakeBeingWritten() { return recordCoordinator.isTakeBeingWritten(); }
+    ReadOnlyBooleanProperty takeBeingWrittenProperty() { return recordCoordinator.takeBeingWrittenProperty(); }
+    long takePublicationsWithClips() { return recordCoordinator.takePublicationsWithClips(); }
     Optional<CapturePeakSnapshot> liveCapturePeaks(String id) { return recordCoordinator.liveCapturePeaks(id); }
     Optional<Thread> pendingSessionInputCheck() { return recordCoordinator.pendingSessionInputCheck(); }
     Optional<Path> activeTakeDirectory() { return recordCoordinator.activeTakeDirectory(); }

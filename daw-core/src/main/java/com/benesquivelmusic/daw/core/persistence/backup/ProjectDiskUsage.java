@@ -29,8 +29,8 @@ public record ProjectDiskUsage(long autosavesBytes, long archivesBytes, long ass
 
     /** Subdirectory holding rotating checkpoints / autosaves. */
     public static final String AUTOSAVES_DIR = "checkpoints";
-    /** Subdirectory holding packaged project archives. */
-    public static final String ARCHIVES_DIR = "archives";
+    /** Subdirectory holding packaged project archives ({@link com.benesquivelmusic.daw.core.persistence.ProjectManager#ARCHIVES_DIR_NAME}). */
+    public static final String ARCHIVES_DIR = com.benesquivelmusic.daw.core.persistence.ProjectManager.ARCHIVES_DIR_NAME;
 
     public ProjectDiskUsage {
         if (autosavesBytes < 0 || archivesBytes < 0 || assetsBytes < 0) {

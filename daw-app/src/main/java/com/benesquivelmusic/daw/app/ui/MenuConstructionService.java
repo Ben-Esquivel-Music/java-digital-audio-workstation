@@ -86,7 +86,8 @@ final class MenuConstructionService {
                          MenuItem cutItem,
                          MenuItem pasteItem,
                          MenuItem duplicateItem,
-                         MenuItem deleteItem) { }
+                         MenuItem deleteItem,
+                         MenuItem closeProjectItem) { }
 
     /** Builds a fresh top-level menu list. */
     Result build() {
@@ -106,6 +107,12 @@ final class MenuConstructionService {
         // only while it has rows (MenuEnablementPolicy).
         MenuItem relinkMissingAssetsItem = menuItem("Relink Missing Assets\u2026", DawIcon.FOLDER,
                 DawAction.RELINK_MISSING_ASSETS, host::onRelinkMissingAssets);
+        // Story 333 — the close protocol's two File-menu doors (rulings R10, R12 #5), labels from the bundle.
+        // Close Project is enabled only while there is something to close (MenuEnablementPolicy).
+        MenuItem closeProjectItem = menuItem(msg("menu.file.closeProject"), DawIcon.CLOSE,
+                DawAction.CLOSE_PROJECT, host::onCloseProject);
+        MenuItem exitItem = menuItem(msg("menu.file.exit"), DawIcon.POWER,
+                DawAction.EXIT, host::onExit);
 
         // Edit menu items needing state sync
         MenuItem undoItem = menuItem("Undo", DawIcon.UNDO,
@@ -126,11 +133,11 @@ final class MenuConstructionService {
         SyncableItems sync = new SyncableItems(
                 saveItem, exportSessionItem, relinkMissingAssetsItem, importAudioFileItem,
                 undoItem, redoItem, copyItem, cutItem, pasteItem,
-                duplicateItem, deleteItem);
+                duplicateItem, deleteItem, closeProjectItem);
 
         List<Menu> menus = List.of(
                 buildFileMenu(saveItem, exportSessionItem, renderQueueItem, importAudioFileItem,
-                        relinkMissingAssetsItem),
+                        relinkMissingAssetsItem, closeProjectItem, exitItem),
                 buildEditMenu(undoItem, redoItem, copyItem, cutItem,
                         pasteItem, duplicateItem, deleteItem),
                 buildTracksMenu(),
@@ -149,7 +156,9 @@ final class MenuConstructionService {
                                MenuItem exportSessionItem,
                                MenuItem renderQueueItem,
                                MenuItem importAudioFileItem,
-                               MenuItem relinkMissingAssetsItem) {
+                               MenuItem relinkMissingAssetsItem,
+                               MenuItem closeProjectItem,
+                               MenuItem exitItem) {
         Menu fileMenu = new Menu("File");
         fileMenu.getStyleClass().add("daw-menu");
 
@@ -170,6 +179,10 @@ final class MenuConstructionService {
         MenuItem createCheckpoint = menuItem("Create Checkpoint\u2026", DawIcon.HISTORY,
                 DawAction.CREATE_CHECKPOINT, host::onCreateCheckpoint);
 
+        // Story 333 — Save As (ruling R5): a new string, so its label flows through the bundle.
+        MenuItem saveAsItem = menuItem(msg("menu.file.saveAs"), DawIcon.DOWNLOAD,
+                DawAction.SAVE_AS, host::onSaveProjectAs);
+
         // Story 189 — Project Archive (ZIP With Assets)
         MenuItem archiveProject = menuItem("Archive Project\u2026", DawIcon.UPLOAD,
                 DawAction.ARCHIVE_PROJECT, host::onArchiveProject);
@@ -177,9 +190,11 @@ final class MenuConstructionService {
                 DawAction.RESTORE_FROM_ARCHIVE, host::onRestoreFromArchive);
 
         fileMenu.getItems().addAll(
-                newProject, openProject, recentProjects,
+                // Story 333 — Close Project with New / Open / Recent, as in the DAWs and the Windows File menu, so
+                // a slip from it never lands on Exit (the studio engineer's stage-7 S2, ruling 4 Q5 (iii)).
+                newProject, openProject, recentProjects, closeProjectItem,
                 new SeparatorMenuItem(),
-                saveItem,
+                saveItem, saveAsItem,
                 createSnapshot, createCheckpoint, snapshots,
                 new SeparatorMenuItem(),
                 importSession, exportSessionItem,
@@ -187,7 +202,10 @@ final class MenuConstructionService {
                 new SeparatorMenuItem(),
                 archiveProject, restoreArchive, relinkMissingAssetsItem,
                 new SeparatorMenuItem(),
-                importAudioFileItem
+                importAudioFileItem,
+                new SeparatorMenuItem(),
+                // Story 333 — Exit is the File menu's last item, alone after a separator.
+                exitItem
         );
 
         return fileMenu;
@@ -482,8 +500,11 @@ final class MenuConstructionService {
             Optional<KeyCombination> binding = keyBindingManager.getBinding(action);
             binding.ifPresent(item::setAccelerator);
         }
+        // Stop and Exit are never fenced: Exit is the window's close box by another door (story 333).
         item.setOnAction(_ -> {
-            if (action == DawAction.STOP || projectActionsAllowed.getAsBoolean()) handler.run();
+            if (action == DawAction.STOP || action == DawAction.EXIT || projectActionsAllowed.getAsBoolean()) {
+                handler.run();
+            }
         });
         return item;
     }

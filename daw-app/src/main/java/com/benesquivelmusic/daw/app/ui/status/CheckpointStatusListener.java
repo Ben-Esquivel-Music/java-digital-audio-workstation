@@ -44,7 +44,8 @@ import java.util.logging.Logger;
  *       (ruling G13 #5) — also counts toward the streak: the second in a row
  *       raises one WARNING naming the cause and the last good checkpoint's
  *       time, and later ones count quietly (ruling F6). A user's Create
- *       Checkpoint or a failed save's safety copy does not count; Create
+ *       Checkpoint, a failed save's safety copy or the exit's closing
+ *       checkpoint (story 333) does not count; Create
  *       Checkpoint reports its own failure every time
  *       ({@link #userCheckpointRequested()}).</li>
  *   <li>Every {@link CheckpointEvent.Rearmed re-arm} re-arms the strip's
@@ -312,11 +313,14 @@ public final class CheckpointStatusListener implements Consumer<CheckpointEvent>
                 : CheckpointFileName.parse(name.toString()).map(parsed -> parsed.instantIn(zone));
     }
 
-    /** Whether a failed checkpoint of {@code origin} is an autosave failure (rulings F6, G13 #5, #9). */
+    /**
+     * Whether a failed checkpoint of {@code origin} is an autosave failure (rulings F6, G13 #5, #9): the exit's
+     * closing checkpoint (story 333, ruling R3) is not one.
+     */
     static boolean countsTowardTheStreak(CheckpointOrigin origin) {
         return switch (origin) {
             case SCHEDULED, AFTER_SAVE -> true;
-            case USER, SAFETY_COPY -> false;
+            case USER, SAFETY_COPY, CLOSING -> false;
         };
     }
 

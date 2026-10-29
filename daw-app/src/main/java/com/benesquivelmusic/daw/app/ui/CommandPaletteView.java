@@ -304,7 +304,11 @@ public final class CommandPaletteView {
             LOG.warning("Command palette handler for '" + entry.label() + "' threw: " + ex);
             throw ex;
         }
-        recentsStore.recordExecution(entry.id());
+        // Story 333 (the studio engineer's stage-7 N3): an exit is never offered back as the first recent
+        // entry, so Ctrl+K then Enter cannot quit a session by repeating the last one's last command.
+        if (!DawAction.EXIT.name().equals(entry.id())) {
+            recentsStore.recordExecution(entry.id());
+        }
     }
 
     /**

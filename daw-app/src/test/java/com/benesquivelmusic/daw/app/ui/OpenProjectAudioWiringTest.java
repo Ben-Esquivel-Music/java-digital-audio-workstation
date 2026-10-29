@@ -17,7 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * tests): the controller's {@code Deps.repaintArrangement} is the arrangement
  * repaint {@code AudioImportController} also receives, and that repaint
  * really repaints the canvas; the canvas asks the owner what each clip's body
- * shows; the window's teardown disposes the owner; and a snapshot restore
+ * shows; the window's disposal (story 333's DISPOSE) disposes the owner; and a snapshot restore
  * installs through the lifecycle controller. A cut default — a no-op
  * repaint, an unwired canvas, a teardown without {@code dispose()} — fails
  * here, while the behavioural tests ({@code ProjectOpenDoesNotDecodeOnTheFxThreadTest})
@@ -52,8 +52,11 @@ class OpenProjectAudioWiringTest {
         assertThat(methodBody(code, "private void createArrangementCanvas()"))
                 .as("the canvas asks the open project's audio what each clip's body shows")
                 .contains("arrangementCanvas.setClipAudioStates(projectLifecycleController.openProjectAudio()::stateOf);");
-        assertThat(code).as("the window's teardown retires the open project's audio")
-                .contains("primaryStage.setOnHidden(_ -> runWindowTeardown(() -> { if (projectLifecycleController != null) { projectLifecycleController.dispose(); } }");
+        // Story 333 — the teardown is the window's disposal (DISPOSE), run by the exit protocol, its first step.
+        assertThat(methodBody(code, "java.util.concurrent.CompletionStage<Void> disposeWindowLifetime()"))
+                .as("the window's disposal retires the open project's audio first")
+                .contains("runWindowTeardown(() -> { if (projectLifecycleController != null) {"
+                        + " projectLifecycleController.dispose(); } }");
         assertThat(methodBody(code, "private void applySnapshotRestoredProject("))
                 .as("a snapshot restore installs, rehydrates and announces through the lifecycle controller")
                 .contains("projectLifecycleController.installRestoredSnapshot(restored, label, missingAssets, unreadItems);");

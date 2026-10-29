@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.persistence.archive;
 
+import com.benesquivelmusic.daw.core.persistence.ProjectManager;
+
 import java.time.Instant;
 
 /**
@@ -26,12 +28,18 @@ public record ArchiveHeader(
         String dawVersion,
         String projectDocSha256
 ) {
-    /** File name of the header inside the archive. */
-    public static final String FILE_NAME = "archive.properties";
+    /**
+     * File name of the header inside the archive; an archive restore leaves it at the top of the restored
+     * folder too ({@link ProjectManager#ARCHIVE_HEADER_FILE_NAME}).
+     */
+    public static final String FILE_NAME = ProjectManager.ARCHIVE_HEADER_FILE_NAME;
 
     /** File name of the embedded project document inside the archive. */
     public static final String PROJECT_DOC_NAME = "project.daw";
 
-    /** Directory inside the archive that holds asset files. */
-    public static final String ASSETS_DIR = "assets";
+    /**
+     * Directory inside the archive that holds asset files; a restored project keeps them under the folder of
+     * the same name ({@link ProjectManager#ASSETS_DIR_NAME}).
+     */
+    public static final String ASSETS_DIR = ProjectManager.ASSETS_DIR_NAME;
 }

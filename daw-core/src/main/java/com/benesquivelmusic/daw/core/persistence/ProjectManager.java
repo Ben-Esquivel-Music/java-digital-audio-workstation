@@ -16,10 +16,15 @@ import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BooleanSupplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -50,10 +55,11 @@ import java.util.logging.Logger;
  * {@link ProjectDocument}. Everything else runs on the <em>save writer</em>,
  * one virtual thread started while saves are queued, so it can never refuse
  * one, in this order (rulings F1, F3, F10, G9): the generation fence (a
- * capture of a project closed, abandoned or replaced since writes nothing);
- * the lock check ({@link ProjectLockManager#verifyOurs()}); the render, once;
- * the backup the open owes, a durable copy that never overwrites a backup;
- * the atomic head write; the project marked clean if no edit came since the
+ * capture of a project closed or replaced since writes nothing); the lock
+ * check of the lease its open took ({@link ProjectLockManager#verifyOurs()});
+ * the render, once; the head-write claim, the fence's last check (story
+ * 333); the backup the open owes, a durable copy that never overwrites a
+ * backup; the atomic head write; the project marked clean if no edit came since the
  * capture; then, if the project is still the open one, the checkpoint of the
  * same bytes. One save writes at a time, and one capture waits behind it: a
  * newer capture of the same open project takes the waiting one's place, and
@@ -64,11 +70,47 @@ import java.util.logging.Logger;
  *
  * <p>A save's checkpoint and a failed save's safety copy are bound, by
  * identity, to the checkpoint generation its project's open started
- * (ruling F9): once that project is closed, abandoned or replaced — the same
- * folder opened again included — neither is written, and no checkpoint
- * listener hears of it. A head write already past its last check when that
- * happens still finishes into its own project's folder (a known limit until
- * story 333's lock hand-off); it writes no checkpoint.</p>
+ * (ruling F9): once that project is closed or replaced — the same folder
+ * opened again included — neither is written, and no checkpoint listener
+ * hears of it. The head write's last check is a claim, taken under the same
+ * lock that fences the project's saves: a head write that claimed before the
+ * fence still finishes into its own project's folder and writes no
+ * checkpoint, and one that did not writes nothing.</p>
+ *
+ * <h2>The lock hand-off</h2>
+ * <p>Closing or replacing a project never waits (story 333; Persistence
+ * Integrity book §5.4, rejection §9.14): its saves are fenced, its
+ * checkpoints stop, and its lease is <em>retired</em> — released, its lock
+ * file deleted if it is still ours, on a {@code daw-lease-retire} thread of
+ * its own, only once everything this session still owes that folder has
+ * ended: the saves queued for it before the close, a head write past its
+ * claim, and the checkpoint writer's claimed work there
+ * ({@link CheckpointManager#stop()}). Until then the retiring lease keeps its
+ * heartbeat, so nothing of this session writes or deletes in a folder after
+ * its lock is gone, and another session never meets a folder that is still
+ * being written without its lock. {@link #whenRetiredLeasesReleased()} says
+ * when the releases have run. Reopening a folder whose lease is still
+ * retiring takes this session's own lock over silently
+ * ({@link ProjectLockManager#handOverTo}); the old release then deletes
+ * nothing, and the obligation moves with the lock: the lease that took it
+ * over is itself released — closed, replaced, or never adopted by a
+ * failed open — only once the old lease's owed work has ended too. A copy
+ * of the folder that carries the retiring lock file is not that folder: its
+ * open meets the lock-conflict prompt.</p>
+ *
+ * <h2>Save As</h2>
+ * <p>A Save As (story 333, ruling R5) is four steps, so the application can
+ * keep the open project untouched until the copy is whole and locked: the
+ * capture on the model's owner ({@link #captureForSaveAs}), the plan and the
+ * copy on a worker ({@link #planSaveAs}, {@link #publishCopy}: every file
+ * through the {@link AtomicFileWriter}, {@code project.daw} last, a staged
+ * copy published by one rename), and — once the application took the copy's
+ * lock and closed the open project — {@link #adoptPublishedCopy}, which makes
+ * the copy the open project without reloading it, so the session and its
+ * undo history go on. The copy's saves and checkpoints write a reference
+ * into the folders it was copied from (its former roots) project-relative
+ * only when the copy holds its file ({@link FormerRoots}); any other stays
+ * absolute and still names the original's file.</p>
  *
  * <p>The save writer waits for the checkpoint it requests at most five
  * seconds (ruling J3): past it the save completes without
@@ -77,10 +119,11 @@ import java.util.logging.Logger;
  * with the lock still ours and the project still open, leaves the rendered
  * bytes in a safety checkpoint (ruling G9).</p>
  *
- * <p>The save writer and the checkpoint writer are daemon virtual threads:
- * the JVM does not wait for them, and an exit can end them mid-write. The
- * application waits for both, at most thirty seconds, from its one JVM
- * shutdown hook ({@link #awaitWritesBeforeExit()}, ruling M1).</p>
+ * <p>The save writer and the checkpoint writers — one per project folder
+ * (story 333) — are daemon virtual threads: the JVM does not wait for them,
+ * and an exit can end them mid-write. The application waits for all of them,
+ * at most thirty seconds, from its one JVM shutdown hook
+ * ({@link #awaitWritesBeforeExit()}, ruling M1).</p>
  *
  * <h2>Project Directory Layout</h2>
  * <pre>
@@ -91,6 +134,8 @@ import java.util.logging.Logger;
  *         2026-08-03T14-22-05_take-0007/   — one directory per record gesture
  *           take.manifest                  — ordered segment lists, format, seal status
  *           &lt;trackId&gt;/segment-000.wav      — sealed segments; segment-NNN.wav.part while streaming
+ *     assets/                — audio an archive restore or a consolidation put there ({@link #ASSETS_DIR_NAME})
+ *     archives/              — packaged archives the disk-usage view counts ({@link #ARCHIVES_DIR_NAME})
  *     checkpoints/           — auto-save checkpoints
  * </pre>
  */
@@ -112,18 +157,42 @@ public final class ProjectManager {
     /**
      * How long {@link #awaitWritesBeforeExit()} waits in all, counted from
      * its start, for the saves and checkpoints still being written as the
-     * application exits (ruling M1).
+     * application exits (ruling M1). Public for the application-stop
+     * fallback, whose waits share this bound (story 333, ruling R4: "bounded
+     * at 30 s, the same bound as the M1 hook").
      */
-    static final Duration EXIT_WRITE_WAIT = Duration.ofSeconds(30);
-
-    /** Bound while this manager's save writer runs an entry: {@link #closeProject()} there would wait on itself. */
-    private static final ScopedValue<ProjectManager> SAVE_WRITING = ScopedValue.newInstance();
+    public static final Duration EXIT_WRITE_WAIT = Duration.ofSeconds(30);
 
     /**
      * Name of the per-project directory that holds recorded audio — the only
      * home for captured takes (Recording Reliability book §2.6).
      */
     public static final String AUDIO_DIR_NAME = "audio";
+
+    /**
+     * Name of the per-project directory that holds the audio an archive
+     * restore or a consolidation put there ({@code assets/<sha>_<name>};
+     * {@code ProjectArchiver}): like {@code audio/}, a home of the project's
+     * own audio, which Save As copies whole (story 333).
+     */
+    public static final String ASSETS_DIR_NAME = "assets";
+
+    /**
+     * Name of the header an archive carries, which an archive restore leaves
+     * at the top of the restored folder ({@code ArchiveHeader}): the
+     * archive's own description, stale in any copy of the folder, which Save
+     * As therefore leaves out (story 333).
+     */
+    public static final String ARCHIVE_HEADER_FILE_NAME = "archive.properties";
+
+    /**
+     * Name of the per-project directory the disk-usage view counts as the
+     * project's packaged archives ({@code ProjectDiskUsage}): copies of the
+     * original at past moments, each self-contained, which Save As leaves
+     * out — they are the original's history, not the copy's (story 333, the
+     * studio engineer's ruling 3 Q2).
+     */
+    public static final String ARCHIVES_DIR_NAME = "archives";
 
     /**
      * Returns {@code <projectDir>/audio} — where recorded takes live
@@ -139,13 +208,85 @@ public final class ProjectManager {
                 .resolve(AUDIO_DIR_NAME);
     }
 
-    private final Map<String, ProjectMetadata> recentProjects = new LinkedHashMap<>();
+    /**
+     * Where every retired lease is released (story 333): never the caller —
+     * the JavaFX application thread in the application — nor the save writer
+     * or a checkpoint writer, whose work the release waits for; except when
+     * no thread can be started (see {@link #startRetirement}).
+     */
+    private static final Executor RETIRE_EXECUTOR = ProjectManager::startRetirement;
+
+    /**
+     * Starts a release on a {@code daw-lease-retire} virtual thread — or, when
+     * no thread can be started, runs it on the caller, with a {@code WARNING}:
+     * a release that never runs would keep its lock, its heartbeat refreshing
+     * it, for the rest of the session.
+     */
+    private static void startRetirement(Runnable release) {
+        try {
+            Thread.ofVirtual().name("daw-lease-retire").start(release);
+        } catch (Throwable notStarted) {
+            LOG.log(Level.WARNING, notStarted, () -> "No thread could be started for a project lock's release; it"
+                    + " runs on the calling thread");
+            release.run();
+        }
+    }
+
+    /**
+     * One retired lease that held a lock: the folder it held, and its release
+     * — completed, never exceptionally, once the work owed in that folder,
+     * this lease's and what it inherited, has ended and the release has run.
+     */
+    private record Retirement(ProjectLockManager lease, Path folder, CompletableFuture<Void> released) {
+        Retirement {
+            Objects.requireNonNull(lease, "lease must not be null");
+            Objects.requireNonNull(folder, "folder must not be null");
+            Objects.requireNonNull(released, "released must not be null");
+        }
+    }
+
+    /**
+     * Every lease this manager retired that held a lock, by that lock's id;
+     * never removed (lock ids are random UUIDs): how a reopen of a folder
+     * recognises this session's own lock, still on disk while its release
+     * waits for the work owed in that folder (story 333).
+     */
+    private final Map<String, Retirement> retiredLeases = new ConcurrentHashMap<>();
+
+    /**
+     * The work a lease inherited with the lock it took over from a retiring
+     * lease of this session (story 333): that lease's release, which waits
+     * for everything still owed in the folder. Keyed by identity; an entry
+     * leaves when its lease is retired, and the lease's own release then
+     * waits for it too — so the obligation moves with the lock, and a lock
+     * handed over is never released while the work of an earlier lease of
+     * the folder may still write there.
+     */
+    private final Map<ProjectLockManager, CompletableFuture<Void>> inheritedWork =
+            Collections.synchronizedMap(new IdentityHashMap<>());
+
+    /** The releases of retired leases not yet run (story 333); each leaves once it has run. */
+    private final Set<CompletableFuture<Void>> retirements = ConcurrentHashMap.newKeySet();
+
+    /**
+     * Fences the open project's saves ({@link #saveTarget}) and guards the
+     * head-write claim ({@link SaveTarget#headWriteEnded}): a head write
+     * claims its target under it exactly while it is still the open one, and
+     * every close and replacement swaps the target under it. Never held
+     * across disk I/O or a wait (Project Manager book §8).
+     */
+    private final ReentrantLock fenceLock = new ReentrantLock();
+
+    /** Written by the create, open and save paths, which may run on workers; read by any thread. */
+    private final Map<String, ProjectMetadata> recentProjects = Collections.synchronizedMap(new LinkedHashMap<>());
     private final CheckpointManager checkpointManager;
     private final RecentProjectsStore recentProjectsStore;
     private final ProjectSerializer serializer = new ProjectSerializer();
     private final ProjectDeserializer deserializer;
     private volatile ProjectLockManager lockManager;
     private final AtomicFileWriter fileWriter;
+    /** Plans and makes Save As copies, every file through {@link #fileWriter} (story 333). */
+    private final ProjectFolderCopy folderCopy;
     private final Duration checkpointWait;
 
     private volatile ProjectMetadata currentProject;
@@ -163,11 +304,12 @@ public final class ProjectManager {
 
     /**
      * The save generation of the open project — what its backup owes, where
-     * it is written and the checkpoint generation its checkpoints belong to
-     * — or {@code null} when none is open, and while a create or an open
-     * replaces it. Replaced by every create and open, cleared by close and
-     * abandon; a capture carries the one it was taken under, and the save
-     * writer writes it only while it is still this one.
+     * it is written, the lease that guards it and the checkpoint generation
+     * its checkpoints belong to — or {@code null} when none is open, and
+     * while a create or an open replaces it. Written only under
+     * {@link #fenceLock} ({@link #fence}): replaced by every create and open,
+     * cleared by every close; a capture carries the one it was taken under,
+     * and the save writer writes it only while it is still this one.
      */
     private volatile SaveTarget saveTarget;
 
@@ -291,11 +433,14 @@ public final class ProjectManager {
         this.lockManager = Objects.requireNonNull(lockManager, "lockManager must not be null");
         this.deserializer = Objects.requireNonNull(deserializer, "deserializer must not be null");
         this.fileWriter = Objects.requireNonNull(fileWriter, "fileWriter must not be null");
+        this.folderCopy = new ProjectFolderCopy(fileWriter);
         this.checkpointWait = Objects.requireNonNull(checkpointWait, "checkpointWait must not be null");
         // A checkpoint is written only while this session holds the project
-        // lock and it is still ours (story 331): a stolen lock fails the
-        // checkpoint visibly, and a session that holds none writes nothing.
-        checkpointManager.setWriteGuard(() -> this.lockManager.verifyHeld());
+        // lock and it is still ours (story 331): each checkpoint generation
+        // checks the lease its own open or create took (story 333), so a
+        // stolen lock fails the checkpoint visibly, a session that holds none
+        // writes nothing, and a project still being written after a switch
+        // never borrows the next project's lease.
     }
 
     /**
@@ -307,7 +452,14 @@ public final class ProjectManager {
         this.lockConflictHandler = handler;
     }
 
-    /** Returns the project lock manager backing this {@code ProjectManager}. */
+    /**
+     * Returns the project lock manager backing this {@code ProjectManager}:
+     * the lease of the open project. A close retires that lease — it is
+     * released once the work owed in its folder has ended (story 333; see the
+     * class note, "The lock hand-off") — and gives this manager a fresh one
+     * ({@link ProjectLockManager#fork()}); an open replaces it with the
+     * lease its preparation took. A retired lease is never reused.
+     */
     public ProjectLockManager getLockManager() {
         return lockManager;
     }
@@ -327,18 +479,18 @@ public final class ProjectManager {
      * default name into the same workspace therefore land in distinct
      * directories instead of the second silently clobbering the first.</p>
      *
-     * <p>The metadata file is written here, on the caller, through the
-     * {@link AtomicFileWriter}: creating a project is not the save path.
-     * Saves of the project open before this call write nothing once it
-     * returns (a new save generation), except what is already being written
-     * — a head write past its last check (a known limit until story 333's
-     * lock hand-off; a door waits for {@link #whenSavesIdle()} first), or a
-     * checkpoint still inside its write when the checkpoints' bounded stop
-     * gives up on it (ruling G5) — which finishes into that project's own
-     * folder. A save of that project never writes a checkpoint or a safety
-     * copy into this project's checkpoints, or any but its own project's:
-     * both are bound to the checkpoint generation its open started, which
-     * this call ends.</p>
+     * <p>Call it off the JavaFX application thread: it does disk I/O — the
+     * folder, the metadata file (written through the {@link AtomicFileWriter};
+     * creating a project is not the save path), the Recent Projects entry and
+     * the lock. A project still open is closed first, as
+     * {@link #closeProject()} closes it (story 333): its saves are fenced, its
+     * checkpoints end, and its lease is retired — its lock released only once
+     * the work owed in its folder has ended (see the class note, "The lock
+     * hand-off"); that close never waits. A save of that project never writes
+     * a checkpoint or a safety copy into this project's checkpoints, or any
+     * but its own project's: both are bound to the checkpoint generation its
+     * open started, which this call ends. The new folder's lock is taken by a
+     * lease of its own.</p>
      *
      * <p>That generation ends first, before any step here that can fail
      * (story 331): if this call throws, no project's checkpoints run until a
@@ -355,8 +507,14 @@ public final class ProjectManager {
     public ProjectMetadata createProject(String name, Path parentDirectory) throws IOException {
         Objects.requireNonNull(name, "name must not be null");
         Objects.requireNonNull(parentDirectory, "parentDirectory must not be null");
-        // The project is being replaced: its checkpoints end before anything here can fail.
-        checkpointManager.stop();
+        // The project is being replaced: its checkpoints end before anything here can fail, and its lease is
+        // retired — released once the work owed in its folder has ended.
+        if (currentProject != null) {
+            closeProject();
+        } else {
+            checkpointManager.stop();
+        }
+        ProjectLockManager lease = lockManager;
 
         Path projectDir = createUniqueProjectDirectory(parentDirectory, sanitizeDirectoryName(name));
         Files.createDirectories(audioDirectory(projectDir));
@@ -364,8 +522,6 @@ public final class ProjectManager {
         ProjectMetadata metadata = ProjectMetadata.createNew(name).withPath(projectDir);
         writeProjectFile(metadata);
 
-        // The open project's saves are fenced from here; the new target follows its checkpoint generation.
-        saveTarget = null;
         currentProject = metadata;
         currentDawProject = null;
         readOnly = false;
@@ -375,10 +531,10 @@ public final class ProjectManager {
         recordRecentProject(projectDir);
         // createUniqueProjectDirectory() atomically created a brand-new folder, so
         // the directory cannot already be locked — unconditionally take it.
-        lockManager.forceAcquire(projectDir);
-        lockManager.startHeartbeat();
-        saveTarget = SaveTarget.writable(projectDir, PendingBackup.NONE,
-                checkpointManager.startGeneration(projectDir));
+        lease.forceAcquire(projectDir);
+        lease.startHeartbeat();
+        fence(SaveTarget.writable(projectDir, PendingBackup.NONE, lease, FormerRoots.NONE,
+                checkpointManager.startGeneration(projectDir, lease::verifyHeld)));
         return metadata;
     }
 
@@ -440,17 +596,20 @@ public final class ProjectManager {
      * the lock, the read, the deserialization, the recent-projects write — so
      * if this call throws, no project's checkpoints run until a project is
      * created or opened, and nothing of another project is ever written into
-     * the old project's {@code checkpoints/}. Saves of the project open before this call
-     * write nothing once it returns (a new save generation), except what is
-     * already being written — a head write past its last check (a known
-     * limit until story 333's lock hand-off; a door waits for
-     * {@link #whenSavesIdle()} first), or a checkpoint still inside its write
-     * when the checkpoints' bounded stop gives up on it (ruling G5) — which
-     * finishes into that project's own folder. A save of that project never
-     * writes a checkpoint or a safety copy into this project's checkpoints —
-     * nor into its own folder's when this call opens that folder again — for
-     * both are bound, by identity, to the checkpoint generation its open
-     * started, which this call ends.</p>
+     * the old project's {@code checkpoints/}. The project open before this
+     * call stays open, and saveable, until the new one has parsed, been
+     * recorded in Recent Projects and its lease verified (story 332); only
+     * then are its saves fenced — what is already being written, a head
+     * write past its claim or a checkpoint the checkpoint writer had already
+     * claimed (ruling G5), finishes into that project's own folder — and its
+     * lease retired: its lock is released, its file deleted if it is still
+     * ours, only once the saves queued for it before this call, that head
+     * write and that claimed checkpoint work have ended (story 333; see the
+     * class note, "The lock hand-off"). This call never waits for them. A
+     * save of that project never writes a checkpoint or a safety copy into
+     * this project's checkpoints — nor into its own folder's when this call
+     * opens that folder again — for both are bound, by identity, to the
+     * checkpoint generation its open started, which this call ends.</p>
      *
      * @param projectDirectory the project directory
      * @return the project metadata
@@ -463,7 +622,7 @@ public final class ProjectManager {
     public ProjectMetadata openProject(Path projectDirectory, PreparedOpen supplied) throws IOException {
         Objects.requireNonNull(projectDirectory, "projectDirectory must not be null");
         // The project is being replaced: its checkpoints end before anything here can fail.
-        checkpointManager.stop();
+        CompletableFuture<Void> outgoingClaims = stopCheckpointsOf(saveTarget);
 
         Path projectFile = projectDirectory.resolve(PROJECT_FILE_NAME);
         if (!Files.exists(projectFile)) {
@@ -475,11 +634,18 @@ public final class ProjectManager {
             if (!prepared.directory().equals(projectDirectory)) {
                 throw new IOException("Prepared open belongs to another project");
             }
+            // Each step that can still fail comes first: until adopt() returned, the outgoing project is untouched.
             PreparedProject loaded = readProject(projectDirectory, projectFile);
             recordRecentProject(projectDirectory);
-            ProjectLockManager accepted = prepared.transferFrom(lockManager);
-            saveTarget = null;
+            ProjectLockManager accepted = prepared.adopt();
+            // The fence comes before any release: the outgoing lease goes only once the work owed in its folder ended.
+            CompletableFuture<Void> savesQueued = whenSavesIdle();
+            CompletableFuture<Void> headIdle = fence(null);
+            ProjectLockManager outgoing = lockManager;
             lockManager = accepted;
+            if (outgoing != accepted) {
+                retire(outgoing, CompletableFuture.allOf(savesQueued, headIdle, outgoingClaims));
+            }
             currentProject = loaded.metadata();
             currentDawProject = loaded.project();
             lastMigrationReport = loaded.migration();
@@ -487,9 +653,9 @@ public final class ProjectManager {
             lastUnreadItems = loaded.unreadItems();
             readOnly = prepared.readOnly();
             recentProjects.put(projectDirectory.toString(), currentProject);
-            saveTarget = readOnly ? SaveTarget.readOnly(projectDirectory, loaded.backup())
-                    : SaveTarget.writable(projectDirectory, loaded.backup(),
-                            checkpointManager.startGeneration(projectDirectory));
+            fence(readOnly ? SaveTarget.readOnly(projectDirectory, loaded.backup(), accepted)
+                    : SaveTarget.writable(projectDirectory, loaded.backup(), accepted, FormerRoots.NONE,
+                            checkpointManager.startGeneration(projectDirectory, accepted::verifyHeld)));
             return currentProject;
         }
     }
@@ -520,36 +686,108 @@ public final class ProjectManager {
                                    PendingBackup backup, MissingAssetsReport missingAssets,
                                    List<UnreadProjectItem> unreadItems) { }
 
-    /** A target lease; closing an unapplied open never touches the outgoing project. */
+    /**
+     * A target lease; closing an unapplied open never touches the outgoing
+     * project. Its lock check and its release read and delete the lock file:
+     * they run under a {@link ReentrantLock} of its own, because the open's
+     * worker may be a virtual thread (Project Manager book §8) — the lock
+     * file's I/O itself still runs under the lease's monitor
+     * ({@link ProjectLockManager}; an accepted tension, stage-2 review R2-N4).
+     */
     public static final class PreparedOpen implements AutoCloseable {
+
+        /** How an unapplied lease is released: at once, or once the work it inherited has ended (story 333). */
+        @FunctionalInterface
+        private interface Release {
+            void release(ProjectLockManager lease) throws IOException;
+        }
+
         private final Path directory;
         private final ProjectLockManager lock;
         private final boolean readOnly;
+        private final Release release;
+        private final ReentrantLock state = new ReentrantLock();
         private boolean consumed;
 
-        private PreparedOpen(Path directory, ProjectLockManager lock, boolean readOnly) {
+        private PreparedOpen(Path directory, ProjectLockManager lock, boolean readOnly, Release release) {
             this.directory = directory;
             this.lock = lock;
             this.readOnly = readOnly;
+            this.release = release;
         }
 
         public Path directory() { return directory; }
         public ProjectLockManager lock() { return lock; }
         public boolean readOnly() { return readOnly; }
 
-        private synchronized ProjectLockManager transferFrom(ProjectLockManager retired) throws IOException {
-            if (consumed) throw new IOException("The prepared project lease has already been closed or transferred");
-            if (!readOnly) lock.verifyHeld();
-            if (retired != lock) retired.close();
-            consumed = true;
-            return lock;
+        /**
+         * Makes this lease the open project's (story 333): verifies it is
+         * still held unless read-only, and retires nothing — the open retires
+         * the outgoing lease once the work owed in its folder has ended (see
+         * the class note, "The lock hand-off"). A failure leaves the outgoing
+         * project as it was.
+         */
+        private ProjectLockManager adopt() throws IOException {
+            state.lock();
+            try {
+                if (consumed) throw new IOException("The prepared project lease has already been closed or transferred");
+                if (!readOnly) lock.verifyHeld();
+                consumed = true;
+                return lock;
+            } finally {
+                state.unlock();
+            }
         }
 
-        @Override
-        public synchronized void close() throws IOException {
-            if (!consumed) {
+        /**
+         * Makes this writable lease the open project's whatever its lock
+         * check finds (story 333, the studio engineer's ruling 3 Q1): a Save
+         * As copy whose lock was lost after the old project was closed is
+         * still the open project — the same fact as a lock stolen one moment
+         * after an adoption. Its lock is checked once ({@link ProjectLockManager#verifyHeld()},
+         * which marks a lost lock {@link LockStatus#STOLEN}), and the lease is
+         * consumed either way.
+         *
+         * @return the check's failure — a {@link LockStolenException} (the
+         *         same instance) when another session holds the lock or its
+         *         file is gone, another {@link IOException} when it could not
+         *         be read — or empty when the lock is still ours
+         * @throws IOException if the lease was already closed or adopted
+         */
+        private Optional<IOException> adoptReportingItsLockCheck() throws IOException {
+            state.lock();
+            try {
+                if (consumed) throw new IOException("The prepared project lease has already been closed or transferred");
+                Optional<IOException> check;
+                try {
+                    lock.verifyHeld();
+                    check = Optional.empty();
+                } catch (IOException failed) {
+                    check = Optional.of(failed);
+                }
                 consumed = true;
-                lock.close();
+                return check;
+            } finally {
+                state.unlock();
+            }
+        }
+
+        /**
+         * Releases the lease unless an open adopted it: at once — unless it
+         * took this session's own lock over from a lease still being retired,
+         * whose work may still write in the folder; then only once that work
+         * has ended (story 333).
+         */
+        @Override
+        public void close() throws IOException {
+            state.lock();
+            try {
+                if (!consumed) {
+                    consumed = true;
+                    release.release(lock);
+                }
+            } finally {
+                state.unlock();
             }
         }
     }
@@ -574,28 +812,109 @@ public final class ProjectManager {
     public PreparedOpen prepareReadOnlyOpen(Path directory) {
         ProjectLockManager target = lockManager.fork();
         target.openReadOnly(directory);
-        return new PreparedOpen(directory, target, true);
+        return new PreparedOpen(directory, target, true, ProjectLockManager::close);
     }
 
+    /**
+     * Takes {@code target}'s lock of {@code directory}: a free folder's at
+     * once; this session's own lock, still on disk because the lease that
+     * holds it is being retired (story 333), by a silent hand-over — no
+     * conflict prompt, and the retiring lease's release then deletes
+     * nothing; another session's only as the conflict handler decides. A
+     * lock file gone by the time it was read is a release that ran in
+     * between, and the acquisition is tried once more.
+     *
+     * <p>The hand-over happens only when the retiring lease held this very
+     * folder — the same path, or another name of it — never for a copy of the
+     * folder that carries the retiring lease's lock file. The lease that
+     * takes the lock over inherits the retiring lease's release
+     * ({@link #inheritedWork}): it is itself released only once the work
+     * owed in the folder has ended, whether it is adopted and closed later or
+     * never adopted at all ({@link #releaseUnapplied}). A retiring lease
+     * released between the read of its lock and the hand-over, or whose lock
+     * another session took over meanwhile, hands nothing over, and the open
+     * acquires the folder's lock as any other's — another session's lock
+     * created or taken over meanwhile meets the conflict prompt and is not
+     * overwritten by the hand-over; a lock file gone by the time that
+     * acquisition read it is tried once more, as above.</p>
+     */
     private PreparedOpen acquireTarget(Path directory, ProjectLockManager target) throws IOException {
         boolean readOnly = false;
         try {
             ProjectLockManager.AcquisitionResult result = target.tryAcquire(directory);
-            if (!result.wasAcquired()) {
+            if (!result.wasAcquired() && result.existingLock() == null) {
+                result = target.tryAcquire(directory);
+            }
+            Retirement found = result.wasAcquired() || result.existingLock() == null ? null
+                    : retiredLeases.get(result.existingLock().lockId());
+            Retirement retiring = found != null && isTheFolderOf(found, directory) ? found : null;
+            if (found != null && retiring == null) {
+                LOG.fine(() -> directory + " carries the lock of this session's retiring lease of " + found.folder()
+                        + ": a copy of that folder, not the folder itself");
+            }
+            boolean handedOver = false;
+            if (retiring != null) {
+                LOG.fine(() -> "This open takes over this session's own retiring lock of " + directory);
+                // The obligation moves with the lock, before the lock does: a failure below still releases it late.
+                inheritedWork.put(target, retiring.released());
+                handedOver = retiring.lease().handOverTo(target, directory).isPresent();
+                if (!handedOver) {
+                    // Released or taken over since the read: the file may hold another session's lock now, which the
+                    // hand-over never overwrites.
+                    LOG.fine(() -> "The retiring lease of " + directory + " no longer held its lock when it could be"
+                            + " handed over; the open acquires the folder's lock as any other's");
+                    result = target.tryAcquire(directory);
+                    if (!result.wasAcquired() && result.existingLock() == null) {
+                        // The lock file vanished between its check and its read (the app fix pass 1 review, N1).
+                        result = target.tryAcquire(directory);
+                    }
+                }
+            }
+            if (!handedOver && !result.wasAcquired()) {
                 LockConflictResolution choice = lockConflictHandler != null && result.existingLock() != null
                         ? lockConflictHandler.resolve(result.existingLock(), result.stale()) : LockConflictResolution.CANCEL;
                 switch (choice) {
                     case CANCEL -> throw new ProjectLockedException("Project is already open by " + describe(result.existingLock()),
                             result.existingLock(), result.stale());
                     case OPEN_READ_ONLY -> { target.openReadOnly(directory); readOnly = true; }
-                    case TAKE_OVER -> target.forceAcquire(directory);
+                    case TAKE_OVER -> {
+                        if (found != null) {
+                            // The lock is this session's retiring lease's, met under a name the file system did not
+                            // match: the taken-over lock still waits for that lease's owed work before its release.
+                            inheritedWork.put(target, found.released());
+                        }
+                        target.forceAcquire(directory);
+                    }
                 }
             }
             if (!readOnly) target.startHeartbeat();
-            return new PreparedOpen(directory, target, readOnly);
+            return new PreparedOpen(directory, target, readOnly, this::releaseUnapplied);
         } catch (IOException | RuntimeException | Error failure) {
-            try { target.close(); } catch (IOException release) { failure.addSuppressed(release); }
+            try { releaseUnapplied(target); } catch (IOException release) { failure.addSuppressed(release); }
             throw failure;
+        }
+    }
+
+    /**
+     * Whether {@code retiring} held {@code directory} itself: the same
+     * absolute path, or — asked of the file system on the open's own thread
+     * ({@link Files#isSameFile}) — another name of the same folder, such as a
+     * junction, a symbolic link or a share name. Never {@link FolderFingerprint}:
+     * its false "same" for a twin of the folder (a copy that kept its
+     * creation time and name, on the same volume) would take the twin's lock
+     * over silently. A folder whose identity cannot be read is not the folder.
+     */
+    private static boolean isTheFolderOf(Retirement retiring, Path directory) {
+        Path held = retiring.folder().toAbsolutePath().normalize();
+        Path opened = directory.toAbsolutePath().normalize();
+        if (held.equals(opened)) {
+            return true;
+        }
+        try {
+            return Files.isSameFile(held, opened);
+        } catch (IOException | RuntimeException unreadable) {
+            LOG.log(Level.FINE, unreadable, () -> "Could not tell whether " + opened + " is " + held);
+            return false;
         }
     }
 
@@ -639,12 +958,16 @@ public final class ProjectManager {
      * capture of a project closed or replaced since is never replaced by the
      * next project's.</p>
      *
-     * <p>The generation fence: a capture of a project closed, abandoned or
-     * replaced before its head write starts writes nothing. One whose head
-     * write is already past its last check then still finishes that write
-     * into its own project's folder (a known limit until story 333's lock
-     * hand-off) and completes {@link SaveOutcome.Saved} naming no checkpoint,
-     * or one written into its own folder before the switch returned.
+     * <p>The generation fence: a capture of a project closed or replaced
+     * before its head write claimed its target writes nothing. One whose
+     * head write had already claimed it — the last check, atomic with the
+     * fence — still finishes that write into its own project's folder, under
+     * that project's lock, which the close releases only once the write has
+     * ended (story 333's lock hand-off), and completes
+     * {@link SaveOutcome.Saved} naming no checkpoint, or one written into its
+     * own folder before the switch returned. A lock found taken over while
+     * its project is being closed by this session is that close, not a
+     * takeover: the save fails as closed before its write.
      * A save's checkpoint and a failed save's safety copy are bound, by
      * identity, to the checkpoint generation its project's open started:
      * neither is ever written into another generation's checkpoints —
@@ -685,7 +1008,7 @@ public final class ProjectManager {
             currentDawProject = project;
             long revision = project.getEditRevision();
             CheckpointManager.Capture capture = checkpointManager.captureStarted(revision);
-            job = new SaveJob(target, project, touched, capture, serializer.capture(project));
+            job = new SaveJob(target, project, touched, capture, serializer.capture(project, target.formerRoots()));
         } catch (Throwable notCaptured) {
             LOG.log(Level.WARNING, notCaptured, () -> "The project in " + target.projectDirectory()
                     + " could not be captured for its save; nothing was written");
@@ -707,7 +1030,9 @@ public final class ProjectManager {
      * <p>The future completes on the save writer with what {@code task}
      * returns, or exceptionally with what it throws (the same instance). The
      * task runs whether or not a project is open; it must not block on a
-     * save's future, nor call {@link #closeProject()}.</p>
+     * save's future, nor on a stage of this manager's that waits for the save
+     * writer ({@link #whenSavesIdle()}, {@link #whenWritersIdle()}, a
+     * close's release).</p>
      *
      * @param task the task
      * @param <T>  what it returns
@@ -742,9 +1067,403 @@ public final class ProjectManager {
     }
 
     /**
+     * Completes once both writers are idle (story 333; ruling M1's wait,
+     * without a thread waiting for it): first every save queued before this
+     * call ({@link #whenSavesIdle()}), then — from then on — until the
+     * checkpoint writers hold no job of any generation, of any folder
+     * ({@link CheckpointManager#whenNoJobIsHeld()}), a checkpoint whose
+     * generation already ended included. It never blocks the caller and
+     * never completes exceptionally; it cancels nothing. It completes on the
+     * save writer or a checkpoint writer: attach dependants with an async
+     * method.
+     *
+     * @return completes when the saves queued before the call and every checkpoint job are done
+     */
+    public CompletableFuture<Void> whenWritersIdle() {
+        return whenSavesIdle().handle((_, _) -> null).thenCompose(_ -> checkpointManager.whenNoJobIsHeld());
+    }
+
+    /**
+     * Completes once the checkpoint generation of the open writable project
+     * holds no job, queued or running (story 333: the exit captures its
+     * closing checkpoint only once that generation is idle) — at once when
+     * no writable project is open, or its generation holds none. It never
+     * completes exceptionally, and it completes on a checkpoint writer or on
+     * the caller: attach dependants with an async method.
+     *
+     * @return completes when the open generation holds no job
+     */
+    public CompletableFuture<Void> whenOpenGenerationIdle() {
+        SaveTarget target = saveTarget;
+        Optional<CheckpointManager.Generation> generation = target == null ? Optional.empty() : target.checkpoints();
+        return generation.map(checkpointManager::whenGenerationIdle)
+                .orElseGet(() -> CompletableFuture.completedFuture(null));
+    }
+
+    /**
+     * Reads the open project's lock file, off the caller, on a
+     * {@code daw-lock-check} virtual thread (story 333: the exit's check that
+     * nothing it is about to write — a closing checkpoint, a seal — goes into
+     * a folder another session took over). It completes with the
+     * {@link LockStolenException} when another session holds the lock or its
+     * file is gone, and empty when the lock is still ours, when nothing is
+     * held (no project open, or a read-only open), or when the file cannot be
+     * read — logged at {@code WARNING}. It never completes exceptionally.
+     *
+     * @return the steal, if the check found one
+     */
+    public CompletableFuture<Optional<LockStolenException>> whenLockChecked() {
+        ProjectLockManager lease = lockManager;
+        CompletableFuture<Optional<LockStolenException>> checked = new CompletableFuture<>();
+        Runnable check = () -> {
+            try {
+                lease.verifyOurs();
+                checked.complete(Optional.empty());
+            } catch (LockStolenException stolen) {
+                checked.complete(Optional.of(stolen));
+            } catch (IOException | RuntimeException unreadable) {
+                LOG.log(Level.WARNING, unreadable, () -> "The project lock could not be checked; it is taken as"
+                        + " still ours");
+                checked.complete(Optional.empty());
+            }
+        };
+        try {
+            Thread.ofVirtual().name("daw-lock-check").start(check);
+        } catch (Throwable notStarted) {
+            LOG.log(Level.WARNING, notStarted, () -> "The project lock check could not start; it is taken as"
+                    + " still ours");
+            checked.complete(Optional.empty());
+        }
+        return checked;
+    }
+
+    /**
+     * Requests the exit's closing checkpoint of {@code project} (story 333,
+     * ruling R3; {@link CheckpointOrigin#CLOSING}) in the checkpoint
+     * generation of the open writable project. Call it on the thread that
+     * owns the model: this call reads the edit revision, takes the journal's
+     * capture boundary and captures the project — no disk access; the
+     * render and the write run on the writer of the project's folder. It is
+     * written even when its revision is already checkpointed and when
+     * autosave is disabled, and its generation's write guard refuses it under
+     * a stolen lock.
+     *
+     * <p>The future completes with the checkpoint written, or exceptionally:
+     * with an {@link IOException} at once when no writable project is open —
+     * none, a read-only open, after {@link #closeProject()} — or when its
+     * generation has ended; with what a capture that threw threw; with what
+     * the guard, the render or the write failed with.</p>
+     *
+     * @param project the live project to capture
+     * @return the closing checkpoint
+     */
+    public CompletableFuture<Path> writeClosingCheckpoint(DawProject project) {
+        Objects.requireNonNull(project, "project must not be null");
+        SaveTarget target = saveTarget;
+        Optional<CheckpointManager.Generation> generation = target == null ? Optional.empty() : target.checkpoints();
+        if (generation.isEmpty()) {
+            return CompletableFuture.failedFuture(new IOException(
+                    "No writable project is open: no closing checkpoint is written"));
+        }
+        CheckpointManager.Capture capture;
+        ProjectDocument document;
+        try {
+            capture = checkpointManager.captureStarted(project.getEditRevision());
+            document = serializer.capture(project, target.formerRoots());
+        } catch (Throwable notCaptured) {
+            LOG.log(Level.WARNING, notCaptured, () -> "The project in " + target.projectDirectory()
+                    + " could not be captured for its closing checkpoint; nothing was written");
+            return CompletableFuture.failedFuture(notCaptured);
+        }
+        return checkpointManager.writeCheckpoint(generation.get(), document::toXml, capture,
+                CheckpointOrigin.CLOSING);
+    }
+
+    /**
+     * Whether the checkpoint generation of the open writable project has
+     * {@code project}'s edit revision checkpointed — written, or matched at
+     * its first tick (story 333: the exit's closing-checkpoint trigger (ii)).
+     * Call it on the thread that owns the model. {@code false} when no
+     * writable project is open. No disk access.
+     *
+     * @param project the live project
+     * @return whether its revision is checkpointed
+     */
+    public boolean isCheckpointed(DawProject project) {
+        Objects.requireNonNull(project, "project must not be null");
+        SaveTarget target = saveTarget;
+        Optional<CheckpointManager.Generation> generation = target == null ? Optional.empty() : target.checkpoints();
+        return generation.isPresent() && checkpointManager.isCheckpointed(generation.get(), project.getEditRevision());
+    }
+
+    /**
+     * Captures {@code project} as the open project's own checkpoints capture
+     * it (story 333, ENG-S10): a document relativised against its folder and
+     * — when it is a published Save As copy — written with its former roots,
+     * so a reference into the folder the copy was taken from whose file the
+     * copy holds names the copy's file, as the copy's saves write it. The
+     * application's periodic checkpoint and its Create Checkpoint capture
+     * through this, never through {@link ProjectSerializer#capture(DawProject)}
+     * alone, so a checkpoint of a copy never depends on the original folder.
+     * Call it on the thread that owns the model; no disk access. It captures
+     * with no former roots when no project is open, or when {@code project}
+     * is not yet re-rooted at the open target's folder.
+     *
+     * @param project the live project
+     * @return the captured document, confined to one thread at a time
+     * @throws IOException if no XML document can be created
+     */
+    public ProjectDocument captureOpenProject(DawProject project) throws IOException {
+        Objects.requireNonNull(project, "project must not be null");
+        return serializer.capture(project, formerRootsFor(project));
+    }
+
+    /** The open target's former roots when {@code project} is rooted at the target's folder; otherwise none. */
+    private FormerRoots formerRootsFor(DawProject project) {
+        SaveTarget target = saveTarget;
+        ProjectMetadata live = project.getMetadata();
+        Path folder = live == null ? null : live.projectPath();
+        return target != null && folder != null && target.projectDirectory().equals(folder)
+                ? target.formerRoots() : FormerRoots.NONE;
+    }
+
+    // ── Save As (story 333, rulings R5, R6) ────────────────────────────────
+
+    /**
+     * Captures {@code project} for a Save As named {@code newName} (story
+     * 333, ruling R5; Persistence Integrity book §2.3, §6.1). Call it on the
+     * thread that owns the model: it reads the edit revision and walks the
+     * model into a document — no disk access. The document carries
+     * {@code newName} and the capture's time in its metadata. The copy's
+     * {@code project.daw} is rendered from it against the copy's folder
+     * ({@link #publishCopy}): a clip reference under the folder the project
+     * was opened from — or under one of its former roots — is written
+     * project-relative there only when the copy holds its file, and stays
+     * absolute, still naming the original's file, when it does not. The live
+     * project is not changed: not renamed, not re-pointed, its metadata and
+     * dirty state as they were.
+     *
+     * @param project the project to copy, as it is now
+     * @param newName the copy's name: its folder's name, already sanitised
+     *                ({@link #sanitizeDirectoryName})
+     * @return the capture, to be handed to one worker
+     * @throws IOException              if no project document can be created
+     * @throws IllegalArgumentException if {@code newName} is blank
+     */
+    public SaveAsCapture captureForSaveAs(DawProject project, String newName) throws IOException {
+        Objects.requireNonNull(project, "project must not be null");
+        Objects.requireNonNull(newName, "newName must not be null");
+        if (newName.isBlank()) {
+            throw new IllegalArgumentException("newName must not be blank");
+        }
+        ProjectMetadata live = project.getMetadata();
+        Optional<Path> sourceFolder = Optional.ofNullable(live == null ? null : live.projectPath());
+        FormerRoots formerRoots = formerRootsFor(project);
+        Instant now = Instant.now();
+        ProjectMetadata metadata = new ProjectMetadata(newName, live == null ? now : live.createdAt(), now, null);
+        long revision = project.getEditRevision();
+        ProjectDocument document = serializer.capture(project, formerRoots)
+                .withProjectName(newName)
+                .withLastModified(now);
+        return new SaveAsCapture(newName, revision, sourceFolder, formerRoots, metadata, document);
+    }
+
+    /**
+     * Plans the Save As of {@code capture} into the folder {@code target}
+     * (story 333, rulings R5, R6), on a worker — it reads the source folder,
+     * renders the document once to measure it, and asks the target's volume:
+     * {@link SaveAsPlan.Ready} with every file the copy takes; or a refusal —
+     * {@link SaveAsPlan.TargetInsideProject} for the open project's folder,
+     * a folder inside it, or another name of either;
+     * {@link SaveAsPlan.TargetTaken} for an existing target that is not an
+     * empty folder; {@link SaveAsPlan.NotEnoughSpace} when the volume's usable
+     * space is less than what the copy needs there. What is copied and what
+     * is left out: {@code audio/} and {@code assets/} whole but for a take
+     * still streaming and temp or {@code .part} files, every other file under
+     * the folder the document references, {@code snapshots/} — never
+     * {@code checkpoints/}, {@code journal/}, {@code sessions/}, the lock or
+     * the head's backups. A source folder that cannot be read — its volume
+     * gone, say — or an entry of it that cannot is logged at
+     * {@code WARNING} and leaves what it holds out of the copy, its referenced
+     * files counted as missing: the copy then holds {@code project.daw}
+     * alone, which keeps the session's work (story 333, the studio engineer's
+     * ruling B1 on stage 3). Never on the JavaFX application thread.
+     *
+     * <p>{@code cancelled} is asked before each folder and file the plan
+     * reads and before the render; once it answers {@code true} the plan
+     * stops, having written nothing, and throws
+     * {@link java.util.concurrent.CancellationException}.</p>
+     *
+     * @param capture   what {@link #captureForSaveAs} captured
+     * @param target    the copy's folder: a name not taken, or an empty folder, named {@code capture.name()}
+     * @param cancelled whether the user cancelled
+     * @return the plan
+     * @throws IOException                                   if the target's volume cannot be asked
+     * @throws java.util.concurrent.CancellationException    if {@code cancelled} answered {@code true}
+     * @throws IllegalArgumentException                      if {@code target}'s name is not the capture's name
+     */
+    public SaveAsPlan planSaveAs(SaveAsCapture capture, Path target, BooleanSupplier cancelled) throws IOException {
+        return folderCopy.plan(capture, target, cancelled);
+    }
+
+    /**
+     * Makes the copy {@code plan} describes, on the calling worker, blocking
+     * until it is published (story 333, ruling R5): each file is copied
+     * through the {@link AtomicFileWriter} — forced, its size checked against
+     * its source's — then {@code project.daw} is written last, and a staged
+     * copy is published by one rename, so the target never holds half a
+     * project. It opens nothing: no lock, journal, checkpoints or session
+     * (see {@link #adoptPublishedCopy}), and records nothing in Recent
+     * Projects ({@link #rememberRecentProject}). The open project and its
+     * folder are only read.
+     *
+     * <p>{@code cancelled} is asked before each file, before
+     * {@link SaveAsProgress#writingHead()} and once more right after it; from
+     * then on the copy can no longer be cancelled and finishes. A cancel or a failure
+     * deletes exactly what this copy created and nothing else. Never throws,
+     * never on the JavaFX application thread.</p>
+     *
+     * @param plan      a {@link SaveAsPlan.Ready} plan
+     * @param progress  told of each file and of the head write, on this worker
+     * @param cancelled whether the user cancelled
+     * @return {@link SaveAsOutcome.Published}, {@link SaveAsOutcome.Cancelled} or {@link SaveAsOutcome.Failed}
+     */
+    public SaveAsOutcome publishCopy(SaveAsPlan.Ready plan, SaveAsProgress progress, BooleanSupplier cancelled) {
+        return folderCopy.copy(plan, progress, cancelled);
+    }
+
+    /**
+     * Makes the published copy the open project (story 333, ruling R5), on a
+     * worker: {@code lease} — the copy's lock, taken by
+     * {@link #prepareLockedAccess} after the publish — becomes this manager's
+     * lease, {@code project} the open project, and the copy's folder its save
+     * target, with its checkpoints started and the folders it was copied
+     * from as its former roots (its saves write a reference into them
+     * project-relative when the copy holds its file). Nothing is saved — the
+     * copy's {@code project.daw} is the head — and nothing in the model is
+     * changed: the caller renames, re-points
+     * ({@link ProjectAssetReferences#rebase}, with the files the copy holds)
+     * and marks the live project clean on its owner thread. The copy is
+     * recorded in Recent Projects; a failure to record it is logged and the
+     * adoption stands. Its missing-assets report is
+     * {@link MissingAssetsReport#EMPTY} until the next open: an adoption
+     * loads nothing (the copy's missing files are
+     * {@link SaveAsOutcome.Published#missingFiles()}).
+     *
+     * <p>No project may be open: close the one the copy was taken from first
+     * ({@link #closeProject()}). <strong>Check the lease before that close</strong>,
+     * on the worker, right after {@link #prepareLockedAccess}: a read-only
+     * lease ({@link PreparedOpen#readOnly()} — another session took the copy
+     * between its publish and its lock) or one that no longer holds the lock
+     * ({@code lease.lock().verifyHeld()}) is the Save As's lock failure, and
+     * the open project must then stay open and unchanged (story 333,
+     * ENG-S5). A lock lost after that check — between the old project's
+     * close and this call — is no refusal (story 333, the studio engineer's
+     * ruling 3 Q1): the copy is still installed, as on success, under a lease
+     * whose lock another session holds, exactly as if the lock had been
+     * stolen a moment after the adoption — its saves fail with
+     * {@link LockStolenException}, its checkpoints are refused by their
+     * guard, its heartbeat and release write and delete nothing of the other
+     * session's lock. The result reports what the lock check found. This
+     * method's own refusals are contract breaches the check before the close
+     * prevents — a project still open, a lease of another folder or a
+     * read-only one, which are fixed when the lease is prepared: they install
+     * nothing and leave {@code lease} to the caller, who closes it.</p>
+     *
+     * @param published the published copy
+     * @param lease     the copy's lock, prepared for {@code published.folder()}
+     * @param project   the live project the copy was taken from
+     * @return the open project's metadata — the copy's — and what the copy's
+     *         lock check found
+     * @throws IOException           if {@code lease} is of another folder, read-only, or already consumed
+     * @throws IllegalStateException if a project is open
+     */
+    public AdoptedCopy adoptPublishedCopy(SaveAsOutcome.Published published, PreparedOpen lease,
+                                          DawProject project) throws IOException {
+        Objects.requireNonNull(published, "published must not be null");
+        Objects.requireNonNull(lease, "lease must not be null");
+        Objects.requireNonNull(project, "project must not be null");
+        if (currentProject != null) {
+            throw new IllegalStateException("A project is still open: close it before the published copy is"
+                    + " adopted");
+        }
+        Path folder = published.folder();
+        if (!lease.directory().equals(folder)) {
+            throw new IOException("The prepared lease belongs to " + lease.directory() + ", not to the published"
+                    + " copy in " + folder);
+        }
+        if (lease.readOnly()) {
+            throw new IOException("The published copy in " + folder + " could not be locked: another session"
+                    + " holds it");
+        }
+        Optional<IOException> lockCheck = lease.adoptReportingItsLockCheck();
+        ProjectLockManager accepted = lease.lock();
+        ProjectLockManager outgoing = lockManager;
+        lockManager = accepted;
+        if (outgoing != accepted) {
+            retire(outgoing, CompletableFuture.completedFuture(null));
+        }
+        ProjectMetadata metadata = published.metadata();
+        currentProject = metadata;
+        currentDawProject = project;
+        readOnly = false;
+        lastMigrationReport = MigrationReport.noOp(
+                com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION);
+        lastMissingAssets = MissingAssetsReport.EMPTY;
+        lastUnreadItems = List.of();
+        recentProjects.put(folder.toString(), metadata);
+        fence(SaveTarget.writable(folder, PendingBackup.NONE, accepted, published.formerRoots(),
+                checkpointManager.startGeneration(folder, accepted::verifyHeld)));
+        try {
+            rememberRecentProject(folder);
+        } catch (RuntimeException notRecorded) {
+            LOG.log(Level.WARNING, notRecorded, () -> "The copy in " + folder + " is open but could not be"
+                    + " recorded in Recent Projects");
+        }
+        lockCheck.ifPresent(failure -> LOG.log(Level.WARNING, failure, () -> "The copy in " + folder + " is open,"
+                + " but its lock " + (failure instanceof LockStolenException ? "was lost" : "could not be checked")
+                + " before it was adopted"));
+        return new AdoptedCopy(metadata, lockCheck);
+    }
+
+    /**
+     * A Save As copy made the open project ({@link #adoptPublishedCopy};
+     * story 333, the studio engineer's ruling 3 Q1): its metadata, and what
+     * its lock check found when it was adopted.
+     *
+     * @param metadata         the open project's metadata — the copy's
+     * @param lockCheckFailure empty when the copy's lock was still ours; a
+     *                         {@link LockStolenException} — the same instance
+     *                         the check threw, its holder in
+     *                         {@link LockStolenException#currentHolder()} —
+     *                         when another session took it or its file is
+     *                         gone; another {@link IOException} when the lock
+     *                         file could not be read
+     */
+    public record AdoptedCopy(ProjectMetadata metadata, Optional<IOException> lockCheckFailure) {
+        public AdoptedCopy {
+            Objects.requireNonNull(metadata, "metadata must not be null");
+            Objects.requireNonNull(lockCheckFailure, "lockCheckFailure must not be null");
+        }
+    }
+
+    /**
+     * Records {@code projectDirectory} in Recent Projects (story 333: a Save
+     * As copy published at exit is not opened, only remembered). It persists
+     * the list — a {@link java.util.prefs.Preferences} write — so call it on
+     * a worker, never on the JavaFX application thread. Does nothing without
+     * a {@link RecentProjectsStore}.
+     *
+     * @param projectDirectory the project folder
+     */
+    public void rememberRecentProject(Path projectDirectory) {
+        recordRecentProject(Objects.requireNonNull(projectDirectory, "projectDirectory must not be null"));
+    }
+
+    /**
      * Waits, as the application exits, for the saves and every checkpoint job
      * already handed to the writers (story 331, ruling M1): the save writer
-     * and the checkpoint writer are daemon virtual threads, which the JVM
+     * and the checkpoint writers are daemon virtual threads, which the JVM
      * would otherwise end mid-write.
      * The application calls it from its one JVM shutdown hook, off the JavaFX
      * application thread; it does nothing else there — it saves nothing,
@@ -754,8 +1473,9 @@ public final class ProjectManager {
      * {@link #whenSavesIdle()} — the save being written, the capture waiting
      * behind it, a named-snapshot copy queued among them, and each save's
      * checkpoint or safety copy, as long as the save writer waits for it
-     * (ruling J3); then, with the time left, every job the checkpoint writer
-     * holds, of any origin and any generation, until it holds none. A write
+     * (ruling J3); then, with the time left, every job the checkpoint writers
+     * hold, of any origin, any generation and any folder, until they hold
+     * none. A write
      * asked for after its half began may be waited for too, within the same
      * deadline. It completes, cancels and interrupts nothing.</p>
      *
@@ -821,85 +1541,63 @@ public final class ProjectManager {
     }
 
     /**
-     * Closes the current project after saving: its {@link DawProject} through
-     * {@link #save(DawProject)}, waited for, or — when none is held — its
-     * metadata file, written on the caller. A read-only project is not
-     * saved. A lost lock ({@link LockStolenException}) skips the final save;
-     * any other failure is thrown, and the project stays open. Must not be
-     * called from a {@link #runAfterQueuedSaves} task.
+     * Closes the open project without saving (story 333, ruling R9: the
+     * exit's FLUSH is the save; RELEASE never saves): its saves are fenced —
+     * a capture queued for it writes nothing, a head write that already
+     * claimed its target finishes into its folder — its checkpoints stop,
+     * never waiting, and its lease is retired: its lock file is deleted, if it
+     * is still ours, only once the saves queued for it before this call, a
+     * head write already past its claim, and the checkpoint writer's claimed
+     * work in its folder have ended (story 333's lock hand-off; see the class
+     * note, "The lock hand-off"). No save of it writes a checkpoint or a
+     * safety copy into another generation's checkpoints, the same folder
+     * opened again included.
      *
-     * @throws IOException if the final save fails
+     * <p>It returns at once, on any thread — the JavaFX application thread,
+     * the save writer (a {@link #runAfterQueuedSaves} task) or a worker — and
+     * the returned stage completes, never exceptionally, when that lock
+     * release has run, on a {@code daw-lease-retire} thread — except when no
+     * thread can be started ({@link #startRetirement}): attach dependants
+     * with an async method. A lost lock is never swallowed here:
+     * nothing is saved, so there is nothing to skip. With no project open it
+     * returns {@link #whenRetiredLeasesReleased()}.</p>
+     *
+     * @return completes when the closed project's lock release has run
      */
-    public void closeProject() throws IOException {
-        if (currentProject == null) {
-            return;
-        }
-        if (SAVE_WRITING.isBound() && SAVE_WRITING.get() == this) {
-            throw new IllegalStateException("closeProject() was called from the save writer; it would wait on itself");
-        }
-        if (!readOnly) {
-            try {
-                saveForClose();
-            } catch (LockStolenException e) {
-                // Lock was stolen — preserve user data by skipping the final save;
-                // the UI is expected to have already prompted Save As.
-            }
-        }
-        saveTarget = null;
-        checkpointManager.stop();
-        try {
-            lockManager.close();
-        } catch (IOException ignored) {
-            // best-effort cleanup
-        }
-        currentProject = null;
-        currentDawProject = null;
-        readOnly = false;
-        lastMigrationReport = MigrationReport.noOp(
-                com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION);
-        lastMissingAssets = MissingAssetsReport.EMPTY;
-        lastUnreadItems = List.of();
-    }
-
-    /** The final save of {@link #closeProject()}; throws what it failed with, as an {@link IOException}. */
-    private void saveForClose() throws IOException {
-        DawProject open = currentDawProject;
-        if (open == null) {
-            lockManager.verifyOurs();
-            ProjectMetadata touched = currentProject.touch();
-            currentProject = touched;
-            writeProjectFile(touched);
-            return;
-        }
-        if (save(open).join() instanceof SaveOutcome.Failed(Throwable cause, _)) {
-            throw cause instanceof IOException io ? io : new IOException("The final save failed: " + cause, cause);
-        }
+    public CompletableFuture<Void> closeProject() {
+        return closeProject(CompletableFuture.completedFuture(null));
     }
 
     /**
-     * Abandons the current project without saving. Use this when the user
-     * has explicitly chosen to discard unsaved changes. Saves of it write
-     * nothing once this call returns (the generation fence), except what is
-     * already being written — a head write past its last check, which is not
-     * waited for (a known limit until story 333's lock hand-off; the caller
-     * waits for {@link #whenSavesIdle()} first, ruling G1), or a checkpoint
-     * still inside its write when the checkpoints' bounded stop gives up on
-     * it (ruling G5) — which finishes into the project's folder. No save of
-     * it writes a checkpoint or a safety copy into another generation's
-     * checkpoints, the same folder opened again included: both are bound to
-     * the checkpoint generation its open started, which this call ends.
+     * {@link #closeProject()}, whose lock release also waits for
+     * {@code alsoOwed}: work the caller still has under way in the project's
+     * folder, such as the end of its journal — a seal or a drain still
+     * writing into {@code journal/} (story 333, ruling OQ-1 #3) — so the lock
+     * is never released while that work may still write there. If it never
+     * completes, the lock stays until the application ends, as after a crash;
+     * an exceptional completion counts as ended.
+     *
+     * @param alsoOwed the caller's work still writing into the folder
+     * @return completes when the closed project's lock release has run
      */
-    public void abandonProject() {
+    public CompletableFuture<Void> closeProject(CompletionStage<?> alsoOwed) {
+        Objects.requireNonNull(alsoOwed, "alsoOwed must not be null");
+        // Adapted before anything changes: a stage that does not interoperate can never leave a half-closed project.
+        CompletableFuture<Void> callersWork = new CompletableFuture<>();
+        alsoOwed.whenComplete((_, _) -> callersWork.complete(null));
         if (currentProject == null) {
-            return;
+            return whenRetiredLeasesReleased();
         }
-        saveTarget = null;
-        checkpointManager.stop();
-        try {
-            lockManager.close();
-        } catch (IOException ignored) {
-            // best-effort cleanup
-        }
+        // A snapshot of the saves queued before the close — a named-snapshot copy among them — then the fence.
+        SaveTarget closing = saveTarget;
+        CompletableFuture<Void> savesQueued = whenSavesIdle();
+        CompletableFuture<Void> headIdle = fence(null);
+        CompletableFuture<Void> checkpointClaims = stopCheckpointsOf(closing);
+        ProjectLockManager outgoing = lockManager;
+        // A retired lease instance is never reused.
+        lockManager = outgoing.fork();
+        CompletableFuture<Void> released = retire(outgoing, CompletableFuture.allOf(savesQueued, headIdle,
+                checkpointClaims, callersWork));
         currentProject = null;
         currentDawProject = null;
         readOnly = false;
@@ -907,6 +1605,110 @@ public final class ProjectManager {
                 com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION);
         lastMissingAssets = MissingAssetsReport.EMPTY;
         lastUnreadItems = List.of();
+        return released;
+    }
+
+    /**
+     * Completes once every lease this manager retired so far has run its
+     * release (story 333): each lock file deleted if it was still ours, each
+     * heartbeat stopped. A lease is released only once the work owed in its
+     * folder has ended — however long that takes (see the class note, "The
+     * lock hand-off"). It never completes exceptionally; it completes on a
+     * {@code daw-lease-retire} thread (or the thread a release ran on when none
+     * could be started, {@link #startRetirement}), or at once when every
+     * release has run.
+     *
+     * @return completes when the releases retired before this call have run
+     */
+    public CompletableFuture<Void> whenRetiredLeasesReleased() {
+        return CompletableFuture.allOf(retirements.toArray(CompletableFuture[]::new));
+    }
+
+    /**
+     * Ends the running checkpoint generation ({@link CheckpointManager#stop()},
+     * which never waits) and returns the checkpoint work still owed in the
+     * folder of {@code closing}: its generation's claimed work — none for a
+     * target without one (a read-only open, or nothing open), whose lease
+     * then never waits for another folder's claimed write.
+     */
+    private CompletableFuture<Void> stopCheckpointsOf(SaveTarget closing) {
+        CompletableFuture<Void> claims = checkpointManager.stop();
+        return closing != null && closing.checkpoints().isPresent() ? claims
+                : CompletableFuture.completedFuture(null);
+    }
+
+    /**
+     * Retires {@code lease}: releases it — its lock file deleted if it is
+     * still ours, its heartbeat stopped, its scheduler shut down — once
+     * {@code owedWork} has completed, normally or not, so nothing this
+     * session still owes the folder writes or deletes there after its lock is
+     * gone (story 333). The release runs on a {@code daw-lease-retire}
+     * virtual thread — unless none can be started ({@link #startRetirement})
+     * — never on the caller — the JavaFX application thread in the
+     * application — and never on the save writer or a checkpoint writer that
+     * ends the owed work. The lease keeps its heartbeat until then, and a
+     * lease that holds a lock is remembered by its lock's id and its folder,
+     * so a reopen of that folder takes the lock over ({@link #acquireTarget}).
+     * A lease that took its lock over from a retiring lease inherited that
+     * lease's release ({@link #inheritedWork}): its own release waits for it
+     * as well. A release that fails is logged; nothing is thrown.
+     *
+     * @return completes, never exceptionally, when the release has run
+     */
+    private CompletableFuture<Void> retire(ProjectLockManager lease, CompletableFuture<Void> owedWork) {
+        CompletableFuture<Void> inherited = inheritedWork.remove(lease);
+        CompletableFuture<Void> owed = inherited == null ? owedWork : CompletableFuture.allOf(owedWork, inherited);
+        // The release stage exists before the lease is findable by its lock: a reopen that finds it inherits it.
+        CompletableFuture<Void> released = new CompletableFuture<>();
+        Optional<ProjectLock> held = lease.currentLock();
+        Optional<Path> folder = lease.boundDirectory();
+        if (held.isPresent() && folder.isPresent()) {
+            retiredLeases.put(held.get().lockId(), new Retirement(lease, folder.get(), released));
+        }
+        if (!owed.isDone()) {
+            LOG.fine(() -> nameOf(lease) + " is released once the work owed in its folder has ended");
+        }
+        retirements.add(released);
+        released.whenComplete((_, _) -> retirements.remove(released));
+        owed.handle((_, _) -> null)
+                .thenRunAsync(() -> release(lease), RETIRE_EXECUTOR)
+                .whenComplete((_, notReleased) -> {
+                    if (notReleased != null) {
+                        LOG.log(Level.WARNING, notReleased, () -> nameOf(lease) + " could not be released");
+                    }
+                    released.complete(null);
+                });
+        return released;
+    }
+
+    /**
+     * Releases a lease the open it was prepared for never adopted (a failed
+     * open, a cancelled recovery, a lock taken read-only after all): at once,
+     * on the caller, as {@link ProjectLockManager#close()} does — unless it
+     * took this session's own lock over from a retiring lease, whose work may
+     * still write in the folder; then it is retired, and released only once
+     * that work has ended (story 333).
+     */
+    private void releaseUnapplied(ProjectLockManager lease) throws IOException {
+        if (inheritedWork.containsKey(lease)) {
+            retire(lease, CompletableFuture.completedFuture(null));
+        } else {
+            lease.close();
+        }
+    }
+
+    private static void release(ProjectLockManager lease) {
+        String name = nameOf(lease);
+        try {
+            lease.close();
+        } catch (Throwable failure) {
+            LOG.log(Level.WARNING, failure, () -> name + " could not be released");
+        }
+    }
+
+    /** How the log names a lease: by the id of the lock it holds. */
+    private static String nameOf(ProjectLockManager lease) {
+        return lease.currentLock().map(lock -> "The project lock " + lock.lockId()).orElse("A project lease");
     }
 
     /**
@@ -928,8 +1730,9 @@ public final class ProjectManager {
      * load found missing or unresolvable, one row per asset, plus the missing
      * reference-track files for the log. Always non-null;
      * {@link MissingAssetsReport#EMPTY} when no deserialized project is open
-     * — after {@link #createProject}, {@link #closeProject()},
-     * {@link #abandonProject()}, and a legacy metadata-only open.
+     * — after {@link #createProject}, {@link #closeProject()}, a legacy
+     * metadata-only open, and {@link #adoptPublishedCopy}, which loads
+     * nothing.
      *
      * <p>The UI layer consults it to qualify the open announcement and to
      * present the missing-assets report; the clip rehydrator skips the
@@ -950,8 +1753,8 @@ public final class ProjectManager {
      * as placeholders, and removed mixer references to tracks the file does
      * not contain. Always non-null; empty when the open honoured everything
      * and when no deserialized project is open — after {@link #createProject},
-     * {@link #closeProject()}, {@link #abandonProject()}, and a legacy
-     * metadata-only open.
+     * {@link #closeProject()}, a legacy metadata-only open, and
+     * {@link #adoptPublishedCopy}, which loads nothing.
      *
      * <p>The UI layer consults it, next to {@link #getLastMissingAssets()},
      * to qualify the open announcement.</p>
@@ -996,12 +1799,15 @@ public final class ProjectManager {
     }
 
     /**
-     * Returns a map of recent project paths to their metadata.
+     * Returns a map of recent project paths to their metadata: a copy, taken
+     * under the map's lock, so iterating it never races a worker's write.
      *
-     * @return unmodifiable map of recent projects
+     * @return an unmodifiable snapshot of the recent projects, in the order they were recorded
      */
     public Map<String, ProjectMetadata> getRecentProjects() {
-        return Collections.unmodifiableMap(recentProjects);
+        synchronized (recentProjects) {
+            return Collections.unmodifiableMap(new LinkedHashMap<>(recentProjects));
+        }
     }
 
     /**
@@ -1041,6 +1847,66 @@ public final class ProjectManager {
         }
     }
 
+    // ── The fence and the head-write claim (story 333) ──────────────────────
+
+    /**
+     * Makes {@code next} the open project's save target — {@code null} when a
+     * close or a replacement fences the open one — under {@link #fenceLock},
+     * atomically with every head-write claim: a head write of the outgoing
+     * target either claimed before this call, and the returned stage
+     * completes when it has ended, or writes nothing. Never waits.
+     *
+     * @return completes when the outgoing target's claimed head write has ended; at once when none is claimed
+     */
+    private CompletableFuture<Void> fence(SaveTarget next) {
+        CompletableFuture<Void> claimed;
+        fenceLock.lock();
+        try {
+            SaveTarget outgoing = saveTarget;
+            saveTarget = next;
+            claimed = outgoing == null || outgoing == next ? null : outgoing.headWriteEnded;
+        } finally {
+            fenceLock.unlock();
+        }
+        return claimed == null ? CompletableFuture.completedFuture(null) : claimed.copy();
+    }
+
+    /**
+     * The head write's last check: claims {@code target} for the backup and
+     * the head write if it is still the open project's, under
+     * {@link #fenceLock}, so no fence passes between the check and the
+     * claim.
+     *
+     * @return whether the claim was taken; {@code false} once the project was closed or replaced
+     */
+    private boolean claimHeadWrite(SaveTarget target) {
+        fenceLock.lock();
+        try {
+            if (target != saveTarget) {
+                return false;
+            }
+            target.headWriteEnded = new CompletableFuture<>();
+            return true;
+        } finally {
+            fenceLock.unlock();
+        }
+    }
+
+    /** Ends {@code target}'s head-write claim, if one is held, and completes what a fence returned for it. */
+    private void endHeadWrite(SaveTarget target) {
+        CompletableFuture<Void> ended;
+        fenceLock.lock();
+        try {
+            ended = target.headWriteEnded;
+            target.headWriteEnded = null;
+        } finally {
+            fenceLock.unlock();
+        }
+        if (ended != null) {
+            ended.complete(null);
+        }
+    }
+
     // ── The save writer ─────────────────────────────────────────────────────
 
     /**
@@ -1074,8 +1940,7 @@ public final class ProjectManager {
      */
     private void startSaveWriter() {
         try {
-            Thread.ofVirtual().name("daw-save-writer")
-                    .start(() -> ScopedValue.where(SAVE_WRITING, this).run(this::drainSaves));
+            Thread.ofVirtual().name("daw-save-writer").start(this::drainSaves);
         } catch (Throwable notStarted) {
             LOG.log(Level.SEVERE, notStarted, () -> "The save writer could not start; its queued saves fail");
             List<WriterEntry> stranded;
@@ -1136,15 +2001,26 @@ public final class ProjectManager {
         }
     }
 
-    /** One save on the writer, in the class note's order ("The save"). */
+    /**
+     * One save on the writer, in the class note's order ("The save"). The
+     * lock check reads the lease of the save's own target, never the lease of
+     * a project opened since; the last check is the head-write claim, taken
+     * atomically with the fence, and the claim is held through the backup
+     * and the head write, so a close releases that project's lock only after
+     * them (story 333).
+     */
     private SaveOutcome write(SaveJob job) {
         SaveTarget target = job.target();
         if (target != saveTarget) {
             return closedBeforeItsWrite(target);
         }
         try {
-            lockManager.verifyOurs();
+            target.lease().verifyOurs();
         } catch (Throwable notOurs) {
+            if (notOurs instanceof LockStolenException && target != saveTarget) {
+                // A lock found taken while this session closed or replaced the project is reported as that close.
+                return closedBeforeItsWrite(target);
+            }
             LOG.log(Level.WARNING, notOurs, () -> "The save of " + target.projectDirectory()
                     + " was refused by the project lock; nothing was written");
             return new SaveOutcome.Failed(notOurs, Optional.empty());
@@ -1157,16 +2033,24 @@ public final class ProjectManager {
                     + " could not render the project; nothing was written");
             return new SaveOutcome.Failed(unrendered, Optional.empty());
         }
-        if (target != saveTarget) {
+        if (!claimHeadWrite(target)) {
             return closedBeforeItsWrite(target);
         }
         Path projectFile = target.projectDirectory().resolve(PROJECT_FILE_NAME);
+        Throwable headFailure = null;
         try {
             backUpIfOwed(target, projectFile);
             replaceProjectFile(projectFile, xml);
-        } catch (Throwable headFailure) {
-            LOG.log(Level.WARNING, headFailure, () -> "Saving " + projectFile + " failed; it is as it was");
-            return failedAfterTheRender(job, xml, headFailure);
+        } catch (Throwable failure) {
+            headFailure = failure;
+        } finally {
+            // The claim covers the folder's head and its backups only; a safety copy is the checkpoint writer's.
+            endHeadWrite(target);
+        }
+        if (headFailure != null) {
+            Throwable failed = headFailure;
+            LOG.log(Level.WARNING, failed, () -> "Saving " + projectFile + " failed; it is as it was");
+            return failedAfterTheRender(job, xml, failed);
         }
         try {
             job.project().markCleanIfUnchanged(job.revision());
@@ -1447,7 +2331,18 @@ public final class ProjectManager {
         return new ProjectMetadata(name, createdAt, lastModified, projectDir);
     }
 
-    static String sanitizeDirectoryName(String name) {
+    /**
+     * The folder name a project name gives (story 333: New, a first save and
+     * Save As name their folder through it): every character but ASCII
+     * letters, digits, {@code .}, {@code _}, {@code -} and space becomes
+     * {@code _}, then the result is stripped. Pure; no I/O.
+     *
+     * @param name the project name the user typed
+     * @return the folder name
+     * @throws IllegalArgumentException if the result is empty, {@code .} or {@code ..}
+     */
+    public static String sanitizeDirectoryName(String name) {
+        Objects.requireNonNull(name, "name must not be null");
         String sanitized = name.replaceAll("[^a-zA-Z0-9._\\- ]", "_").strip();
         if (sanitized.isEmpty() || sanitized.equals(".") || sanitized.equals("..")) {
             throw new IllegalArgumentException("Project name results in an invalid directory name: " + name);
@@ -1459,17 +2354,42 @@ public final class ProjectManager {
 
     /**
      * One open project's save generation: where its saves are written, the
-     * backup its first write owes, and the checkpoint generation its open
-     * started, which its saves' checkpoints and safety copies are bound to
-     * (ruling F9). Compared by identity: a capture taken under one writes
-     * only while it is still {@link #saveTarget}.
+     * backup its first write owes, the lease its open or create took, and the
+     * checkpoint generation its open started, which its saves' checkpoints
+     * and safety copies are bound to (ruling F9). Compared by identity: a
+     * capture taken under one writes only while it is still
+     * {@link #saveTarget}.
      */
     private static final class SaveTarget {
 
         private final Path projectDirectory;
 
+        /**
+         * The lease its open or create took: a save of this target checks
+         * this lease's lock, never the lease of a project opened since
+         * (story 333).
+         */
+        private final ProjectLockManager lease;
+
         /** The checkpoint generation a writable open started; {@code null} for a read-only open, which starts none. */
         private final CheckpointManager.Generation checkpoints;
+
+        /**
+         * The folders this session saved the project from as a copy, oldest
+         * first, and the files this folder holds of them (story 333, Save As;
+         * ENG-S10): a capture writes a reference under one of them
+         * project-relative only when this folder holds its file
+         * ({@link ProjectSerializer#capture(DawProject, FormerRoots)}).
+         * {@link FormerRoots#NONE} unless this target is a published Save As copy.
+         */
+        private final FormerRoots formerRoots;
+
+        /**
+         * Guarded by {@link ProjectManager#fenceLock}: completed when the head
+         * write that claimed this target ends; {@code null} while none is
+         * claimed (story 333's lock hand-off).
+         */
+        private CompletableFuture<Void> headWriteEnded;
 
         /**
          * The sibling backup of {@code project.daw} the first write owes,
@@ -1482,26 +2402,42 @@ public final class ProjectManager {
          */
         private final AtomicReference<PendingBackup> pendingBackup;
 
-        private SaveTarget(Path projectDirectory, PendingBackup owed, CheckpointManager.Generation checkpoints) {
+        private SaveTarget(Path projectDirectory, PendingBackup owed, ProjectLockManager lease,
+                           FormerRoots formerRoots, CheckpointManager.Generation checkpoints) {
             this.projectDirectory = Objects.requireNonNull(projectDirectory, "projectDirectory must not be null");
             this.pendingBackup = new AtomicReference<>(Objects.requireNonNull(owed, "owed must not be null"));
+            this.lease = Objects.requireNonNull(lease, "lease must not be null");
+            this.formerRoots = Objects.requireNonNull(formerRoots, "formerRoots must not be null");
             this.checkpoints = checkpoints;
         }
 
-        /** The target of a writable open, whose saves' checkpoints belong to {@code checkpoints}. */
-        static SaveTarget writable(Path projectDirectory, PendingBackup owed,
-                                   CheckpointManager.Generation checkpoints) {
-            return new SaveTarget(projectDirectory, owed,
+        /**
+         * A writable open's target, guarded by {@code lease}; its saves' checkpoints belong to
+         * {@code checkpoints}, and its captures write references under its {@code formerRoots} whose files it
+         * holds project-relative.
+         */
+        static SaveTarget writable(Path projectDirectory, PendingBackup owed, ProjectLockManager lease,
+                                   FormerRoots formerRoots, CheckpointManager.Generation checkpoints) {
+            return new SaveTarget(projectDirectory, owed, lease, formerRoots,
                     Objects.requireNonNull(checkpoints, "checkpoints must not be null"));
         }
 
-        /** The target of a read-only open: it has no checkpoint generation. */
-        static SaveTarget readOnly(Path projectDirectory, PendingBackup owed) {
-            return new SaveTarget(projectDirectory, owed, null);
+        /** The target of a read-only open, whose {@code lease} holds no lock: it has no checkpoint generation. */
+        static SaveTarget readOnly(Path projectDirectory, PendingBackup owed, ProjectLockManager lease) {
+            return new SaveTarget(projectDirectory, owed, lease, FormerRoots.NONE, null);
+        }
+
+        /** The folders this session saved the project from as a copy, and what this folder holds of them. */
+        FormerRoots formerRoots() {
+            return formerRoots;
         }
 
         Path projectDirectory() {
             return projectDirectory;
+        }
+
+        ProjectLockManager lease() {
+            return lease;
         }
 
         /** The checkpoint generation this project's open started; empty for a read-only open. */

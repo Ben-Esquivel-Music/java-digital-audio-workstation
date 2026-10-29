@@ -62,7 +62,7 @@ class ReplacingAProjectEndsItsCheckpointsFirstTest {
 
     @AfterEach
     void close() {
-        manager.abandonProject();
+        manager.closeProject().join();
         checkpoints.stop();
     }
 
@@ -78,6 +78,12 @@ class ReplacingAProjectEndsItsCheckpointsFirstTest {
         DawProject beta = new DawProject(NEW_PROJECT, AudioFormat.CD_QUALITY);
         assertThatThrownBy(() -> manager.save(beta)).as("and cannot be saved: no save target was installed")
                 .isInstanceOf(IllegalStateException.class).hasMessage("No project is currently open");
+        // Story 333: the create closed Alpha first, so Alpha's lease was retired, never left bound or reused.
+        manager.whenRetiredLeasesReleased().get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        assertThat(alpha.resolve(ProjectLockManager.LOCK_FILE_NAME)).as("Alpha's lock was released")
+                .doesNotExist();
+        assertThat(manager.getLockManager().currentLock()).as("the failed create's own lease holds no lock")
+                .isEmpty();
     }
 
     @Test

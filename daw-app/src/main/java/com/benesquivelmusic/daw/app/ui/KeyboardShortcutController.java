@@ -36,6 +36,24 @@ final class KeyboardShortcutController {
         void onUndo();
         void onRedo();
         void onSaveProject();
+        /**
+         * Story 333 — Save Project As… (ruling R5; no default shortcut,
+         * R12 #5): the palette's and a user binding's way to File ▸ Save As….
+         * Abstract, so no host drops it silently.
+         */
+        void onSaveProjectAs();
+        /**
+         * Story 333 — Close Project ({@code Shortcut+Shift+W} and the
+         * palette; ruling R10): the same intent as File ▸ Close Project.
+         * Abstract, so no host drops it silently.
+         */
+        void onCloseProject();
+        /**
+         * Story 333 — Exit ({@code Shortcut+Q} and the palette): the same
+         * intent as File ▸ Exit and the window's close box. Abstract, so no
+         * host drops it silently.
+         */
+        void onExit();
         void onNewProject();
         void onOpenProject();
         void onImportSession();
@@ -226,6 +244,10 @@ final class KeyboardShortcutController {
         actionHandlers.put(DawAction.UNDO, host::onUndo);
         actionHandlers.put(DawAction.REDO, host::onRedo);
         actionHandlers.put(DawAction.SAVE, host::onSaveProject);
+        actionHandlers.put(DawAction.SAVE_AS, host::onSaveProjectAs);
+        // ── The close protocol's doors (story 333, ruling R12 #5) ─────────────
+        actionHandlers.put(DawAction.CLOSE_PROJECT, host::onCloseProject);
+        actionHandlers.put(DawAction.EXIT, host::onExit);
         // ── Snapshot history (Story 190) ─────────────────────────────────────
         actionHandlers.put(DawAction.CREATE_CHECKPOINT, host::onCreateCheckpoint);
         actionHandlers.put(DawAction.NEW_PROJECT, host::onNewProject);
@@ -315,8 +337,10 @@ final class KeyboardShortcutController {
             int slot = i + 1;
             actionHandlers.put(slotActions.get(i), () -> host.onSwitchToWorkspaceSlot(slot));
         }
+        // Stop and Exit are never fenced: Exit is the window's close box by another door (story 333), and the
+        // exit protocol decides what an exit during an installation or during a close does (ruling R12 #8).
         actionHandlers.replaceAll((action, handler) -> () -> {
-            if (action == DawAction.STOP || projectActionsAllowed.getAsBoolean()) handler.run();
+            if (action == DawAction.STOP || action == DawAction.EXIT || projectActionsAllowed.getAsBoolean()) handler.run();
         });
         return actionHandlers;
     }

@@ -15,7 +15,6 @@ import javafx.scene.Parent;
 import javafx.scene.Scene;
 import javafx.scene.text.Font;
 import javafx.stage.Stage;
-import javafx.stage.WindowEvent;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -34,6 +33,13 @@ public final class DawApplication extends Application {
     private static final double DEFAULT_HEIGHT = 900;
 
     private final DawRuntime runtime;
+
+    /** The FXML-instantiated controller of the main window, once {@link #start} loaded it. FX thread. */
+    private MainController mainController;
+    /** The application-wide event bus, closed last by {@link #stop()}. FX thread. */
+    private EventBus bus;
+    /** The FX-thread marshalling seam, disposed last by {@link #stop()}. FX thread. */
+    private FxDispatcher fxDispatcher;
 
     /** JavaFX-required no-arg constructor: builds a default {@link DawRuntime}. */
     public DawApplication() {
@@ -67,7 +73,7 @@ public final class DawApplication extends Application {
         // minority of call sites that cannot take a constructor dependency
         // (the FXML-instantiated MainController, the toolkit-free getDefault()
         // singletons, short-lived dialogs), mirroring EventBusPublisher.
-        FxDispatcher fxDispatcher = new FxDispatcher();
+        fxDispatcher = new FxDispatcher();
         fxDispatcher.start();
         FxDispatcher.installDefault(fxDispatcher);
 
@@ -79,7 +85,7 @@ public final class DawApplication extends Application {
         // FxDispatcher seam (fxDispatcher::onFx is Executor-compatible and
         // posts an unconditional Platform.runLater, which the bus's blocking
         // runAndAwait worker requires) instead of a bare Platform::runLater.
-        EventBus bus = DefaultEventBus.builder()
+        bus = DefaultEventBus.builder()
                 .uiExecutor(fxDispatcher::onFx)
                 .build();
         EventBusPublisher.setDefault(bus);
@@ -95,17 +101,9 @@ public final class DawApplication extends Application {
         ThemeManager.getDefault().subscribeToSettings(bus);
         DensityManager.getDefault().subscribeToSettings(bus);
         MotionManager.getDefault().subscribeToSettings(bus);
-        primaryStage.addEventHandler(WindowEvent.WINDOW_HIDDEN, _ -> {
-            bus.close();
-            if (EventBusPublisher.getDefault() == bus) {
-                EventBusPublisher.setDefault(null);
-            }
-            // Story 289 — stop the pulse timer and clear the seam's channels.
-            fxDispatcher.dispose();
-            if (FxDispatcher.getDefault() == fxDispatcher) {
-                FxDispatcher.installDefault(null);
-            }
-        });
+        // Story 333 — no hidden handler on the primary stage: the exit
+        // protocol disposes the window's lifetime before it hides the stage,
+        // and the bus and the dispatcher are torn down last, in stop().
 
         FXMLLoader loader = new FXMLLoader(
                 getClass().getResource("ui/main-view.fxml"));
@@ -115,9 +113,13 @@ public final class DawApplication extends Application {
         // setter is set-once at app init, exactly like the EventBusPublisher
         // default above; MainController threads it to the collaborators it
         // builds in initialize().
-        MainController mainController = loader.getController();
+        mainController = loader.getController();
         if (mainController != null) {
             mainController.setFxDispatcher(fxDispatcher);
+            // Story 333 — the window's close box (and Alt+F4) asks the exit
+            // protocol, whose event filter consumes the close request until
+            // the protocol decides; installed before the stage shows.
+            mainController.installPrimaryStage(primaryStage);
         }
 
         Scene scene = new Scene(root, DEFAULT_WIDTH, DEFAULT_HEIGHT);
@@ -151,6 +153,35 @@ public final class DawApplication extends Application {
         // Done after show() so it opens as an owned window over the main scene.
         if (mainController != null) {
             mainController.showWelcomeIfNoProjectOpen();
+        }
+    }
+
+    /**
+     * It runs the application-stop fallback when the exit protocol has not run (ruling R4) — after the protocol
+     * ran, it only waits, at most 15 seconds from the audio engine's stop, for that stop to end (ruling 2 OQ-3) —
+     * and then tears the event bus and the FX dispatcher down, last, because DISPOSE still publishes and posts
+     * through them (ruling R4).
+     */
+    @Override
+    public void stop() {
+        try {
+            if (mainController != null) {
+                mainController.applicationStopping();
+            }
+        } finally {
+            if (bus != null) {
+                bus.close();
+                if (EventBusPublisher.getDefault() == bus) {
+                    EventBusPublisher.setDefault(null);
+                }
+            }
+            // Story 289 — stop the pulse timer and clear the seam's channels.
+            if (fxDispatcher != null) {
+                fxDispatcher.dispose();
+                if (FxDispatcher.getDefault() == fxDispatcher) {
+                    FxDispatcher.installDefault(null);
+                }
+            }
         }
     }
 

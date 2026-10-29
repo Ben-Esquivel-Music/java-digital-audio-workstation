@@ -685,6 +685,16 @@ never‑shown settings shell was supposed to provide (§1.1). The install‑pane
 idiom asserts every constructed `DawgDialog` is dismissible — the bug class becomes
 structurally extinct, not individually patched.
 
+> **As landed by story 333** (`PERSISTENCE_INTEGRITY_DESIGN_BOOK.md` Stage 5): its two
+> application-modal progress surfaces, the closing progress dialog (`ClosingProgressDialog`) and
+> Save As's (`SaveAsProgressDialog`), are `DawgDialog`s with the hidden-CANCEL idiom
+> (`DialogDismissibility.installHiddenCancel`). The closing dialog's Escape and close box run its
+> keep button, so while that button is disabled after the journal's detach, or hidden once the
+> release began, they do nothing: a temporary veto (§5.2). Its three close prompts — the recording
+> confirmation, the unsaved-changes prompt and the “Project Taken Over” dialog — are `Alert`s: each
+> has a cancel button that Escape and the window's close box press, but a gate that discovers
+> `DawgDialog`s does not reach them. Story 333's Resolution records that, with its owner, story 339.
+
 **Why hidden‑CANCEL over window‑level close mechanics:** the hidden button routes
 *all* dismiss paths (Esc, [X], glyph, programmatic close) through one
 JavaFX‑sanctioned mechanism with a single veto point; window‑level closing bypasses

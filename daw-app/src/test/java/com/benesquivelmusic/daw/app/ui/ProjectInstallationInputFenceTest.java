@@ -3,7 +3,10 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointEvent;
+import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
+import com.benesquivelmusic.daw.core.persistence.CheckpointSource;
 import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
+import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import javafx.scene.Parent;
 import javafx.scene.Scene;
@@ -14,6 +17,7 @@ import javafx.scene.layout.StackPane;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.ArgumentCaptor;
 
 import java.lang.reflect.Field;
 import java.nio.file.Files;
@@ -50,16 +54,28 @@ class ProjectInstallationInputFenceTest {
                 Scene scene = new Scene(new StackPane());
                 shortcuts.register(scene);
                 allowed.set(false);
+                assertThat(palette).as("story 333: Save As is a palette action").containsKey(DawAction.SAVE_AS);
+                assertThat(palette).as("story 333: so are Close Project and Exit")
+                        .containsKeys(DawAction.CLOSE_PROJECT, DawAction.EXIT);
                 palette.values().forEach(Runnable::run);
                 scene.getAccelerators().values().forEach(Runnable::run);
                 verify(host, times(2)).onStop();
+                // Story 333 — Exit is exempt like Stop (the window's close box by another door); Close Project and
+                // Save As are doors, fenced.
+                verify(host, times(2)).onExit();
+                verify(host, never()).onSaveProjectAs();
+                verify(host, never()).onCloseProject();
                 verifyNoMoreInteractions(host);
                 allowed.set(true);
                 palette.get(DawAction.UNDO).run();
                 palette.get(DawAction.DELETE_SELECTION).run();
+                palette.get(DawAction.SAVE_AS).run();
+                palette.get(DawAction.CLOSE_PROJECT).run();
                 scene.getAccelerators().get(keys.getBinding(DawAction.SAVE).orElseThrow()).run();
                 verify(host).onUndo();
                 verify(host).onDeleteSelection();
+                verify(host).onSaveProjectAs();
+                verify(host).onCloseProject();
                 verify(host).onSaveProject();
             });
         } finally { preferences.removeNode(); }
@@ -76,16 +92,93 @@ class ProjectInstallationInputFenceTest {
                 MenuConstructionService.Result result = menus.build();
                 clearInvocations(host);
                 result.menus().forEach(ProjectInstallationInputFenceTest::fireMenu);
-                verifyNoInteractions(host);
+                // Story 333 — File ▸ Save As… and File ▸ Close Project are doors: fenced like every project action
+                // but Stop; File ▸ Exit is not, as the window's close box is not.
+                verify(host).onExit();
+                verifyNoMoreInteractions(host);
                 allowed.set(true);
                 result.syncableItems().saveItem().fire();
                 result.syncableItems().undoItem().fire();
                 result.syncableItems().deleteItem().fire();
+                result.syncableItems().closeProjectItem().fire();
                 verify(host).onSaveProject();
                 verify(host).onUndo();
                 verify(host).onDeleteSelection();
+                verify(host).onCloseProject();
             });
         } finally { preferences.removeNode(); }
+    }
+
+    /**
+     * Story 333 (design §1.5) — the main controller's guard also says no
+     * while a close waits on disk work and the window is input-inert: an
+     * exit waiting for a held save fences every project action the palette
+     * and the accelerators reach, as an installation does, but Stop and Exit;
+     * once the exit hid the window the guard says yes again. The autosave's
+     * capture gate the controller installs is not an input gate: it keeps
+     * saying yes while the window is inert (ruling 4 Q4, the stage-7 review
+     * S2). The controller is partial: its lifecycle controller and its exit
+     * coordinator are the exit fixture's, set on non-final fields (the main
+     * controller is never FXML-loaded in tests), and its autosave is wired
+     * through {@code wireTheWindowsAutosave()} onto a mock project manager,
+     * whose checkpoints keep the capture source the controller hands them.
+     */
+    @Test void aCloseWaitingOnDiskWorkFencesTheProjectActionsButStopAndExit() throws Exception {
+        Preferences preferences = Preferences.userRoot().node("daw-inert-shortcuts-" + UUID.randomUUID());
+        try (ExitFixture exit = new ExitFixture(workspace, AutoSaveConfig.DEFAULT)) {
+            ProjectManager autosaved = mock(ProjectManager.class);
+            CheckpointManager checkpoints = mock(CheckpointManager.class);
+            when(autosaved.getCheckpointManager()).thenReturn(checkpoints);
+            ArgumentCaptor<CheckpointSource> installed = ArgumentCaptor.forClass(CheckpointSource.class);
+            MainController main = onFx(() -> {
+                MainController controller = new MainController();
+                setField(controller, "projectLifecycleController", exit.lifecycle());
+                setField(controller, "exitCoordinator", exit.coordinator());
+                setField(controller, "projectManager", autosaved);
+                controller.wireTheWindowsAutosave();
+                return controller;
+            });
+            verify(checkpoints).setCaptureSource(any(), installed.capture());
+            java.util.function.BooleanSupplier captureAllowed = () -> installed.getValue().isAvailable();
+            java.util.function.BooleanSupplier allowed = () -> projectActionsAllowed(main);
+            KeyboardShortcutController.Host host = mock(KeyboardShortcutController.Host.class);
+            AtomicReference<Map<DawAction, Runnable>> palette = new AtomicReference<>();
+            runOnFx(() -> {
+                assertThat(allowed.getAsBoolean()).as("nothing closes: allowed").isTrue();
+                palette.set(new KeyboardShortcutController(new KeyBindingManager(preferences), host, allowed)
+                        .buildActionHandlers());
+            });
+            exit.edit("Bass");
+            SaveFlowFixture.Publishes.Hold held = exit.save.publishes.holdNext(SaveFlowFixture::isHead);
+            try {
+                exit.save.save();
+                held.awaitHeld();
+                exit.closeBox();
+                exit.await(() -> exit.fence().isRaised(), "the exit waits for the held save, the window inert");
+                runOnFx(() -> {
+                    assertThat(allowed.getAsBoolean()).as("the inert window fences the project actions").isFalse();
+                    assertThat(captureAllowed.getAsBoolean())
+                            .as("ruling 4 Q4: the autosave gate the controller installs still lets a tick capture")
+                            .isTrue();
+                    palette.get().values().forEach(Runnable::run);
+                    verify(host).onStop();
+                    verify(host).onExit();
+                    verifyNoMoreInteractions(host);
+                });
+            } finally {
+                held.release();
+            }
+            exit.awaitStep(ExitCoordinator.ExitStep.HIDE);
+            assertThat(onFx(allowed::getAsBoolean)).as("the fence came down with the window").isTrue();
+        } finally { preferences.removeNode(); }
+    }
+
+    private static boolean projectActionsAllowed(MainController main) {
+        try {
+            java.lang.reflect.Method guard = MainController.class.getDeclaredMethod("projectActionsAllowed");
+            guard.setAccessible(true);
+            return (boolean) guard.invoke(main);
+        } catch (ReflectiveOperationException failure) { throw new AssertionError(failure); }
     }
 
     @Test void workspaceMenusCannotMoveEditablePanelsOutOfTheGuardDuringInstallation() throws Exception {

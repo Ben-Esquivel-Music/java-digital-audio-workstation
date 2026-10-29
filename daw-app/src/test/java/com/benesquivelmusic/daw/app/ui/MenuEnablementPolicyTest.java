@@ -23,7 +23,8 @@ class MenuEnablementPolicyTest {
                 /* hasClipboard*/ false,
                 /* hasSelection*/ false,
                 /* hasTracks   */ false,
-                /* hasUnresolvedAssets */ false));
+                /* hasUnresolvedAssets */ false,
+                /* closeProjectAvailable */ false));
 
         assertThat(enablement.saveDisabled()).isTrue();
         assertThat(enablement.exportSessionDisabled()).isTrue();
@@ -35,19 +36,20 @@ class MenuEnablementPolicyTest {
         assertThat(enablement.pasteDisabled()).isTrue();
         assertThat(enablement.duplicateDisabled()).isTrue();
         assertThat(enablement.deleteDisabled()).isTrue();
+        assertThat(enablement.closeProjectDisabled()).isTrue();
     }
 
     @Test
     void dirtyProjectEnablesSave() {
         var enablement = MenuEnablementPolicy.compute(new MenuEnablementPolicy.MenuState(
-                true, false, false, false, false, false, false));
+                true, false, false, false, false, false, false, false));
         assertThat(enablement.saveDisabled()).isFalse();
     }
 
     @Test
     void havingTracksEnablesExportSession() {
         var enablement = MenuEnablementPolicy.compute(new MenuEnablementPolicy.MenuState(
-                false, false, false, false, false, true, false));
+                false, false, false, false, false, true, false, false));
         assertThat(enablement.exportSessionDisabled()).isFalse();
     }
 
@@ -55,23 +57,41 @@ class MenuEnablementPolicyTest {
     @Test
     void unresolvedAssetsAloneEnableRelinkMissingAssets() {
         MenuEnablementPolicy.MenuEnablement unresolved = MenuEnablementPolicy.compute(
-                new MenuEnablementPolicy.MenuState(false, false, false, false, false, false, true));
+                new MenuEnablementPolicy.MenuState(false, false, false, false, false, false, true, false));
         assertThat(unresolved.relinkMissingAssetsDisabled()).isFalse();
 
         MenuEnablementPolicy.MenuEnablement everythingElse = MenuEnablementPolicy.compute(
-                new MenuEnablementPolicy.MenuState(true, true, true, true, true, true, false));
+                new MenuEnablementPolicy.MenuState(true, true, true, true, true, true, false, true));
         assertThat(everythingElse.relinkMissingAssetsDisabled()).isTrue();
+    }
+
+    /**
+     * Story 333 (ruling R10) — File ▸ Close Project is enabled exactly while
+     * there is something to close, whatever else the menu shows: a dirty
+     * project is not by itself the menu's fact (the predicate already
+     * counts its unsaved changes), so only {@code closeProjectAvailable}
+     * moves it.
+     */
+    @Test
+    void closeProjectFollowsItsAvailabilityAlone() {
+        MenuEnablementPolicy.MenuEnablement available = MenuEnablementPolicy.compute(
+                new MenuEnablementPolicy.MenuState(false, false, false, false, false, false, false, true));
+        assertThat(available.closeProjectDisabled()).isFalse();
+
+        MenuEnablementPolicy.MenuEnablement everythingElse = MenuEnablementPolicy.compute(
+                new MenuEnablementPolicy.MenuState(true, true, true, true, true, true, true, false));
+        assertThat(everythingElse.closeProjectDisabled()).isTrue();
     }
 
     @Test
     void undoRedoFlagsControlUndoRedoMenuItems() {
         var canUndoOnly = MenuEnablementPolicy.compute(new MenuEnablementPolicy.MenuState(
-                false, true, false, false, false, false, false));
+                false, true, false, false, false, false, false, false));
         assertThat(canUndoOnly.undoDisabled()).isFalse();
         assertThat(canUndoOnly.redoDisabled()).isTrue();
 
         var canRedoOnly = MenuEnablementPolicy.compute(new MenuEnablementPolicy.MenuState(
-                false, false, true, false, false, false, false));
+                false, false, true, false, false, false, false, false));
         assertThat(canRedoOnly.undoDisabled()).isTrue();
         assertThat(canRedoOnly.redoDisabled()).isFalse();
     }
@@ -80,7 +100,7 @@ class MenuEnablementPolicyTest {
     void selectionEnablesCopyCutDuplicateDeleteButNotPaste() {
         var enablement = MenuEnablementPolicy.compute(new MenuEnablementPolicy.MenuState(
                 false, false, false, /* hasClipboard */ false,
-                /* hasSelection */ true, false, false));
+                /* hasSelection */ true, false, false, false));
 
         assertThat(enablement.copyDisabled()).isFalse();
         assertThat(enablement.cutDisabled()).isFalse();
@@ -94,14 +114,14 @@ class MenuEnablementPolicyTest {
     void clipboardEnablesPasteRegardlessOfSelection() {
         var enablement = MenuEnablementPolicy.compute(new MenuEnablementPolicy.MenuState(
                 false, false, false, /* hasClipboard */ true,
-                /* hasSelection */ false, false, false));
+                /* hasSelection */ false, false, false, false));
         assertThat(enablement.pasteDisabled()).isFalse();
     }
 
     @Test
     void allEnabledStateMatchesAFullyLoadedSession() {
         var enablement = MenuEnablementPolicy.compute(new MenuEnablementPolicy.MenuState(
-                true, true, true, true, true, true, true));
+                true, true, true, true, true, true, true, true));
 
         assertThat(enablement.saveDisabled()).isFalse();
         assertThat(enablement.exportSessionDisabled()).isFalse();
@@ -113,5 +133,6 @@ class MenuEnablementPolicyTest {
         assertThat(enablement.pasteDisabled()).isFalse();
         assertThat(enablement.duplicateDisabled()).isFalse();
         assertThat(enablement.deleteDisabled()).isFalse();
+        assertThat(enablement.closeProjectDisabled()).isFalse();
     }
 }

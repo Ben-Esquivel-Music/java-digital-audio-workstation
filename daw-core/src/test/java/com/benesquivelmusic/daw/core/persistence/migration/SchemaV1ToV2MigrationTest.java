@@ -196,7 +196,7 @@ class SchemaV1ToV2MigrationTest {
         Path projectFile = metadata.projectPath().resolve("project.daw");
         Files.writeString(projectFile, V1_WITH_CHAIN_AND_PRE_ROLL);
         byte[] original = Files.readAllBytes(projectFile);
-        manager.abandonProject();
+        manager.closeProject().join();
 
         manager.openProject(metadata.projectPath());
         MigrationReport report = manager.getLastMigrationReport();
@@ -213,11 +213,11 @@ class SchemaV1ToV2MigrationTest {
 
         saved(manager, project);
         assertThat(backupsIn(metadata.projectPath())).as("a second save writes no new backup").hasSize(1);
-        manager.abandonProject();
+        manager.closeProject().join();
 
         manager.openProject(metadata.projectPath());
         assertThat(manager.getLastMigrationReport().wasMigrated()).as("reopening is a no-op").isFalse();
-        manager.abandonProject();
+        manager.closeProject().join();
     }
 
     @Test

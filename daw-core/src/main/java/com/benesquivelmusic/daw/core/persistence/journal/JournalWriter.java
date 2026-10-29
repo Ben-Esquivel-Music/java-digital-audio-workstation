@@ -108,6 +108,13 @@ public final class JournalWriter implements AutoCloseable {
     private final AtomicLong sequence = new AtomicLong(0L);
     private final java.util.concurrent.ConcurrentSkipListSet<Long> durableMutations = new java.util.concurrent.ConcurrentSkipListSet<>();
     private volatile long checkpointBoundary = -1L;
+    /**
+     * The highest sequence of a non-control record this writer accepted
+     * ({@link #offer(JournalRecord)}), {@code -1} before any: with
+     * {@link #checkpointBoundary}, the fact
+     * {@link #offeredMutationsAfterCheckpointBoundary()} (story 333).
+     */
+    private final AtomicLong highestMutationOffered = new AtomicLong(-1L);
     private volatile IOException closeFailure;
     private final AtomicInteger queuedSinceCheckpoint = new AtomicInteger(0);
     private final AtomicBoolean bufferingSignalled = new AtomicBoolean(false);
@@ -411,6 +418,9 @@ public final class JournalWriter implements AutoCloseable {
         // before then would be drained by close() into no segment, or into the one a failing start deletes.
         if (writerThread == null) throw new IllegalStateException("Journal writer has not started");
         sequence.accumulateAndGet(record.sequence() + 1L, Math::max);
+        if (!record.isControl()) {
+            highestMutationOffered.accumulateAndGet(record.sequence(), Math::max);
+        }
         if (queue.offer(record)) {
             signalWork();
             return OfferResult.QUEUED;
@@ -472,6 +482,22 @@ public final class JournalWriter implements AutoCloseable {
 
     /** The publication fence at a model capture; no disk access. */
     public long captureSequence() { return sequence.get() - 1L; }
+
+    /**
+     * Whether a non-control record was offered after the highest capture
+     * boundary a checkpoint marker recorded — queued or already appended —
+     * so that recovery detection would owe a decision for it
+     * ({@code JournalState.needsRecovery}): the exit's closing-checkpoint
+     * trigger (i) (story 333, ruling R3). Decided from this writer's own
+     * facts, never from the project's dirty flag: transport and engine
+     * records count although they change no saved state. Lock-free; no disk
+     * access. {@code false} for a disabled writer, which accepts no record.
+     *
+     * @return whether a mutation was offered after the checkpoint boundary
+     */
+    public boolean offeredMutationsAfterCheckpointBoundary() {
+        return highestMutationOffered.get() > checkpointBoundary;
+    }
 
     /**
      * A successful checkpoint retires only mutations represented by its capture.

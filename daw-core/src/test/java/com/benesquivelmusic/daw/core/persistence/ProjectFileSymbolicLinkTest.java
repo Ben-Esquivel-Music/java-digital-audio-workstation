@@ -91,7 +91,7 @@ class ProjectFileSymbolicLinkTest {
     @AfterEach
     void releaseTheManager() {
         if (manager != null) {
-            manager.abandonProject();
+            manager.closeProject().join();
         }
     }
 
@@ -185,7 +185,7 @@ class ProjectFileSymbolicLinkTest {
      */
     @Test
     void aBackupOwedThroughALinkTheSaveRefusesCopiesNothingAndStaysOwedForTheNextSave() throws IOException {
-        manager.abandonProject();
+        manager.closeProject().join();
         Path schemaOne = Files.writeString(shared.resolve("Song-v1.xml"), SCHEMA_ONE);
         byte[] original = Files.readAllBytes(schemaOne);
         Path toSchemaOne = Path.of("..", "shared", "Song-v1.xml");
@@ -230,7 +230,7 @@ class ProjectFileSymbolicLinkTest {
      */
     @Test
     void aBackupOwedThroughADanglingLinkStaysOwedUntilItsDawFileIsBack() throws IOException {
-        manager.abandonProject();
+        manager.closeProject().join();
         Files.writeString(song, SCHEMA_ONE);
         byte[] original = Files.readAllBytes(song);
         Files.createSymbolicLink(projectFile, SHARED_SONG);
@@ -264,20 +264,21 @@ class ProjectFileSymbolicLinkTest {
     }
 
     @Test
-    void closingALegacyProjectWritesItsMetadataThroughTheLink() throws IOException {
-        manager.abandonProject();
+    void closingALegacyProjectWritesNothingThroughTheLink() throws IOException {
+        manager.closeProject().join();
         Files.createSymbolicLink(projectFile, SHARED_SONG);
         manager.openProject(projectFile.getParent());
         assertThat(manager.getCurrentDawProject()).as("fixture: a metadata-only project").isNull();
+        byte[] before = Files.readAllBytes(song);
         mover.clear();
 
-        manager.closeProject();
+        manager.closeProject().join();
 
         assertThat(Files.isSymbolicLink(projectFile)).as("the link stays").isTrue();
         assertThat(Files.readSymbolicLink(projectFile)).isEqualTo(SHARED_SONG);
-        assertThat(mover.publishes()).extracting(Publish::target).as("the metadata was published onto Song.daw")
-                .containsExactly(song.toRealPath());
-        assertThat(Files.readString(song)).startsWith("# DAW Project File").contains("name=Song");
+        assertThat(mover.publishes()).as("a close is no save (story 333, ruling R9): nothing was published")
+                .isEmpty();
+        assertThat(Files.readAllBytes(song)).as("Song.daw is as it was").isEqualTo(before);
         assertThat(tempsIn(projectFile.getParent())).isEmpty();
         assertThat(tempsIn(shared)).isEmpty();
     }

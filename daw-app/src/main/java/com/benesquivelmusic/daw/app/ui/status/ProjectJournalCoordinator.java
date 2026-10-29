@@ -23,6 +23,8 @@ import java.time.InstantSource;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
@@ -89,6 +91,9 @@ public final class ProjectJournalCoordinator {
     private Runnable rotationListener;
     private Runnable captureListener;
     private volatile Path openProjectDir;
+
+    /** The folders whose journal was last closed unsealed ({@link #closedUnsealed(Path)}). */
+    private final Set<Path> closedUnsealed = ConcurrentHashMap.newKeySet();
 
     /**
      * Serialises {@link #openFor(Path)}, {@link #closeCurrent(WorkingSession)}
@@ -161,9 +166,47 @@ public final class ProjectJournalCoordinator {
     public boolean isOpen() {
         return writer != null;
     }
+
+    /**
+     * The project folder whose journal is open, or {@code null} when none is
+     * — also while a close of it is under way, which clears it first.
+     * Lock-free.
+     *
+     * @return the folder, or {@code null}
+     */
     public Path currentProjectDirectory() { return openProjectDir; }
 
+    /**
+     * Whether a non-control record was offered to the open journal after the
+     * highest capture boundary a checkpoint marker recorded (story 333, the
+     * studio engineer's closing-checkpoint trigger (i);
+     * {@link JournalWriter#offeredMutationsAfterCheckpointBoundary()}).
+     * {@code false} when no journal is open. Lock-free, so the close reads it
+     * on the FX thread right after the journal was detached from the bus,
+     * when no record can be offered any more.
+     *
+     * @return whether a record lies outside every capture
+     */
+    public boolean hasRecordsOutsideACapture() {
+        JournalWriter w = writer;
+        return w != null && w.offeredMutationsAfterCheckpointBoundary();
+    }
+
+    /**
+     * Seals the open journal into {@code session} if it is still the
+     * journal of {@code expectedDirectory} ({@link #closeCurrent(WorkingSession)}),
+     * checked under the lifecycle lock. With {@code expectedDirectory}
+     * {@code null} — no journal was open when the caller looked — it returns
+     * at once and never waits behind another folder's close (story 333).
+     *
+     * @param expectedDirectory the folder whose journal the caller closes, or {@code null}
+     * @param session           the working session to fold the segments into; may be {@code null}
+     * @throws java.io.UncheckedIOException if the seal failed (recovery evidence preserved)
+     */
     public void closeCurrentFor(Path expectedDirectory, WorkingSession session) {
+        if (expectedDirectory == null) {
+            return;
+        }
         lifecycleLock.lock();
         try {
             if (Objects.equals(expectedDirectory, openProjectDir)) closeCurrent(session);
@@ -171,11 +214,47 @@ public final class ProjectJournalCoordinator {
     }
 
     /**
+     * Drains the open journal without sealing it ({@link #drainWithoutSeal})
+     * if it is still the journal of {@code expectedDirectory}, checked under
+     * the lifecycle lock; returns at once with {@code expectedDirectory}
+     * {@code null} (story 333; the studio engineer's ruling 2 OQ-1, constraint
+     * 2: a journal end only ever touches the journal of the folder it closes).
+     *
+     * @param expectedDirectory the folder whose journal the caller closes, or {@code null}
+     * @param session           the working session to fold the segments into, or {@code null}
+     *                          for no manifest at all
+     */
+    public void drainWithoutSealFor(Path expectedDirectory, WorkingSession session) {
+        if (expectedDirectory == null) {
+            return;
+        }
+        lifecycleLock.lock();
+        try {
+            if (Objects.equals(expectedDirectory, openProjectDir)) closeCurrent(session, false);
+        } finally { lifecycleLock.unlock(); }
+    }
+
+    /**
+     * Whether the last close of {@code projectDir}'s journal left it unsealed
+     * — a drain, or a seal that failed — so a later journal end of the same
+     * folder must certify nothing (story 333: a session manifest written then
+     * would claim a clean close the journal does not have). A new journal
+     * opened for the folder clears it. Lock-free.
+     *
+     * @param projectDir the project folder
+     * @return whether its journal was last closed unsealed
+     */
+    public boolean closedUnsealed(Path projectDir) {
+        return projectDir != null && closedUnsealed.contains(projectDir);
+    }
+
+    /**
      * Synchronously detaches the journal's {@link JournalEventRecorder} from the
      * event bus, so no further events are journaled. Fast and FX-thread-safe (it
-     * only cancels the bus subscription). Call this on the FX thread at the start
-     * of shutdown — <strong>before the EventBus closes</strong> — then finish the
-     * drain/seal with {@link #closeCurrent()} off the FX thread. Idempotent.
+     * only cancels the bus subscription). Call this on the FX thread when a
+     * close begins — <strong>before the EventBus closes</strong> — then finish
+     * the drain or seal off the FX thread ({@link #closeCurrentFor},
+     * {@link #drainWithoutSealFor}). Idempotent.
      */
     public void detachFromBus() {
         JournalEventRecorder r = this.recorder;
@@ -187,7 +266,7 @@ public final class ProjectJournalCoordinator {
     /**
      * Opens the write-ahead journal for {@code projectDir}. A no-op when
      * journaled persistence is disabled, when {@code projectDir} is {@code null},
-     * or when a journal is already open (the caller must {@link #closeCurrent()}
+     * or when a journal is already open (the caller must {@link #closeCurrent(WorkingSession)}
      * first). Any prior open is left untouched.
      *
      * @param projectDir the project root (must contain — or be able to create —
@@ -299,6 +378,7 @@ public final class ProjectJournalCoordinator {
         this.rotationListener = listener;
         this.captureListener = captureRemoval;
         this.openProjectDir = projectDir;
+        closedUnsealed.remove(projectDir);
         // Seed the Journal cell to a clean state for the freshly-opened project.
         progress.setJournalEventsQueued(0);
         progress.setJournalBackpressure(ProjectOperationProgress.JournalBackpressure.NORMAL);
@@ -392,7 +472,17 @@ public final class ProjectJournalCoordinator {
         closeCurrent(sessionToSeal, true);
     }
 
-    /** Disposal has no ordered final-save protocol until story 333: never certify it clean. */
+    /**
+     * Closes the open journal without sealing it, folding its segments into
+     * {@code sessionToSeal} — or, with {@code null}, writing no manifest at
+     * all. The exits that cannot certify a save — Quit anyway, the
+     * application-stop fallback with unsaved changes, a lost lock
+     * ({@code null} session: no manifest), a keep after the detach, Save As's
+     * Continue — never certify the session clean (story 333); the folder is
+     * then {@link #closedUnsealed(Path) closed unsealed}. Off the FX thread.
+     *
+     * @param sessionToSeal the working session to fold the segments into, or {@code null}
+     */
     public void drainWithoutSeal(WorkingSession sessionToSeal) {
         closeCurrent(sessionToSeal, false);
     }
@@ -422,13 +512,25 @@ public final class ProjectJournalCoordinator {
             }
             List<String> segments = List.of();
             if (w != null) {
-                segments = w.segmentFileNames();
+                boolean sealed = false;
                 try {
-                    if (seal) w.sealAndClose(clock.instant());
+                    if (seal) {
+                        w.sealAndClose(clock.instant());
+                        sealed = true;
+                    }
                     else w.close();
                 }
                 catch (IOException failure) {
                     throw new java.io.UncheckedIOException("Project journal could not be sealed; recovery evidence was preserved", failure);
+                }
+                finally {
+                    // Read after the seal (story 333): a checkpoint marker asks the final drain to rotate, so the
+                    // seal lands in a segment that did not exist before it; the manifest names that one too.
+                    segments = w.segmentFileNames();
+                    if (dir != null) {
+                        if (sealed) closedUnsealed.remove(dir);
+                        else closedUnsealed.add(dir);
+                    }
                 }
             }
             sealSession(dir, segments, sessionToSeal);

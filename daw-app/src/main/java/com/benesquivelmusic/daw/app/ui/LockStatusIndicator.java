@@ -20,10 +20,24 @@ import java.util.Optional;
  * after every project open / close, after each lock heartbeat, and whenever
  * a {@code LockStolenException} is observed so the title bar reflects reality
  * immediately.</p>
+ *
+ * <p>Story 333 (Persistence Integrity book §7.3; UI Design Book §3.1, tokens
+ * by role, never by hex): each status is a style class beside
+ * {@code lock-status-indicator} — {@link #HELD_STYLE_CLASS} on the
+ * {@code -ok} fill, {@link #READ_ONLY_STYLE_CLASS} on {@code -warn},
+ * {@link #STOLEN_STYLE_CLASS} on {@code -danger}, the text
+ * {@code -text-on-accent} — defined in {@code styles.css}; none for no lock.
+ * The indicator writes no inline style. A stolen lock's tooltip names
+ * File ▸ Save As… (ruling R7).</p>
  */
 public final class LockStatusIndicator extends Label {
 
-    private static final String STYLE_BASE = "-fx-padding: 2 8 2 8; -fx-background-radius: 8;";
+    /** The style class of a lock this session holds. */
+    static final String HELD_STYLE_CLASS = "lock-held";
+    /** The style class of a read-only open. */
+    static final String READ_ONLY_STYLE_CLASS = "lock-read-only";
+    /** The style class of a lock another session took over. */
+    static final String STOLEN_STYLE_CLASS = "lock-stolen";
 
     /**
      * The FX-thread marshalling seam (story 289), injected on the production
@@ -90,10 +104,11 @@ public final class LockStatusIndicator extends Label {
     }
 
     private void applyStatus(LockStatus status, ProjectLock lock) {
+        getStyleClass().removeAll(HELD_STYLE_CLASS, READ_ONLY_STYLE_CLASS, STOLEN_STYLE_CLASS);
         switch (status) {
             case HELD -> {
                 setText("● Locked");
-                setStyle(STYLE_BASE + "-fx-background-color: #1f8a3a; -fx-text-fill: white;");
+                getStyleClass().add(HELD_STYLE_CLASS);
                 setTooltip(new Tooltip("You hold the write lock for this project."
                         + Optional.ofNullable(lock)
                             .map(l -> "\nHolder: " + l.user() + "@" + l.hostname() + " (pid " + l.pid() + ")")
@@ -101,18 +116,16 @@ public final class LockStatusIndicator extends Label {
             }
             case READ_ONLY -> {
                 setText("◔ Read-only");
-                setStyle(STYLE_BASE + "-fx-background-color: #b8860b; -fx-text-fill: white;");
+                getStyleClass().add(READ_ONLY_STYLE_CLASS);
                 setTooltip(new Tooltip("Project is read-only because another session holds the lock."));
             }
             case STOLEN -> {
                 setText("⚠ Lock stolen");
-                setStyle(STYLE_BASE + "-fx-background-color: #b22222; -fx-text-fill: white;");
-                setTooltip(new Tooltip("Another session has taken over the lock. "
-                        + "Use Save As to preserve your changes."));
+                getStyleClass().add(STOLEN_STYLE_CLASS);
+                setTooltip(new Tooltip(ProjectCloseText.text("lock.tooltip.stolen")));
             }
             case NONE -> {
                 setText("");
-                setStyle(STYLE_BASE);
                 setTooltip(null);
             }
         }

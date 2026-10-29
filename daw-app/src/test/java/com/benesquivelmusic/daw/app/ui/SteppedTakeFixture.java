@@ -75,6 +75,12 @@ final class SteppedTakeFixture {
     final NotificationHistoryService shown = new NotificationHistoryService();
     /** The controller's still-writing delay, which fires only when a test fires it, on the FX thread. */
     final ManualFxDelay stillWritingDelay = new ManualFxDelay();
+    /**
+     * The count-in a Record plays, read at each Record (story 333: a take
+     * counting in). The stepped device advances only when the test feeds
+     * it, so a count-in never ends by itself.
+     */
+    volatile CountInMode countIn = CountInMode.OFF;
     final TransportController controller;
     private final CaptureFlushThreadWatch flushThreads = CaptureFlushThreadWatch.snapshot();
     private NotificationBar notificationBar;
@@ -115,7 +121,7 @@ final class SteppedTakeFixture {
                     new Label(), statusBarLabel, recIndicator, new Button(), new Button(),
                     () -> false,
                     () -> GridResolution.QUARTER,
-                    () -> CountInMode.OFF,
+                    () -> countIn,
                     _ -> { },
                     () -> true,
                     () -> reportedLatency,

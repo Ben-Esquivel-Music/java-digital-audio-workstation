@@ -20,5 +20,14 @@ public enum CheckpointOrigin {
     USER,
 
     /** The safety copy of a save whose head write failed after its document rendered (ruling G9). */
-    SAFETY_COPY
+    SAFETY_COPY,
+
+    /**
+     * The exit protocol's closing checkpoint (story 333; Persistence Integrity
+     * book §5.4; ruling R3): written once the close decided, by the running
+     * generation, whether or not its revision is already checkpointed and
+     * whether or not autosave is enabled; no in-memory browser entry and no
+     * label; counts toward retention.
+     */
+    CLOSING
 }

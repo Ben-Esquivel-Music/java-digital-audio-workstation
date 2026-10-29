@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.core.persistence;
 
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -43,7 +45,11 @@ import java.util.Optional;
  *       lies strictly under the root. The result is the root-relative path
  *       joined with {@code '/'}. Everything else — an already-relative
  *       reference, an absolute reference outside the root, the root itself,
- *       or an unparseable string — is returned <em>verbatim</em>.</li>
+ *       or an unparseable string — is returned <em>verbatim</em>.
+ *       {@link #relativize(Path, List, String)} adds the project's former
+ *       roots (story 333, Save As): an absolute reference that rule leaves
+ *       verbatim and that lies strictly under a former root's
+ *       {@code audio/} is written {@code audio/<path under it>}.</li>
  *   <li>The read side. With a known root, a non-empty reference falls in
  *       exactly one of five classes, decided in one private method that both
  *       {@link #resolve(Path, String)} and {@link #unresolvable(Path, String)}
@@ -207,19 +213,56 @@ public final class ProjectPaths {
      * @return the serialised form
      */
     static String relativize(Path root, String reference) {
-        if (root == null || reference == null || reference.isEmpty()) {
+        return relativize(root, FormerRoots.NONE, reference);
+    }
+
+    /**
+     * Write-side rule with the project's <em>former roots</em> (story 333,
+     * Save As; Persistence Integrity book §3.3): first {@link #relativize(Path,
+     * String)}; then, for a reference that rule leaves absolute, the first
+     * former root {@code F} that holds it strictly gives its path under
+     * {@code F}, forward-slashed — but only when the copy holds the file at
+     * that path ({@link FormerRoots#holds}), so it names the copy's own file:
+     * a clip held only by the undo history and brought back after the Save
+     * As, say. A reference under a former root whose file the copy does not
+     * hold — missing when the copy was taken, left out of it, or put there
+     * since — is returned unchanged, absolute: it still names the original's
+     * file. Pure path arithmetic and a set lookup; no I/O.
+     *
+     * @param root        the project directory, or {@code null} when the project has no directory yet
+     * @param formerRoots the folders the project was saved from as a copy this session, and what the copy holds
+     * @param reference   the in-memory reference (may be {@code null})
+     * @return the serialised form
+     */
+    static String relativize(Path root, FormerRoots formerRoots, String reference) {
+        Objects.requireNonNull(formerRoots, "formerRoots must not be null");
+        if (reference == null || reference.isEmpty()) {
             return reference;
         }
         Path candidate = parse(reference);
         if (candidate == null || !candidate.isAbsolute()) {
             return reference;
         }
-        Path rootAbs = root.toAbsolutePath().normalize();
         Path target = candidate.normalize();
-        if (!isStrictlyUnder(rootAbs, target)) {
-            return reference;
+        if (root != null) {
+            Path rootAbs = root.toAbsolutePath().normalize();
+            if (isStrictlyUnder(rootAbs, target)) {
+                return joined(rootAbs.relativize(target));
+            }
         }
-        Path relative = rootAbs.relativize(target);
+        for (Path formerRoot : formerRoots.folders()) {
+            if (isStrictlyUnder(formerRoot, target)) {
+                Path relative = formerRoot.relativize(target);
+                if (formerRoots.holds(relative)) {
+                    return joined(relative);
+                }
+            }
+        }
+        return reference;
+    }
+
+    /** {@code relative}'s names joined with {@code '/'}. */
+    private static String joined(Path relative) {
         StringBuilder joined = new StringBuilder();
         for (Path element : relative) {
             if (!joined.isEmpty()) {

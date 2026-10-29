@@ -52,7 +52,9 @@ class DawActionTest {
                 // Story 329 — File-menu / Command Palette only, no keyboard accelerator.
                 DawAction.RELINK_MISSING_ASSETS,
                 // Sessions Stage 3 — Window-menu only, no keyboard accelerator.
-                DawAction.TOGGLE_SESSION_MANAGER);
+                DawAction.TOGGLE_SESSION_MANAGER,
+                // Story 333 (ruling R12 #5) — File ▸ Save As… and the palette; Shortcut+Shift+S is Toggle Snap.
+                DawAction.SAVE_AS);
         for (DawAction action : DawAction.values()) {
             if (nullBindingAllowed.contains(action)) {
                 continue;
@@ -61,6 +63,28 @@ class DawActionTest {
                     .as("defaultBinding for %s", action.name())
                     .isNotNull();
         }
+    }
+
+    @Test
+    void saveProjectAsIsAnEditingActionWithNoDefaultShortcutNamedApartFromTheWorkspacesSaveAs() {
+        // Story 333 — ruling R12 #5 (no shortcut in this story) and ENG-N8 (the palette names it apart).
+        assertThat(DawAction.SAVE_AS.displayName()).isEqualTo("Save Project As…");
+        assertThat(DawAction.SAVE_AS.category()).isEqualTo(DawAction.Category.EDITING);
+        assertThat(DawAction.SAVE_AS.defaultBinding()).isNull();
+        assertThat(DawAction.SAVE_AS.displayName()).isNotEqualTo(DawAction.WORKSPACE_SAVE_AS.displayName());
+    }
+
+    @Test
+    void closeProjectIsShortcutShiftWAndExitIsShortcutQWithExitBesideSettingsAndThePalette() {
+        // Story 333 — ruling R12 #5's shortcuts; design §3.9: Exit sits with Settings and Command Palette.
+        assertThat(DawAction.CLOSE_PROJECT.displayName()).isEqualTo("Close Project");
+        assertThat(DawAction.CLOSE_PROJECT.category()).isEqualTo(DawAction.Category.EDITING);
+        assertThat(DawAction.CLOSE_PROJECT.defaultBinding()).isEqualTo(new javafx.scene.input.KeyCodeCombination(
+                javafx.scene.input.KeyCode.W, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN));
+        assertThat(DawAction.EXIT.displayName()).isEqualTo("Exit");
+        assertThat(DawAction.EXIT.category()).isEqualTo(DawAction.Category.APPLICATION);
+        assertThat(DawAction.EXIT.defaultBinding()).isEqualTo(new javafx.scene.input.KeyCodeCombination(
+                javafx.scene.input.KeyCode.Q, KeyCombination.SHORTCUT_DOWN));
     }
 
     @Test
