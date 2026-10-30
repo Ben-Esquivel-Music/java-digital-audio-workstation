@@ -157,7 +157,8 @@ public final class ProjectSerializer {
      * roots</em> project-relative too (story 333, Save As; Persistence
      * Integrity book §3.3): a clip reference that the project-relative rule
      * leaves absolute and that lies strictly under a former root is written
-     * as its path under that root when the copy holds the file there
+     * as its path under that root when that root's own held set holds the
+     * path — the copy holds that root's file there
      * ({@link ProjectPaths#relativize(Path, FormerRoots, String)}). A former
      * root is a folder this session saved the open project from as a copy, so
      * such a reference — a clip held only by the undo history and brought
@@ -167,8 +168,8 @@ public final class ProjectSerializer {
      * the rest of the capture.
      *
      * @param project     the project to capture
-     * @param formerRoots the folders the open project was saved from as a copy this session, and what the copy
-     *                    holds; {@link FormerRoots#NONE} for none
+     * @param formerRoots the folders the open project was saved from as a copy this session, each with what the
+     *                    copy holds of it; {@link FormerRoots#NONE} for none
      * @return the captured document, confined to one thread at a time
      * @throws IOException if no XML document can be created
      */

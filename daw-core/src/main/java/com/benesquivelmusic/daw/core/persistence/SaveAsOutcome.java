@@ -24,12 +24,15 @@ public sealed interface SaveAsOutcome permits SaveAsOutcome.Published, SaveAsOut
      * @param metadata       the copy's metadata, its folder set
      * @param sourceFolder   the folder the project was copied from; empty for a project never saved
      * @param formerRoots    the folders the copy was taken from, oldest first — the source folder's own former
-     *                       roots, then the source folder — and every file the copy holds, by its path relative
-     *                       to {@code folder}: the copy's saves write a reference under those folders
-     *                       project-relative only when the copy holds its file, and the live project is
-     *                       re-pointed at the copy for those files alone
+     *                       roots, then the source folder — each with its own held set, by path relative to
+     *                       {@code folder}: the source folder's set is every file the copy holds, and an older
+     *                       root's set the files of its set the copy took at the same path. The copy's saves
+     *                       write a reference that lies under those folders project-relative only when the held
+     *                       set of a folder it lies under holds its path, as its path under the newest such
+     *                       folder, and the live project is re-pointed at the copy
+     *                       for the source folder's set alone
      *                       ({@link ProjectAssetReferences#rebase(com.benesquivelmusic.daw.core.project.DawProject,
-     *                       Path, Path, java.util.Set)})
+     *                       Path, Path, java.util.Set)}, {@link FormerRoots#heldFrom})
      * @param missingFiles   the audio files the project uses that were missing and were not copied
      * @param unknownEntries the source folder's top-level entries left out because nothing knows them
      */

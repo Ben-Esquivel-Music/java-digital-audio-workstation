@@ -761,21 +761,43 @@ final class TransportController implements TransportIntentHandler {
 
     /**
      * Stops the transport for a close (story 333; the studio engineer's
-     * rulings R1, R2 and B2): a take in flight gets its ordinary Stop — its
-     * seal requested, the MIDI recorders stopped, a take being prepared
-     * cancelled — but no post-roll is entered, and one that is running ends
-     * now ({@link #finishPostRoll()}, with its {@code TransportEvent.Stopped}
-     * published on this turn), so the close's capture is taken of a stopped
-     * transport and nothing is journaled after it. Does nothing when the
-     * transport is already stopped and nothing records — never the
-     * double-stop rewind. FX thread; wait-free.
+     * rulings R1, R2 and B2): a take that is recording or counting in gets
+     * its ordinary Stop ({@link #stop()}) — its seal requested, the MIDI
+     * recorders stopped, a count-in ended — also when Record started it
+     * inside a running post-roll's tail (PR #989 review 5704604621), so no
+     * take still records when this returns: an audio take that was
+     * recording is then being written ({@link #isTakeBeingWritten()}), and
+     * the close waits for its publication. A take still being
+     * prepared gets the Stop too, which cancels it — except in post-roll
+     * ({@link Transport#isInPostRoll()}: a running tail, or one paused
+     * inside it), whose end ({@link #finishPostRoll()}) cancels it as it
+     * always does and leaves the cancel's text in the status bar. With
+     * nothing recording, the Stop runs only over a transport that is not
+     * stopped and not in post-roll; in post-roll it is never run: over a
+     * running tail it would enter a new tail, and over a paused one the
+     * tail's end stops the transport just as that Stop would.
      *
-     * @return whether the transport is now STOPPED and not in post-roll
+     * <p>It leaves no post-roll running: one its Stop enters — the Stop of a
+     * MIDI-only take, or of a playing transport, with a post-roll configured —
+     * or one already in progress, running or paused, ends on this turn
+     * ({@link #finishPostRoll()}, its timer stopped first), so exactly one
+     * {@code TransportEvent.Stopped} is published on this turn when the
+     * transport was rolling, the close's capture is taken of a stopped
+     * transport and nothing is journaled after it. Does nothing when the transport is already stopped and nothing
+     * records — never the double-stop rewind. FX thread; wait-free: an audio
+     * take's seal is only requested here, and its capture thread seals it.</p>
+     *
+     * @return whether the transport is now STOPPED, not in post-roll, and
+     *         nothing still records or counts in — the fact the close's
+     *         consent reads ({@link #isRecordingInFlight()},
+     *         {@link #isCountingIn()})
      */
     boolean stopForClose() {
         Transport transport = project.getTransport();
-        if (!transport.isInPostRoll()
-                && (transport.getState() != TransportState.STOPPED || isRecordingInFlight())) {
+        boolean takeInFlight = isRecordingInFlight() || isCountingIn();
+        boolean preparedInsideTheTail = transport.isInPostRoll() && recordCoordinator.isPreparingTake();
+        boolean rollingOutsideATail = !transport.isInPostRoll() && transport.getState() != TransportState.STOPPED;
+        if (takeInFlight ? !preparedInsideTheTail : rollingOutsideATail) {
             stop();
         }
         if (transport.isInPostRoll()) {
@@ -784,7 +806,8 @@ final class TransportController implements TransportIntentHandler {
             }
             finishPostRoll();
         }
-        return transport.getState() == TransportState.STOPPED && !transport.isInPostRoll();
+        return transport.getState() == TransportState.STOPPED && !transport.isInPostRoll()
+                && !isRecordingInFlight() && !isCountingIn();
     }
 
     /**

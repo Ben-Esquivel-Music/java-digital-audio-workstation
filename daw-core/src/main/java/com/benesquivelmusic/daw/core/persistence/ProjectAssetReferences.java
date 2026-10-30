@@ -93,14 +93,16 @@ public final class ProjectAssetReferences {
      * or that lies elsewhere is left as it is. References held only by the
      * undo history are not reachable here (the former-root rule of
      * {@link ProjectSerializer#capture(DawProject, FormerRoots)} writes their
-     * saved form project-relative when the copy holds their file). Owner
-     * thread; no disk access; nothing is marked dirty.
+     * saved form project-relative when the held set of the former root they
+     * lie under holds their path — the copy holds that folder's file there).
+     * Owner thread; no disk access; nothing is marked dirty.
      *
      * @param project the project
      * @param from    the folder the references lie under now
      * @param to      the folder they are to lie under
-     * @param held    the files the copy in {@code to} holds, each relative to it
-     *                ({@link SaveAsOutcome.Published#formerRoots()}'s {@link FormerRoots#heldFiles()})
+     * @param held    the files the copy in {@code to} took from {@code from}, each relative to both — every file
+     *                the copy holds, never an older former root's set
+     *                ({@link SaveAsOutcome.Published#formerRoots()}'s {@link FormerRoots#heldFrom} {@code from})
      * @return how many references it re-pointed
      */
     public static int rebase(DawProject project, Path from, Path to, Set<Path> held) {

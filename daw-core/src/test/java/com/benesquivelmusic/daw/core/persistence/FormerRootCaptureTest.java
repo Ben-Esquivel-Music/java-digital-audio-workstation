@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -30,7 +31,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * when, the copy holds that file. A reference whose file the copy does not
  * hold — one that appeared in the original after the copy — stays absolute,
  * so it still names the original's file; a project opened the ordinary way
- * has no former roots.
+ * has no former roots. Along a chain of copies each former root answers for
+ * itself (PR #989 review 5704604621): a file a copy left out and a later
+ * folder acquired at the same path is held for the later folder only, and
+ * the newest former root that holds a reference decides.
  */
 class FormerRootCaptureTest {
 
@@ -51,8 +55,8 @@ class FormerRootCaptureTest {
         vox.addClip(new AudioClip("not held", 4, 1, songA.resolve("audio/late.wav").toString()));
         // Ruling 3 D-a: one rule for every path, audio/ or not — a non-audio file the copy does not hold.
         vox.addClip(new AudioClip("not held outside audio", 5, 1, songA.resolve("samples/old.wav").toString()));
-        FormerRoots roots = new FormerRoots(List.of(songA), Set.of(Path.of("audio/takes/t1/vox/segment-000.wav"),
-                Path.of("samples/kick.wav"), Path.of("audio/ext.wav")));
+        FormerRoots roots = new FormerRoots(List.of(new FormerRoots.Root(songA, Set.of(
+                Path.of("audio/takes/t1/vox/segment-000.wav"), Path.of("samples/kick.wav"), Path.of("audio/ext.wav")))));
 
         ProjectDocument withRoots = new ProjectSerializer().capture(project, roots);
         String xml = withRoots.toXml();
@@ -169,6 +173,133 @@ class FormerRootCaptureTest {
         await(second.closeProject());
     }
 
+    @Test
+    void aFileACopyLeftOutStaysAbsoluteThoughALaterFolderHoldsAnotherAtTheSamePath() {
+        Path songA = tmp.resolve("Song A");
+        Path songB = tmp.resolve("Song B");
+        Path songC = tmp.resolve("Song C");
+        // A to B took audio/kept.wav, not audio/gone.wav; B to C took both, its audio/gone.wav B's own.
+        FormerRoots roots = FormerRoots.NONE
+                .thenCopiedFrom(songA, paths("audio/kept.wav"))
+                .thenCopiedFrom(songB, paths("audio/kept.wav", "audio/gone.wav"));
+
+        assertThat(ProjectPaths.relativize(songC, roots, songA.resolve("audio/gone.wav").toString()))
+                .as("C's audio/gone.wav is B's file, never A's: A's reference stays absolute")
+                .isEqualTo(songA.resolve("audio/gone.wav").toString());
+        assertThat(ProjectPaths.relativize(songC, roots, songA.resolve("audio/kept.wav").toString()))
+                .isEqualTo("audio/kept.wav");
+        assertThat(ProjectPaths.relativize(songC, roots, songB.resolve("audio/gone.wav").toString()))
+                .isEqualTo("audio/gone.wav");
+    }
+
+    @Test
+    void aFileEveryCopyTookIsWrittenRelativeForEachFolderOfTheChain() {
+        Path songA = tmp.resolve("Song A");
+        Path songB = tmp.resolve("Song B");
+        Path songC = tmp.resolve("Song C");
+        FormerRoots roots = FormerRoots.NONE
+                .thenCopiedFrom(songA, paths("audio/x.wav"))
+                .thenCopiedFrom(songB, paths("audio/x.wav", "audio/b.wav"));
+
+        assertThat(ProjectPaths.relativize(songC, roots, songA.resolve("audio/x.wav").toString()))
+                .as("audio/x.wav went A to B to C at the same path").isEqualTo("audio/x.wav");
+        assertThat(ProjectPaths.relativize(songC, roots, songB.resolve("audio/x.wav").toString()))
+                .isEqualTo("audio/x.wav");
+        assertThat(ProjectPaths.relativize(songC, roots, songB.resolve("audio/b.wav").toString()))
+                .isEqualTo("audio/b.wav");
+    }
+
+    @Test
+    void aFileALaterCopyLeftOutStaysAbsoluteForTheEarlierFolder() {
+        Path songA = tmp.resolve("Song A");
+        Path songB = tmp.resolve("Song B");
+        Path songC = tmp.resolve("Song C");
+        FormerRoots roots = FormerRoots.NONE
+                .thenCopiedFrom(songA, paths("audio/x.wav", "audio/y.wav"))
+                .thenCopiedFrom(songB, paths("audio/y.wav"));
+
+        assertThat(ProjectPaths.relativize(songC, roots, songA.resolve("audio/x.wav").toString()))
+                .as("B to C left audio/x.wav out: C has no file at that path that came from A")
+                .isEqualTo(songA.resolve("audio/x.wav").toString());
+        assertThat(ProjectPaths.relativize(songC, roots, songA.resolve("audio/y.wav").toString()))
+                .isEqualTo("audio/y.wav");
+    }
+
+    @Test
+    void theNewestFolderHoldsEveryFileItsCopyTookThoughNoEarlierFolderHadIt() {
+        Path songA = tmp.resolve("Song A");
+        Path songB = tmp.resolve("Song B");
+        Path songC = tmp.resolve("Song C");
+        FormerRoots roots = FormerRoots.NONE
+                .thenCopiedFrom(songA, paths("audio/a.wav"))
+                .thenCopiedFrom(songB, paths("audio/a.wav", "audio/recorded-in-b.wav"));
+
+        assertThat(ProjectPaths.relativize(songC, roots, songB.resolve("audio/recorded-in-b.wav").toString()))
+                .as("B's own take, which A never had, is C's file").isEqualTo("audio/recorded-in-b.wav");
+        assertThat(ProjectPaths.relativize(songC, roots, songA.resolve("audio/recorded-in-b.wav").toString()))
+                .isEqualTo(songA.resolve("audio/recorded-in-b.wav").toString());
+    }
+
+    @Test
+    void aFolderNestedInAnEarlierFolderDecidesFirst() {
+        Path songA = tmp.resolve("Song A");
+        Path songB = tmp.resolve("Song B");
+        Path nested = songA.resolve("sub");
+        Path songC = tmp.resolve("Song C");
+        // A to B took sub/audio/t.wav; B to A/sub took it and B's audio/t.wav; A/sub to C took both again.
+        FormerRoots roots = FormerRoots.NONE
+                .thenCopiedFrom(songA, paths("sub/audio/t.wav", "sub/only-in-a.wav"))
+                .thenCopiedFrom(songB, paths("sub/audio/t.wav", "audio/t.wav", "sub/only-in-a.wav"))
+                .thenCopiedFrom(nested, paths("sub/audio/t.wav", "audio/t.wav", "sub/only-in-a.wav"));
+
+        assertThat(ProjectPaths.relativize(songC, roots, nested.resolve("audio/t.wav").toString()))
+                .as("A/sub, the newer folder, names the file; under A it would read sub/audio/t.wav")
+                .isEqualTo("audio/t.wav");
+        assertThat(ProjectPaths.relativize(songC, roots, nested.resolve("only-in-a.wav").toString()))
+                .as("A/sub does not hold only-in-a.wav: skipped, and A, which does, decides")
+                .isEqualTo("sub/only-in-a.wav");
+    }
+
+    @Test
+    void aChainOfSaveAsCopiesKeepsEachFoldersFilesApart() throws IOException {
+        ProjectManager manager = manager();
+        Path songA = manager.createProject("Song A", tmp).projectPath();
+        Files.write(songA.resolve("audio/kept.wav"), new byte[16]);
+        DawProject project = projectIn(songA);
+        saved(manager, project);
+        Path songB = saveAsAndAdopt(manager, project, "Song B");
+        // After A to B: A gains an audio/gone.wav the copy never took, and B gains a different one of its own.
+        Files.write(songA.resolve("audio/gone.wav"), new byte[] {1, 1, 1, 1});
+        Files.write(songB.resolve("audio/gone.wav"), new byte[] {2, 2, 2, 2});
+        Path songC = saveAsAndAdopt(manager, project, "Song C");
+
+        project.getTracks().getFirst().addClip(new AudioClip("A's gone", 8, 1,
+                songA.resolve("audio/gone.wav").toString()));
+        project.getTracks().getFirst().addClip(new AudioClip("A's kept", 9, 1,
+                songA.resolve("audio/kept.wav").toString()));
+        project.getTracks().getFirst().addClip(new AudioClip("B's gone", 10, 1,
+                songB.resolve("audio/gone.wav").toString()));
+        project.markDirty();
+        saved(manager, project);
+
+        assertThat(Files.readAllBytes(songC.resolve("audio/gone.wav"))).as("C's audio/gone.wav is B's")
+                .containsExactly(2, 2, 2, 2);
+        String head = Files.readString(songC.resolve("project.daw"));
+        assertThat(head).as("A's audio/gone.wav keeps naming A's file")
+                .contains("source-file=\"" + songA.resolve("audio/gone.wav") + "\"")
+                .contains("source-file=\"audio/kept.wav\"");
+        assertThat(head.split("source-file=\"audio/gone.wav\"", -1)).as("only B's reference names C's audio/gone.wav")
+                .hasSize(2);
+    }
+
+    private static Set<Path> paths(String... relative) {
+        Set<Path> paths = new HashSet<>();
+        for (String path : relative) {
+            paths.add(Path.of(path));
+        }
+        return paths;
+    }
+
     private static ProjectManager manager() {
         return new ProjectManager(new CheckpointManager(new AutoSaveConfig(Duration.ofHours(1), 10, true)));
     }
@@ -192,7 +323,7 @@ class FormerRootCaptureTest {
         ProjectManager.PreparedOpen lease = manager.prepareLockedAccess(published.folder());
         manager.closeProject();
         manager.adoptPublishedCopy(published, lease, project);
-        ProjectAssetReferences.rebase(project, from, published.folder(), published.formerRoots().heldFiles());
+        ProjectAssetReferences.rebase(project, from, published.folder(), published.formerRoots().heldFrom(from));
         project.setName(name);
         project.setMetadata(published.metadata());
         project.markCleanIfUnchanged(capture.revision());

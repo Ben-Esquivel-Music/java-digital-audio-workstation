@@ -875,8 +875,11 @@ close box, File ▸ Exit, File ▸ Close Project and the close-then-continue pri
 flight — `isRecordingInFlight()` or `isCountingIn()` on the current `TransportController` — asks
 first, “Recording in Progress”: Stop the take and close, or Keep recording, the default (Enter,
 Escape and the window's close box), which ends the close at GUARD, before any later step. On consent the close
-stops the transport with `TransportController.stopForClose()`: the take's ordinary Stop, with no
-post-roll entered and a running one ended now. That take, like any take still being written
+stops the transport with `TransportController.stopForClose()`: the take's ordinary Stop — a take
+Record started inside a post-roll's tail included, while a take still being prepared in post-roll, its tail
+running or paused, is cancelled by that tail's end, as it always is — after which no post-roll is left
+running: one the Stop enters, or one already in progress, running or paused, ends on that turn. That take,
+like any take still being written
 (`isTakeBeingWritten()`), is then waited out, never refused: the window is input-inert, after half a
 second the strip and the progress dialog show “Finishing take…”, the keep button (Don't quit, or
 Keep project open) ends the close and leaves the take to publish into the still-open project, and

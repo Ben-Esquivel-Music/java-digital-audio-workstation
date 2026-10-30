@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 
@@ -39,8 +40,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * box, a take being prepared (its Stop cancels the start, which counts as
  * being written until the removal of its files ran), a take counting in (the
  * Stop ends the count-in with no take), a MIDI take (the confirmation, then
- * the take line) and a take with post-roll on (the close's Stop ends the
- * post-roll at once, so the transport is stopped and out of it). The
+ * the take line), a take with post-roll on (the close's Stop ends the
+ * post-roll at once, so the transport is stopped and out of it) and a take
+ * Record started inside a running post-roll's tail (the close's Stop at
+ * GUARD stops it, and GUARD waits for its publication; PR #989 review
+ * 5704604621) — and the same take at the application-stop fallback, which
+ * stops it and waits for its publication before its closing checkpoint. The
  * device is stepped by the test ({@link SteppedTakeFixture}) wherever a
  * state must hold; the MIDI and post-roll takes record as the app records
  * ({@link RecordingInFlightFixture}).
@@ -256,6 +261,103 @@ class TakeAtExitInEveryRecordingStateTest {
         assertThat(clips).hasSize(1);
         assertThat(Files.readString(fixture.songA.resolve("project.daw"), StandardCharsets.UTF_8))
                 .contains(Path.of(clips.getFirst().getSourceFilePath()).getFileName().toString());
+    }
+
+    /**
+     * A take Record started inside a running post-roll's tail (PR #989
+     * review 5704604621; {@code Transport.record()} leaves the post-roll flag
+     * set): the close's Stop at GUARD gives it its ordinary Stop, so GUARD
+     * waits for its publication before the unsaved-changes prompt and FLUSH —
+     * the prompt's take line, the clip in {@code project.daw} after Save and
+     * close — and each of the close's stops leaves the transport stopped,
+     * out of the post-roll.
+     */
+    @Test
+    void aTakeRecordStartedInsideARunningPostRollIsStoppedAtTheGuardAndKept() throws Exception {
+        recordInsideARunningPostRoll();
+        fixture.stopTakeAnswer = "Stop the take and close";
+        fixture.save.promptAnswer = "Save and close";
+
+        fixture.closeBox();
+        fixture.awaitStep(ExitCoordinator.ExitStep.HIDE);
+
+        assertThat(fixture.stopTakePrompts).hasSize(1);
+        assertThat(fixture.transportBeforeStops).as("the close's first stop met the take recording inside the tail")
+                .first().isEqualTo("RECORDING post-roll");
+        assertThat(fixture.transportAfterStops).as("each of the close's stops left the transport stopped, out of"
+                + " the post-roll").isNotEmpty().allMatch("STOPPED"::equals);
+        assertThat(fixture.unsavedPrompts).singleElement().satisfies(prompt -> assertThat(prompt.content())
+                .as("GUARD waited for the take's publication before the prompt").startsWith(TAKE_LINE));
+        List<AudioClip> clips = onFx(() -> List.copyOf(recording.armed().getClips()));
+        assertThat(clips).hasSize(1);
+        assertThat(Files.readString(fixture.songA.resolve("project.daw"), StandardCharsets.UTF_8))
+                .as("the take is in project.daw after Save and close")
+                .contains(Path.of(clips.getFirst().getSourceFilePath()).getFileName().toString());
+    }
+
+    /**
+     * The application-stop fallback with a take Record started inside a
+     * running post-roll's tail (PR #989 review 5704604621; ruling R4 step 1):
+     * the fallback's transport stop gives the take its ordinary Stop, so the
+     * fallback waits for the take's publication before its closing
+     * checkpoint, which then holds the take's clip; {@code project.daw} is
+     * never written (R4), and each of the close's stops leaves the transport
+     * stopped, out of the post-roll.
+     */
+    @Test
+    void theApplicationStopStopsATakeRecordStartedInsideARunningPostRollAndKeepsItInTheClosingCheckpoint()
+            throws Exception {
+        recordInsideARunningPostRoll();
+        byte[] head = Files.readAllBytes(fixture.songA.resolve("project.daw"));
+
+        java.util.concurrent.CompletableFuture<Void> stopped = fixture.stopTheApplication();
+        try {
+            ExitFixture.awaitStopped(stopped);
+        } finally {
+            if (!stopped.isDone()) {
+                fixture.fire(com.benesquivelmusic.daw.core.persistence.ProjectManager.EXIT_WRITE_WAIT);
+            }
+        }
+
+        assertThat(fixture.transportBeforeStops).as("the fallback's stop met the take recording inside the tail")
+                .first().isEqualTo("RECORDING post-roll");
+        assertThat(fixture.transportAfterStops).as("each of the close's stops left the transport stopped, out of"
+                + " the post-roll").isNotEmpty().allMatch("STOPPED"::equals);
+        assertThat(fixture.stepNames()).containsExactly("GUARD DONE", "CLOSING_CHECKPOINT DONE", "SEAL DONE",
+                "RELEASE DONE", "DISPOSE DONE");
+        List<AudioClip> clips = onFx(() -> List.copyOf(recording.armed().getClips()));
+        assertThat(clips).as("the take was published before the fallback went on").hasSize(1);
+        String clipFile = Path.of(clips.getFirst().getSourceFilePath()).getFileName().toString();
+        assertThat(Files.readString(SaveFlowFixture.checkpointFiles(fixture.songA).getLast(), StandardCharsets.UTF_8))
+                .as("the take is in the closing checkpoint").contains(clipFile);
+        assertThat(Files.readAllBytes(fixture.songA.resolve("project.daw"))).as("project.daw never written (R4)")
+                .isEqualTo(head);
+    }
+
+    /**
+     * Song A saved with an armed audio track recorded as the app records;
+     * post-roll on — eight bars at 20 BPM, a 96 s tail that outlasts the
+     * take's preparation — Play, the user's Stop, whose tail runs, and Record
+     * inside the tail; then waits, bounded, until the take records, and
+     * asserts that the post-roll flag is still set.
+     */
+    private void recordInsideARunningPostRoll() throws Exception {
+        DawProject song = fixture.save.project.get();
+        recording = RecordingInFlightFixture.audio(song);
+        fixture.transport = recording.controller();
+        fixture.save.save();
+        fixture.save.settle();
+        runOnFx(() -> {
+            Transport transport = song.getTransport();
+            transport.setPreRollPostRoll(new PreRollPostRoll(0, PreRollPostRoll.MAX_BARS, true));
+            transport.setTempo(20.0);
+            transport.play();
+            recording.controller().stop();
+            assertThat(transport.isInPostRoll()).as("fixture: the user's Stop entered the post-roll").isTrue();
+            recording.startOnFx();
+        });
+        recording.assertStillRecording();
+        assertThat(onFx(song.getTransport()::isInPostRoll)).as("fixture: the take records inside the tail").isTrue();
     }
 
     /** Song A's Vox armed and saved, recorded through a device the test steps. */

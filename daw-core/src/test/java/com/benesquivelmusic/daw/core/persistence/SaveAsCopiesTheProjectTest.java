@@ -140,8 +140,8 @@ class SaveAsCopiesTheProjectTest {
         assertThat(published.metadata().projectPath()).isEqualTo(songB);
         assertThat(published.metadata().name()).isEqualTo("Song B");
         assertThat(published.sourceFolder()).contains(songA);
-        assertThat(published.formerRoots().folders()).containsExactly(songA);
-        assertThat(published.formerRoots().heldFiles()).as("the copy holds exactly the files it copied")
+        assertThat(published.formerRoots().roots()).extracting(FormerRoots.Root::folder).containsExactly(songA);
+        assertThat(published.formerRoots().heldFrom(songA)).as("the copy holds exactly the files it copied")
                 .containsExactlyInAnyOrderElementsOf(plan.files().stream().map(SaveAsPlan.CopyItem::relativePath).toList());
         assertThat(published.missingFiles()).isEqualTo(1);
         assertThat(published.unknownEntries()).isEqualTo(1);

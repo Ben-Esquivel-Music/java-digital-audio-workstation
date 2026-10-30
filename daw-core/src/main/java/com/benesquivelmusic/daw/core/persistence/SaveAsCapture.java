@@ -18,7 +18,8 @@ import java.util.Optional;
  * ({@link ProjectSerializer#capture(com.benesquivelmusic.daw.core.project.DawProject,
  * FormerRoots)}). The copy's {@code project.daw} is rendered against the copy's
  * folder instead: a reference is written project-relative there only when the
- * copy holds its file, and every other one stays absolute (Persistence
+ * copy holds, at the same relative path, the file of the folder it lies under
+ * ({@link FormerRoots}), and every other one stays absolute (Persistence
  * Integrity book §3.3).</p>
  *
  * <p>Opaque: the planner ({@link ProjectManager#planSaveAs}) and the copy
@@ -89,7 +90,7 @@ public final class SaveAsCapture {
         return metadata;
     }
 
-    /** The folders the open project was itself saved from as a copy this session, and what it holds of them. */
+    /** The folders the open project was itself saved from as a copy this session, each with what it holds of it. */
     FormerRoots formerRoots() {
         return formerRoots;
     }

@@ -119,7 +119,7 @@ class AdoptPublishedCopyTest {
         manager.closeProject();
         manager.adoptPublishedCopy(published, lease, project);
         Path songB = published.folder();
-        ProjectAssetReferences.rebase(project, songA, songB, published.formerRoots().heldFiles());
+        ProjectAssetReferences.rebase(project, songA, songB, published.formerRoots().heldFrom(songA));
         project.setMetadata(published.metadata());
 
         project.createAudioTrack("Bass");

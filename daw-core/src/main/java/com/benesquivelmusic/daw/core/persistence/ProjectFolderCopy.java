@@ -51,9 +51,10 @@ import java.util.logging.Logger;
  *       {@link AtomicFileWriter}, never over a file another writer put
  *       there. A clip reference under the source folder (or under one of its
  *       former roots) is written project-relative only when the copy holds
- *       its file, so it names the copy's file; a reference the copy could not
- *       take keeps its absolute path, so it still names the original's file
- *       and plays again once that file is back ({@link FormerRoots}). A
+ *       the file that folder had at that path, so it names the copy's file;
+ *       a reference the copy could not take keeps its absolute path, so it
+ *       still names the original's file and plays again once that file is
+ *       back ({@link FormerRoots}). A
  *       SoundFont path, which the document writes as held, is re-pointed at
  *       the copy's file when the copy holds it.</li>
  *   <li>{@code audio/} and {@code assets/} (an archive restore's audio),
@@ -574,7 +575,7 @@ final class ProjectFolderCopy {
      * The path, relative to {@code source}, of the file {@code reference}
      * names under it: a clip reference the capture writes project-relative
      * ({@link ProjectPaths#relativize(Path, FormerRoots, String)} — under the
-     * source, or under a former root whose file the source holds); a
+     * source, or under a former root whose own held set holds its path); a
      * SoundFont path, which the document writes as held, when it is absolute
      * and strictly under the source. Empty for every other reference.
      */
@@ -632,9 +633,13 @@ final class ProjectFolderCopy {
     }
 
     /**
-     * The folders a copy holding {@code files} was taken from, and what it
-     * holds: the capture's former roots, then the source folder; the copy's
-     * files by their path relative to the copy's folder.
+     * The former roots of a copy holding {@code files} (each by its path
+     * relative to the copy's folder, the same path it had in the source):
+     * the capture's former roots, each keeping only the files of its own set
+     * the copy took, then the source folder, whose set is the copy's files
+     * ({@link FormerRoots#thenCopiedFrom}). For a project never saved there
+     * is no source folder and so no new root; the capture's former roots are
+     * carried the same way ({@link FormerRoots#carriedBy}).
      */
     private static FormerRoots rootsOfCopy(SaveAsCapture capture, List<SaveAsPlan.CopyItem> files) {
         Set<Path> held = new HashSet<>();
@@ -643,15 +648,16 @@ final class ProjectFolderCopy {
         }
         FormerRoots own = capture.formerRoots();
         return sourceOf(capture).map(source -> own.thenCopiedFrom(source, held))
-                .orElseGet(() -> new FormerRoots(own.folders(), held));
+                .orElseGet(() -> own.carriedBy(held));
     }
 
     /**
      * The copy's {@code project.daw}: the captured document rendered against
      * {@code destination} — a clip reference into the folders the copy was
-     * taken from written project-relative only when the copy holds its file
-     * — with its SoundFont paths under the source folder that the copy takes
-     * re-pointed at the copy's files.
+     * taken from written project-relative only when the copy holds that
+     * folder's file at the same relative path — with its SoundFont paths
+     * under the source folder that the copy takes re-pointed at the copy's
+     * files.
      */
     private static String render(SaveAsCapture capture, List<SaveAsPlan.CopyItem> files, Path destination)
             throws IOException {

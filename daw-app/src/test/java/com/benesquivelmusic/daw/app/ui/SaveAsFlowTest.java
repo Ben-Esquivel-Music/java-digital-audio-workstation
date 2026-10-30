@@ -155,6 +155,49 @@ class SaveAsFlowTest {
                 .contains(target);
     }
 
+    /**
+     * Two Save As copies in a row, A to B, then B to C (PR #989 review
+     * 5704604621): the second copy's adoption re-points the live references
+     * at the files the newest copy took from B — B's own new file included,
+     * which A never had — not at the files an older folder's held set names,
+     * so every clip names C's file and C's {@code project.daw} names neither
+     * earlier folder.
+     */
+    @Test
+    void aSecondSaveAsRepointsOnlyTheFilesTheNewestCopyTook() throws Exception {
+        DawProject live = fixture.project.get();
+        fixture.saveAsTargets.choose(target);
+        runOnFx(() -> fixture.lifecycle().onSaveProjectAs());
+        awaitTheSaveAsEndedWithTheCopyOpenIn(target);
+        fixture.projectManager.whenRetiredLeasesReleased().get(GUARD.toMillis(), TimeUnit.MILLISECONDS);
+        Path secondTake = target.resolve("audio").resolve("second.wav");
+        Files.write(secondTake, new byte[TAKE_BYTES]);
+        runOnFx(() -> {
+            live.getTracks().getFirst().addClip(new AudioClip("second", 1, 1, secondTake.toString()));
+            live.markDirty();
+        });
+        Path songC = workspace.resolve("Song C");
+        fixture.saveAsTargets.choose(songC);
+
+        runOnFx(() -> fixture.lifecycle().onSaveProjectAs());
+        awaitTheSaveAsEndedWithTheCopyOpenIn(songC);
+
+        assertThat(onFx(() -> live.getTracks().getFirst().getClips().stream().map(AudioClip::getSourceFilePath)
+                .toList())).as("every clip re-pointed at the newest copy's file, B's own new take included")
+                .containsExactlyInAnyOrder(songC.resolve("audio").resolve("take.wav").toString(),
+                        songC.resolve("audio").resolve("second.wav").toString());
+        assertThat(Files.readAllBytes(songC.resolve("audio").resolve("second.wav"))).hasSize(TAKE_BYTES);
+        assertThat(Files.readString(songC.resolve("project.daw"), StandardCharsets.UTF_8))
+                .as("self-contained: no reference into either earlier folder")
+                .doesNotContain(songA.toString()).doesNotContain(target.toString());
+    }
+
+    /** Waits, bounded, until the copy in {@code folder} is the open project and the Save As ended. */
+    private void awaitTheSaveAsEndedWithTheCopyOpenIn(Path folder) throws Exception {
+        fixture.awaitOnFx(() -> fixture.currentProjectIs(folder) && fixture.lifecycle().closeReadiness().pending()
+                instanceof ProjectLifecycleController.PendingSwitch.None, "the copy open and the Save As ended");
+    }
+
     @Test
     void theRulingsBoundsAreTenSecondsToContinueAndTwoSecondsForThePrefill() {
         assertThat(SaveAsFlow.ORIGINAL_STILL_CLOSING_DELAY).as("ruling S6: \"after 10 seconds\"")

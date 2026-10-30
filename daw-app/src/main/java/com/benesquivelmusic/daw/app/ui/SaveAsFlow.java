@@ -870,7 +870,7 @@ final class SaveAsFlow {
                          Throwable journalFailure) {
         DawProject project = run.project;
         run.capture.sourceFolder().ifPresent(from -> ProjectAssetReferences.rebase(project, from, published.folder(),
-                published.formerRoots().heldFiles()));
+                published.formerRoots().heldFrom(from)));
         project.setName(run.newName);
         project.setMetadata(adopted.metadata());
         project.markCleanIfUnchanged(run.capture.revision());

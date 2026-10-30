@@ -109,7 +109,8 @@ import java.util.logging.Logger;
  * the copy the open project without reloading it, so the session and its
  * undo history go on. The copy's saves and checkpoints write a reference
  * into the folders it was copied from (its former roots) project-relative
- * only when the copy holds its file ({@link FormerRoots}); any other stays
+ * only when the copy holds that folder's file at the same relative path,
+ * each former root by its own held set ({@link FormerRoots}); any other stays
  * absolute and still names the original's file.</p>
  *
  * <p>The save writer waits for the checkpoint it requests at most five
@@ -1238,7 +1239,8 @@ public final class ProjectManager {
      * {@code project.daw} is rendered from it against the copy's folder
      * ({@link #publishCopy}): a clip reference under the folder the project
      * was opened from — or under one of its former roots — is written
-     * project-relative there only when the copy holds its file, and stays
+     * project-relative there only when the copy holds that folder's file at
+     * the same relative path ({@link FormerRoots}), and stays
      * absolute, still naming the original's file, when it does not. The live
      * project is not changed: not renamed, not re-pointed, its metadata and
      * dirty state as they were.
@@ -1339,10 +1341,12 @@ public final class ProjectManager {
      * lease, {@code project} the open project, and the copy's folder its save
      * target, with its checkpoints started and the folders it was copied
      * from as its former roots (its saves write a reference into them
-     * project-relative when the copy holds its file). Nothing is saved — the
+     * project-relative when the copy holds that folder's file at the same
+     * relative path). Nothing is saved — the
      * copy's {@code project.daw} is the head — and nothing in the model is
      * changed: the caller renames, re-points
-     * ({@link ProjectAssetReferences#rebase}, with the files the copy holds)
+     * ({@link ProjectAssetReferences#rebase}, with the files the copy took
+     * from the source folder, {@link FormerRoots#heldFrom})
      * and marks the live project clean on its owner thread. The copy is
      * recorded in Recent Projects; a failure to record it is logged and the
      * adoption stands. Its missing-assets report is
@@ -2376,9 +2380,9 @@ public final class ProjectManager {
 
         /**
          * The folders this session saved the project from as a copy, oldest
-         * first, and the files this folder holds of them (story 333, Save As;
-         * ENG-S10): a capture writes a reference under one of them
-         * project-relative only when this folder holds its file
+         * first, each with the files this folder holds of it (story 333, Save
+         * As; ENG-S10): a capture writes a reference under one of them
+         * project-relative only when that folder's own held set holds its path
          * ({@link ProjectSerializer#capture(DawProject, FormerRoots)}).
          * {@link FormerRoots#NONE} unless this target is a published Save As copy.
          */

@@ -154,14 +154,15 @@ public final class ProjectDocument {
      * {@link #toXml(AssetReferenceRemap)} writes it, but against
      * {@code root} and {@code rootsOfCopy} instead of the folder the project
      * was captured from — so a reference into the folders the copy was taken
-     * from is written project-relative only when the copy holds its file
+     * from is written project-relative only when the copy holds that folder's
+     * file at the same relative path
      * ({@link ProjectPaths#relativize(Path, FormerRoots, String)}), and stays
      * absolute, naming the original's file, when it does not. Like
      * {@link #toXml(AssetReferenceRemap)}, it rewrites the recorded sites'
      * values in this document.
      *
      * @param root        the folder the rendered file is the project file of
-     * @param rootsOfCopy the folders that folder's copy was taken from, and what it holds
+     * @param rootsOfCopy the folders that folder's copy was taken from, each with what the copy holds of it
      * @param remap       the reference substitutions; {@link AssetReferenceRemap#NONE} for none
      * @return the XML
      * @throws IOException if the document cannot be rendered

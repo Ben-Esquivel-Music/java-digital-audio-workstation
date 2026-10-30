@@ -2,7 +2,6 @@ package com.benesquivelmusic.daw.core.persistence;
 
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
-import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -46,10 +45,13 @@ import java.util.Optional;
  *       joined with {@code '/'}. Everything else — an already-relative
  *       reference, an absolute reference outside the root, the root itself,
  *       or an unparseable string — is returned <em>verbatim</em>.
- *       {@link #relativize(Path, List, String)} adds the project's former
- *       roots (story 333, Save As): an absolute reference that rule leaves
- *       verbatim and that lies strictly under a former root's
- *       {@code audio/} is written {@code audio/<path under it>}.</li>
+ *       {@link #relativize(Path, FormerRoots, String)} adds the project's
+ *       former roots (story 333, Save As), each with its own held set
+ *       ({@link FormerRoots}): an absolute reference that rule leaves
+ *       verbatim is written as its path under a former root it lies
+ *       strictly under, joined with {@code '/'}, when that root's held set
+ *       holds that path ({@link FormerRoots.Root#holds}), the former roots
+ *       tried newest first; otherwise it stays verbatim.</li>
  *   <li>The read side. With a known root, a non-empty reference falls in
  *       exactly one of five classes, decided in one private method that both
  *       {@link #resolve(Path, String)} and {@link #unresolvable(Path, String)}
@@ -146,7 +148,8 @@ import java.util.Optional;
  * {@code source-file} and its {@code <source-segment>} children, recorded or
  * imported). A relinked clip is no exception: {@link AssetRelinker} gives it
  * the located file's absolute path, and the next save writes that
- * project-relative under the root and verbatim outside it. The other asset
+ * project-relative under the root and verbatim outside it, except under a
+ * former root whose held set holds its path, as above. The other asset
  * references are not under the rule: a reference track's
  * {@code source-file} is written as held and, when relative, checked
  * against the JVM's working directory on load, and a SoundFont
@@ -219,18 +222,22 @@ public final class ProjectPaths {
     /**
      * Write-side rule with the project's <em>former roots</em> (story 333,
      * Save As; Persistence Integrity book §3.3): first {@link #relativize(Path,
-     * String)}; then, for a reference that rule leaves absolute, the first
-     * former root {@code F} that holds it strictly gives its path under
-     * {@code F}, forward-slashed — but only when the copy holds the file at
-     * that path ({@link FormerRoots#holds}), so it names the copy's own file:
-     * a clip held only by the undo history and brought back after the Save
-     * As, say. A reference under a former root whose file the copy does not
-     * hold — missing when the copy was taken, left out of it, or put there
+     * String)}; then, for a reference that rule leaves absolute, the former
+     * roots newest first: the first former root {@code F} the reference lies
+     * strictly under and whose own held set holds its path under {@code F}
+     * ({@link FormerRoots.Root#holds}) gives that path, forward-slashed, so it
+     * names the copy's own file — a clip held only by the undo history and
+     * brought back after the Save As, say. A former root the reference lies
+     * under whose held set does not hold its path is skipped, not a stop: a
+     * newer root nested inside an older one decides first, and the older
+     * one's held set may still hold the reference's path under it. A
+     * reference whose path no former root it lies under holds — missing when
+     * its folder was copied, left out of a copy in the chain, or put there
      * since — is returned unchanged, absolute: it still names the original's
-     * file. Pure path arithmetic and a set lookup; no I/O.
+     * file. Pure path arithmetic and set lookups; no I/O.
      *
      * @param root        the project directory, or {@code null} when the project has no directory yet
-     * @param formerRoots the folders the project was saved from as a copy this session, and what the copy holds
+     * @param formerRoots the folders the project was saved from as a copy this session, each with its held set
      * @param reference   the in-memory reference (may be {@code null})
      * @return the serialised form
      */
@@ -250,10 +257,10 @@ public final class ProjectPaths {
                 return joined(rootAbs.relativize(target));
             }
         }
-        for (Path formerRoot : formerRoots.folders()) {
-            if (isStrictlyUnder(formerRoot, target)) {
-                Path relative = formerRoot.relativize(target);
-                if (formerRoots.holds(relative)) {
+        for (FormerRoots.Root formerRoot : formerRoots.roots().reversed()) {
+            if (isStrictlyUnder(formerRoot.folder(), target)) {
+                Path relative = formerRoot.folder().relativize(target);
+                if (formerRoot.holds(relative)) {
                     return joined(relative);
                 }
             }

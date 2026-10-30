@@ -505,7 +505,8 @@ final class ExitCoordinator {
      * @param saveAs          the exit's Save As (rulings R2 read-only, R7)
      * @param takes           the current transport controller's take facts
      * @param stopForClose    the close's transport stop ({@code TransportController.stopForClose()}),
-     *                        answering whether the transport stopped
+     *                        answering whether the transport stopped, out of post-roll, with nothing still
+     *                        recording or counting in
      * @param disposeWindow   DISPOSE: the window's lifetime's FX part, returning the engine's hand-off; it runs
      *                        once — a second call returns the first call's hand-off, also after the first call
      *                        threw
@@ -2675,14 +2676,20 @@ final class ExitCoordinator {
         return run.takeHandled && deps.takes().takePublicationsWithClips() > run.takePublicationsAtStart;
     }
 
-    /** The close's transport stop, checked: a transport that did not stop is stopped once more (design §3.8). */
+    /**
+     * The close's transport stop, checked (design §3.8): {@code stopForClose} answers {@code false} when the
+     * transport did not stop, is still in post-roll, or a take still records or counts in, and the stop is then
+     * run once more.
+     */
     private void stopTransport() {
         if (deps.stopForClose().getAsBoolean()) {
             return;
         }
-        LOG.warning("The transport did not stop for the close; it is stopped once more");
+        LOG.warning("The transport did not stop, is still in post-roll, or a take still records or counts in,"
+                + " for the close; it is stopped once more");
         if (!deps.stopForClose().getAsBoolean()) {
-            LOG.warning("The transport still did not stop for the close");
+            LOG.warning("The transport still did not stop, is still in post-roll, or a take still records or"
+                    + " counts in, for the close");
         }
     }
 
