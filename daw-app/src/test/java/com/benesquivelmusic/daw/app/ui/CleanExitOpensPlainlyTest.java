@@ -3,8 +3,11 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.JournalEnding.JournalEnd;
 import com.benesquivelmusic.daw.app.ui.dialogs.RecoveryChoice;
 import com.benesquivelmusic.daw.app.ui.hub.ProjectHealthScanner;
+import com.benesquivelmusic.daw.app.ui.status.ProjectJournalCoordinator;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
+import com.benesquivelmusic.daw.core.persistence.CheckpointEvent;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
+import com.benesquivelmusic.daw.core.persistence.CheckpointOrigin;
 import com.benesquivelmusic.daw.core.persistence.ProjectLockManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.journal.JournalRecord;
@@ -21,15 +24,21 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.time.InstantSource;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.UnaryOperator;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 import java.util.stream.Stream;
 
 import static com.benesquivelmusic.daw.app.ui.SaveFlowFixture.runOnFx;
@@ -42,7 +51,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * is sealed, so the next launch's recovery gate (story 332) classifies the
  * project as clean and opens it plainly — also after "Ctrl+S, play it back,
  * quit", the commonest way a session ends, whose transport records the
- * closing checkpoint covers; with autosave off; after Discard and close; and
+ * closing checkpoint covers; after a save whose checkpoint the journal could
+ * not read; with autosave off; after Discard and close; and
  * with records published right before the journal's detach and, from
  * another thread, right after it — which the detach, the close's point of no
  * return, keeps out of the journal.
@@ -108,6 +118,76 @@ class CleanExitOpensPlainlyTest {
         assertThat(SaveFlowFixture.checkpointFiles(fixture.songA)).as("the checkpoints as the save left them")
                 .isEqualTo(afterTheSave);
         assertTheNextOpenIsPlain();
+    }
+
+    /**
+     * Ruling R3's trigger (i) after a checkpoint the journal could not read
+     * (PR #989 review 5707175128): playback, then Ctrl+S, whose checkpoint is
+     * deleted on its writer right after its publish — the save fixture's
+     * mover runs the deletion after the move, before the checkpoint manager
+     * tells any listener — so it is written, but gone when the journal reads
+     * and hashes it for its marker. No marker is placed, a WARNING names the
+     * checkpoint, the capture boundary does not advance and the playback's
+     * records stay outside every capture: the close box writes a closing
+     * checkpoint, whose marker covers them, and the next open is plain.
+     */
+    @Test
+    void aSaveCheckpointTheJournalCouldNotReadLeavesTheClosingCheckpointOwedAndTheNextOpenPlain() throws Exception {
+        Logger journalLog = Logger.getLogger(ProjectJournalCoordinator.class.getName());
+        List<LogRecord> logged = new CopyOnWriteArrayList<>();
+        Handler recording = new Handler() {
+            @Override
+            public void publish(LogRecord logRecord) {
+                logged.add(logRecord);
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        journalLog.addHandler(recording);
+        try {
+            fixture = new ExitFixture(workspace, AutoSaveConfig.DEFAULT);
+            fixture.edit("Bass");
+            playItBack();
+            AtomicReference<Path> removed = new AtomicReference<>();
+            fixture.save.publishes.afterNext(SaveFlowFixture::isCheckpoint, published -> {
+                removed.set(published);
+                Files.delete(published);
+            });
+            fixture.save.save();
+            fixture.save.settle();
+            fixture.save.projectManager.whenWritersIdle().get(ExitFixture.GUARD.toMillis(), TimeUnit.MILLISECONDS);
+            assertThat(fixture.events).as("the save's checkpoint was written").contains("checkpoint Written AFTER_SAVE");
+            Path afterTheSave = fixture.save.checkpointEvents.stream()
+                    .filter(event -> event instanceof CheckpointEvent.Written written
+                            && written.origin() == CheckpointOrigin.AFTER_SAVE)
+                    .map(CheckpointEvent.Written.class::cast)
+                    .map(CheckpointEvent.Written::file).reduce((first, second) -> second).orElseThrow();
+            assertThat(removed.get()).as("fixture: the save's checkpoint was deleted right after its publish")
+                    .isEqualTo(afterTheSave).doesNotExist();
+            assertThat(logged).as("the journal could not record that checkpoint, and its WARNING names it")
+                    .filteredOn(entry -> entry.getLevel() == Level.WARNING).singleElement().satisfies(entry -> {
+                        assertThat(entry.getMessage()).isEqualTo("Could not record checkpoint capture boundary for "
+                                + afterTheSave.getFileName() + "; the journal's boundary is unchanged");
+                        assertThat(entry.getThrown()).isInstanceOf(NoSuchFileException.class);
+                    });
+            assertThat(fixture.journal.hasRecordsOutsideACapture())
+                    .as("no marker covers the playback's records: trigger (i) holds").isTrue();
+
+            fixture.closeBox();
+            fixture.awaitStep(ExitCoordinator.ExitStep.HIDE);
+
+            assertThat(fixture.stepNames()).contains("CLOSING_CHECKPOINT DONE");
+            assertThat(fixture.events).as("the closing checkpoint").contains("checkpoint Written CLOSING");
+            assertTheNextOpenIsPlain();
+        } finally {
+            journalLog.removeHandler(recording);
+        }
     }
 
     @Test

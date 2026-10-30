@@ -41,18 +41,20 @@ import java.util.logging.Logger;
  * {@link #openFor(Path) open} starts a {@link JournalWriter} for the project's
  * {@code journal/} directory and a {@link JournalEventRecorder} that feeds it
  * from the application {@link EventBus}, and registers capture and checkpoint listeners
- * that rotate at the successful checkpoint's capture boundary. Journal telemetry —
- * the queued-since-checkpoint count and the back-pressure level — is published
- * onto the {@link ProjectOperationProgress} model, which the Session Status
- * Strip's Journal cell binds to.</p>
+ * that, once the journal accepts a written checkpoint's marker, retire the
+ * records its capture covers and request a segment rotation. Journal
+ * telemetry — the queued-since-checkpoint count and the back-pressure level —
+ * is published onto the {@link ProjectOperationProgress} model, which the
+ * Session Status Strip's Journal cell binds to.</p>
  *
  * <h2>Threading</h2>
  *
  * <p>{@link JournalWriter#offer(String, java.util.UUID, byte[], Instant) offer}
  * is non-blocking and never drops, so the {@link JournalEventRecorder} can feed
  * it from the synchronous publication observer. The {@link JournalListener} callbacks fire on the
- * writer's virtual thread; the {@link ProjectOperationProgress} mutators
- * self-marshal onto the FX thread (story 289), so they are called directly, and
+ * thread whose journal work caused them (see {@link JournalListener}); the
+ * {@link ProjectOperationProgress} mutators self-marshal onto the FX thread
+ * (story 289), so they are called directly, and
  * the one user-facing {@link NotificationBar} alert (on
  * {@link Backpressure#UNRESPONSIVE}) is wrapped in
  * {@link FxDispatcher#runOnFx(FxDispatcher, Runnable)} because the bar does not
@@ -368,7 +370,10 @@ public final class ProjectJournalCoordinator {
                 if (written.journalSequence().isPresent()) {
                     long boundary = written.journalSequence().getAsLong();
                     try { newWriter.onCheckpointSucceeded(boundary, written.file(), clock.instant()); }
-                    catch (IOException failure) { LOG.log(Level.WARNING, "Could not record checkpoint capture boundary", failure); }
+                    catch (IOException failure) {
+                        LOG.log(Level.WARNING, "Could not record checkpoint capture boundary for " + written.file().getFileName()
+                                + "; the journal's boundary is unchanged", failure);
+                    }
                 }
             }
         });
