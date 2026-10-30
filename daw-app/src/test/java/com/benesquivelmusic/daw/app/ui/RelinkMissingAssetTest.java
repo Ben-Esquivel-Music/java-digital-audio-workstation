@@ -508,7 +508,7 @@ class RelinkMissingAssetTest {
         take.setSourceSegmentPaths(recorded);
         track.addClip(take);
         SaveOutcomes.saved(other, project);
-        other.abandonProject();
+        other.closeProject().join();
         return directory;
     }
 
@@ -526,7 +526,7 @@ class RelinkMissingAssetTest {
             track.addClip(new AudioClip("Object " + object, 0.0, 1.0, master.toString()));
         }
         SaveOutcomes.saved(other, project);
-        other.abandonProject();
+        other.closeProject().join();
         return directory;
     }
 

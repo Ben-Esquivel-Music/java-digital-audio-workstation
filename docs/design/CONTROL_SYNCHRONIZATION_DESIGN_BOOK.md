@@ -246,6 +246,14 @@ intent boundary. This is what makes shortcuts and menus feel trustworthy
 (`UI_DESIGN_BOOK §2.8 Keyboard parity`; menu enablement already centralised in
 `MenuEnablementPolicy`).
 
+*As landed (story 333): File ▸ Save As…, File ▸ Close Project and File ▸ Exit — from the menu,
+their shortcuts (Shortcut+Shift+W for Close Project, Shortcut+Q for Exit; Save As… has none) and
+the Command Palette — end in the same call: Save As… runs
+`ProjectLifecycleController.onSaveProjectAs()`, and Close Project and Exit ask
+`ExitCoordinator.request(...)`, which the window's close box also asks through the primary stage's
+close-request filter, so one coordinator runs the exit protocol whatever the input
+(`PERSISTENCE_INTEGRITY_DESIGN_BOOK.md` §5.4).*
+
 ---
 
 ## 3. Information model — the state graph

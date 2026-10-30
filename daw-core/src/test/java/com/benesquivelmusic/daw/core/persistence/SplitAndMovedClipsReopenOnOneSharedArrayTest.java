@@ -85,7 +85,7 @@ class SplitAndMovedClipsReopenOnOneSharedArrayTest {
                 .as("fixture: before the save the three parts share the import's array")
                 .allSatisfy(audio -> assertThat(audio).isSameAs(beforeSave));
         saved(manager, project);
-        manager.abandonProject();
+        manager.closeProject().join();
 
         reopened = newManager();
         reopened.openProject(projectDir);
@@ -129,7 +129,7 @@ class SplitAndMovedClipsReopenOnOneSharedArrayTest {
     @AfterEach
     void closeTheProject() {
         if (reopened != null) {
-            reopened.abandonProject();
+            reopened.closeProject().join();
         }
     }
 

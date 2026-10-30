@@ -108,6 +108,13 @@ public final class JournalWriter implements AutoCloseable {
     private final AtomicLong sequence = new AtomicLong(0L);
     private final java.util.concurrent.ConcurrentSkipListSet<Long> durableMutations = new java.util.concurrent.ConcurrentSkipListSet<>();
     private volatile long checkpointBoundary = -1L;
+    /**
+     * The highest sequence of a non-control record this writer accepted
+     * ({@link #offer(JournalRecord)}), {@code -1} before any: with
+     * {@link #checkpointBoundary}, the fact
+     * {@link #offeredMutationsAfterCheckpointBoundary()} (story 333).
+     */
+    private final AtomicLong highestMutationOffered = new AtomicLong(-1L);
     private volatile IOException closeFailure;
     private final AtomicInteger queuedSinceCheckpoint = new AtomicInteger(0);
     private final AtomicBoolean bufferingSignalled = new AtomicBoolean(false);
@@ -332,7 +339,7 @@ public final class JournalWriter implements AutoCloseable {
         return enabled;
     }
 
-    /** {@return the records journaled since the last successful checkpoint} */
+    /** {@return how many mutation records are durably appended that no accepted checkpoint marker covers} */
     public int queuedSinceCheckpoint() {
         return queuedSinceCheckpoint.get();
     }
@@ -411,6 +418,9 @@ public final class JournalWriter implements AutoCloseable {
         // before then would be drained by close() into no segment, or into the one a failing start deletes.
         if (writerThread == null) throw new IllegalStateException("Journal writer has not started");
         sequence.accumulateAndGet(record.sequence() + 1L, Math::max);
+        if (!record.isControl()) {
+            highestMutationOffered.accumulateAndGet(record.sequence(), Math::max);
+        }
         if (queue.offer(record)) {
             signalWork();
             return OfferResult.QUEUED;
@@ -450,23 +460,37 @@ public final class JournalWriter implements AutoCloseable {
     // ---- checkpoint coordination ------------------------------------------
 
     /**
-     * Signals that an external checkpoint succeeded: the journal rotates to a
-     * fresh segment (the new checkpoint subsumes the prior segment) and resets
-     * the since-checkpoint counter to 0. The actual segment swap happens on
-     * the writer thread once the in-flight batch is durable.
+     * Signals that an external checkpoint succeeded, with a legacy marker,
+     * whose boundary recovery reads as its own sequence. Once
+     * {@link #offer(JournalRecord)} has accepted the marker, the capture
+     * boundary moves to {@link #captureSequence()} as read before the
+     * marker's sequence was drawn, the durable mutations at or below it leave
+     * the since-checkpoint counter, and a rotation to a fresh segment is
+     * requested (the new checkpoint subsumes the prior segment). The swap
+     * itself happens once a later batch append is durable — on the writer
+     * thread, a force flush or a close's or a seal's final drain — and is
+     * retried at the next one if the new segment cannot be opened. Unlike
+     * {@link #onCheckpointSucceeded(long, Path, Instant)}, this takes no
+     * append lock and overwrites the boundary even when it is higher, so a
+     * call that races another thread's offer, an append or another checkpoint
+     * can leave the counter higher or lower than the accepted markers
+     * warrant, and the boundary lower, never higher.
      *
-     * @throws IllegalStateException if this enabled writer has not started;
-     *                               nothing is changed
+     * @throws IllegalStateException if this enabled writer has not started, or
+     *                               no longer accepts records; no marker is
+     *                               queued and the boundary and the counter are
+     *                               unchanged
      */
     public void onCheckpointSucceeded() {
         if (!enabled) {
             return;
         }
         synchronized (this) { if (writerThread == null) throw new IllegalStateException("Journal writer has not started"); }
-        checkpointBoundary = captureSequence();
-        durableMutations.headSet(checkpointBoundary, true).clear();
-        publishQueuedCount();
+        long boundary = captureSequence();
         offer(JournalRecord.checkpointMarker(sequence.getAndIncrement(), Instant.now()));
+        checkpointBoundary = boundary;
+        durableMutations.headSet(boundary, true).clear();
+        publishQueuedCount();
         rotateRequested.set(true);
     }
 
@@ -474,22 +498,64 @@ public final class JournalWriter implements AutoCloseable {
     public long captureSequence() { return sequence.get() - 1L; }
 
     /**
-     * A successful checkpoint retires only mutations represented by its capture.
+     * Whether a non-control record was offered — queued or already appended —
+     * after the highest capture boundary of a checkpoint marker this writer
+     * accepted, so that recovery detection would owe a decision for it
+     * ({@code JournalState.needsRecovery}): the exit's closing-checkpoint
+     * trigger (i) (story 333, ruling R3). A boundary advances only after its
+     * marker was accepted, never for a checkpoint whose marker could not be
+     * built or was refused (PR #989 review 5707175128), so a read racing a
+     * checkpoint can answer {@code true} for a record that checkpoint's marker
+     * covers, never {@code false} for one no accepted marker covers.
+     * Decided from this writer's own facts, never from the project's dirty
+     * flag: transport and engine records count although they change no saved
+     * state. Lock-free; no disk access. {@code false} for a disabled writer,
+     * which accepts no record.
      *
-     * @throws IllegalStateException if this enabled writer has not started;
-     *                               nothing is changed
+     * @return whether a mutation was offered after the checkpoint boundary
+     */
+    public boolean offeredMutationsAfterCheckpointBoundary() {
+        // Boundary first: the highest offered mutation only grows, so a false answer held when the boundary was read.
+        long boundary = checkpointBoundary;
+        return highestMutationOffered.get() > boundary;
+    }
+
+    /**
+     * Records a checkpoint's capture in the journal. The marker — the capture
+     * boundary, the checkpoint's file name and the SHA-256 of its bytes, read
+     * from the file now — is built first and offered; only once
+     * {@link #offer(JournalRecord)} has accepted it does the capture boundary
+     * advance, retiring the mutations the capture covers from the
+     * durable-mutation count the {@link JournalListener} is told, and a
+     * rotation is requested. A checkpoint whose file cannot be read, or whose
+     * marker is refused, queues no marker and leaves the boundary, the
+     * durable-mutation count and the rotation request as they were, so
+     * {@link #offeredMutationsAfterCheckpointBoundary()} still reports the
+     * mutations no accepted marker covers (story 333, the exit's
+     * closing-checkpoint trigger (i); PR #989 review 5707175128).
+     *
+     * @param capturedSequence the capture's journal boundary
+     * @param checkpoint       the checkpoint file the capture was written to
+     * @param time             the marker's time
+     * @throws IOException           if the checkpoint cannot be read; no marker is
+     *                               queued and the boundary is unchanged
+     * @throws IllegalStateException if this enabled writer has not started, or no
+     *                               longer accepts records; no marker is queued and
+     *                               the boundary is unchanged
      */
     public void onCheckpointSucceeded(long capturedSequence, java.nio.file.Path checkpoint, Instant time) throws IOException {
         if (!enabled) return;
-        // Checked under the monitor and released before appendLock is taken, so a refused call changes nothing.
+        // Checked under the monitor, which is released before appendLock is taken; a call refused here changes nothing.
         synchronized (this) { if (writerThread == null) throw new IllegalStateException("Journal writer has not started"); }
+        // Read and hashed before the marker's sequence is drawn and before appendLock is taken: a checkpoint that
+        // cannot be read changes nothing, and the writer thread's appends never wait on the read.
+        byte[] capture = JournalState.capture(capturedSequence, checkpoint);
         appendLock.lock();
         try {
+            offer(new JournalRecord(sequence.getAndIncrement(), time, JournalRecord.CHECKPOINT_TYPE, null, capture));
             checkpointBoundary = Math.max(checkpointBoundary, capturedSequence);
             durableMutations.headSet(checkpointBoundary, true).clear();
             publishQueuedCount();
-            offer(new JournalRecord(sequence.getAndIncrement(), time, JournalRecord.CHECKPOINT_TYPE, null,
-                    JournalState.capture(capturedSequence, checkpoint)));
             rotateRequested.set(true);
         } finally { appendLock.unlock(); }
     }

@@ -89,8 +89,7 @@ class CheckpointWithAutosaveDisabledTest {
         Path directory = Files.createDirectories(projectDir.resolve("checkpoints"));
         Files.writeString(directory.resolve(SEEDED), document(7));
         AtomicInteger guardChecks = new AtomicInteger();
-        start(new AutoSaveConfig(INTERVAL, 1, false), new AtomicFileWriter());
-        manager.setWriteGuard(guardChecks::incrementAndGet);
+        start(new AutoSaveConfig(INTERVAL, 1, false), new AtomicFileWriter(), guardChecks::incrementAndGet);
 
         Path written = write(3, CheckpointOrigin.USER);
 
@@ -375,9 +374,15 @@ class CheckpointWithAutosaveDisabledTest {
     }
 
     private void start(AutoSaveConfig config, AtomicFileWriter writer) throws Exception {
+        start(config, writer, () -> { });
+    }
+
+    /** Starts the generation with {@code guard} as its write guard (story 333: each generation has its own). */
+    private void start(AutoSaveConfig config, AtomicFileWriter writer, CheckpointManager.WriteGuard guard)
+            throws Exception {
         manager = CheckpointTestSupport.manager(config, writer, clock, Files::delete, CheckpointManager.STOP_WAIT);
         recorder = Recorder.on(manager);
-        manager.start(projectDir).get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        manager.start(projectDir, guard).get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
     }
 
     private Path write(long revision, CheckpointOrigin origin) throws Exception {

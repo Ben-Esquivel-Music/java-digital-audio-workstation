@@ -122,11 +122,10 @@ class CheckpointRetentionAcrossSessionsTest {
         Path directory = Files.createDirectories(projectDir.resolve("checkpoints"));
         Files.writeString(directory.resolve(STRAY_CHECKPOINT_TEMP), "<daw-project");
         CheckpointManager manager = manager(CAP, Files::delete);
-        manager.setWriteGuard(() -> {
-            throw new LockStolenException("another session holds the project", null);
-        });
 
-        manager.start(projectDir).get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        manager.start(projectDir, () -> {
+            throw new LockStolenException("another session holds the project", null);
+        }).get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
         manager.stop();
 
         assertThat(directory.resolve(STRAY_CHECKPOINT_TEMP)).exists();

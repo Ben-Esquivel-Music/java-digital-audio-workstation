@@ -177,7 +177,8 @@ final class OpenProjectFixture implements AutoCloseable {
             // Story 331 — a save the controller asked for is written off the FX thread.
             SaveOutcomes.awaitIdle(projectManager);
         } finally {
-            projectManager.abandonProject();
+            // Bounded (story 333 review): a release that never ends fails the test instead of hanging it.
+            projectManager.closeProject().get(GUARD.toMillis() * 3, TimeUnit.MILLISECONDS);
         }
     }
 
@@ -213,7 +214,7 @@ final class OpenProjectFixture implements AutoCloseable {
             importer.importFile(source, 0.0);
         }
         SaveOutcomes.saved(other, saved);
-        other.abandonProject();
+        other.closeProject().join();
         return new SavedProject(directory, saved);
     }
 

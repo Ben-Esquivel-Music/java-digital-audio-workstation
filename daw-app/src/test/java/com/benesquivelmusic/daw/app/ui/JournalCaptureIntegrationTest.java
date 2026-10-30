@@ -279,7 +279,7 @@ class JournalCaptureIntegrationTest {
         } finally { preferences.removeNode(); }
     }
 
-    @Test void switchSealsBeforeOpeningTheNextJournalAndDisposalLeavesItsReaderUnsealed() throws Exception {
+    @Test void switchSealsBeforeOpeningTheNextJournalAndAnUnsealedDrainLeavesItsReaderOwingRecovery() throws Exception {
         try (SaveFlowFixture fixture = new SaveFlowFixture(workspace, AutoSaveConfig.DEFAULT)) {
             fixture.save(); fixture.settle();
             DefaultEventBus bus = new DefaultEventBus();

@@ -31,9 +31,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * time — naming the safety checkpoint when one was written ("Your work is in
  * checkpoint 014 (14:32)."), saying a safety copy is still being written when
  * the save stopped waiting for it, and otherwise that none could be written —
- * with a Retry for an I/O failure, but none after the lock was taken over
- * (whose holder it names) or on a read-only project. An outcome that arrives
- * after a project switch changes nothing of the project that replaced it.
+ * with a Retry for an I/O failure, and, for any other failure, a read-only
+ * project's included, the one action {@code Save As…} (story 333, the
+ * studio engineer's ruling Q1/Q5). A lock another session took over shows no
+ * ERROR: the takeover dialog asks instead (ruling R7). An outcome that
+ * arrives after a project switch changes nothing of the project that
+ * replaced it.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class SaveOutcomeNotificationTest {
@@ -177,25 +180,42 @@ class SaveOutcomeNotificationTest {
     }
 
     @Test
-    void aLockAnotherSessionTookOverNamesItsHolderAndOffersNoRetry() throws Exception {
+    void aLockAnotherSessionTookOverAsksTheTakeoverDialogInsteadOfShowingAnError() throws Exception {
         new ProjectLockManager(InstantSource.system(), "alice", "Studio-PC", 42L).forceAcquire(fixture.songA);
 
         fixture.save();
         fixture.settle();
+        fixture.awaitOnFx(() -> fixture.takeoverHeaders.size() == 1, "the takeover dialog (ruling R7)");
 
-        NotificationEntry error = fixture.notifications().getLast();
-        assertThat(error.level()).isEqualTo(NotificationLevel.ERROR);
-        assertThat(error.message())
-                .isEqualTo("Save failed: the project was taken over by alice on Studio-PC (process 42)"
-                        + " — nothing was written");
-        assertThat(error.actionLabel()).as("a retry cannot succeed").isEmpty();
+        assertThat(fixture.takeoverHeaders).containsExactly("“Song A” was taken over by alice on Studio-PC (process 42).");
+        assertThat(fixture.takeoverButtons).containsExactly(List.of("Save As…", "Not now"));
+        assertThat(fixture.notifications()).as("no ERROR toast: the dialog replaces 331's").isEmpty();
         assertThat(onFx(fixture.progress::isLastSaveSucceeded)).isFalse();
         assertThat(SaveFlowFixture.checkpointFiles(fixture.songA)).as("no safety copy after a lost lock")
                 .isEmpty();
     }
 
     @Test
-    void aReadOnlyProjectOffersNoRetry() throws Exception {
+    void aFailureThatIsNoInputOutputFailureOffersSaveAsAndItsActionOpensTheSaveAsChooser() throws Exception {
+        runOnFx(() -> fixture.project.get().getTracks().getFirst().getMidiEffectChain()
+                .add(new CaptureThatThrows(new IllegalStateException("the capture broke"))));
+
+        fixture.save();
+        fixture.settle();
+
+        NotificationEntry error = fixture.notifications().getLast();
+        assertThat(error.level()).isEqualTo(NotificationLevel.ERROR);
+        assertThat(error.message()).startsWith("Save failed: the capture broke");
+        assertThat(error.actionLabel()).as("ruling Q1: no Retry, the one action Save As…").contains("Save As…");
+        fixture.saveAsTargets.cancel();
+        runOnFx(() -> error.action().orElseThrow().run());
+        fixture.awaitOnFx(() -> fixture.saveAsTargets.calls().size() == 1, "the Save As chooser");
+        assertThat(fixture.saveAsTargets.calls().getFirst())
+                .isEqualTo(new SaveFlowFixture.SaveAsTargets.Call(workspace, "Song A copy"));
+    }
+
+    @Test
+    void aReadOnlyProjectOffersSaveAsNotRetry() throws Exception {
         Path songB = fixture.anotherProjectOnDisk("Song B");
         ProjectLockManager otherSession = new ProjectLockManager(InstantSource.system(), "bob", "Mix-Room", 7L);
         otherSession.forceAcquire(songB);
@@ -212,11 +232,45 @@ class SaveOutcomeNotificationTest {
             assertThat(shown).hasSize(before + 1);
             assertThat(shown.getLast().message())
                     .isEqualTo("Save failed: Project was opened read-only; use Save As to a new location");
-            assertThat(shown.getLast().actionLabel()).as("a retry cannot succeed").isEmpty();
+            assertThat(shown.getLast().actionLabel()).as("a retry cannot succeed: ruling Q5's Save As…")
+                    .contains("Save As…");
             assertThat(onFx(fixture.progress::isLastSaveSucceeded)).isFalse();
+            fixture.saveAsTargets.cancel();
+            runOnFx(() -> shown.getLast().action().orElseThrow().run());
+            fixture.awaitOnFx(() -> fixture.saveAsTargets.calls().size() == 1, "the Save As chooser");
+            assertThat(fixture.saveAsTargets.calls().getFirst())
+                    .as("ruling R6: the original's parent, \"<folder name> copy\"")
+                    .isEqualTo(new SaveFlowFixture.SaveAsTargets.Call(workspace, "Song B copy"));
         } finally {
             otherSession.release();
         }
+    }
+
+    /** A MIDI effect whose descriptor read — made by the capture's walk — throws: a save that fails, not for I/O. */
+    private static final class CaptureThatThrows implements com.benesquivelmusic.daw.core.plugin.MidiEffectPlugin {
+
+        private final RuntimeException failure;
+
+        CaptureThatThrows(RuntimeException failure) {
+            this.failure = failure;
+        }
+
+        @Override
+        public com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor getDescriptor() {
+            throw failure;
+        }
+
+        @Override
+        public com.benesquivelmusic.daw.core.plugin.builtin.midi.MidiMessage[] process(
+                com.benesquivelmusic.daw.core.plugin.builtin.midi.MidiMessage[] in, int sampleOffset,
+                com.benesquivelmusic.daw.core.plugin.builtin.midi.MidiProcessContext ctx) {
+            return in;
+        }
+
+        @Override public void initialize(com.benesquivelmusic.daw.sdk.plugin.PluginContext context) { }
+        @Override public void activate() { }
+        @Override public void deactivate() { }
+        @Override public void dispose() { }
     }
 
     @Test

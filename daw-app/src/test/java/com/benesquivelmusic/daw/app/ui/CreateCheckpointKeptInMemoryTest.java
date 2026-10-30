@@ -57,7 +57,7 @@ class CreateCheckpointKeptInMemoryTest {
     @Test
     void onAProjectNeverSavedEachPressKeepsTheEntryInMemoryAndWarnsWithoutAFailure() throws Exception {
         // As at a fresh start: the Untitled project is not a project on disk.
-        runOnFx(() -> fixture.projectManager.abandonProject());
+        runOnFx(() -> fixture.projectManager.closeProject());
 
         SnapshotEntry first = onFx(() -> fixture.snapshots().createCheckpointWithLabel("Before the comp"));
         SnapshotEntry second = onFx(() -> fixture.snapshots().createCheckpointWithLabel("After the comp"));

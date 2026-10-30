@@ -43,7 +43,8 @@ class ProjectSaveCrashWindowTest {
 
     @AfterEach
     void releaseTheManagers() {
-        managers.forEach(ProjectManager::abandonProject);
+        // Each release reads and deletes a lock file: let it end before the temporary folder is deleted.
+        managers.forEach(manager -> SaveTestSupport.await(manager.closeProject()));
     }
 
     @Test
@@ -68,7 +69,7 @@ class ProjectSaveCrashWindowTest {
         assertThat(Files.readAllBytes(directory.resolve("project.daw"))).as("the previous head, byte for byte")
                 .isEqualTo(previous);
         assertThat(tempsIn(directory)).as("no temp beside it").isEmpty();
-        manager.abandonProject();
+        manager.closeProject().join();
 
         ProjectManager reopened = manager(new AtomicFileWriter());
         reopened.openProject(directory);

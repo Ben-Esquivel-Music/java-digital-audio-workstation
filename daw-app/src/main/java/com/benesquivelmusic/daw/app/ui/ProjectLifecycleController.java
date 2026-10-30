@@ -23,6 +23,7 @@ import com.benesquivelmusic.daw.core.persistence.AssetReference;
 import com.benesquivelmusic.daw.core.persistence.AtomicFileWriter;
 import com.benesquivelmusic.daw.core.persistence.CheckpointFileName;
 import com.benesquivelmusic.daw.core.persistence.ClipRehydrator;
+import com.benesquivelmusic.daw.core.persistence.LockStatus;
 import com.benesquivelmusic.daw.core.persistence.LockStolenException;
 import com.benesquivelmusic.daw.core.persistence.MissingAsset;
 import com.benesquivelmusic.daw.core.persistence.MissingAssetsReport;
@@ -36,6 +37,7 @@ import com.benesquivelmusic.daw.core.persistence.SaveOutcome;
 import com.benesquivelmusic.daw.core.persistence.UnreadProjectItem;
 import com.benesquivelmusic.daw.core.persistence.migration.MigrationException;
 import com.benesquivelmusic.daw.core.persistence.migration.MigrationReport;
+import com.benesquivelmusic.daw.core.persistence.migration.MigrationSuppression;
 import com.benesquivelmusic.daw.core.persistence.archive.ArchiveCapture;
 import com.benesquivelmusic.daw.core.persistence.archive.ArchivedProject;
 import com.benesquivelmusic.daw.core.persistence.archive.ArchiveOptions;
@@ -48,6 +50,8 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.session.SessionExportResult;
 import com.benesquivelmusic.daw.sdk.session.SessionImportResult;
+import javafx.beans.property.ReadOnlyBooleanProperty;
+import javafx.beans.property.ReadOnlyBooleanWrapper;
 import javafx.scene.Parent;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
@@ -78,7 +82,9 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -109,9 +115,10 @@ final class ProjectLifecycleController {
      * Story 323 review (Recording Reliability book §5.2): shown as a WARNING
      * toast when an in-app door that replaces the open project is refused
      * because a take is still being written to disk or read back from it for
-     * its publication. Quitting the application
-     * is not one of those doors — nothing guards it until story 333 — so the
-     * message asks the user to keep it open.
+     * its publication. Quitting the application and Close Project are not
+     * among those doors: the exit protocol waits for the take to be published
+     * before it saves, seals or releases anything (story 333, ruling R1). The
+     * message asks the user to keep the application open until it has.
      */
     static final String PROJECT_CHANGE_WHILE_WRITING_MESSAGE =
             "The open project can't be replaced until the last take has been finished"
@@ -141,6 +148,37 @@ final class ProjectLifecycleController {
     static final String RECOVER_SESSION_DOOR = "Recover Session";
     /** The migration report's {@code Roll back…}, and the Migration History's {@code Roll back}. */
     static final String ROLL_BACK_MIGRATION_DOOR = "Roll Back Migration";
+    /**
+     * File ▸ Save (Ctrl+S) of a project never saved (story 333, ruling L4): the
+     * pending switch while its location prompt is open and while its folder is
+     * created off the FX thread.
+     */
+    static final String SAVE_PROJECT_DOOR = "Save Project";
+
+    /**
+     * File ▸ Save As… (story 333, ruling R5): the pending switch while its
+     * chooser is open and while its copy is made, published and opened.
+     */
+    static final String SAVE_AS_DOOR = "Save As";
+
+    /** File ▸ Close Project (story 333, ruling R10): the close protocol's door that keeps the application open. */
+    static final String CLOSE_PROJECT_DOOR = "Close Project";
+
+    /**
+     * The application-stop fallback (story 333, ruling R4): the close pending once {@code Application.stop()} ran
+     * without the exit protocol, as the log names it — a takeover offer that comes then shows nothing.
+     */
+    static final String APPLICATION_STOP_DOOR = "Application stop";
+
+    /** The worker a new project's folder is created on, off the FX thread (story 333). */
+    static final String PROJECT_CREATE_WORKER = "daw-project-create";
+
+    /**
+     * How long a door waits for a save before it offers to stop waiting
+     * (story 333, ruling R8): one WARNING with a "Stop waiting" action, once
+     * per wait.
+     */
+    static final Duration DOOR_WAIT_WARNING_DELAY = Duration.ofSeconds(10);
 
     /**
      * The INFO of a door asked while an archive is being extracted for
@@ -210,6 +248,270 @@ final class ProjectLifecycleController {
          * @param sameProject whether the project it saved is still the open one
          */
         void after(SaveOutcome outcome, boolean sameProject);
+
+        /**
+         * Whether this follow-up handles a lost lock itself (story 333, ruling
+         * 2 OQ-4): the exit's own save hands the {@link LockStolenException} to
+         * its run, which shows the exit's takeover dialog, so the save's
+         * report shows nothing for it. Asked on the FX thread when the outcome
+         * arrived. Every follow-up but the exit's answers {@code false}.
+         *
+         * @return {@code true} if a lost lock is this follow-up's to report
+         */
+        default boolean ownsLockLoss() {
+            return false;
+        }
+    }
+
+    /**
+     * The unsaved-changes prompt a switch or a close asks with (story 333,
+     * ruling R2): one Alert, titled "Unsaved Changes", for the doors and the
+     * close protocol, with the header, the content and the labels of the
+     * asker. The doors ask {@link #DOOR} — their text and buttons as before.
+     * A close asks the R2 prompt ({@code ProjectClosePrompts}), whose Discard
+     * stands apart.
+     *
+     * @param header       the prompt's header
+     * @param content      the prompt's content
+     * @param saveLabel    the Save button's label
+     * @param discardLabel the Discard button's label
+     * @param cancelLabel  the Cancel button's label; empty for the platform's own
+     *                     Cancel ({@link ButtonType#CANCEL}), as the doors' prompt
+     *                     has always shown it
+     * @param discardApart whether Discard stands apart, on the left
+     *                     ({@link ButtonBar.ButtonData#LEFT}), with Save the default
+     *                     button (Enter) and Cancel the cancel button (Escape and
+     *                     the window's close box): the close protocol's layout
+     * @param owner        the window that owns the prompt, or empty for none
+     */
+    record UnsavedChangesPrompt(String header, String content, String saveLabel, String discardLabel,
+                                Optional<String> cancelLabel, boolean discardApart, Optional<Window> owner) {
+
+        /** The doors' prompt (story 331): the text and buttons they have always shown. */
+        static final UnsavedChangesPrompt DOOR = door(CONTINUE_QUESTION);
+
+        UnsavedChangesPrompt {
+            Objects.requireNonNull(header, "header must not be null");
+            Objects.requireNonNull(content, "content must not be null");
+            Objects.requireNonNull(saveLabel, "saveLabel must not be null");
+            Objects.requireNonNull(discardLabel, "discardLabel must not be null");
+            Objects.requireNonNull(cancelLabel, "cancelLabel must not be null");
+            Objects.requireNonNull(owner, "owner must not be null");
+        }
+
+        /**
+         * The doors' prompt asking {@code question} — {@link #DOOR}'s, or a
+         * restored archive's question (ruling K3).
+         *
+         * @param question the prompt's content
+         * @return the prompt
+         */
+        static UnsavedChangesPrompt door(String question) {
+            return new UnsavedChangesPrompt("You have unsaved changes.", question, "Save", "Discard",
+                    Optional.empty(), false, Optional.empty());
+        }
+    }
+
+    /** The answers of the unsaved-changes prompt. */
+    enum UnsavedChangesAnswer { SAVE, DISCARD, CANCEL }
+
+    /**
+     * The switch pending now, as the close protocol reads it (story 333;
+     * rulings G2, K3, L3, L4, R12 #8, Q3): at most one at a time — a door's
+     * own first save is reported as the folder being created, which the door
+     * waits for — named as its door is named. Read on the FX thread through
+     * {@link #closeReadiness()}; {@link #switchPendingProperty()} is whether
+     * one is.
+     */
+    sealed interface PendingSwitch permits PendingSwitch.None, PendingSwitch.WaitingDoor,
+            PendingSwitch.DoorDialogOpen, PendingSwitch.Extracting, PendingSwitch.Recovering,
+            PendingSwitch.Installing, PendingSwitch.CreatingFolder, PendingSwitch.SaveAsChoosing,
+            PendingSwitch.SaveAsCopying {
+
+        /** The pending switch's name, as a refusal or a progress step names it. */
+        String name();
+
+        /** No switch is pending. */
+        record None() implements PendingSwitch {
+            @Override
+            public String name() {
+                return "";
+            }
+        }
+
+        /** A door waits for a save — its own prompt's, or one this controller asked for (ruling G2). */
+        record WaitingDoor(String name) implements PendingSwitch {
+            public WaitingDoor {
+                Objects.requireNonNull(name, "name must not be null");
+            }
+        }
+
+        /** A door's file dialog is open (ruling L4). */
+        record DoorDialogOpen(String name) implements PendingSwitch {
+            public DoorDialogOpen {
+                Objects.requireNonNull(name, "name must not be null");
+            }
+        }
+
+        /** An archive is being extracted for Restore from Archive (ruling K3). */
+        record Extracting() implements PendingSwitch {
+            @Override
+            public String name() {
+                return RESTORE_FROM_ARCHIVE_DOOR;
+            }
+        }
+
+        /** Recover Session scans, asks or works off the FX thread (ruling L3). */
+        record Recovering() implements PendingSwitch {
+            @Override
+            public String name() {
+                return RECOVER_SESSION_DOOR;
+            }
+        }
+
+        /** A project is being installed in the open project's place (story 332's installation fence). */
+        record Installing(String name) implements PendingSwitch {
+            public Installing {
+                Objects.requireNonNull(name, "name must not be null");
+            }
+        }
+
+        /** A never-saved project's first save creates its folder off the FX thread (story 333, ruling L4). */
+        record CreatingFolder(String name) implements PendingSwitch {
+            public CreatingFolder {
+                Objects.requireNonNull(name, "name must not be null");
+            }
+        }
+
+        /** Save As's chooser is open, or its pre-fill is checked (story 333, ruling R5). */
+        record SaveAsChoosing() implements PendingSwitch {
+            @Override
+            public String name() {
+                return SAVE_AS_DOOR;
+            }
+        }
+
+        /** Save As copies, publishes and opens its copy (story 333, ruling R5). */
+        record SaveAsCopying() implements PendingSwitch {
+            @Override
+            public String name() {
+                return SAVE_AS_DOOR;
+            }
+        }
+    }
+
+    /**
+     * What the close protocol reads of the open project before it asks
+     * anything (story 333; rulings R2, R9, R12 #8), on the FX thread.
+     *
+     * @param projectName the open project's name
+     * @param dirty       whether it has unsaved changes ({@link DawProject#isDirty()})
+     * @param hasFolder   whether it has a project folder (it was saved, or opened from one)
+     * @param readOnly    whether its folder was opened read-only
+     * @param headSavedAt when its {@code project.daw} was last durably written
+     *                    ({@link #headSavedAt}); empty for a folder whose head was
+     *                    never written by a save of it ("left empty, as it was
+     *                    created") and for no folder
+     * @param headFailure the failure of its last head save, while it stands
+     *                    ({@link #lastHeadFailure})
+     * @param lockLost    whether its lock is already known to be lost — its
+     *                    last head save met a {@link LockStolenException}, a
+     *                    Save As copy's adoption met one, or its lease is
+     *                    {@link LockStatus#STOLEN} — known facts
+     *                    only, no lock I/O (the studio engineer's stage-4 S8:
+     *                    the close then shows ruling R7's exit dialog, not R2)
+     * @param knownLockLoss the lost lock as it is known, with its holder: the
+     *                    last head save's {@link LockStolenException}, or the
+     *                    one a Save As copy's adoption met (ruling 3 Q1, the
+     *                    same instance); empty when the loss is known only
+     *                    from the lease's status, whose holder is never read
+     *                    at GUARD (the studio engineer's stage-6 S1)
+     * @param pending     the switch pending now
+     * @param today       the strip model's today (ruling L1)
+     */
+    record CloseReadiness(String projectName, boolean dirty, boolean hasFolder, boolean readOnly,
+                          Optional<Instant> headSavedAt, Optional<Throwable> headFailure, boolean lockLost,
+                          Optional<LockStolenException> knownLockLoss, PendingSwitch pending, LocalDate today) {
+        CloseReadiness {
+            Objects.requireNonNull(projectName, "projectName must not be null");
+            Objects.requireNonNull(headSavedAt, "headSavedAt must not be null");
+            Objects.requireNonNull(headFailure, "headFailure must not be null");
+            Objects.requireNonNull(knownLockLoss, "knownLockLoss must not be null");
+            Objects.requireNonNull(pending, "pending must not be null");
+            Objects.requireNonNull(today, "today must not be null");
+        }
+    }
+
+    /**
+     * What the saves queued before a close reported, once each of them had
+     * (story 333; rulings R9 and 2 OQ-4).
+     *
+     * @param anyFailed whether one of them failed — its 331 ERROR, or its lost lock, is the report
+     * @param lockLost  the lost lock one of them met, handed to the close instead of the save's own takeover
+     *                  dialog; a lock loss among them governs the close (ruling 2 OQ-4, constraint 3)
+     */
+    record SavesReport(boolean anyFailed, Optional<LockStolenException> lockLost) {
+        SavesReport {
+            Objects.requireNonNull(lockLost, "lockLost must not be null");
+        }
+    }
+
+    /**
+     * How the close protocol's own save — the FLUSH of "Save and close" —
+     * ended (story 333; rulings R2, R7, R9).
+     */
+    sealed interface FlushResult permits FlushResult.Saved, FlushResult.LockLost, FlushResult.SaveFailed,
+            FlushResult.NotRequested {
+
+        /** The canonical save wrote the head (story 331). */
+        record Saved(SaveOutcome.Saved outcome) implements FlushResult {
+            public Saved {
+                Objects.requireNonNull(outcome, "outcome must not be null");
+            }
+        }
+
+        /** The save met a lock another session took over, caught as itself (ruling R7). */
+        record LockLost(LockStolenException stolen) implements FlushResult {
+            public LockLost {
+                Objects.requireNonNull(stolen, "stolen must not be null");
+            }
+        }
+
+        /** The save failed; its 331 ERROR is already shown (ruling R9). */
+        record SaveFailed(SaveOutcome.Failed outcome) implements FlushResult {
+            public SaveFailed {
+                Objects.requireNonNull(outcome, "outcome must not be null");
+            }
+        }
+
+        /** No save was asked for: the first save's location prompt was cancelled, or it was refused. */
+        record NotRequested() implements FlushResult { }
+    }
+
+    /**
+     * The close protocol's wait for the saves queued before it (story 333,
+     * ruling 2 OQ-4): while {@code stillWanted} answers {@code true}, the
+     * first lost lock those saves meet is kept here instead of being shown
+     * as the save's own takeover dialog. FX-confined.
+     */
+    private static final class ClosingSavesWait {
+        private final BooleanSupplier stillWanted;
+        private LockStolenException lockLost;
+
+        private ClosingSavesWait(BooleanSupplier stillWanted) {
+            this.stillWanted = stillWanted;
+        }
+
+        /** Takes {@code stolen} for the close, when it still waits; the first one governs. FX thread. */
+        private boolean takes(LockStolenException stolen) {
+            if (!stillWanted.getAsBoolean()) {
+                return false;
+            }
+            if (lockLost == null) {
+                lockLost = stolen;
+            }
+            return true;
+        }
     }
 
     /**
@@ -421,12 +723,31 @@ final class ProjectLifecycleController {
     private Supplier<Runnable> prepareJournalClose = () -> () -> { };
     private Consumer<Path> prepareJournalOpen = _ -> { };
     private OpenRecoveryGate.Result recoveryResult = OpenRecoveryGate.Result.PLAIN;
-    private final javafx.beans.property.ReadOnlyBooleanWrapper projectInstallationPending =
-            new javafx.beans.property.ReadOnlyBooleanWrapper(this, "projectInstallationPending");
+    private final ReadOnlyBooleanWrapper projectInstallationPending =
+            new ReadOnlyBooleanWrapper(this, "projectInstallationPending");
     boolean isProjectInstallationPending() { return projectInstallationPending.get(); }
-    javafx.beans.property.ReadOnlyBooleanProperty projectInstallationPendingProperty() {
+    ReadOnlyBooleanProperty projectInstallationPendingProperty() {
         return projectInstallationPending.getReadOnlyProperty();
     }
+
+    /**
+     * Story 333 — the door whose project is being installed while
+     * {@link #projectInstallationPending} holds, as {@link PendingSwitch.Installing}
+     * names it; {@code null} otherwise. Written only with the installation
+     * fence ({@link #raiseInstallationFence}, {@link #lowerInstallationFence}).
+     * FX thread.
+     */
+    private String installingDoor;
+
+    /**
+     * Story 333 (javafx-application-design skill §4, "Use JavaFX Properties for
+     * everything observable") — whether a switch is pending or a project is
+     * being installed: the fact the close protocol waits on instead of
+     * polling. Its one writer is {@link #pendingChanged()}, which every setter
+     * of the pending state calls, and which listens to
+     * {@link #projectInstallationPending}. FX thread.
+     */
+    private final ReadOnlyBooleanWrapper switchPending = new ReadOnlyBooleanWrapper(this, "switchPending");
 
     /** Production wiring: all disk-open doors use the same worker gate and FX installation. */
     void enableRecoveryGate(Supplier<Boolean> enabled, Supplier<Runnable> closeJournal, Consumer<Path> openJournal) {
@@ -453,8 +774,7 @@ final class ProjectLifecycleController {
     }
 
     private void beginGatedLoad(Path folder, OpenDoor door, long attempt) {
-        projectInstallationPending.set(true);
-        rootPane.setDisable(true);
+        raiseInstallationFence(installingDoorOf(door));
         startRecoveryWorker(RECOVERY_SCAN_WORKER, () -> {
             ProjectManager.PreparedOpen prepared = null;
             boolean installed = false;
@@ -476,7 +796,7 @@ final class ProjectLifecycleController {
                     if (!mayRetireAfterJournalClose(folder)) return;
                     projectManager.getLockManager().verifyHeld();
                     com.benesquivelmusic.daw.core.persistence.journal.JournalState.clear(ProjectContext.forProject(folder));
-                    projectManager.abandonProject();
+                    projectManager.closeProject();
                     retiredOutgoing = true;
                 }
                 OpenDoor selectedDoor = door;
@@ -500,26 +820,27 @@ final class ProjectLifecycleController {
                     outgoingJournalDetached = true;
                     closeJournal.run();
                     if (!mayRetireAfterJournalClose(folder)) return;
-                    projectManager.abandonProject();
+                    projectManager.closeProject();
                     retiredOutgoing = true;
                 }
                 projectManager.openProject(folder, prepared); // PARSE only; target lock and recovery already resolved
                 OpenDoor actualDoor = recoveryResult.door(selectedDoor);
+                // Story 333 — the migration dialog's "Don't show again" marker is read here, off the FX thread.
+                boolean migrationDialogSuppressed = migrationDialogSuppressed(folder);
                 PreparedLoad loaded = callOnFx(() -> {
                     if (refuseLateLoadWhileATakeIsRecordingOrBeingWritten(
                             "The recovery decision for " + folder + " was applied")) return null;
-                    projectInstallationPending.set(true);
-                    rootPane.setDisable(true);
+                    raiseInstallationFence(installingDoorOf(door));
                     headSavedAt = null;
                     progress.checkpointsEnded();
-                    return prepareLoadedProject(folder); // REHYDRATE and ACCOUNT before JOURNAL
+                    return prepareLoadedProject(folder, migrationDialogSuppressed); // REHYDRATE and ACCOUNT before JOURNAL
                 });
                 if (loaded == null) return;
                 if (!projectManager.isReadOnly()) prepareJournalOpen.accept(folder);
                 installed = true;
                 postFx(() -> {
                     if (attempt != loadAttempts) return;
-                    recovering = false;
+                    setRecovering(false);
                     try { lastLoadResult = finishPreparedLoad(folder, actualDoor, attempt, true, loaded); }
                     finally { finishOpenAttempt(attempt); }
                 });
@@ -541,7 +862,7 @@ final class ProjectLifecycleController {
             } finally {
                 if (!installed) {
                     if (retiredOutgoing && prepared != null && projectManager.getLockManager() == prepared.lock()) {
-                        projectManager.abandonProject();
+                        projectManager.closeProject();
                     }
                     if (prepared != null) {
                         try { prepared.close(); }
@@ -569,9 +890,43 @@ final class ProjectLifecycleController {
 
     private void finishOpenAttempt(long attempt) {
         if (attempt != loadAttempts) return;
-        recovering = false;
+        setRecovering(false);
+        lowerInstallationFence();
+    }
+
+    /**
+     * Raises the installation fence (story 332): editing, the transport and
+     * the project actions are fenced while {@code door}'s project replaces
+     * the open one. With {@link #lowerInstallationFence()} the only writer of
+     * {@link #projectInstallationPending}, {@link #installingDoor} and the
+     * root pane's disable state (pinned by {@code PendingSwitchStateHasOneWriterTest}).
+     * FX thread.
+     *
+     * @param door the door whose project is being installed
+     */
+    private void raiseInstallationFence(String door) {
+        installingDoor = door;
+        projectInstallationPending.set(true);
+        rootPane.setDisable(true);
+    }
+
+    /** Lowers the installation fence ({@link #raiseInstallationFence}). FX thread. */
+    private void lowerInstallationFence() {
+        installingDoor = null;
         projectInstallationPending.set(false);
         rootPane.setDisable(false);
+    }
+
+    /** The door an open through {@code door} installs its project for, as {@link PendingSwitch.Installing} names it. */
+    private static String installingDoorOf(OpenDoor door) {
+        return switch (door) {
+            case OpenDoor.Plain _ -> OPEN_PROJECT_DOOR;
+            case OpenDoor.ArchiveRestore _ -> RESTORE_FROM_ARCHIVE_DOOR;
+            case OpenDoor.JournalReplay _, OpenDoor.InterruptedSavePromotion _, OpenDoor.RecoveredWriteFailed _,
+                 OpenDoor.FailedReplayFallback _ -> RECOVER_SESSION_DOOR;
+            case OpenDoor.MigrationRollback _ -> ROLL_BACK_MIGRATION_DOOR;
+            case OpenDoor.SnapshotRestore _ -> RESTORE_SNAPSHOT_DOOR;
+        };
     }
 
     private <T> T callOnFx(Supplier<T> work) {
@@ -694,14 +1049,192 @@ final class ProjectLifecycleController {
      * the save its own prompt asked for — a door, or a switch that comes
      * after work off the FX thread ({@link #whenNoAppWriteIsPending}) — or
      * {@code null}: only one switch is pending, and another is refused
-     * meanwhile. FX thread.
+     * meanwhile. Written only by {@link #setWaitingDoor} (story 333; like
+     * every field of the pending state). FX thread.
      */
     private String waitingDoor;
 
     /**
+     * Story 333 (ruling R8) — the wait of the door that waits for a save
+     * now, or {@code null}: created by the door's first wait and kept across
+     * its re-waits, until the door switches, is refused, its save fails, or
+     * the user stops waiting. Every continuation of the wait checks that its
+     * wait is still this one, so a wait that was stopped never switches the
+     * project when its save ends. FX thread.
+     */
+    private DoorWait currentDoorWait;
+
+    /** Story 333 — the number of door waits so far: each {@link DoorWait}'s epoch. FX thread. */
+    private long doorWaitEpochs;
+
+    /** Story 333 — the 10 s timer of {@link #currentDoorWait}, or {@code null}. FX thread. */
+    private CloseTimers.Cancellable doorWaitTimer;
+
+    /**
+     * Story 333 — the clock of the doors' "Stop waiting" offer (ruling R8); a
+     * test installs manual timers ({@link #setDoorWaitTimers}).
+     */
+    private CloseTimers doorWaitTimers;
+
+    /**
+     * A door's wait for a save (story 333, ruling R8): the door, its epoch,
+     * and — for a late switch that already did its work — what "Stop
+     * waiting" reports instead of {@code door.cancelled}, which would call
+     * that work cancelled (the studio engineer's stage-4 S3). Compared by
+     * identity; a continuation holding a wait that is no longer
+     * {@link #currentDoorWait} does nothing.
+     *
+     * @param door                the waiting door's name
+     * @param epoch               the wait's number
+     * @param stoppedAfterItsWork a late switch's own not-opened report, or empty for a door that did nothing yet
+     */
+    private record DoorWait(String door, long epoch, Optional<Runnable> stoppedAfterItsWork) {
+        DoorWait {
+            Objects.requireNonNull(door, "door must not be null");
+            Objects.requireNonNull(stoppedAfterItsWork, "stoppedAfterItsWork must not be null");
+        }
+    }
+
+    /**
+     * Story 333 (the studio engineer's stage-4 N3) — the "Still saving" WARNING
+     * the current door wait showed, or {@code null}: the wait's end takes it
+     * off the bar while it still shows there. FX thread.
+     */
+    private String doorWaitWarning;
+
+    /**
+     * Story 333 (ruling L4) — the first save of a never-saved project whose
+     * folder is being created off the FX thread, the one switch pending from
+     * its location prompt's answer until the create's outcome reached the FX
+     * thread; {@code null} otherwise. Written only by
+     * {@link #setCreatingFolder}. FX thread.
+     */
+    private FolderBeingCreated creatingFolder;
+
+    /**
+     * A first save whose folder is being created (story 333): the door that
+     * asked for it, the save's outcome — the one a Ctrl+S during the create
+     * is handed too, so it makes no second folder, no second head and no
+     * ERROR — and what waits for the save's submission: a named snapshot's
+     * copy, queued on the save writer right behind that save in the FX step
+     * that submits it. FX-confined.
+     *
+     * @param door        the door's name, {@link #SAVE_PROJECT_DOOR}
+     * @param composed    the first save's outcome
+     * @param onSubmitted run with the save's own outcome once it is submitted
+     */
+    private record FolderBeingCreated(String door, CompletableFuture<SaveOutcome> composed,
+                                      List<Consumer<CompletableFuture<SaveOutcome>>> onSubmitted) { }
+
+    /** Where a user's Save As stands while it is the switch pending (story 333, ruling R5). */
+    private enum SaveAsPhase { CHOOSING, COPYING }
+
+    /**
+     * Story 333 (ruling R5) — a user's Save As, the one switch pending from
+     * its start until it ended: choosing its target, or copying, publishing
+     * and opening its copy; {@code null} otherwise. Written only by
+     * {@link #setSaveAsPhase}. FX thread.
+     */
+    private SaveAsPhase saveAsPhase;
+
+    /**
+     * Story 333 (design §1.4) — the close protocol's own run, the switch
+     * pending from the moment the exit or Close Project starts waiting on
+     * disk work until it ends; it stays set for the rest of the process
+     * after an exit's HIDE, and once the application-stop fallback's own
+     * close set it ({@code ExitCoordinator.closeAtTheStop}) or the fallback
+     * took over a close that had set it, so a stale continuation is refused:
+     * the door's name, or {@code null}. While it is set every door and every
+     * later switch is refused at FINE — the window is input-inert then, so
+     * only a stale programmatic continuation can reach one — and the close's
+     * own nested work (its first-save chooser and create, its Save As copy)
+     * runs under it. It is not part of {@link #switchPending}, which the
+     * close itself waits on. Written only by {@link #setClosing}. FX thread.
+     */
+    private String closing;
+
+    /**
+     * Story 333 (ruling 2 OQ-4) — the close protocol's wait for the saves
+     * queued before it ({@link #whenItsSavesHaveReported}), or {@code null}:
+     * while it is wanted, a lost lock any of those saves meets is handed to
+     * it instead of the save's own takeover dialog. FX thread.
+     */
+    private ClosingSavesWait closingSavesWait;
+
+    /**
+     * Story 333 (ruling R10) — what runs after Close Project installed the
+     * Untitled project and its run ended, when the Welcome window is to show
+     * ({@link #showWelcomeAfterClose}): by default
+     * {@link #showWelcome()}; {@code MainController} installs its own
+     * ({@link #setWelcomeAfterClose}). FX thread.
+     */
+    private Runnable welcomeAfterClose = this::showWelcome;
+
+    /**
+     * Story 333 — File ▸ Save As…, set by {@code MainController}
+     * ({@link #setSaveAsFlow}); {@code null} in a pure-unit context, where
+     * Save As does nothing. FX thread.
+     */
+    private SaveAsFlow saveAsFlow;
+
+    /** Story 333 — the close protocol's prompts, the takeover dialog's among them; made on first use. FX thread. */
+    private ProjectClosePrompts closePrompts;
+
+    /**
+     * Story 333 — what runs on the FX thread once the open project's folder
+     * changed without a rebuild after it: a new project's folder was created
+     * off the FX thread after the UI was rebuilt for it. {@code MainController}
+     * registers the folder's checkpoints with the snapshot browser, opens its
+     * session manifest and repaints the lock indicator and labels — what the
+     * rebuild did when the folder already existed. A no-op by default.
+     */
+    private Runnable projectFolderChangedHook = () -> { };
+
+    /**
+     * Story 333 (ruling R2, R9) — the failure of the open project's last
+     * head save while it stands, or {@code null}: set when a save of the open
+     * project, or the creation of its folder, failed; cleared by a head save's
+     * success and when a project or a snapshot replaces the open one, as the
+     * strip clears its head failure. It is an FX field of its own because the
+     * strip's failure state is written through the keyed pulse, so a prompt
+     * shown right after a failed save would read the strip stale (memory
+     * "async publish then sync re-read is stale"). FX thread.
+     */
+    private Throwable lastHeadFailure;
+
+    /**
+     * Story 333 (ruling 3 Q1; the studio engineer's stage-6 S1) — the lost
+     * lock a Save As copy's adoption met, the same instance, while that copy
+     * is the open project; {@code null} otherwise. With
+     * {@link #lastHeadFailure}'s own {@link LockStolenException} it is the
+     * known loss {@link CloseReadiness#knownLockLoss()} reports, so a close
+     * names the holder without reading the lock. Set by the adoption,
+     * cleared where {@link #lastHeadFailure} is. FX thread.
+     */
+    private LockStolenException adoptedUnderALostLock;
+
+    /**
+     * Story 333 — a monotonic count of the failed head saves of whichever
+     * project was open: never reset at a replacement — the close protocol
+     * snapshots it and compares the count after the saves it waits for, so
+     * only the difference matters. A first save or a new project whose folder
+     * could not be created counts as a failed save. FX thread.
+     */
+    private long failedSavesOfOpenProject;
+
+    /**
+     * Story 333 — the Project Manager book's §3.1 workspace
+     * ({@code ~/DAW Projects}) as the location prompt's initial directory,
+     * when it is a directory: read once, off the FX thread, when this
+     * controller is built; {@code null} otherwise.
+     */
+    private volatile java.io.File workspaceRootIfDirectory;
+
+    /**
      * Story 331 (ruling K3) — an archive is being extracted for Restore from
      * Archive: from the FX step that starts the extraction until its outcome
-     * reaches the FX thread, the one switch pending. FX thread.
+     * reaches the FX thread, the one switch pending. Written only by
+     * {@link #setExtractingArchive}. FX thread.
      */
     private boolean extractingArchive;
 
@@ -711,7 +1244,7 @@ final class ProjectLifecycleController {
      * the journal or replays it off the FX thread: from the FX step in
      * {@link #beginRecovery} until each of those hands over to the switch
      * point that follows it — in one FX step — or the recovery ends without
-     * a load. FX thread.
+     * a load. Written only by {@link #setRecovering}. FX thread.
      */
     private boolean recovering;
 
@@ -720,7 +1253,8 @@ final class ProjectLifecycleController {
      * switch pending from the door's judgment until its dialog returned
      * nothing, its import read failed, an exception escaped it, or its own
      * switch point or the archive's extraction took it over in one FX step;
-     * {@code null} otherwise. FX thread.
+     * {@code null} otherwise. Written only by {@link #setDoorDialog}. FX
+     * thread.
      */
     private DoorDialog doorDialog;
 
@@ -772,9 +1306,15 @@ final class ProjectLifecycleController {
      * @param question    the prompt's content text
      * @param switchNow   what replaces the open project
      * @param notSwitched what follows when the user kept the project open
+     * @param stoppedAfterItsWork what "Stop waiting" reports for a late switch that already did its work, or
+     *                    empty for a door ({@link DoorWait})
      */
     private record AnsweredSwitch(String name, DoorAnswer answered, BooleanSupplier refused, String question,
-                                  Runnable switchNow, Runnable notSwitched) { }
+                                  Runnable switchNow, Runnable notSwitched, Optional<Runnable> stoppedAfterItsWork) {
+        AnsweredSwitch {
+            Objects.requireNonNull(stoppedAfterItsWork, "stoppedAfterItsWork must not be null");
+        }
+    }
 
     /**
      * An extracted archive the late load opens (ruling K3).
@@ -862,6 +1402,31 @@ final class ProjectLifecycleController {
                 message -> confirm(ProjectAudioText.text("missingAssets.confirm.title"), message,
                         ProjectAudioText.text("missingAssets.confirm.button")));
         this.renderGuard = new RenderReadinessGuard(openProjectAudio, notificationBar, this::confirm);
+        this.doorWaitTimers = CloseTimers.onFx(fxDispatcher);
+        // Story 333 — switchPending follows the installation fence too. The listener re-reads the fence
+        // (pendingChanged() calls get()), so it is told of every later change, and lives as long as this
+        // controller, which owns both properties.
+        projectInstallationPending.addListener(_ -> pendingChanged());
+        resolveWorkspaceRootOffTheFxThread();
+    }
+
+    /**
+     * Reads, on a virtual thread, whether the Project Manager book's §3.1
+     * workspace is a directory, so the location prompt never asks the disk
+     * on the FX thread (story 333). A thread that cannot start leaves the
+     * prompt without an initial directory.
+     */
+    private void resolveWorkspaceRootOffTheFxThread() {
+        try {
+            Thread.ofVirtual().name("daw-workspace-root").start(() -> {
+                Path workspace = workspaceRoot();
+                if (workspace != null && Files.isDirectory(workspace)) {
+                    workspaceRootIfDirectory = workspace.toFile();
+                }
+            });
+        } catch (RuntimeException notStarted) {
+            LOG.log(Level.FINE, "The workspace root is not read: its worker did not start", notStarted);
+        }
     }
 
     /**
@@ -884,7 +1449,97 @@ final class ProjectLifecycleController {
      * project manager (ruling F2). FX thread.
      */
     void onSaveProject() {
-        saveOpenProject(SaveFollowUp.NONE);
+        saveOpenProject(SaveFollowUp.NONE, () -> { });
+    }
+
+    /**
+     * File ▸ Save As… (story 333, ruling R5) — also the palette's Save
+     * Project As… and a save failure's {@code Save As…} action: the open
+     * project copied into a new folder, which then becomes the open project
+     * in this window ({@link SaveAsFlow}). FX thread; returns at once.
+     */
+    void onSaveProjectAs() {
+        if (saveAsFlow == null) {
+            LOG.warning("Save As is not available: no Save As flow is installed");
+            return;
+        }
+        saveAsFlow.start(SaveAsFlow.Prefill.COPY);
+    }
+
+    /**
+     * Story 333 — what {@link SaveAsFlow} needs of this controller: the Save
+     * As as the one switch pending, the recording and take facts, the
+     * installation of the adopted copy as the strip's new project and the
+     * folder-dependent work that follows a folder change, and the copy's
+     * journal open (the gate's, so a failure throws). FX thread, but for
+     * the journal's open, which runs on the Save As worker.
+     *
+     * @return the flow's view of this controller
+     */
+    SaveAsFlow.Lifecycle saveAsLifecycle() {
+        return new SaveAsFlow.Lifecycle() {
+            @Override
+            public boolean beginSaveAs() {
+                if (isProjectInstallationPending()) {
+                    LOG.fine("Save As is fenced while a project is being installed");
+                    return false;
+                }
+                if (aSwitchIsPending()) {
+                    refuseWhileASwitchIsPending();
+                    return false;
+                }
+                setSaveAsPhase(SaveAsPhase.CHOOSING);
+                return true;
+            }
+
+            @Override
+            public void saveAsCopying(boolean copying) {
+                if (saveAsPhase != null) {
+                    setSaveAsPhase(copying ? SaveAsPhase.COPYING : SaveAsPhase.CHOOSING);
+                }
+            }
+
+            @Override
+            public void endSaveAs() {
+                setSaveAsPhase(null);
+            }
+
+            @Override
+            public boolean recordingInFlight() {
+                return recordingInFlight.getAsBoolean();
+            }
+
+            @Override
+            public boolean takeBeingWritten() {
+                return takeBeingWritten.getAsBoolean();
+            }
+
+            @Override
+            public void copyAdopted(ProjectMetadata adopted, Optional<LockStolenException> lockLost) {
+                projectReplaced(adopted.lastModified());
+                adoptedUnderALostLock = lockLost.orElse(null);
+                projectFolderChangedHook.run();
+            }
+
+            @Override
+            public void openJournalOf(Path folder) {
+                prepareJournalOpen.accept(folder);
+            }
+        };
+    }
+
+    /**
+     * The close protocol's prompts (story 333), owned by the main window:
+     * the takeover dialog and the Save As target's refusal among them. Made
+     * on first use. FX thread.
+     *
+     * @return the prompts
+     */
+    ProjectClosePrompts closePrompts() {
+        if (closePrompts == null) {
+            closePrompts = new ProjectClosePrompts(this, () -> Optional.ofNullable(mainWindow()));
+        }
+        return closePrompts;
     }
 
     /**
@@ -922,13 +1577,16 @@ final class ProjectLifecycleController {
      * ended {@link SaveOutcome.Saved} (ruling G13 #10; a failed save never
      * snapshots the old head under the user's name, and reports only its own
      * ERROR). Nothing is queued when no save was requested — a cancelled
-     * location prompt, a project that could not be created. FX thread.
+     * location prompt, a project that could not be created. A first save
+     * creates the project's folder off the FX thread (story 333): its copy is
+     * queued in the FX step that submits that save, right behind it. FX
+     * thread.
      */
     void createNamedSnapshot(String name) {
         String snapshotName = name == null || name.trim().isEmpty()
                 ? "Snapshot"
                 : name.trim();
-        saveOpenProject(SaveFollowUp.NONE).ifPresent(save -> copyNamedSnapshotAfter(save, snapshotName));
+        saveOpenProject(SaveFollowUp.NONE, () -> { }).ifPresent(save -> copyNamedSnapshotAfter(save, snapshotName));
     }
 
     /**
@@ -937,9 +1595,16 @@ final class ProjectLifecycleController {
      * right behind that save; its outcome comes back on the FX thread. The
      * copy counts among the {@linkplain #pendingWrites writes a door waits
      * for}, and "Creating snapshot…" shows, from now until its outcome
-     * reaches the FX thread. FX thread.
+     * reaches the FX thread. A first save whose folder is still being created
+     * has not queued its save yet: the copy is queued once it has, and not at
+     * all when the folder could not be created (story 333). FX thread.
      */
     private void copyNamedSnapshotAfter(CompletableFuture<SaveOutcome> save, String snapshotName) {
+        FolderBeingCreated creating = creatingFolder;
+        if (creating != null && creating.composed() == save) {
+            creating.onSubmitted().add(submitted -> copyNamedSnapshotAfter(submitted, snapshotName));
+            return;
+        }
         ProjectOperationProgress.NamedOperation snapshotOp =
                 new ProjectOperationProgress.NamedOperation("Creating snapshot…");
         progress.addOperation(snapshotOp);
@@ -1000,46 +1665,210 @@ final class ProjectLifecycleController {
      * through (story 331; Persistence Integrity book §4.2, §5.2, §6.1;
      * rejection §9.8): Save, the Save of the unsaved-changes prompt, Retry and
      * the named snapshot's save. A project that was never saved first asks
-     * for its folder ({@link #newProjectLocationPrompt}) and is created there,
-     * as before; then the live layout is captured into it and it is handed to
-     * {@link ProjectManager#save}, which only captures on this thread.
-     * See {@link #submitSave} for what follows. FX thread.
+     * for its folder, which is created off the FX thread
+     * ({@link #saveIntoANewFolder}); a request made while that folder is being
+     * created is that first save's request — one folder, one head, no ERROR
+     * (story 333). Otherwise {@code beforeCapture} runs, then the live layout
+     * is captured into the project and it is handed to
+     * {@link ProjectManager#save}, which only captures on this thread. See
+     * {@link #submitSave} for what follows. FX thread.
      *
-     * @param then what to do once the outcome reached the FX thread
-     * @return the save's outcome, completed on the save writer, if a save
-     *         was requested ({@code then} will run); empty if the location
-     *         prompt was cancelled or the project could not be created or
-     *         saved into (the failure is reported)
+     * @param then          what to do once the outcome reached the FX thread; a
+     *                      request coalesced into a first save whose folder is
+     *                      being created is told that first save's outcome, in
+     *                      a later FX turn
+     * @param beforeCapture what runs right before the capture, after any
+     *                      chooser (the close protocol stops playback there,
+     *                      story 333); Ctrl+S runs nothing
+     * @return the save's outcome if a save was requested ({@code then} will
+     *         run); empty if a project is being installed, the location prompt
+     *         was cancelled, or the project manager had no project to save into
+     *         (the failure is reported)
      */
-    private Optional<CompletableFuture<SaveOutcome>> saveOpenProject(SaveFollowUp then) {
+    private Optional<CompletableFuture<SaveOutcome>> saveOpenProject(SaveFollowUp then, Runnable beforeCapture) {
         if (isProjectInstallationPending()) return Optional.empty();
-        DawProject project = deps.project().get();
+        if (creatingFolder != null) return Optional.of(coalescedIntoTheFirstSave(then));
         if (projectManager.getCurrentProject() == null) {
-            // §8 / §1.1 — a brand-new project that has never been saved
-            // prompts for a real destination once instead of the silent
-            // Files.createTempDirectory into the system temp dir (which the
-            // next reboot can wipe). A null return means the user cancelled
-            // the location prompt, so nothing is saved — but no /tmp leak.
-            Path parentDirectory = newProjectLocationPrompt.get();
-            if (parentDirectory == null) {
-                return Optional.empty();
-            }
-            try {
-                projectManager.createProject(project.getName(), parentDirectory);
-            } catch (IOException | RuntimeException notCreated) {
-                LOG.log(Level.WARNING, "Failed to create the project folder for its first save", notCreated);
-                long generation = progress.projectGeneration();
-                progress.recordSaveFailed(generation, Instant.now(), notCreated);
-                showSaveFailure("Save failed: the project folder could not be created: "
-                        + failureReason(notCreated), notCreated instanceof IOException, generation);
-                return Optional.empty();
-            }
+            return saveIntoANewFolder(then, beforeCapture);
         }
+        beforeCapture.run();
         // Story 282 — capture the live layout state into the project model
         // before the capture. {@code null} from the supplier clears the field
         // so legacy projects round-trip byte-identical when the layout manager
         // is not installed.
-        return submitSave(project, deps.captureLayoutJson().get(), then);
+        return submitSave(deps.project().get(), deps.captureLayoutJson().get(), then);
+    }
+
+    /**
+     * A save request made while a first save's folder is being created: that
+     * first save's request — one folder, one head, no ERROR — whose outcome
+     * {@code then} is told, in a later FX turn, as the first save's own
+     * follow-up is (stage-4 review N4). FX thread.
+     */
+    private CompletableFuture<SaveOutcome> coalescedIntoTheFirstSave(SaveFollowUp then) {
+        CompletableFuture<SaveOutcome> composed = creatingFolder.composed();
+        if (then != SaveFollowUp.NONE) {
+            composed.whenComplete((outcome, failure) -> postFx(() -> then.after(outcome != null ? outcome
+                    : new SaveOutcome.Failed(unwrap(failure), Optional.empty()), true)));
+        }
+        return composed;
+    }
+
+    /**
+     * The first save of a project never saved (story 333; §8 / §1.1, ruling
+     * L4). Refused, with the pending switch's INFO, while another switch is
+     * pending — a door's file dialog, an archive's extraction, a recovery or
+     * a Save As (stage-4 review S3; a door that waits for its own prompt's
+     * save is the one asking for it) — it prompts for a real destination
+     * once — as {@link #SAVE_PROJECT_DOOR}, the one switch pending while the
+     * prompt is open — instead of the silent {@code Files.createTempDirectory}
+     * into the system temp dir; a cancelled prompt saves nothing. Then
+     * {@code beforeCapture} runs and the create becomes the one switch
+     * pending, both before the prompt hands its pending state over, so the
+     * pending fact never reads false between them; the folder is created off
+     * the FX thread ({@link #createProjectOffTheFxThread}) until
+     * {@link #saveIntoTheCreatedFolder} captures the project as it is then
+     * and saves it into the folder. The strip's "Saving project…" covers the
+     * create as it covers the head write that follows (ruling F7). FX thread.
+     *
+     * @return the first save's outcome, or empty when it was refused or the prompt was cancelled
+     */
+    private Optional<CompletableFuture<SaveOutcome>> saveIntoANewFolder(SaveFollowUp then, Runnable beforeCapture) {
+        if (doorDialog != null || extractingArchive || recovering || saveAsPhase != null) {
+            refuseWhileASwitchIsPending();
+            return Optional.empty();
+        }
+        AtomicReference<Path> chosen = new AtomicReference<>();
+        AtomicReference<CompletableFuture<SaveOutcome>> pending = new AtomicReference<>();
+        whileItsDialogIsOpen(SAVE_PROJECT_DOOR, _ -> {
+            Path parent = newProjectLocationPrompt.get();
+            if (parent == null) {
+                return;
+            }
+            chosen.set(parent);
+            beforeCapture.run();
+            CompletableFuture<SaveOutcome> composed = new CompletableFuture<>();
+            setCreatingFolder(new FolderBeingCreated(SAVE_PROJECT_DOOR, composed, new ArrayList<>()));
+            pending.set(composed);
+        });
+        Path parentDirectory = chosen.get();
+        CompletableFuture<SaveOutcome> composed = pending.get();
+        if (parentDirectory == null || composed == null) {
+            return Optional.empty();
+        }
+        long generation = progress.projectGeneration();
+        pendingSavesOfOpenProject++;
+        armSlowSaveIndicator(generation);
+        createProjectOffTheFxThread(deps.project().get().getName(), parentDirectory).whenComplete(
+                (created, failure) -> postFx(() -> saveIntoTheCreatedFolder(created, failure, then, composed,
+                        generation)));
+        return Optional.of(composed);
+    }
+
+    /**
+     * The outcome of a first save's folder creation, on the FX thread (story
+     * 333): the first save is no longer the switch pending. A folder that
+     * could not be created is a failed save — the head's failure state, its
+     * ERROR with a Retry for an I/O failure, {@code then} and the first save's
+     * outcome {@link SaveOutcome.Failed}. A created folder gets the project
+     * captured now, with its layout, and saved into it through
+     * {@link #submitSave}; a named snapshot asked for meanwhile queues its
+     * copy right behind that save, in this step.
+     */
+    private void saveIntoTheCreatedFolder(ProjectMetadata created, Throwable failure, SaveFollowUp then,
+                                          CompletableFuture<SaveOutcome> composed, long armedGeneration) {
+        FolderBeingCreated creating = creatingFolder;
+        setCreatingFolder(null);
+        if (failure != null) {
+            Throwable notCreated = unwrap(failure);
+            LOG.log(Level.WARNING, "Failed to create the project folder for its first save", notCreated);
+            long generation = progress.projectGeneration();
+            createEnded(armedGeneration);
+            progress.recordSaveFailed(generation, Instant.now(), notCreated);
+            noteHeadSaveFailed(notCreated);
+            showSaveFailure("Save failed: the project folder could not be created: "
+                    + failureReason(notCreated), notCreated instanceof IOException, generation);
+            SaveOutcome.Failed notSaved = new SaveOutcome.Failed(notCreated, Optional.empty());
+            then.after(notSaved, true);
+            composed.complete(notSaved);
+            return;
+        }
+        LOG.fine(() -> "The first save's folder was created: " + created.projectPath());
+        Optional<CompletableFuture<SaveOutcome>> save = submitSave(deps.project().get(),
+                deps.captureLayoutJson().get(), completing(composed, then));
+        // After the head's save was counted, so the strip's "Saving project…" never settles in between.
+        createEnded(armedGeneration);
+        if (save.isEmpty()) {
+            SaveOutcome.Failed notSaved = new SaveOutcome.Failed(
+                    new IllegalStateException("No project is open to save into"), Optional.empty());
+            then.after(notSaved, true);
+            composed.complete(notSaved);
+            return;
+        }
+        if (creating != null) {
+            creating.onSubmitted().forEach(waiting -> waiting.accept(save.get()));
+        }
+    }
+
+    /**
+     * A first save's folder creation ended: it no longer counts among the
+     * saves the strip's "Saving project…" covers — unless a project replaced
+     * the one it was armed for, which started the count over. FX thread.
+     */
+    private void createEnded(long armedGeneration) {
+        if (armedGeneration == progress.projectGeneration() && pendingSavesOfOpenProject > 0
+                && --pendingSavesOfOpenProject == 0) {
+            settleSlowSaveIndicator();
+        }
+    }
+
+    /**
+     * {@code then}, then the first save's outcome {@code composed} completed
+     * with the same outcome — the side effects before the terminal state.
+     */
+    private static SaveFollowUp completing(CompletableFuture<SaveOutcome> composed, SaveFollowUp then) {
+        return new SaveFollowUp() {
+            @Override
+            public void after(SaveOutcome outcome, boolean sameProject) {
+                try {
+                    then.after(outcome, sameProject);
+                } finally {
+                    composed.complete(outcome);
+                }
+            }
+
+            @Override
+            public boolean ownsLockLoss() {
+                return then.ownsLockLoss();
+            }
+        };
+    }
+
+    /**
+     * Creates the project folder {@code name} under {@code parentDirectory}
+     * on a virtual thread, {@link #PROJECT_CREATE_WORKER} (story 333): the
+     * folder, its metadata-only {@code project.daw}, its Recent Projects entry
+     * and its lock are disk I/O the FX thread never does
+     * ({@link ProjectManager#createProject}). Callable on the FX thread; never
+     * waits.
+     *
+     * @return the new project's metadata, completed on the worker; exceptional
+     *         when the folder could not be created or the worker not started
+     */
+    private CompletableFuture<ProjectMetadata> createProjectOffTheFxThread(String name, Path parentDirectory) {
+        CompletableFuture<ProjectMetadata> created = new CompletableFuture<>();
+        try {
+            Thread.ofVirtual().name(PROJECT_CREATE_WORKER).start(() -> {
+                try {
+                    created.complete(projectManager.createProject(name, parentDirectory));
+                } catch (Throwable notCreated) {
+                    created.completeExceptionally(notCreated);
+                }
+            });
+        } catch (RuntimeException | Error notStarted) {
+            created.completeExceptionally(notStarted);
+        }
+        return created;
     }
 
     /**
@@ -1081,7 +1910,7 @@ final class ProjectLifecycleController {
         } catch (IllegalStateException notOpen) {
             // The project manager holds no project to save into (a create or an
             // open that failed part-way): nothing was captured.
-            reportSaveFailed(generation, new SaveOutcome.Failed(notOpen, Optional.empty()), readOnly);
+            reportSaveFailed(generation, new SaveOutcome.Failed(notOpen, Optional.empty()), readOnly, then);
             return Optional.empty();
         }
         pendingWrites++;
@@ -1107,10 +1936,12 @@ final class ProjectLifecycleController {
                     // Story 295 / ruling G4 — the Saved cell shows the new time
                     // and flashes once; no "Project saved" notification.
                     headSavedAt = saved.metadata().lastModified();
+                    lastHeadFailure = null;
+                    adoptedUnderALostLock = null;
                     progress.recordSaveSucceeded(generation, headSavedAt, ProjectOperationProgress.SaveScope.FULL);
                     LOG.info("Project saved successfully");
                 }
-                case SaveOutcome.Failed failed -> reportSaveFailed(generation, failed, readOnly);
+                case SaveOutcome.Failed failed -> reportSaveFailed(generation, failed, readOnly, then);
             }
         } else {
             switch (outcome) {
@@ -1132,20 +1963,97 @@ final class ProjectLifecycleController {
     /**
      * A failed save of the open project (story 331; rulings F6, G9, G13 #6,
      * J3): the head's failure state, which only a head save success or a
-     * project replacement clears, and an ERROR notification, every time,
-     * with a Retry only for an I/O failure — not after the lock was taken
-     * over ({@link LockStolenException}) nor on a read-only project, where a
-     * retry cannot succeed. FX thread.
+     * project replacement clears — on the strip and in {@link #lastHeadFailure}
+     * (story 333) — one more in {@link #failedSavesOfOpenProject}, and an
+     * ERROR notification, every time, with a Retry only for an I/O failure —
+     * not on a read-only project, where a retry cannot succeed — and
+     * {@code Save As…} otherwise (story 333, the studio engineer's ruling
+     * Q1/Q5). A lock another session took over is caught as itself, never as
+     * an {@link IOException} (Persistence Integrity book §9.14), and has no
+     * ERROR: its follow-up reports it when it owns it (the exit's save); a
+     * close that still waits for the saves queued before it takes it over,
+     * and shows its own exit dialog (ruling 2 OQ-4 — ownership is decided
+     * here, on the FX thread, when the outcome arrived); otherwise the
+     * takeover dialog asks, in a later FX turn — after the save's follow-up
+     * ran — whether to keep the work in a new project
+     * ({@link #offerSaveAsAfterTakeover}; ruling R7). FX thread.
      */
-    private void reportSaveFailed(long generation, SaveOutcome.Failed failed, boolean readOnly) {
+    private void reportSaveFailed(long generation, SaveOutcome.Failed failed, boolean readOnly, SaveFollowUp then) {
         Throwable cause = failed.cause();
         LOG.log(Level.WARNING, cause, () -> "Failed to save project");
         progress.recordSaveFailed(generation, Instant.now(), cause);
-        boolean retry = cause instanceof IOException && !(cause instanceof LockStolenException) && !readOnly;
+        noteHeadSaveFailed(cause);
+        if (cause instanceof LockStolenException stolen) {
+            if (!then.ownsLockLoss() && !takenOverByTheClose(stolen)) {
+                postFx(() -> offerSaveAsAfterTakeover(generation, stolen));
+            }
+            return;
+        }
+        boolean retry = cause instanceof IOException && !readOnly;
         showSaveFailure(saveFailureMessage(failed, readOnly, null, progress.getToday()), retry, generation);
     }
 
-    /** Shows a save's ERROR, with a Retry of the open project's save when {@code retry}. FX thread. */
+    /**
+     * A save of the open project met a lock another session took over
+     * (story 333, ruling R7, its Ctrl+S variant): the blocking takeover
+     * dialog — {@code Save As…} keeps the work in a new project
+     * ({@link SaveAsFlow}, pre-filled {@code <folder>-takeover-<stamp>});
+     * {@code Not now} leaves the project dirty, its head failure standing and
+     * the lock cell showing the steal, and says nothing more. Every save that
+     * meets the lost lock asks again: the dialog is not rate-limited. A save
+     * of a project replaced since asks nothing, and nor does one whose offer
+     * runs while a close is pending ({@link #closing}): an interactive close
+     * meets the lost lock itself, in the takeover dialog whose Save As can
+     * run — at GUARD when the loss is known, or at its FLUSH (ruling R7) —
+     * where a Save As started here would be refused while the close runs;
+     * after an exit's HIDE, and while the application-stop fallback runs,
+     * nothing may ask (ruling 4 Q6.2 item 4), and a dialog opened inside one
+     * of {@code Application.stop()}'s nested waits would hold that wait open
+     * (story 333, the stage-8 review B1; the studio engineer's final ruling
+     * F1). FX thread, outside a pulse.
+     *
+     * @param generation the strip generation of the project the save was of
+     * @param stolen     what the save's lock check found
+     */
+    private void offerSaveAsAfterTakeover(long generation, LockStolenException stolen) {
+        if (generation != progress.projectGeneration()) {
+            return;
+        }
+        String pending = closing;
+        if (pending != null) {
+            LOG.fine(() -> "The takeover dialog was not shown while " + pending + " closes the open project");
+            return;
+        }
+        ProjectClosePrompts prompts = closePrompts();
+        ProjectClosePrompts.TakenOverAnswer answer = prompts.takenOver(
+                prompts.takenOverOnSave(deps.project().get().getName(), stolen.currentHolder()));
+        if (answer == ProjectClosePrompts.TakenOverAnswer.SAVE_AS && generation == progress.projectGeneration()) {
+            if (saveAsFlow == null) {
+                LOG.warning("Save As is not available: no Save As flow is installed");
+                return;
+            }
+            saveAsFlow.start(SaveAsFlow.Prefill.TAKEOVER);
+        }
+    }
+
+    /**
+     * A head save of the open project failed — a save, or the creation of a
+     * first save's or a new project's folder (story 333): its failure stands
+     * ({@link #lastHeadFailure}) and the failed saves count one more
+     * ({@link #failedSavesOfOpenProject}). FX thread.
+     */
+    private void noteHeadSaveFailed(Throwable cause) {
+        lastHeadFailure = cause;
+        failedSavesOfOpenProject++;
+    }
+
+    /**
+     * Shows a save's ERROR with its one action (story 333, the studio
+     * engineer's ruling Q1): a Retry of the open project's save when
+     * {@code retry}, else {@code Save As…} — File ▸ Save As… of the open
+     * project, read-only included. Each belongs to the project that failed
+     * to save: in a later project it does nothing. FX thread.
+     */
     private void showSaveFailure(String message, boolean retry, long generation) {
         if (retry) {
             notificationBar.show(NotificationLevel.ERROR, message, "Retry", () -> {
@@ -1155,7 +2063,12 @@ final class ProjectLifecycleController {
                 }
             });
         } else {
-            notificationBar.show(NotificationLevel.ERROR, message);
+            notificationBar.show(NotificationLevel.ERROR, message, ProjectCloseText.text("saveFailure.saveAs"), () -> {
+                // So does its Save As.
+                if (generation == progress.projectGeneration()) {
+                    onSaveProjectAs();
+                }
+            });
         }
     }
 
@@ -1281,6 +2194,8 @@ final class ProjectLifecycleController {
      */
     private void projectReplaced(Instant lastSaved) {
         headSavedAt = lastSaved;
+        lastHeadFailure = null;
+        adoptedUnderALostLock = null;
         progress.resetForProject(lastSaved);
         settleTheReplacedProjectsSaves();
     }
@@ -1294,6 +2209,8 @@ final class ProjectLifecycleController {
      * never the stamp of a save that failed. FX thread.
      */
     private void snapshotReplacedTheOpenProject() {
+        lastHeadFailure = null;
+        adoptedUnderALostLock = null;
         progress.resetForSnapshotRestore(headSavedAt);
         settleTheReplacedProjectsSaves();
     }
@@ -1322,7 +2239,7 @@ final class ProjectLifecycleController {
     }
 
     /** A failure's message, or its simple class name when it has none, so the user never reads "null". */
-    private static String failureReason(Throwable failure) {
+    static String failureReason(Throwable failure) {
         String message = failure.getMessage();
         return message == null || message.isBlank() ? failure.getClass().getSimpleName() : message;
     }
@@ -1369,50 +2286,122 @@ final class ProjectLifecycleController {
 
     /** Replaces the open project with a new one created in {@code parentDirectory}. FX thread. */
     private void createNewProjectIn(Path parentDirectory) {
-        replaceAfterJournalClose(attempt -> createNewProjectAfterClose(parentDirectory, attempt));
+        replaceAfterJournalClose(NEW_PROJECT_DOOR, attempt -> createNewProjectAfterClose(parentDirectory, attempt));
     }
 
+    /**
+     * New Project once the open project was closed (story 333): the new
+     * project is installed on the FX thread — the live project, a fresh undo
+     * history, the rebuilt UI and the built-in Default layout — and only then,
+     * as this step's last statement, its folder's creation starts off the FX
+     * thread ({@link #createProjectOffTheFxThread}), so the rebuild never reads
+     * a project manager the create is filling in; under the installation
+     * fence, which stays up until the replacement finishes
+     * ({@link #finishReplacement}); without the recovery gate ({@code attempt}
+     * {@code -1}) this step raises the fence itself. The create's outcome
+     * continues in {@link #newProjectFolderCreated}. FX thread.
+     *
+     * @param parentDirectory where the new project's folder is created
+     * @param attempt         the replacement's attempt, or {@code -1} without the recovery gate
+     */
     private void createNewProjectAfterClose(Path parentDirectory, long attempt) {
-        DawProject newProject = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
-        deps.setProject().accept(newProject);
+        long installation = attempt >= 0L ? attempt : raiseUngatedInstallationFence(NEW_PROJECT_DOOR);
+        DawProject newProject = installFreshUntitledProject();
+        // Last (stage-4 review S1): the rebuild above read the project manager before the create touched it.
+        createProjectOffTheFxThread(newProject.getName(), parentDirectory).whenComplete((created, failure) ->
+                postFx(() -> newProjectFolderCreated(newProject, created, failure, installation)));
+    }
+
+    /**
+     * Installs a fresh in-memory Untitled project in the window: the
+     * replacement New Project and Close Project share (ruling R10, "the
+     * same replacement New performs, without creating a folder") — the live
+     * project, a new undo history, the rebuilt UI (which retires the
+     * outgoing transport controller and the closed project's plug-ins and
+     * their editors) and the built-in Default layout, so the closed
+     * project's named layouts don't leak into the next one (story 282; the
+     * studio engineer's stage-6 S4 and stage-7 S3). FX thread.
+     *
+     * @return the Untitled project installed
+     */
+    private DawProject installFreshUntitledProject() {
+        DawProject untitled = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
+        deps.setProject().accept(untitled);
         projectReplaced(null);
         deps.setUndoManager().accept(new UndoManager());
         deps.rebuildHistoryPanel().run();
         deps.resetTrackCounters().run();
-        try {
-            Path folder = projectManager.createProject(newProject.getName(), parentDirectory).projectPath();
-            // Persist the full initial state (createProject writes a metadata-only
-            // file first) through the one save request; the new project's layout
-            // is the built-in Default, so none is stored. Its outcome is reported
-            // like any save's.
-            Optional<CompletableFuture<SaveOutcome>> initialSave = submitSave(newProject, null, (outcome, sameProject) -> {
-                if (sameProject && outcome instanceof SaveOutcome.Saved) {
-                    openCreatedJournal(folder, attempt);
-                } else {
-                    finishReplacement(attempt);
-                }
-            });
-            if (initialSave.isEmpty()) finishReplacement(attempt);
-        } catch (IOException e) {
-            // The on-disk create failed (e.g. permissions); keep the in-memory
-            // project so the UI is still usable and surface the error.
-            progress.recordSaveFailed(progress.projectGeneration(), Instant.now(), e);
-            notificationBar.show(NotificationLevel.ERROR,
-                    "Could not create project: " + e.getMessage());
-            LOG.log(Level.WARNING, "Failed to create new project on disk", e);
-            finishReplacement(attempt);
-        }
         rebuildUI();
         // Story 282 — Reset layouts to the built-in Default so that a
         // previously opened project's saved layouts don't leak into the
-        // new project.
+        // next project.
         deps.applyLayoutJson().accept(null);
+        return untitled;
+    }
+
+    /**
+     * Raises the installation fence of a replacement made without the
+     * recovery gate (story 333): a new project's folder is created off the
+     * FX thread, so editing and the project actions stay fenced until the
+     * replacement finishes. FX thread.
+     *
+     * @return the replacement's attempt, which {@link #finishReplacement} ends
+     */
+    private long raiseUngatedInstallationFence(String door) {
+        long attempt = ++loadAttempts;
+        raiseInstallationFence(door);
+        return attempt;
+    }
+
+    /**
+     * New Project's folder creation ended, on the FX thread (story 333). A
+     * folder that could not be created leaves the in-memory project, so the
+     * UI is still usable, and says so. A created folder first tells
+     * {@code MainController} the open project's folder changed
+     * ({@link #projectFolderChangedHook}: its checkpoints are registered with
+     * the snapshot browser, its session manifest opens, the lock indicator and
+     * the labels follow), then persists the full initial state through the one
+     * save request — {@code createProject} wrote a metadata-only file first;
+     * the new project's layout is the built-in Default, so none is stored —
+     * whose outcome is reported like any save's, and opens the new project's
+     * journal once it is saved.
+     */
+    private void newProjectFolderCreated(DawProject newProject, ProjectMetadata created, Throwable failure,
+                                         long attempt) {
+        if (attempt != loadAttempts || deps.project().get() != newProject) {
+            // Another replacement took this one's place since (unreachable under the fence): nothing of it runs
+            // but the end of its attempt, which does nothing for an attempt no longer the current one.
+            LOG.fine(() -> "The folder of a new project that was replaced since was "
+                    + (failure != null ? "not created" : "created: " + created.projectPath()));
+            finishReplacement(attempt);
+            return;
+        }
+        if (failure != null) {
+            Throwable notCreated = unwrap(failure);
+            progress.recordSaveFailed(progress.projectGeneration(), Instant.now(), notCreated);
+            noteHeadSaveFailed(notCreated);
+            notificationBar.show(NotificationLevel.ERROR, "Could not create project: " + failureReason(notCreated));
+            LOG.log(Level.WARNING, "Failed to create new project on disk", notCreated);
+            finishReplacement(attempt);
+            return;
+        }
+        projectFolderChangedHook.run();
+        Path folder = created.projectPath();
+        Optional<CompletableFuture<SaveOutcome>> initialSave = submitSave(newProject, null, (outcome, sameProject) -> {
+            if (sameProject && outcome instanceof SaveOutcome.Saved) {
+                openCreatedJournal(folder, attempt);
+            } else {
+                finishReplacement(attempt);
+            }
+        });
+        if (initialSave.isEmpty()) finishReplacement(attempt);
     }
 
     private void openCreatedJournal(Path folder, long attempt) {
         if (openRecoveryGate == null) {
             notifyJournalOpen(folder);
             notificationBar.show(NotificationLevel.SUCCESS, "New project created");
+            finishReplacement(attempt);
             return;
         }
         Thread.ofVirtual().name("daw-new-project-journal").start(() -> {
@@ -1537,7 +2526,7 @@ final class ProjectLifecycleController {
 
     /** Replaces the open project with the session {@code result} imported from {@code source}. FX thread. */
     private void installImportedSession(Path source, SessionImportResult result) {
-        replaceAfterJournalClose(attempt -> {
+        replaceAfterJournalClose(IMPORT_SESSION_DOOR, attempt -> {
             try { installImportedSessionAfterClose(source, result); }
             finally { finishReplacement(attempt); }
         });
@@ -1873,17 +2862,17 @@ final class ProjectLifecycleController {
         progress.addOperation(restoreOp);
 
         archiveDoorAnswer = answered;
-        extractingArchive = true;
+        setExtractingArchive(true);
         try {
             Thread.ofVirtual()
                     .name("daw-restore-worker")
                     .start(() -> restoreArchive(archivePath, destination, () -> {
-                        extractingArchive = false;
+                        setExtractingArchive(false);
                         progress.removeOperation(restoreOp);
                         restoreProgress.close();
                     }));
         } catch (RuntimeException | Error notStarted) {
-            extractingArchive = false;
+            setExtractingArchive(false);
             archiveDoorAnswer = null;
             progress.removeOperation(restoreOp);
             restoreProgress.close();
@@ -2003,9 +2992,10 @@ final class ProjectLifecycleController {
                 () -> refuseLateLoadWhileATakeIsRecordingOrBeingWritten(restored.alreadyDone()),
                 restoredArchivePromptText(destination),
                 () -> loadProjectFromPath(restored.destination(), restored.door()),
-                () -> offerToOpenTheRestoredArchiveLater(restored));
+                () -> offerToOpenTheRestoredArchiveLater(restored),
+                Optional.of(() -> offerToOpenTheRestoredArchiveLater(restored)));
         whenNoAppWriteIsPending(RESTORE_FROM_ARCHIVE_DOOR, restored.alreadyDone(), load.refused(),
-                () -> switchIfTheAnswerCovers(load));
+                () -> switchIfTheAnswerCovers(load), load.stoppedAfterItsWork());
     }
 
     /**
@@ -2013,7 +3003,8 @@ final class ProjectLifecycleController {
      * prompt's save, as the one switch pending — then step (3). FX thread.
      */
     private void judgeTheAnsweredSwitch(AnsweredSwitch pending) {
-        switchOnceAppWritesEnded(pending.name(), pending.refused(), () -> switchIfTheAnswerCovers(pending));
+        switchOnceAppWritesEnded(pending.name(), pending.refused(), () -> switchIfTheAnswerCovers(pending),
+                pending.stoppedAfterItsWork());
     }
 
     /** Step (3) of an {@link AnsweredSwitch}: no app write is pending. FX thread. */
@@ -2023,11 +3014,11 @@ final class ProjectLifecycleController {
             pending.switchNow().run();
             return;
         }
-        switch (askAboutUnsavedChanges(pending.question())) {
+        switch (askAboutUnsavedChanges(UnsavedChangesPrompt.door(pending.question()))) {
             case DISCARD -> pending.switchNow().run();
             case CANCEL -> pending.notSwitched().run();
             case SAVE -> saveThenJudgeAgain(pending.name(), () -> judgeTheAnsweredSwitch(pending),
-                    pending.notSwitched());
+                    pending.notSwitched(), pending.stoppedAfterItsWork());
         }
     }
 
@@ -2216,8 +3207,8 @@ final class ProjectLifecycleController {
      * migration roll-back, which do not pass it — they ask nothing about
      * unsaved changes — pass the switch point ({@link #whenNoAppWriteIsPending})
      * instead, as every switch made after a chooser or after work off the FX
-     * thread does. Quitting the application does not pass either: there is
-     * no exit protocol until story 333.
+     * thread does. Quitting the application and Close Project pass neither:
+     * the exit protocol has its own guard (story 333).
      *
      * <p>Continuation-passing (story 331, rulings G1, G2, G13 #8, K3, L3, L4):
      * it runs {@code proceed}, on the FX thread, once the door may replace
@@ -2278,7 +3269,7 @@ final class ProjectLifecycleController {
     /** Steps 2 to 4 of {@link #whenProjectMayClose}; {@link #waitingDoor} is {@code null} or {@code door}. */
     private void judgeDoor(String door, Runnable proceed) {
         switchOnceAppWritesEnded(door, this::refuseWhileATakeIsRecordingOrBeingWritten,
-                () -> proceedUnlessCancelled(door, proceed));
+                () -> proceedUnlessCancelled(door, proceed), Optional.empty());
     }
 
     /** Step 4 of {@link #whenProjectMayClose}: no app write is pending. FX thread. */
@@ -2287,11 +3278,11 @@ final class ProjectLifecycleController {
             proceed.run();
             return;
         }
-        switch (askAboutUnsavedChanges(CONTINUE_QUESTION)) {
+        switch (askAboutUnsavedChanges(UnsavedChangesPrompt.DOOR)) {
             case CANCEL -> { }
             case DISCARD -> proceed.run();
             // A failed save at the prompt cancels the door; its ERROR is already shown.
-            case SAVE -> saveThenJudgeAgain(door, () -> judgeDoor(door, proceed), () -> { });
+            case SAVE -> saveThenJudgeAgain(door, () -> judgeDoor(door, proceed), () -> { }, Optional.empty());
         }
     }
 
@@ -2312,7 +3303,7 @@ final class ProjectLifecycleController {
      */
     private void whileItsDialogIsOpen(String door, Consumer<DoorDialog> chooseThenSwitch) {
         DoorDialog dialog = new DoorDialog(door, DoorAnswer.of(deps.project().get()));
-        doorDialog = dialog;
+        setDoorDialog(dialog);
         try {
             chooseThenSwitch.accept(dialog);
         } finally {
@@ -2323,7 +3314,7 @@ final class ProjectLifecycleController {
     /** The door's dialog returned: it is no longer the switch pending — unless another took its place. FX thread. */
     private void handOver(DoorDialog dialog) {
         if (doorDialog == dialog) {
-            doorDialog = null;
+            setDoorDialog(null);
         }
     }
 
@@ -2344,7 +3335,8 @@ final class ProjectLifecycleController {
     private void switchAfterItsDialog(DoorDialog dialog, Runnable switchNow) {
         handOver(dialog);
         AnsweredSwitch pending = new AnsweredSwitch(dialog.door(), dialog.answer(),
-                this::refuseWhileATakeIsRecordingOrBeingWritten, CONTINUE_QUESTION, switchNow, () -> { });
+                this::refuseWhileATakeIsRecordingOrBeingWritten, CONTINUE_QUESTION, switchNow, () -> { },
+                Optional.empty());
         whenNoAppWriteIsPending(dialog.door(), pending.refused(), () -> switchIfTheAnswerCovers(pending));
     }
 
@@ -2374,7 +3366,7 @@ final class ProjectLifecycleController {
             refuseWhileASwitchIsPending();
             return;
         }
-        switchOnceAppWritesEnded(name, refused, switchNow);
+        switchOnceAppWritesEnded(name, refused, switchNow, Optional.empty());
     }
 
     /**
@@ -2385,7 +3377,11 @@ final class ProjectLifecycleController {
      * another switch is pending it is refused with a WARNING that says what
      * was done, that the project was not opened and which switch is replacing
      * the open project ({@link #lateSwitchRefusedMessage}), shown and logged
-     * every time — that message is the only record of the work. FX thread.
+     * every time — that message is the only record of the work. A wait it
+     * then makes for a save, which the user stops, says what was done and
+     * that the project was not opened ({@code door.cancelled.alreadyDone}),
+     * never that it was cancelled (the studio engineer's stage-4 S3). FX
+     * thread.
      *
      * @param name        the switch's name, as the INFO refusing a door meanwhile names it
      * @param alreadyDone what the work did, a sentence without its full stop
@@ -2394,13 +3390,41 @@ final class ProjectLifecycleController {
      */
     private void whenNoAppWriteIsPending(String name, String alreadyDone, BooleanSupplier refused,
                                          Runnable switchNow) {
+        whenNoAppWriteIsPending(name, alreadyDone, refused, switchNow,
+                Optional.of(() -> reportStoppedAfterItsWork(alreadyDone)));
+    }
+
+    /**
+     * {@link #whenNoAppWriteIsPending(String, String, BooleanSupplier, Runnable)}
+     * whose stopped wait reports {@code stoppedAfterItsWork} — a restored
+     * archive's "Open it later" INFO (ruling K3). FX thread.
+     */
+    private void whenNoAppWriteIsPending(String name, String alreadyDone, BooleanSupplier refused,
+                                         Runnable switchNow, Optional<Runnable> stoppedAfterItsWork) {
         if (aSwitchIsPending()) {
-            String warning = lateSwitchRefusedMessage(alreadyDone, pendingSwitchName());
+            // Story 333's two variants are the bundle's (ruling 4 Q5 (i)); the L3 (b) text stays 331's literal.
+            String warning = closing != null ? ProjectCloseText.text("door.lateRefused.closing", alreadyDone)
+                    : aFirstSaveIsPending() ? ProjectCloseText.text("door.lateRefused.firstSave", alreadyDone)
+                    : lateSwitchRefusedMessage(alreadyDone, pendingSwitchName());
             LOG.warning(warning);
             notificationBar.show(NotificationLevel.WARNING, warning);
             return;
         }
-        switchOnceAppWritesEnded(name, refused, switchNow);
+        switchOnceAppWritesEnded(name, refused, switchNow, stoppedAfterItsWork);
+    }
+
+    /**
+     * A late switch's wait, stopped (the studio engineer's stage-4 S3): its
+     * work stays done, the project was not opened, and the open project and
+     * its save go on — one INFO says so. FX thread.
+     *
+     * @param alreadyDone what the work did, a sentence without its full stop
+     */
+    private void reportStoppedAfterItsWork(String alreadyDone) {
+        String stopped = ProjectCloseText.text("door.cancelled.alreadyDone", alreadyDone,
+                deps.project().get().getName());
+        LOG.info(stopped);
+        notificationBar.show(NotificationLevel.INFO, stopped);
     }
 
     /**
@@ -2414,6 +3438,18 @@ final class ProjectLifecycleController {
     static String lateSwitchRefusedMessage(String alreadyDone, String pending) {
         return alreadyDone + "; the project was not opened, because " + pending
                 + " is replacing the open project — open it later with File ▸ Open Project…";
+    }
+
+    /**
+     * Whether the switch pending is the open project's first save, for no
+     * door — its location prompt open, or its folder being created — which
+     * replaces nothing: a late switch refused then says so
+     * ({@code door.lateRefused.firstSave}, the studio engineer's stage-4 N1
+     * and appfix-1 N1, ruling 4 Q5 (i)). FX thread.
+     */
+    private boolean aFirstSaveIsPending() {
+        return doorDialog != null ? SAVE_PROJECT_DOOR.equals(doorDialog.door())
+                : !recovering && !extractingArchive && creatingFolder != null && waitingDoor == null;
     }
 
     /**
@@ -2434,23 +3470,34 @@ final class ProjectLifecycleController {
      * {@code name} is the switch pending until the save writer is idle, then
      * it is judged again from the refusal on the FX thread, so a recording
      * started meanwhile refuses it and a save requested meanwhile makes it
-     * wait again. Neither: no switch is pending any more, and
-     * {@code switchNow} runs. FX thread.
+     * wait again. Its first wait starts its {@link DoorWait} (story 333,
+     * ruling R8), kept across its re-waits: after
+     * {@link #DOOR_WAIT_WARNING_DELAY} still waiting, one WARNING offers to
+     * stop waiting, and a wait that was stopped never resumes. Neither: no
+     * switch is pending any more, and {@code switchNow} runs. FX thread.
      */
-    private void switchOnceAppWritesEnded(String name, BooleanSupplier refused, Runnable switchNow) {
+    private void switchOnceAppWritesEnded(String name, BooleanSupplier refused, Runnable switchNow,
+                                          Optional<Runnable> stoppedAfterItsWork) {
         if (refused.getAsBoolean()) {
-            waitingDoor = null;
+            endDoorWait();
+            setWaitingDoor(null);
             return;
         }
         if (pendingWrites > 0) {
-            waitingDoor = name;
+            setWaitingDoor(name);
+            DoorWait wait = doorWaitOf(name, stoppedAfterItsWork);
             projectManager.whenSavesIdle().whenComplete((idle, never) -> postFx(() -> {
+                if (currentDoorWait != wait) {
+                    LOG.fine(() -> wait.door() + " no longer waits for the save: it does not resume");
+                    return;
+                }
                 beforeWaitingDoorResumes.run();
-                switchOnceAppWritesEnded(name, refused, switchNow);
+                switchOnceAppWritesEnded(name, refused, switchNow, stoppedAfterItsWork);
             }));
             return;
         }
-        waitingDoor = null;
+        endDoorWait();
+        setWaitingDoor(null);
         switchNow.run();
     }
 
@@ -2460,35 +3507,149 @@ final class ProjectLifecycleController {
      * {@link SaveOutcome.Saved} for the same project, {@code judgeAgain}
      * runs; a failed save, a cancelled location prompt or a project that
      * could not be created end the switch and run {@code notSaved} (ruling
-     * G1 (3)). FX thread.
+     * G1 (3)). The door waits for the save as its {@link DoorWait} (story
+     * 333, ruling R8), from when the request returned — after any location
+     * prompt, so the user's time in the chooser is not waiting — and a wait
+     * that was stopped ignores the save's outcome, which was reported as
+     * every save's is. FX thread.
      */
-    private void saveThenJudgeAgain(String name, Runnable judgeAgain, Runnable notSaved) {
-        waitingDoor = name;
+    private void saveThenJudgeAgain(String name, Runnable judgeAgain, Runnable notSaved,
+                                    Optional<Runnable> stoppedAfterItsWork) {
+        setWaitingDoor(name);
+        AtomicReference<DoorWait> waiting = new AtomicReference<>();
         Optional<CompletableFuture<SaveOutcome>> requested = saveOpenProject((outcome, sameProject) -> {
+            if (currentDoorWait != waiting.get()) {
+                LOG.fine(() -> name + " no longer waits for its save: its outcome ends nothing");
+                return;
+            }
             if (sameProject && outcome instanceof SaveOutcome.Saved) {
                 judgeAgain.run();
             } else {
-                waitingDoor = null;
+                endDoorWait();
+                setWaitingDoor(null);
                 notSaved.run();
             }
-        });
+        }, () -> { });
         if (requested.isEmpty()) {
-            waitingDoor = null;
+            endDoorWait();
+            setWaitingDoor(null);
             notSaved.run();
+            return;
         }
+        waiting.set(doorWaitOf(name, stoppedAfterItsWork));
+    }
+
+    /**
+     * The wait of the door {@code door} (story 333, ruling R8): the current
+     * one when it is this door's — a re-wait keeps it — else a new one, whose
+     * timer shows the "Stop waiting" WARNING once, after
+     * {@link #DOOR_WAIT_WARNING_DELAY}. FX thread.
+     */
+    private DoorWait doorWaitOf(String door, Optional<Runnable> stoppedAfterItsWork) {
+        if (currentDoorWait != null && currentDoorWait.door().equals(door)) {
+            return currentDoorWait;
+        }
+        endDoorWait();
+        DoorWait wait = new DoorWait(door, ++doorWaitEpochs, stoppedAfterItsWork);
+        currentDoorWait = wait;
+        doorWaitTimer = doorWaitTimers.after(DOOR_WAIT_WARNING_DELAY, () -> warnStillSaving(wait));
+        return wait;
+    }
+
+    /**
+     * The door's wait ended — it switched, was refused, its save failed, or
+     * the user stopped it: its timer is cancelled, and its "Still saving"
+     * WARNING, while the bar still shows it, is taken off (the studio
+     * engineer's stage-4 N3). FX thread.
+     */
+    private void endDoorWait() {
+        currentDoorWait = null;
+        if (doorWaitTimer != null) {
+            doorWaitTimer.cancel();
+            doorWaitTimer = null;
+        }
+        String shown = doorWaitWarning;
+        doorWaitWarning = null;
+        if (shown != null && notificationBar.getCurrentLevel() == NotificationLevel.WARNING
+                && shown.equals(notificationBar.getMessage())) {
+            notificationBar.dismiss();
+        }
+    }
+
+    /**
+     * {@link #DOOR_WAIT_WARNING_DELAY} into a door's wait, still waiting
+     * (story 333, ruling R8): one WARNING, {@code door.stillSaving}, whose
+     * action {@code Stop waiting} cancels the door — once per wait, and never
+     * rate-limited. A wait that already ended shows nothing. FX thread.
+     */
+    private void warnStillSaving(DoorWait wait) {
+        if (currentDoorWait != wait || waitingDoor == null) {
+            return;
+        }
+        doorWaitTimer = null;
+        String warning = ProjectCloseText.text("door.stillSaving", deps.project().get().getName(), wait.door());
+        LOG.warning(warning);
+        doorWaitWarning = warning;
+        notificationBar.show(NotificationLevel.WARNING, warning, ProjectCloseText.text("door.stopWaiting"),
+                () -> stopWaiting(wait));
+    }
+
+    /**
+     * The WARNING's {@code Stop waiting} (story 333, ruling R8): the door is
+     * cancelled — no switch is pending any more, and nothing it would have
+     * done runs when the save ends — the open project stays as it is, and its
+     * save goes on with its usual outcome; one INFO says so: a late switch's
+     * own report for one that already did its work (its archive restored, its
+     * recovered changes written), {@code door.cancelled} otherwise. An action
+     * of a wait that has ended does nothing. FX thread.
+     */
+    private void stopWaiting(DoorWait wait) {
+        if (currentDoorWait != wait) {
+            return;
+        }
+        endDoorWait();
+        setWaitingDoor(null);
+        if (wait.stoppedAfterItsWork().isPresent()) {
+            wait.stoppedAfterItsWork().get().run();
+            return;
+        }
+        String cancelled = ProjectCloseText.text("door.cancelled", wait.door(), deps.project().get().getName());
+        LOG.info(cancelled);
+        notificationBar.show(NotificationLevel.INFO, cancelled);
     }
 
     /**
      * Whether a switch is pending: one waits for a save ({@link #waitingDoor}),
      * an archive is extracted, a recovery scans, asks or works off the FX
-     * thread, or a door's file dialog is open. Only one is at a time.
+     * thread, a door's file dialog is open, a first save's folder is being
+     * created, or a Save As chooses its target or copies — or the close
+     * protocol runs ({@link #closing}, story 333). Only one is at a time —
+     * each refuses the others while it is pending, a first save included —
+     * but for a door's own first save, which waits for it as its
+     * {@link #waitingDoor} while it is {@link #creatingFolder}, and for the
+     * close, which waits for the switch it found pending. Package-private so
+     * a test reads whether the close's own run is still pending (ruling 4
+     * Q3). FX thread.
      */
-    private boolean aSwitchIsPending() {
-        return waitingDoor != null || extractingArchive || recovering || doorDialog != null;
+    boolean aSwitchIsPending() {
+        return aSwitchBesidesClosingIsPending() || closing != null;
+    }
+
+    /**
+     * {@link #aSwitchIsPending()} but for the close protocol's own run: the
+     * fact {@link #switchPending} reports, which the close waits on (story
+     * 333, design §3.1).
+     */
+    private boolean aSwitchBesidesClosingIsPending() {
+        return waitingDoor != null || extractingArchive || recovering || doorDialog != null
+                || creatingFolder != null || saveAsPhase != null;
     }
 
     /** The pending switch's name, as a refusal names it; see {@link #aSwitchIsPending()}. */
     private String pendingSwitchName() {
+        if (closing != null) {
+            return closing;
+        }
         if (doorDialog != null) {
             return doorDialog.door();
         }
@@ -2498,26 +3659,347 @@ final class ProjectLifecycleController {
         if (extractingArchive) {
             return RESTORE_FROM_ARCHIVE_DOOR;
         }
+        if (creatingFolder != null && waitingDoor == null) {
+            return creatingFolder.door();
+        }
+        if (saveAsPhase != null) {
+            return SAVE_AS_DOOR;
+        }
         return waitingDoor;
     }
 
-    /** The answers of the unsaved-changes prompt. */
-    private enum UnsavedChangesAnswer { SAVE, DISCARD, CANCEL }
+    /**
+     * The switch pending now (story 333): what {@link #closeReadiness()}
+     * reports — a door's open file dialog first, then an installation, named
+     * by its door ({@link #installingDoor}: every fenced replacement names
+     * one, a gated New or Open as well, whose worker also keeps
+     * {@link #recovering} set), then the rest in the order a refusal names
+     * them. Recover Session's unfenced scan and dialog report
+     * {@link PendingSwitch.Recovering}. FX thread.
+     */
+    private PendingSwitch pendingSwitch() {
+        if (doorDialog != null) {
+            return new PendingSwitch.DoorDialogOpen(doorDialog.door());
+        }
+        if (projectInstallationPending.get()) {
+            return new PendingSwitch.Installing(installingDoor);
+        }
+        if (recovering) {
+            return new PendingSwitch.Recovering();
+        }
+        if (extractingArchive) {
+            return new PendingSwitch.Extracting();
+        }
+        if (creatingFolder != null) {
+            return new PendingSwitch.CreatingFolder(creatingFolder.door());
+        }
+        if (saveAsPhase != null) {
+            return saveAsPhase == SaveAsPhase.CHOOSING ? new PendingSwitch.SaveAsChoosing()
+                    : new PendingSwitch.SaveAsCopying();
+        }
+        if (waitingDoor != null) {
+            return new PendingSwitch.WaitingDoor(waitingDoor);
+        }
+        return new PendingSwitch.None();
+    }
+
+    /**
+     * The one writer of {@link #switchPending}, called by every setter of the
+     * pending state and by the installation fence's listener. It reads the
+     * fence first, every time, so that invalidation listener is told of every
+     * later change (an invalidation listener whose property is never read
+     * again hears nothing more). FX thread.
+     */
+    private void pendingChanged() {
+        boolean installing = projectInstallationPending.get();
+        switchPending.set(installing || aSwitchBesidesClosingIsPending());
+    }
+
+    /** The door waiting for a save, or {@code null}; see {@link #waitingDoor}. FX thread. */
+    private void setWaitingDoor(String door) {
+        waitingDoor = door;
+        pendingChanged();
+    }
+
+    /** Whether an archive is being extracted; see {@link #extractingArchive}. FX thread. */
+    private void setExtractingArchive(boolean extracting) {
+        extractingArchive = extracting;
+        pendingChanged();
+    }
+
+    /** Whether Recover Session is the switch pending; see {@link #recovering}. FX thread. */
+    private void setRecovering(boolean pending) {
+        recovering = pending;
+        pendingChanged();
+    }
+
+    /** The door whose file dialog is open, or {@code null}; see {@link #doorDialog}. FX thread. */
+    private void setDoorDialog(DoorDialog dialog) {
+        doorDialog = dialog;
+        pendingChanged();
+    }
+
+    /** The first save whose folder is being created, or {@code null}; see {@link #creatingFolder}. FX thread. */
+    private void setCreatingFolder(FolderBeingCreated creating) {
+        creatingFolder = creating;
+        pendingChanged();
+    }
+
+    /** Where a user's Save As stands, or {@code null}; see {@link #saveAsPhase}. FX thread. */
+    private void setSaveAsPhase(SaveAsPhase phase) {
+        saveAsPhase = phase;
+        pendingChanged();
+    }
+
+    /** The close protocol's run, by its door's name, or {@code null}; see {@link #closing}. FX thread. */
+    private void setClosing(String door) {
+        closing = door;
+        pendingChanged();
+    }
+
+    /**
+     * Story 333 (design §1.4, §3.1) — the close protocol starts waiting on
+     * disk work: from now until {@link #endClosing()} its run is the one
+     * switch pending, so a door or a later switch a stale continuation
+     * starts is refused, at FINE. FX thread.
+     *
+     * @param door the close's name, as a log line or a late switch's refusal names it
+     */
+    void beginClosing(String door) {
+        setClosing(Objects.requireNonNull(door, "door must not be null"));
+    }
+
+    /** Story 333 — the close protocol's run ended; no switch of it is pending any more. FX thread. */
+    void endClosing() {
+        setClosing(null);
+    }
+
+    /**
+     * Whether a switch is pending or a project is being installed (story 333):
+     * the fact the close protocol waits on — never its own run
+     * ({@link #closing}). Read-only; its one writer is this controller's
+     * pending state. FX thread.
+     *
+     * @return the property
+     */
+    ReadOnlyBooleanProperty switchPendingProperty() {
+        return switchPending.getReadOnlyProperty();
+    }
+
+    /**
+     * What the close protocol reads of the open project now (story 333,
+     * rulings R2, R9, R12 #8): its name, whether it has unsaved changes and a
+     * folder, whether that folder was opened read-only, when its head was last
+     * written, the failure of its last head save while it stands, whether its
+     * lock is already known lost, the switch pending and today. FX thread.
+     *
+     * @return the open project's readiness to close
+     */
+    CloseReadiness closeReadiness() {
+        DawProject project = deps.project().get();
+        ProjectMetadata open = projectManager.getCurrentProject();
+        boolean hasFolder = open != null && open.projectPath() != null;
+        Optional<LockStolenException> knownLockLoss = !hasFolder ? Optional.empty()
+                : lastHeadFailure instanceof LockStolenException stolen ? Optional.of(stolen)
+                : Optional.ofNullable(adoptedUnderALostLock);
+        boolean lockLost = hasFolder && (knownLockLoss.isPresent()
+                || projectManager.getLockManager().status() == LockStatus.STOLEN);
+        return new CloseReadiness(project.getName(), project.isDirty(), hasFolder,
+                hasFolder && projectManager.isReadOnly(), Optional.ofNullable(headSavedAt),
+                Optional.ofNullable(lastHeadFailure), lockLost, knownLockLoss, pendingSwitch(), progress.getToday());
+    }
+
+    /**
+     * Story 333 — how many head saves failed so far, of whichever project was
+     * open ({@link #failedSavesOfOpenProject}): the close protocol compares it
+     * before and after the saves it waits for. FX thread.
+     *
+     * @return the count
+     */
+    long failedSavesOfOpenProject() {
+        return failedSavesOfOpenProject;
+    }
+
+    /**
+     * Story 333 (ruling R12 #8) — an exit replaces a door that waits for a
+     * save, silently: the door is cancelled as its "Stop waiting" cancels it
+     * — epoch-fenced, so its wait never resumes and nothing it would have
+     * done runs when the save ends — with a FINE log instead of the INFO;
+     * the save goes on, and the exit waits for it. A door waiting for its
+     * own prompt's first save is cancelled the same way, while that save
+     * still creates its folder. Nothing when no door waits. FX thread.
+     */
+    void cancelWaitingDoorForExit() {
+        if (waitingDoor == null) {
+            return;
+        }
+        String door = waitingDoor;
+        endDoorWait();
+        setWaitingDoor(null);
+        LOG.fine(() -> door + " no longer waits for the save: the application is closing");
+    }
+
+    /**
+     * Story 333 (rulings R1, R9 and 2 OQ-4) — waits, without blocking the FX
+     * thread, until every save and named-snapshot copy this controller asked
+     * for before this call has reported its outcome on the FX thread, then
+     * tells {@code reported} — on the FX thread, unless {@code stillWanted}
+     * answered {@code false} at a wake-up, which ends the wait silently —
+     * whether one of them failed (the monotonic count of failed head saves
+     * changed) and the lost lock one of them met. While the wait is wanted,
+     * a lost lock is the close's, decided in that save's report
+     * ({@link #reportSaveFailed}): it shows no takeover dialog of its own.
+     * Like a door's wait: the save writer's idle, then an unkeyed post that
+     * looks again. FX thread.
+     *
+     * @param stillWanted asked at every wake-up and when a lost lock arrives
+     * @param reported    told once, on the FX thread, what the saves reported
+     */
+    void whenItsSavesHaveReported(BooleanSupplier stillWanted, Consumer<SavesReport> reported) {
+        Objects.requireNonNull(stillWanted, "stillWanted must not be null");
+        Objects.requireNonNull(reported, "reported must not be null");
+        ClosingSavesWait wait = new ClosingSavesWait(stillWanted);
+        closingSavesWait = wait;
+        awaitTheSavesOf(wait, failedSavesOfOpenProject, reported);
+    }
+
+    /** One look of {@link #whenItsSavesHaveReported}: wait again, end silently, or report. FX thread. */
+    private void awaitTheSavesOf(ClosingSavesWait wait, long failedBefore, Consumer<SavesReport> reported) {
+        if (!wait.stillWanted.getAsBoolean()) {
+            if (closingSavesWait == wait) {
+                closingSavesWait = null;
+            }
+            return;
+        }
+        if (pendingWrites > 0) {
+            projectManager.whenSavesIdle().whenComplete((idle, never) ->
+                    postFx(() -> awaitTheSavesOf(wait, failedBefore, reported)));
+            return;
+        }
+        if (closingSavesWait == wait) {
+            closingSavesWait = null;
+        }
+        reported.accept(new SavesReport(failedSavesOfOpenProject != failedBefore, Optional.ofNullable(wait.lockLost)));
+    }
+
+    /**
+     * Whether the close protocol, waiting for the saves queued before it,
+     * takes {@code stolen} over (ruling 2 OQ-4): only while its wait is
+     * still wanted — a run already kept open ("Don't quit") leaves the save
+     * its own takeover dialog. FX thread.
+     */
+    private boolean takenOverByTheClose(LockStolenException stolen) {
+        ClosingSavesWait wait = closingSavesWait;
+        return wait != null && wait.takes(stolen);
+    }
+
+    /**
+     * Story 333 (rulings R2, R7, R9) — the close protocol's FLUSH: the one
+     * save request of the open project ({@link #saveOpenProject}) — a
+     * project never saved first asks for its folder, which is created off
+     * the FX thread — with {@code beforeCapture} (the close's playback stop)
+     * run right before the capture, after any chooser. Its follow-up owns a
+     * lost lock while {@code stillWanted} answers {@code true}: the close
+     * then shows the exit's takeover dialog, and the save's report shows
+     * none. FX thread; returns once the request was made.
+     *
+     * @param stillWanted   whether the close still wants the outcome, asked when it arrives
+     * @param beforeCapture what runs right before the capture
+     * @return how the save ended, completed on the FX thread
+     */
+    CompletionStage<FlushResult> saveBeforeClosing(BooleanSupplier stillWanted, Runnable beforeCapture) {
+        Objects.requireNonNull(stillWanted, "stillWanted must not be null");
+        Objects.requireNonNull(beforeCapture, "beforeCapture must not be null");
+        CompletableFuture<FlushResult> flushed = new CompletableFuture<>();
+        SaveFollowUp followUp = new SaveFollowUp() {
+            @Override
+            public void after(SaveOutcome outcome, boolean sameProject) {
+                flushed.complete(switch (outcome) {
+                    case SaveOutcome.Saved saved -> new FlushResult.Saved(saved);
+                    case SaveOutcome.Failed failed -> failed.cause() instanceof LockStolenException stolen
+                            ? new FlushResult.LockLost(stolen) : new FlushResult.SaveFailed(failed);
+                });
+            }
+
+            @Override
+            public boolean ownsLockLoss() {
+                return stillWanted.getAsBoolean();
+            }
+        };
+        if (saveOpenProject(followUp, beforeCapture).isEmpty()) {
+            flushed.complete(new FlushResult.NotRequested());
+        }
+        return flushed;
+    }
+
+    /**
+     * Story 333 (ruling R10) — File ▸ Close Project closed the open
+     * project's folder: the window is as at launch, a fresh in-memory
+     * Untitled project — New's replacement without its folder
+     * ({@link #installFreshUntitledProject}), its tempo the new project's
+     * default and loop and punch off — with a new undo history, the rebuilt
+     * UI (which retires the outgoing transport controller, after the take
+     * the close waited out was published) and the built-in Default layout,
+     * as New's; the open project's audio retired, the strip started over,
+     * and what depends on the open folder told there is none. The Welcome
+     * window is not opened here: the close shows it once its run has ended
+     * ({@link #showWelcomeAfterClose}, ruling 4 Q3 and the stage-7 review
+     * N9). FX thread.
+     */
+    void installUntitledAfterClose() {
+        openProjectAudio.retire();
+        headSavedAt = null;
+        progress.checkpointsEnded();
+        installFreshUntitledProject();
+        projectFolderChangedHook.run();
+    }
+
+    /**
+     * Story 333 (ruling R10) — the Welcome window over the Untitled project
+     * Close Project installed ({@link #installUntitledAfterClose}), shown by
+     * the close once its run has ended and no exit runs next — never inside
+     * the run, whose fence and pending close would refuse the first-run
+     * wizard's own actions (ruling 4 Q3, the stage-7 review N9). FX thread.
+     */
+    void showWelcomeAfterClose() {
+        welcomeAfterClose.run();
+    }
 
     /**
      * Asks whether to save the open project's unsaved changes before a
-     * switch replaces it, {@code question} being the prompt's content. FX
-     * thread.
+     * switch or a close replaces it, as {@code prompt} words it (story 333,
+     * ruling R2: one Alert for the doors and the close protocol). Titled
+     * "Unsaved Changes"; Save, Discard, then Cancel. With
+     * {@link UnsavedChangesPrompt#discardApart()} Discard stands apart on the
+     * left, Save is the default button (Enter) and Cancel the cancel button
+     * (Escape and the window's close box); without it the buttons are the
+     * doors' own, as before. Owned by the prompt's owner, when it names one.
+     * FX thread.
+     *
+     * @param prompt what the prompt says, and its buttons
+     * @return the answer; the window closed without an answer is a Cancel
      */
-    private UnsavedChangesAnswer askAboutUnsavedChanges(String question) {
+    UnsavedChangesAnswer askAboutUnsavedChanges(UnsavedChangesPrompt prompt) {
         Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
         alert.setTitle("Unsaved Changes");
-        alert.setHeaderText("You have unsaved changes.");
-        alert.setContentText(question);
-        ButtonType saveBtn = new ButtonType("Save");
-        ButtonType discardBtn = new ButtonType("Discard");
-        ButtonType cancelBtn = ButtonType.CANCEL;
+        alert.setHeaderText(prompt.header());
+        alert.setContentText(prompt.content());
+        ButtonType saveBtn = prompt.discardApart()
+                ? new ButtonType(prompt.saveLabel(), ButtonBar.ButtonData.OK_DONE)
+                : new ButtonType(prompt.saveLabel());
+        ButtonType discardBtn = prompt.discardApart()
+                ? new ButtonType(prompt.discardLabel(), ButtonBar.ButtonData.LEFT)
+                : new ButtonType(prompt.discardLabel());
+        ButtonType cancelBtn = prompt.cancelLabel()
+                .map(label -> new ButtonType(label, ButtonBar.ButtonData.CANCEL_CLOSE))
+                .orElse(ButtonType.CANCEL);
         alert.getButtonTypes().setAll(saveBtn, discardBtn, cancelBtn);
+        if (prompt.discardApart()) {
+            // The safe answer is the default: Enter saves; Discard is never the default.
+            ((Button) alert.getDialogPane().lookupButton(saveBtn)).setDefaultButton(true);
+            ((Button) alert.getDialogPane().lookupButton(discardBtn)).setDefaultButton(false);
+        }
+        prompt.owner().ifPresent(alert::initOwner);
         ThemeManager.getDefault().applyTo(alert.getDialogPane());
 
         Optional<ButtonType> result = alert.showAndWait();
@@ -2532,15 +4014,32 @@ final class ProjectLifecycleController {
      * G2, K3, L3, L4): refused, with one INFO naming the pending switch —
      * {@link #doorDialogStillOpenMessage} while a door's file dialog is open,
      * {@link #STILL_RECOVERING_MESSAGE} while a recovery runs,
-     * {@link #STILL_EXTRACTING_MESSAGE} while an archive is extracted, else
-     * "Still saving — &lt;it&gt; continues when the save finishes."; the same
+     * {@link #STILL_EXTRACTING_MESSAGE} while an archive is extracted;
+     * "Still creating the project folder — Save Project continues when the
+     * folder has been created." ({@code door.stillCreatingFolder}) while a
+     * first save's folder is created for no door (story 333) — one a door's
+     * prompt asked for names that door, as below; "Still finishing Save As —
+     * try again when it has finished." ({@code door.stillFinishing}) while a
+     * Save As copies, publishes and opens its copy, or deletes what a
+     * cancelled copy made (story 333; a Save As whose chooser is open is
+     * refused as a door whose file dialog is open); the two story-333 texts
+     * are bundle values (ruling 4 Q5 (i); the studio engineer's final ruling
+     * F13); else "Still saving —
+     * &lt;it&gt; continues when the save finishes." for a door waiting for a
+     * save; the same
      * refusal again within {@link #DOOR_REFUSAL_WINDOW} shows nothing more
      * (Failure Surfacing book §5.4: one toast per fingerprint per window). A
      * late switch that already did something is refused with a WARNING
      * instead ({@link #whenNoAppWriteIsPending(String, String, BooleanSupplier, Runnable)}).
-     * FX thread.
+     * While the close protocol runs ({@link #closing}, story 333) the refusal
+     * is a FINE log, not a toast: every window is input-inert then, so only a
+     * stale programmatic continuation is refused. FX thread.
      */
-    private void refuseWhileASwitchIsPending() {
+    void refuseWhileASwitchIsPending() {
+        if (closing != null) {
+            LOG.fine(() -> "Refused while " + closing + " closes the open project");
+            return;
+        }
         String refusal;
         if (doorDialog != null) {
             refusal = doorDialogStillOpenMessage(doorDialog.door());
@@ -2548,6 +4047,12 @@ final class ProjectLifecycleController {
             refusal = STILL_RECOVERING_MESSAGE;
         } else if (extractingArchive) {
             refusal = STILL_EXTRACTING_MESSAGE;
+        } else if (creatingFolder != null && waitingDoor == null) {
+            refusal = ProjectCloseText.text("door.stillCreatingFolder", creatingFolder.door());
+        } else if (saveAsPhase == SaveAsPhase.CHOOSING) {
+            refusal = doorDialogStillOpenMessage(SAVE_AS_DOOR);
+        } else if (saveAsPhase != null) {
+            refusal = ProjectCloseText.text("door.stillFinishing", SAVE_AS_DOOR);
         } else {
             refusal = "Still saving — " + waitingDoor + " continues when the save finishes.";
         }
@@ -2579,7 +4084,8 @@ final class ProjectLifecycleController {
      * {@link #PROJECT_CHANGE_WHILE_RECORDING_MESSAGE} or
      * {@link #PROJECT_CHANGE_WHILE_WRITING_MESSAGE} as a WARNING toast, with
      * no modal dialog, and logs it. Only the in-app doors that call this are
-     * refused; quitting the application is not (story 333).
+     * refused; the exit protocol and Close Project wait for the take instead
+     * (story 333, ruling R1).
      *
      * @return {@code true} if a recording is in flight or a take is still
      *         being written, and the change is refused
@@ -2771,10 +4277,19 @@ final class ProjectLifecycleController {
         }
     }
 
+    /**
+     * A parsed project, installed and about to be shown.
+     *
+     * @param project                   the installed project
+     * @param unread                    the saved items its read could not honour as written
+     * @param generation                its audio's load
+     * @param migrationDialogSuppressed whether the user chose "Don't show again" for the migration
+     *                                  its load ran, read off the FX thread (story 333)
+     */
     private record PreparedLoad(DawProject project, List<UnreadProjectItem> unread,
-                                OpenProjectAudio.Generation generation) { }
+                                OpenProjectAudio.Generation generation, boolean migrationDialogSuppressed) { }
 
-    private PreparedLoad prepareLoadedProject(Path projectDir) {
+    private PreparedLoad prepareLoadedProject(Path projectDir, boolean migrationDialogSuppressed) {
             // Story 331 (G13 #4) — the strip starts over, its time the opened file's.
             projectReplaced(openedFileLastSaved());
             DawProject dawProject = projectManager.getCurrentDawProject();
@@ -2795,11 +4310,17 @@ final class ProjectLifecycleController {
             deps.project().get().markClean();
             OpenProjectAudio.Generation generation = openProjectAudio.begin(dawProject, projectDir,
                     missingAssets, dawProject.getTransport().getPositionInBeats());
-        return new PreparedLoad(dawProject, unreadItems, generation);
+        return new PreparedLoad(dawProject, unreadItems, generation, migrationDialogSuppressed);
     }
 
+    /**
+     * The install of an open made without the recovery gate, on the FX
+     * thread — where that open read the project (known limit, story 384) —
+     * so its migration dialog's "Don't show again" marker is read here too.
+     */
     private boolean finishLoad(Path projectDir, OpenDoor door, long attempt, boolean journalPrepared) {
-        return finishPreparedLoad(projectDir, door, attempt, journalPrepared, prepareLoadedProject(projectDir));
+        return finishPreparedLoad(projectDir, door, attempt, journalPrepared,
+                prepareLoadedProject(projectDir, migrationDialogSuppressed(projectDir)));
     }
 
     private boolean finishPreparedLoad(Path projectDir, OpenDoor door, long attempt, boolean journalPrepared,
@@ -2817,9 +4338,9 @@ final class ProjectLifecycleController {
             // Story 247 — surface the migration report dialog when the
             // load ran a registry-driven schema migration that changes what
             // the user authored (story 330: a format-only step opens
-            // silently). The dialog itself short-circuits when the user has
-            // already chosen "Don't show again" for this project.
-            maybeShowMigrationReport(projectDir);
+            // silently), unless the user already chose "Don't show again"
+            // for this project — read before this FX step (story 333).
+            maybeShowMigrationReport(projectDir, loaded.migrationDialogSuppressed());
             // Story 329 (D41) — a Roll back re-entered this method: the inner
             // load said what happened, announced or failed, and opened the
             // journal if it succeeded. This load stays quiet and answers with
@@ -2844,14 +4365,32 @@ final class ProjectLifecycleController {
     }
 
     /**
-     * Invokes {@link MigrationReportDialog#showIfNeeded} for the just-loaded
-     * project when the load ran a schema migration that changes what the
-     * user authored ({@link MigrationReport#changesAuthoredContent()}, the
-     * gate {@code showIfNeeded} applies too): a load whose migrations only
-     * re-express the file format opens without the dialog — it is still
-     * backed up on its first save, listed in the Migration History and
-     * badged on the hub, all of which follow {@link MigrationReport#wasMigrated()}.
-     * Wired with a roll-back action that restores the most recent sibling
+     * Whether the migration report dialog of the load the project manager
+     * just made is suppressed for {@code projectDir} — the user chose "Don't
+     * show again" for its version ({@link MigrationSuppression}). Reads the
+     * marker from disk: called off the FX thread by the gated open (story
+     * 333), and on it only by an open made without the gate. {@code false}
+     * when no migration that changes what the user authored ran, without
+     * reading anything.
+     */
+    private boolean migrationDialogSuppressed(Path projectDir) {
+        MigrationReport report = projectManager.getLastMigrationReport();
+        return report != null && report.changesAuthoredContent()
+                && MigrationSuppression.isSuppressed(projectDir, report.toVersion());
+    }
+
+    /**
+     * Invokes {@link MigrationReportDialog#showUnlessSuppressed} for the
+     * just-loaded project when the load ran a schema migration that changes
+     * what the user authored ({@link MigrationReport#changesAuthoredContent()},
+     * the gate {@code showUnlessSuppressed} applies too): a load whose
+     * migrations only re-express the file format opens without the dialog —
+     * it is still backed up on its first save, listed in the Migration
+     * History and badged on the hub, all of which follow
+     * {@link MigrationReport#wasMigrated()}. Nothing is read from disk here
+     * (story 333): whether the user chose "Don't show again" was read before,
+     * off the FX thread ({@link #migrationDialogSuppressed}). Wired with a
+     * roll-back action that restores the most recent sibling
      * {@code project.daw.v<n>.*.bak} (created by the first save after a
      * previous migrated load) and reloads the project. When no backup
      * exists yet, rolling back simply abandons the in-memory migrated
@@ -2859,13 +4398,16 @@ final class ProjectLifecycleController {
      *
      * <p>Package-private so tests can drive it directly without going
      * through a directory chooser.</p>
+     *
+     * @param projectDir the project's folder
+     * @param suppressed whether the user chose "Don't show again" for this migration
      */
-    void maybeShowMigrationReport(Path projectDir) {
+    void maybeShowMigrationReport(Path projectDir, boolean suppressed) {
         MigrationReport report = projectManager.getLastMigrationReport();
         if (report == null || !report.changesAuthoredContent()) {
             return;
         }
-        MigrationReportDialog.showIfNeeded(report, projectDir,
+        MigrationReportDialog.showUnlessSuppressed(report, projectDir, suppressed,
                 () -> rollbackMigration(projectDir, report));
     }
 
@@ -2941,7 +4483,7 @@ final class ProjectLifecycleController {
             } else {
                 // No backup yet: the migrated DawProject lives only in
                 // memory, so abandoning is a complete rollback.
-                replaceAfterJournalClose(attempt -> {
+                replaceAfterJournalClose(ROLL_BACK_MIGRATION_DOOR, attempt -> {
                     try {
                         deps.setProject().accept(new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY));
                         projectReplaced(null);
@@ -3092,11 +4634,16 @@ final class ProjectLifecycleController {
      * project parsed.
      */
     void resetProjectState() {
-        replaceAfterJournalClose(this::finishReplacement);
+        replaceAfterJournalClose(NEW_PROJECT_DOOR, this::finishReplacement);
     }
 
-    /** Keeps editing and transport fenced until the replacement's durable state is ready. */
-    private void replaceAfterJournalClose(java.util.function.LongConsumer replacement) {
+    /**
+     * Keeps editing and transport fenced until the replacement's durable state is ready.
+     *
+     * @param door        the door that replaces the open project, as {@link PendingSwitch.Installing} names it
+     * @param replacement the replacement, given its attempt ({@code -1} without the recovery gate)
+     */
+    private void replaceAfterJournalClose(String door, java.util.function.LongConsumer replacement) {
         if (openRecoveryGate == null) {
             openProjectAudio.retire();
             abandonOpenProject();
@@ -3104,8 +4651,7 @@ final class ProjectLifecycleController {
             return;
         }
         long attempt = ++loadAttempts;
-        projectInstallationPending.set(true);
-        rootPane.setDisable(true);
+        raiseInstallationFence(door);
         try {
             startRecoveryWorker("daw-project-replacement", () -> {
                 boolean detached = false;
@@ -3130,7 +4676,7 @@ final class ProjectLifecycleController {
                         });
                         return;
                     }
-                    projectManager.abandonProject();
+                    projectManager.closeProject();
                     postFx(() -> {
                         if (attempt != loadAttempts) return;
                         openProjectAudio.retire();
@@ -3177,7 +4723,7 @@ final class ProjectLifecycleController {
      */
     private void abandonOpenProject() {
         if (projectManager.getCurrentProject() != null) {
-            projectManager.abandonProject();
+            projectManager.closeProject();
         }
         headSavedAt = null;
         progress.checkpointsEnded();
@@ -3426,11 +4972,11 @@ final class ProjectLifecycleController {
      * leaves no recovery pending (ruling L3). FX thread.
      */
     private void startRecoveryWorker(String name, Runnable work) {
-        recovering = true;
+        setRecovering(true);
         try {
             Thread.ofVirtual().name(name).start(work);
         } catch (RuntimeException | Error notStarted) {
-            recovering = false;
+            setRecovering(false);
             throw notStarted;
         }
     }
@@ -3441,7 +4987,7 @@ final class ProjectLifecycleController {
      * follows, in this FX step (ruling L3).
      */
     private void afterTheRecoveryWorker(Runnable switchPoint) {
-        recovering = false;
+        setRecovering(false);
         switchPoint.run();
     }
 
@@ -3481,18 +5027,18 @@ final class ProjectLifecycleController {
                 // dismissed the Welcome launch window, so re-present it rather than
                 // strand the user on the empty main window (story 298 review).
                 case INSPECT_EVENTS -> {
-                    recovering = false;
+                    setRecovering(false);
                     showInspectEvents(summary);
                     reshowWelcomeAfterRecovery();
                 }
                 case CANCEL -> {
-                    recovering = false;
+                    setRecovering(false);
                     reshowWelcomeAfterRecovery();
                 }
             }
         } catch (RuntimeException | Error thrown) {
             // Anything thrown here ends the recovery: logged with its stack, said, and the Welcome window is back.
-            recovering = false;
+            setRecovering(false);
             LOG.log(Level.SEVERE, "Recovering " + projectDir + " failed unexpectedly", thrown);
             notificationBar.show(NotificationLevel.ERROR, "Recovery failed: " + failureReason(thrown));
             reshowWelcomeAfterRecovery();
@@ -3792,8 +5338,7 @@ final class ProjectLifecycleController {
     void discardConfirmedRecovery(Path projectDir) {
         if (recovering) { refuseWhileASwitchIsPending(); return; }
         long attempt = ++loadAttempts;
-        projectInstallationPending.set(true);
-        rootPane.setDisable(true);
+        raiseInstallationFence(RECOVER_SESSION_DOOR);
         try {
             startRecoveryWorker("daw-recovery-discard", () -> {
                 try {
@@ -3843,15 +5388,17 @@ final class ProjectLifecycleController {
 
     /**
      * Default {@link #newProjectLocationPrompt}: a {@link DirectoryChooser}
-     * rooted at the §3.1 workspace ({@code ~/DAW Projects}). Returns the chosen
-     * parent directory, or {@code null} if the user cancelled.
+     * rooted at the §3.1 workspace ({@code ~/DAW Projects}) when it is a
+     * directory — read once off the FX thread ({@link #workspaceRootIfDirectory},
+     * story 333), so the FX thread asks the disk nothing here. Returns the
+     * chosen parent directory, or {@code null} if the user cancelled.
      */
     private Path promptNewProjectLocation() {
         DirectoryChooser chooser = new DirectoryChooser();
         chooser.setTitle("Choose a location for the new project");
-        Path workspace = workspaceRoot();
-        if (workspace != null && Files.isDirectory(workspace)) {
-            chooser.setInitialDirectory(workspace.toFile());
+        java.io.File workspace = workspaceRootIfDirectory;
+        if (workspace != null) {
+            chooser.setInitialDirectory(workspace);
         }
         Window owner = rootPane.getScene() != null ? rootPane.getScene().getWindow() : null;
         java.io.File chosen = chooser.showDialog(owner);
@@ -3859,7 +5406,7 @@ final class ProjectLifecycleController {
     }
 
     /** The §3.1 default workspace root ({@code ~/DAW Projects}); {@code null} if no home. */
-    private static Path workspaceRoot() {
+    static Path workspaceRoot() {
         String home = System.getProperty("user.home");
         if (home == null || home.isBlank()) {
             return null;
@@ -4262,6 +5809,52 @@ final class ProjectLifecycleController {
     }
 
     /**
+     * Story 333 — sets what runs on the FX thread once the open project's
+     * folder changed without a rebuild after it ({@link #projectFolderChangedHook}):
+     * {@code MainController} registers the folder's checkpoints, opens its
+     * session manifest and repaints the lock indicator and labels.
+     *
+     * @param hook run when the open project's folder changed; must not be {@code null}
+     */
+    void setProjectFolderChangedHook(Runnable hook) {
+        this.projectFolderChangedHook = Objects.requireNonNull(hook, "hook must not be null");
+    }
+
+    /**
+     * Story 333 — installs File ▸ Save As… ({@link #onSaveProjectAs}), which
+     * the takeover dialog's and a save failure's {@code Save As…} run too.
+     * {@code MainController} builds it over {@link #saveAsLifecycle()}.
+     *
+     * @param flow the Save As flow; must not be {@code null}
+     */
+    void setSaveAsFlow(SaveAsFlow flow) {
+        this.saveAsFlow = Objects.requireNonNull(flow, "flow must not be null");
+    }
+
+    /**
+     * Story 333 (ruling R10) — sets what runs after Close Project installed
+     * the Untitled project, when the Welcome window is to show
+     * ({@link #showWelcomeAfterClose}); {@code MainController} installs
+     * its own. The default shows the Welcome window ({@link #showWelcome()}).
+     *
+     * @param hook run after Close Project; must not be {@code null}
+     */
+    void setWelcomeAfterClose(Runnable hook) {
+        this.welcomeAfterClose = Objects.requireNonNull(hook, "hook must not be null");
+    }
+
+    /**
+     * Story 333 (ruling R8) — replaces the clock of the doors' "Stop waiting"
+     * offer. Tests install manual timers and fire the 10 s threshold when
+     * they choose. FX thread.
+     *
+     * @param timers the timers; must not be {@code null}
+     */
+    void setDoorWaitTimers(CloseTimers timers) {
+        this.doorWaitTimers = Objects.requireNonNull(timers, "timers must not be null");
+    }
+
+    /**
      * Story 331 (ruling L3) — sets what runs on a recovery worker, with its
      * name ({@link #RECOVERY_SCAN_WORKER}, {@link #RECOVERY_DISCARD_WORKER},
      * {@link #RECOVERY_REPLAY_WORKER}), before its work and inside its
@@ -4307,7 +5900,8 @@ final class ProjectLifecycleController {
      * a migration roll-back at their start, and the loads the recovery and
      * archive-restore flows make later (see
      * {@link #refuseWhileATakeIsRecordingOrBeingWritten()}). Quitting the
-     * application is not refused: there is no exit protocol until story 333.
+     * application and Close Project are not refused: the exit protocol waits
+     * for the take instead (story 333, ruling R1).
      * {@code MainController} supplies the current transport controller's
      * answer; the default never refuses.
      *
@@ -4326,8 +5920,9 @@ final class ProjectLifecycleController {
      * a journal discard that deleted the journal, with
      * {@link #lateLoadRefusalWhileRecordingMessage} — unless the
      * take-being-written check answers {@code true} as well, whose refusal is
-     * shown instead. Quitting the application is not refused: there is no
-     * exit protocol until story 333. {@code MainController} supplies the
+     * shown instead. Quitting the application and Close Project are not
+     * refused: the exit protocol asks first whether to stop the take (story
+     * 333, ruling R1). {@code MainController} supplies the
      * current transport controller's answer; the default never refuses.
      *
      * @param check whether a recording is in flight; must not be {@code null}

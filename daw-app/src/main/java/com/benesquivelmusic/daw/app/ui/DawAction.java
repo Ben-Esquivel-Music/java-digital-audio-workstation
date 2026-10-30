@@ -63,6 +63,14 @@ public enum DawAction {
     SAVE("Save", Category.EDITING,
             new KeyCodeCombination(KeyCode.S, KeyCombination.SHORTCUT_DOWN)),
     /**
+     * Story 333 — File ▸ Save As… (ruling R5): the open project copied into
+     * a new folder, which becomes the open project. No default shortcut
+     * (ruling R12 #5: Shortcut+Shift+S is {@link #TOGGLE_SNAP}); named so the
+     * palette and the key bindings never confuse it with
+     * {@link #WORKSPACE_SAVE_AS} (ENG-N8).
+     */
+    SAVE_AS("Save Project As\u2026", Category.EDITING, null),
+    /**
      * Snapshot history browser — explicit checkpoint creation.
      * Bound to {@code Ctrl+Alt+S} per the issue
      * <em>Snapshot History Browser with Visual Diff Preview</em>.
@@ -74,6 +82,14 @@ public enum DawAction {
             new KeyCodeCombination(KeyCode.N, KeyCombination.SHORTCUT_DOWN)),
     OPEN_PROJECT("Open Project", Category.EDITING,
             new KeyCodeCombination(KeyCode.O, KeyCombination.SHORTCUT_DOWN)),
+    /**
+     * Story 333 — File ▸ Close Project (ruling R10): the open project closes
+     * through the exit protocol, without its window's end, and a fresh
+     * Untitled project takes its place. {@code Shortcut+Shift+W} (ruling
+     * R12 #5).
+     */
+    CLOSE_PROJECT("Close Project", Category.EDITING,
+            new KeyCodeCombination(KeyCode.W, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
     TOGGLE_SNAP("Toggle Snap", Category.EDITING,
             new KeyCodeCombination(KeyCode.S, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
     COPY("Copy", Category.EDITING,
@@ -266,6 +282,16 @@ public enum DawAction {
      */
     OPEN_COMMAND_PALETTE("Command Palette", Category.APPLICATION,
             new KeyCodeCombination(KeyCode.K, KeyCombination.SHORTCUT_DOWN)),
+    /**
+     * Story 333 — File ▸ Exit: the application closes through the exit
+     * protocol, as the window's close box does. {@code Shortcut+Q} (ruling
+     * R12 #5). Like {@link #STOP}, its handler passes the project-action
+     * fence, so Ctrl+Q works while a project is being installed; while a
+     * close makes the window input-inert, only the window's close box
+     * reaches the exit protocol.
+     */
+    EXIT("Exit", Category.APPLICATION,
+            new KeyCodeCombination(KeyCode.Q, KeyCombination.SHORTCUT_DOWN)),
 
     // ── Workspaces (Issue: Customizable Workspace Layouts) ──────────────────
     // The issue spec calls for Ctrl+1..Ctrl+9, but those shortcuts are

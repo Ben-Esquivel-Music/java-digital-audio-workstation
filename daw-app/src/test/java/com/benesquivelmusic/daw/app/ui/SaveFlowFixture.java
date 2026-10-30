@@ -76,6 +76,10 @@ final class SaveFlowFixture implements AutoCloseable {
     static final Duration GUARD = Duration.ofSeconds(20);
 
     private static final String UNSAVED_CHANGES_TITLE = "Unsaved Changes";
+    /** The takeover dialog's title (story 333, ruling R7). */
+    static final String TAKEOVER_TITLE = "Project Taken Over";
+    /** The Save As refusal's title (story 333, ruling Q6); its progress dialog shares it. */
+    static final String SAVE_AS_TITLE = "Save Project As";
 
     final Path workspace;
     final Publishes publishes = new Publishes();
@@ -104,6 +108,53 @@ final class SaveFlowFixture implements AutoCloseable {
     final Path songA;
     /** The text of the prompt button to press; {@code null} hides the prompt, which cancels it. */
     volatile String promptAnswer;
+    /**
+     * The clock of the controller's door waits (story 333, ruling R8): manual, so a test fires the
+     * 10 s "Stop waiting" offer when it chooses, and no other test ever sees it.
+     */
+    final ManualCloseTimers doorWaitTimers = new ManualCloseTimers();
+    /** The text of the takeover dialog's button to press (story 333); {@code null} hides it, its Escape answer. */
+    volatile String takeoverAnswer = "Not now";
+    /** The header, content and button texts of each takeover dialog shown, in order. */
+    final List<String> takeoverHeaders = new CopyOnWriteArrayList<>();
+    final List<String> takeoverContents = new CopyOnWriteArrayList<>();
+    final List<List<String>> takeoverButtons = new CopyOnWriteArrayList<>();
+    /** The default button's text of each takeover dialog shown, in order. */
+    final List<String> takeoverDefaults = new CopyOnWriteArrayList<>();
+    /** The message of each Save As target refusal shown (ruling Q6); each is answered OK. */
+    final List<String> saveAsRefusals = new CopyOnWriteArrayList<>();
+    /** Save As's chooser: scripted answers, and what each call opened with. */
+    final SaveAsTargets saveAsTargets = new SaveAsTargets();
+    /** The clock of Save As's "Continue" offer (ruling S6): manual, so a test fires its 10 s. */
+    final ManualCloseTimers saveAsTimers = new ManualCloseTimers();
+    /** Every layout the controller applied, in order; {@code null} is the built-in Default (story 282, R10). */
+    final List<String> appliedLayouts = new CopyOnWriteArrayList<>();
+    /** What each UI rebuild the controller asks for runs (story 333: a test makes it throw). */
+    volatile Runnable onProjectUIRebuild = () -> { };
+    /**
+     * Told each project the controller installs, right after it became the live one — where the application's
+     * {@code MainController.replacePluginProject} runs (story 333: a test wires a partial controller's).
+     */
+    volatile java.util.function.Consumer<DawProject> onProjectSet = _ -> { };
+    /** Run on the FX thread while each takeover dialog asks, before it is answered (story 333). */
+    volatile Runnable whileTheTakeoverAsks = () -> { };
+    /**
+     * Where the closer of the open folder runs a journal end: its own virtual
+     * worker unless a test holds the end before it begins (story 333: a task
+     * submitted and never run is a journal end not begun).
+     */
+    volatile java.util.concurrent.Executor sealWorker =
+            task -> Thread.ofVirtual().name(ProjectFolderCloser.SEAL_WORKER).start(task);
+    /**
+     * Whether the window's lifetime has begun ending: the exit fixture's DISPOSE stand-in sets it first, as
+     * {@code MainController.disposeWindowLifetime} does, and the autosave's capture gate then says no for good
+     * ({@code MainController.autosaveCaptureAllowed}; the app-fix-2 review S1).
+     */
+    volatile boolean windowLifetimeEnding;
+    /** The journal coordinator the Save As flow closes through: journaling off unless a test installs one. */
+    private com.benesquivelmusic.daw.app.ui.status.ProjectJournalCoordinator saveAsJournal;
+    private ProjectFolderCloser folderCloser;
+    private SaveAsFlow saveAsFlow;
 
     private NotificationBar notificationBar;
     private ProjectLifecycleController lifecycle;
@@ -119,6 +170,10 @@ final class SaveFlowFixture implements AutoCloseable {
                 if (window instanceof Stage stage && UNSAVED_CHANGES_TITLE.equals(stage.getTitle())) {
                     prompts.incrementAndGet();
                     Platform.runLater(() -> answer(stage));
+                } else if (window instanceof Stage stage && TAKEOVER_TITLE.equals(stage.getTitle())) {
+                    Platform.runLater(() -> answerTakeover(stage));
+                } else if (window instanceof Stage stage && SAVE_AS_TITLE.equals(stage.getTitle())) {
+                    Platform.runLater(() -> answerSaveAsRefusal(stage));
                 }
             }
         }
@@ -162,8 +217,8 @@ final class SaveFlowFixture implements AutoCloseable {
             notificationBar.setHistoryService(shown);
             status = new CheckpointStatusListener(progress, checkpoints, notificationBar, dispatcher,
                     InstantSource.system(), ZoneId.systemDefault());
-            statusRemoval = MainController.wireAutosave(checkpoints, dispatcher::onFx, project::get, status,
-                    () -> lifecycle == null || !lifecycle.isProjectInstallationPending());
+            statusRemoval = MainController.wireAutosave(projectManager, dispatcher::onFx, project::get, status,
+                    () -> !windowLifetimeEnding && (lifecycle == null || !lifecycle.isProjectInstallationPending()));
         });
         eventRecording = checkpoints.addEventListener(checkpointEvents::add);
         songA = projectManager.createProject("Song A", workspace).projectPath();
@@ -175,10 +230,15 @@ final class SaveFlowFixture implements AutoCloseable {
         runOnFx(() -> {
             lifecycle = new ProjectLifecycleController(projectManager, new SessionInterchangeController(),
                     notificationBar, progress, new BorderPane(), new VBox(),
-                    new ProjectLifecycleController.Deps(project::get, project::set, undoManager::get,
-                            undoManager::set, () -> { }, () -> { }, () -> { }, () -> null, _ -> { }, () -> { }),
+                    new ProjectLifecycleController.Deps(project::get, next -> {
+                        project.set(next);
+                        onProjectSet.accept(next);
+                    }, undoManager::get,
+                            undoManager::set, () -> { }, () -> { }, () -> onProjectUIRebuild.run(), () -> null,
+                            appliedLayouts::add, () -> { }),
                     new ProjectArchiver(), dispatcher);
             lifecycle.setWelcomePresenter(_ -> { });
+            lifecycle.setDoorWaitTimers(doorWaitTimers);
             snapshots = new SnapshotsController(new SnapshotBrowserService(), checkpoints, projectManager,
                     new SnapshotsController.Deps(() -> null, project::get,
                             proceed -> lifecycle.whenProjectMayClose(
@@ -188,8 +248,63 @@ final class SaveFlowFixture implements AutoCloseable {
                     dispatcher);
             snapshots.setCheckpointStatus(status);
             snapshots.setProjectActionsAllowed(() -> !lifecycle.isProjectInstallationPending());
+            com.benesquivelmusic.daw.app.ui.status.ProjectJournalCoordinator journalOff =
+                    new com.benesquivelmusic.daw.app.ui.status.ProjectJournalCoordinator(progress, notificationBar,
+                            dispatcher, () -> false, () -> null, checkpoints,
+                            new com.benesquivelmusic.daw.core.session.SessionManager(), InstantSource.system());
+            installSaveAs(journalOff, new SessionJournalEnding(journalOff,
+                    new com.benesquivelmusic.daw.core.session.SessionManager(), () -> null, () -> null, () -> null,
+                    this::openFolder, InstantSource.system()));
         });
         publishes.clear();
+    }
+
+    /**
+     * Builds the Save As flow (story 333) as {@code MainController} builds it
+     * — over the controller's own lifecycle part and prompts, closing the
+     * original folder through a {@link ProjectFolderCloser} over
+     * {@code journal} and {@code ending} — with this fixture's scripted
+     * chooser ({@link #saveAsTargets}), manual timers ({@link #saveAsTimers})
+     * and the workspace as its workspace root, and installs it on the
+     * controller. FX thread.
+     */
+    void installSaveAs(com.benesquivelmusic.daw.app.ui.status.ProjectJournalCoordinator journal,
+                       JournalEnding ending) {
+        installSaveAs(journal, ending, InstantSource.system(), ZoneId.systemDefault(), () -> workspace);
+    }
+
+    /** As {@link #installSaveAs(com.benesquivelmusic.daw.app.ui.status.ProjectJournalCoordinator, JournalEnding)},
+     *  with the takeover pre-fill's clock and zone and the workspace root given. FX thread. */
+    void installSaveAs(com.benesquivelmusic.daw.app.ui.status.ProjectJournalCoordinator journal,
+                       JournalEnding ending, InstantSource clock, ZoneId zone, Supplier<Path> workspaceRoot) {
+        saveAsJournal = journal;
+        folderCloser = new ProjectFolderCloser(projectManager, journal, ending, project::get, dispatcher,
+                task -> sealWorker.execute(task));
+        saveAsFlow = new SaveAsFlow(new SaveAsFlow.Deps(projectManager, lifecycle.saveAsLifecycle(), folderCloser,
+                lifecycle.closePrompts(), saveAsTargets, notificationBar, dispatcher, project::get, () -> null,
+                saveAsTimers, clock, zone, java.util.Optional::empty, workspaceRoot));
+        lifecycle.setSaveAsFlow(saveAsFlow);
+    }
+
+    /** The Save As flow installed on the controller; FX thread only. */
+    SaveAsFlow saveAsFlow() {
+        return saveAsFlow;
+    }
+
+    /** The closer of the open folder the Save As flow closes through; FX thread only. */
+    ProjectFolderCloser folderCloser() {
+        return folderCloser;
+    }
+
+    /** The journal coordinator the Save As flow closes through. */
+    com.benesquivelmusic.daw.app.ui.status.ProjectJournalCoordinator saveAsJournal() {
+        return saveAsJournal;
+    }
+
+    /** The project manager's open folder, or {@code null}. */
+    Path openFolder() {
+        ProjectMetadata open = projectManager.getCurrentProject();
+        return open == null ? null : open.projectPath();
     }
 
     /** The controller under test; FX thread only. */
@@ -200,6 +315,11 @@ final class SaveFlowFixture implements AutoCloseable {
     /** The snapshot browser's controller, wired to this fixture's checkpoint status; FX thread only. */
     SnapshotsController snapshots() {
         return snapshots;
+    }
+
+    /** The notification bar the controller and the Save As flow show their toasts on; FX thread only. */
+    NotificationBar notificationBar() {
+        return notificationBar;
     }
 
     /** The checkpoint-status listener wired through {@link MainController#wireAutosave}. */
@@ -273,7 +393,7 @@ final class SaveFlowFixture implements AutoCloseable {
         DawProject saved = new DawProject(name, AudioFormat.CD_QUALITY);
         saved.createAudioTrack("Other");
         SaveOutcomes.saved(other, saved);
-        other.abandonProject();
+        other.closeProject().join();
         return directory;
     }
 
@@ -347,6 +467,10 @@ final class SaveFlowFixture implements AutoCloseable {
         try {
             publishes.releaseAll();
             runOnFx(() -> {
+                SaveAsProgressDialog leftOpen = saveAsFlow == null ? null : saveAsFlow.progressDialog();
+                if (leftOpen != null) {
+                    leftOpen.closeByFlow();
+                }
                 Window.getWindows().removeListener(answerPrompts);
                 if (statusRemoval != null) {
                     statusRemoval.run();
@@ -356,7 +480,8 @@ final class SaveFlowFixture implements AutoCloseable {
             SaveOutcomes.awaitIdle(projectManager);
         } finally {
             eventRecording.run();
-            projectManager.abandonProject();
+            // Bounded (story 333 review): a release that never ends fails the test instead of hanging it.
+            projectManager.closeProject().get(GUARD.toMillis() * 3, TimeUnit.MILLISECONDS);
         }
     }
 
@@ -379,6 +504,112 @@ final class SaveFlowFixture implements AutoCloseable {
             }
         }
         prompt.hide();
+    }
+
+    /**
+     * Records the takeover dialog — its header, content, buttons in order and
+     * default button — then presses {@link #takeoverAnswer}'s button, or hides
+     * it (its Escape answer). FX thread, inside its showAndWait.
+     */
+    private void answerTakeover(Stage dialog) {
+        Node found = dialog.getScene().getRoot().lookup(".dialog-pane");
+        if (!(found instanceof DialogPane pane)) {
+            dialog.hide();
+            return;
+        }
+        takeoverHeaders.add(pane.getHeaderText());
+        takeoverContents.add(pane.getContentText());
+        List<String> buttons = new ArrayList<>();
+        String defaultButton = null;
+        for (ButtonType type : pane.getButtonTypes()) {
+            buttons.add(type.getText());
+            if (pane.lookupButton(type) instanceof Button button && button.isDefaultButton()) {
+                defaultButton = type.getText();
+            }
+        }
+        takeoverButtons.add(List.copyOf(buttons));
+        takeoverDefaults.add(defaultButton);
+        whileTheTakeoverAsks.run();
+        String text = takeoverAnswer;
+        if (text != null) {
+            for (ButtonType type : pane.getButtonTypes()) {
+                if (type.getText().equals(text) && pane.lookupButton(type) instanceof Button button) {
+                    button.fire();
+                    return;
+                }
+            }
+        }
+        dialog.hide();
+    }
+
+    /**
+     * Records a Save As target refusal's message (ruling Q6) and presses its
+     * OK; Save As's progress dialog, which has the same title, is left alone.
+     * FX thread, inside the refusal's showAndWait.
+     */
+    private void answerSaveAsRefusal(Stage dialog) {
+        Node message = dialog.getScene().getRoot().lookup(".dawg-dialog-message");
+        if (!(message instanceof javafx.scene.control.Label label)) {
+            return;
+        }
+        saveAsRefusals.add(label.getText());
+        Node found = dialog.getScene().getRoot().lookup(".dialog-pane");
+        if (found instanceof DialogPane pane) {
+            for (ButtonType type : pane.getButtonTypes()) {
+                if (pane.lookupButton(type) instanceof Button button && button.isDefaultButton()) {
+                    button.fire();
+                    return;
+                }
+            }
+        }
+        dialog.hide();
+    }
+
+    /**
+     * Save As's chooser for the tests (story 333): each call is recorded with
+     * what it opened with, and answered by the next scripted answer — a
+     * target, or a cancel — or, with none left, cancelled. Called on the FX
+     * thread.
+     */
+    static final class SaveAsTargets implements SaveAsTargetPrompt {
+
+        /** What one call opened with. */
+        record Call(Path directory, String name) { }
+
+        private final List<Call> calls = new CopyOnWriteArrayList<>();
+        private final java.util.Deque<java.util.function.Function<Call, java.util.Optional<Path>>> answers =
+                new java.util.concurrent.ConcurrentLinkedDeque<>();
+
+        /** The next call chooses {@code target}. */
+        SaveAsTargets choose(Path target) {
+            answers.add(_ -> java.util.Optional.of(target));
+            return this;
+        }
+
+        /** The next call chooses what {@code answer} gives for it. */
+        SaveAsTargets answer(java.util.function.Function<Call, java.util.Optional<Path>> answer) {
+            answers.add(answer);
+            return this;
+        }
+
+        /** The next call is cancelled. */
+        SaveAsTargets cancel() {
+            answers.add(_ -> java.util.Optional.empty());
+            return this;
+        }
+
+        /** Every call so far, oldest first. */
+        List<Call> calls() {
+            return List.copyOf(calls);
+        }
+
+        @Override
+        public java.util.Optional<Path> choose(Path initialDirectory, String initialName) {
+            Call call = new Call(initialDirectory, initialName);
+            calls.add(call);
+            java.util.function.Function<Call, java.util.Optional<Path>> answer = answers.poll();
+            return answer == null ? java.util.Optional.empty() : answer.apply(call);
+        }
     }
 
     // ── FX ───────────────────────────────────────────────────────────────────
@@ -472,6 +703,21 @@ final class SaveFlowFixture implements AutoCloseable {
 
         private record Failure(Predicate<Path> which, IOException failure) { }
 
+        /** What runs on the publishing thread right after a publish, with its target. */
+        @FunctionalInterface
+        interface AfterPublish {
+            void run(Path target) throws IOException;
+        }
+
+        private record After(Predicate<Path> which, AfterPublish action) { }
+
+        private final List<After> afters = new CopyOnWriteArrayList<>();
+
+        /** Runs {@code action} right after the next publish {@code which} accepts, on its thread (story 333). */
+        void afterNext(Predicate<Path> which, AfterPublish action) {
+            afters.add(new After(which, action));
+        }
+
         /** Holds the next publish {@code which} accepts. */
         Hold holdNext(Predicate<Path> which) {
             Hold hold = new Hold(which);
@@ -527,6 +773,11 @@ final class SaveFlowFixture implements AutoCloseable {
             }
             AtomicFileWriter.FILE_SYSTEM_MOVER.move(temp, target, options);
             done.add(new Publish(target, Thread.currentThread()));
+            for (After after : afters) {
+                if (after.which().test(target) && afters.remove(after)) {
+                    after.action().run(target);
+                }
+            }
         }
     }
 }

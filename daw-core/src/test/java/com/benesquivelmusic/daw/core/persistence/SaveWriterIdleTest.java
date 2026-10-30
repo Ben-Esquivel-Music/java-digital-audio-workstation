@@ -51,7 +51,7 @@ class SaveWriterIdleTest {
     @AfterEach
     void releaseTheManager() {
         gates.forEach(Gate::release);
-        manager.abandonProject();
+        manager.closeProject().join();
     }
 
     @Test

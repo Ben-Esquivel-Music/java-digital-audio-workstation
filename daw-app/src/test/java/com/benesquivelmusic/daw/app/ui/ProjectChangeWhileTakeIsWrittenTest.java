@@ -61,8 +61,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * behaves as before once the take has been written. A load refused after
  * work off the FX thread has already changed something on disk says what
  * that work did ({@link ProjectLifecycleController#lateLoadRefusalMessage}).
- * Quitting the application is not one of those doors: nothing guards it
- * until story 333.
+ * Quitting the application and Close Project are not among those doors: the
+ * exit protocol (story 333, ruling R1) asks first whether to stop a
+ * recording, waits until the take has been written and published, and only
+ * then saves, seals or releases anything; the application-stop fallback
+ * stops a recording at once and waits for its take the same way, bounded.
  *
  * <p>The take-being-written check is the controller's seam
  * ({@code setTakeBeingWrittenCheck}); what feeds it in the app is
@@ -143,7 +146,7 @@ class ProjectChangeWhileTakeIsWrittenTest {
         try {
             runOnFx(() -> Window.getWindows().removeListener(dismissUnsavedChangesPrompts));
         } finally {
-            projectManager.abandonProject();
+            projectManager.closeProject().join();
         }
     }
 
@@ -512,7 +515,7 @@ class ProjectChangeWhileTakeIsWrittenTest {
     private Path anotherProjectOnDisk(String name) throws IOException {
         ProjectManager other = new ProjectManager(new CheckpointManager(AutoSaveConfig.DEFAULT));
         Path directory = other.createProject(name, workspace).projectPath();
-        other.closeProject();
+        other.closeProject().join();
         return directory;
     }
 

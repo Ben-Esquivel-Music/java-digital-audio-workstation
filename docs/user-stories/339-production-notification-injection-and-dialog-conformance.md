@@ -31,6 +31,7 @@ Finally, the story-313 bug class — the zero-button `DawgDialog<Void>` host —
 ## Goals — Tests
 
 - Gate 1 (dismissibility) passes on the current tree and **fails under mutation**: reintroducing a zero-button `DawgDialog<Void>` host anywhere in main source fails the test.
+- Gate 1 covers every `Alert` that daw-app main constructs as well (story 333's known limit on its close prompts): story 333's close prompts, reached through `ProjectClosePrompts` (the unsaved-changes prompt is built in `ProjectLifecycleController.askAboutUnsavedChanges`) — the recording confirmation, the unsaved-changes prompt and the “Project Taken Over” dialog — pass it because each closes by Escape and by its window's close box with its safe answer, under JavaFX's dialog closing rules (one button, or a button with cancel data), and removing that answer from any of them fails the gate.
 - Gate 2 (no-noop) passes and fails under mutation: a production-scope `NotificationManager.noop()` reference fails the scan.
 - An end-to-end device-loss test: a simulated unplug via the mock backend produces the visible device-lost toast through the injected sink — the message text is the controller's existing copy, now surfaced.
 - A take-store scoping test — *as landed by story 327 the controller holds no `IncompleteTakeStore`; the equivalent pins are `IncompleteTakeStoreTest.aTakeOutsideTheProjectsTakesDirectoryIsRefused` (over `IncompleteTakeStore.requireUnderTakes`) and `RescuedTakeRegistryRoleScanTest.theEngineControllerDoesNotReferenceTheStore`; nothing remains for this story to write here.*

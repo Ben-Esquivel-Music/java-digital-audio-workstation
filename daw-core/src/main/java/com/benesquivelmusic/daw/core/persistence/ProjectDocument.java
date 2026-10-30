@@ -3,6 +3,8 @@ package com.benesquivelmusic.daw.core.persistence;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer.AssetReferenceRemap;
 import org.w3c.dom.Attr;
 import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
 
 import javax.xml.XMLConstants;
 import javax.xml.transform.OutputKeys;
@@ -14,6 +16,7 @@ import javax.xml.transform.stream.StreamResult;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -83,17 +86,21 @@ public final class ProjectDocument {
 
     private final Document document;
     private final Path projectRoot;
+    private final FormerRoots formerRoots;
     private final List<ReferenceSite> sites;
     private final List<AssetReference> references;
 
     /**
      * @param document    the captured document, holding the unremapped references
      * @param projectRoot the directory references are relativised against, or {@code null} for none
+     * @param formerRoots the folders the project was saved from as a copy this session, whose references the
+     *                    copy holds are written project-relative too (story 333)
      * @param sites       every asset-reference site, in document order
      */
-    ProjectDocument(Document document, Path projectRoot, List<ReferenceSite> sites) {
+    ProjectDocument(Document document, Path projectRoot, FormerRoots formerRoots, List<ReferenceSite> sites) {
         this.document = Objects.requireNonNull(document, "document must not be null");
         this.projectRoot = projectRoot;
+        this.formerRoots = Objects.requireNonNull(formerRoots, "formerRoots must not be null");
         this.sites = List.copyOf(sites);
         List<AssetReference> recorded = new ArrayList<>(this.sites.size());
         for (ReferenceSite site : this.sites) {
@@ -138,9 +145,33 @@ public final class ProjectDocument {
      * @throws IOException if the document cannot be rendered
      */
     public String toXml(AssetReferenceRemap remap) throws IOException {
+        return toXml(projectRoot, formerRoots, remap);
+    }
+
+    /**
+     * Renders the document as the project file of another folder (story 333,
+     * Save As): every clip reference written as
+     * {@link #toXml(AssetReferenceRemap)} writes it, but against
+     * {@code root} and {@code rootsOfCopy} instead of the folder the project
+     * was captured from — so a reference into the folders the copy was taken
+     * from is written project-relative only when the copy holds that folder's
+     * file at the same relative path
+     * ({@link ProjectPaths#relativize(Path, FormerRoots, String)}), and stays
+     * absolute, naming the original's file, when it does not. Like
+     * {@link #toXml(AssetReferenceRemap)}, it rewrites the recorded sites'
+     * values in this document.
+     *
+     * @param root        the folder the rendered file is the project file of
+     * @param rootsOfCopy the folders that folder's copy was taken from, each with what the copy holds of it
+     * @param remap       the reference substitutions; {@link AssetReferenceRemap#NONE} for none
+     * @return the XML
+     * @throws IOException if the document cannot be rendered
+     */
+    String toXml(Path root, FormerRoots rootsOfCopy, AssetReferenceRemap remap) throws IOException {
+        Objects.requireNonNull(rootsOfCopy, "rootsOfCopy must not be null");
         Objects.requireNonNull(remap, "remap must not be null");
         for (ReferenceSite site : sites) {
-            String written = written(site.reference(), remap);
+            String written = written(site.reference(), root, rootsOfCopy, remap);
             if (!written.equals(site.attribute().getValue())) {
                 site.attribute().setValue(written);
             }
@@ -149,12 +180,64 @@ public final class ProjectDocument {
     }
 
     /** The value a site is written with under {@code remap}: the serializer's remap-then-relativize rule. */
-    private String written(AssetReference reference, AssetReferenceRemap remap) {
+    private static String written(AssetReference reference, Path root, FormerRoots roots, AssetReferenceRemap remap) {
         return switch (reference.kind()) {
             case CLIP_SOURCE_FILE, CLIP_SOURCE_SEGMENT -> ProjectSerializer.clipReference(
-                    projectRoot, remap, reference.reference());
+                    root, roots, remap, reference.reference());
             case SOUND_FONT -> ProjectSerializer.soundFontPath(remap, reference.reference());
         };
+    }
+
+    /**
+     * Names the captured project {@code name} — the document's
+     * {@code /daw-project/metadata/name} — in this document, and returns it
+     * (story 333: Save As writes the copy under the name the user gave its
+     * folder, and the live project is renamed only once the copy is open).
+     * The model is not read or changed.
+     *
+     * @param name the project's new name
+     * @return this document
+     * @throws IllegalStateException if the document has no metadata name (never, for a captured project)
+     */
+    ProjectDocument withProjectName(String name) {
+        metadataElement("name").setTextContent(Objects.requireNonNull(name, "name must not be null"));
+        return this;
+    }
+
+    /**
+     * Stamps the document's {@code /daw-project/metadata/last-modified} with
+     * {@code lastModified}, and returns this document (story 333: the copy's
+     * head carries the time Save As took it, as a save's head carries its
+     * capture's time). The model is not read or changed.
+     *
+     * @param lastModified the time the copy was taken
+     * @return this document
+     * @throws IllegalStateException if the document has no metadata time (never, for a captured project)
+     */
+    ProjectDocument withLastModified(Instant lastModified) {
+        metadataElement("last-modified").setTextContent(
+                Objects.requireNonNull(lastModified, "lastModified must not be null").toString());
+        return this;
+    }
+
+    /** The {@code /daw-project/metadata/<child>} element. */
+    private Element metadataElement(String child) {
+        Element root = document.getDocumentElement();
+        Element metadata = root == null ? null : firstChildElement(root, "metadata");
+        Element element = metadata == null ? null : firstChildElement(metadata, child);
+        if (element == null) {
+            throw new IllegalStateException("the captured document has no /daw-project/metadata/" + child);
+        }
+        return element;
+    }
+
+    private static Element firstChildElement(Element parent, String name) {
+        for (Node node = parent.getFirstChild(); node != null; node = node.getNextSibling()) {
+            if (node instanceof Element element && element.getTagName().equals(name)) {
+                return element;
+            }
+        }
+        return null;
     }
 
     private String render() throws IOException {

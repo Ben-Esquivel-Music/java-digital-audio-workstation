@@ -81,9 +81,10 @@ class ProjectSchemaParityContractTest {
             "carries the Document type of a migration step's function; reads and writes nothing itself",
             "ProjectDocument.java",
             "renders the document ProjectSerializer.capture built and rewrites the values of the asset-reference"
-            + " attributes the serializer wrote and recorded (Attr.setValue through a remap); it creates no"
-            + " element and names no attribute, so every name the document holds is the serializer's, which"
-            + " the writer guard scans",
+            + " attributes the serializer wrote and recorded (Attr.setValue through a remap), and, for Save As"
+            + " (story 333), the text of the <name> and <last-modified> elements the serializer wrote under"
+            + " <metadata> (setTextContent); it creates no element and names no attribute, so every name the"
+            + " document holds is the serializer's, which the writer guard scans",
             "RecoveryTemps.java",
             "parses an interrupted save only to tell a torn one (not well-formed) from one this build refuses,"
             + " and hands the Document to ProjectDeserializer; it creates no element and asks the Document for"

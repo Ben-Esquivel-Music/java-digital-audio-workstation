@@ -3226,3 +3226,87 @@
     -fx-alignment: center-right;
     -fx-padding: 8 0 0 0;
 }
+
+/* ════════════════════════════════════════════════════════════════════
+ * Story 333 — the lock indicator and Save As's progress dialog
+ * (Persistence Integrity book §7.3; UI Design Book §3.1: tokens by
+ * role, never by hex). Tokens only. Spacing on the 4 px grid but for the
+ * lock badge's 2 px vertical padding: the status pills' own (2 8, as the
+ * status fills above), which keeps the status bar's height.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* The status bar's lock badge: one state class beside the base class
+ * (LockStatusIndicator), never an inline style. Held reads as -ok,
+ * read-only as -warn, a lock another session took as -danger. */
+.lock-status-indicator {
+    -fx-padding: 2 8 2 8;
+    -fx-background-radius: 8;
+}
+.lock-status-indicator.lock-held {
+    -fx-background-color: -ok;
+    -fx-text-fill: -text-on-accent;
+}
+.lock-status-indicator.lock-read-only {
+    -fx-background-color: -warn;
+    -fx-text-fill: -text-on-accent;
+}
+.lock-status-indicator.lock-stolen {
+    -fx-background-color: -danger;
+    -fx-text-fill: -text-on-accent;
+}
+
+/* Save As's modal progress (ruling R5): a static status line over a
+ * determinate bar — no animation — then the 10 s note in -warn and the
+ * content-owned Continue / Cancel. */
+.save-as-progress-body {
+    -fx-spacing: 12;
+    -fx-min-width: 400;
+}
+.dialog-pane .save-as-progress-status,
+.save-as-progress-status {
+    -fx-text-fill: -text;
+    -fx-font-size: 12px;
+}
+.dialog-pane .save-as-progress-note,
+.save-as-progress-note {
+    -fx-text-fill: -warn;
+    -fx-font-size: 11px;
+}
+.save-as-progress-actions {
+    -fx-spacing: 8;
+    -fx-alignment: center-right;
+    -fx-padding: 8 0 0 0;
+}
+
+/* The close protocol's modal progress (rulings R1, R8, Q4): a static step line — no
+ * animation — the 10 s note in -warn, and the content-owned Quit anyway / Close anyway
+ * and keep buttons. */
+.closing-progress-body {
+    -fx-spacing: 12;
+    -fx-min-width: 400;
+}
+/* The step line holds the keyboard focus while the keep button is disabled or hidden, so Enter and Space
+ * never press Quit anyway (the studio engineer's stage-6 S2): it shows the house 1 px focus ring then
+ * (javafx skill §14). The resting border is transparent and of the same width, so the ring moves nothing;
+ * :focused, so it shows however the focus got there — the dialog parks it with requestFocus(). */
+.dialog-pane .closing-progress-step,
+.closing-progress-step {
+    -fx-text-fill: -text;
+    -fx-font-size: 12px;
+    -fx-border-color: transparent;
+    -fx-border-width: 1;
+}
+.dialog-pane .closing-progress-step:focused,
+.closing-progress-step:focused {
+    -fx-border-color: -focus-ring;
+}
+.dialog-pane .closing-progress-note,
+.closing-progress-note {
+    -fx-text-fill: -warn;
+    -fx-font-size: 11px;
+}
+.closing-progress-actions {
+    -fx-spacing: 8;
+    -fx-alignment: center-right;
+    -fx-padding: 8 0 0 0;
+}

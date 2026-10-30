@@ -76,6 +76,13 @@ public final class ProjectLockManager implements AutoCloseable {
     private ScheduledExecutorService ownedExecutor;
     private ScheduledFuture<?> heartbeatTask;
 
+    /**
+     * Guarded by this manager's monitor: set, never cleared, by
+     * {@link #quiesceHeartbeat()} — from then on {@link #heartbeat()} writes
+     * nothing (story 333).
+     */
+    private boolean quiesced;
+
     /** Creates a manager that uses the system clock and detected OS identity. */
     public ProjectLockManager() {
         this(InstantSource.system(), defaultUser(), defaultHostname(), defaultPid());
@@ -291,9 +298,16 @@ public final class ProjectLockManager implements AutoCloseable {
     /**
      * Refreshes the lock file's {@code lastSeenAt} to the current clock value.
      * Returns {@code true} if the heartbeat succeeded; {@code false} if the
-     * lock has been stolen or the file is gone (status is updated accordingly).
+     * lock has been stolen or the file is gone (status is updated accordingly),
+     * and — writing nothing — once {@link #quiesceHeartbeat()} quiesced it.
+     * Synchronized with {@link #release()}: a release waits for a heartbeat
+     * inside its write, so the lock file is never written again after the
+     * release deleted it (story 333's lock hand-off).
      */
     public synchronized boolean heartbeat() {
+        if (quiesced) {
+            return false;
+        }
         ProjectLock ours = heldLock.get();
         Path dir = projectDirectory.get();
         if (ours == null || dir == null) {
@@ -350,8 +364,71 @@ public final class ProjectLockManager implements AutoCloseable {
     }
 
     /**
+     * Stops this lease's heartbeat for good (story 333): cancels the
+     * scheduled task and — by taking this manager's monitor — waits for a
+     * heartbeat already inside its write. A heartbeat the scheduler had
+     * already started, which enters {@link #heartbeat()} only after this
+     * call, writes nothing: {@code cancel(false)} alone is no proof that it
+     * never runs. Idempotent.
+     */
+    synchronized void quiesceHeartbeat() {
+        quiesced = true;
+        stopHeartbeat();
+    }
+
+    /**
+     * Hands this session's own lock of {@code projectDir} over to
+     * {@code successor} while this lease is still being retired (story 333;
+     * {@link ProjectManager} reopening a folder whose release still waits for
+     * the work owed in it): quiesces this lease's heartbeat, then has
+     * {@code successor} {@linkplain #forceAcquire(Path) take the lock over},
+     * all under this manager's monitor — so neither this lease's
+     * {@link #release()} (which reads the lock file, then deletes it if it
+     * is still ours) nor a late heartbeat (which reads it, then rewrites it)
+     * interleaves with the successor's write. Afterwards the file holds the
+     * successor's lock: this lease's release reads a foreign lock and
+     * deletes nothing, and work bound to this lease fails its
+     * {@link #verifyHeld()}. The work this lease still owes in the folder —
+     * a held checkpoint write or prune, say — is not ended by the hand-over:
+     * the successor's lock must outlive it too, so {@link ProjectManager}
+     * releases the successor only once this lease's release has run.
+     *
+     * <p>Only a lock file that still holds this lease's own lock is handed
+     * over — the precondition {@link #release()} uses, read under the same
+     * monitor. A lease already released by the time the hand-over runs has
+     * none: its release deleted the lock file if it was still ours, and the
+     * file may since hold another session's lock (corefix review N12). Nor
+     * has a lease whose lock another session took over meanwhile, its file
+     * now that session's (the app fix pass 1 review, N1). A forced
+     * acquisition would overwrite either; the hand-over hands nothing over,
+     * and the caller acquires as for any folder, through the conflict
+     * path.</p>
+     *
+     * @param successor  the lease that takes the lock over
+     * @param projectDir the folder whose lock is handed over
+     * @return the successor's lock, or empty when the folder no longer holds this lease's lock and nothing was
+     *         handed over
+     * @throws IOException if the lock file could not be read, or the successor could not write the lock
+     */
+    synchronized Optional<ProjectLock> handOverTo(ProjectLockManager successor, Path projectDir) throws IOException {
+        Objects.requireNonNull(successor, "successor must not be null");
+        Objects.requireNonNull(projectDir, "projectDir must not be null");
+        quiesceHeartbeat();
+        ProjectLock ours = heldLock.get();
+        Path lockFile = projectDir.resolve(LOCK_FILE_NAME);
+        ProjectLock onDisk = ours == null || !Files.exists(lockFile) ? null : readLock(lockFile, lockFileReader);
+        if (onDisk == null || !onDisk.lockId().equals(ours.lockId())) {
+            return Optional.empty();
+        }
+        return Optional.of(successor.forceAcquire(projectDir));
+    }
+
+    /**
      * Releases the lock if it still belongs to us, deleting the sidecar file.
-     * Always stops the heartbeat. Safe to call when nothing is held.
+     * Always stops the heartbeat. Safe to call when nothing is held. It waits
+     * for a {@link #heartbeat()} inside its write and for a
+     * {@link #withHeldLease} operation (one monitor), so neither runs in the
+     * folder after the lock file is gone.
      */
     public synchronized void release() throws IOException {
         stopHeartbeat();
@@ -390,6 +467,17 @@ public final class ProjectLockManager implements AutoCloseable {
         return Optional.ofNullable(heldLock.get());
     }
 
+    /**
+     * The folder this lease is bound to — the one whose lock it holds, or
+     * that it opened read-only — until it is released (story 333: a retiring
+     * lease is told apart from a copy of its folder by it).
+     *
+     * @return the folder, if any
+     */
+    Optional<Path> boundDirectory() {
+        return Optional.ofNullable(projectDirectory.get());
+    }
+
     /** Returns the current high-level status (NONE / HELD / READ_ONLY / STOLEN). */
     public LockStatus status() {
         return status.get();
@@ -422,7 +510,10 @@ public final class ProjectLockManager implements AutoCloseable {
         }
     }
 
-    /** Reads and parses a lock file, returning {@code null} if it cannot be parsed. */
+    /**
+     * Reads and parses a lock file, returning {@code null} if it is absent —
+     * gone by the time it is read included — or cannot be parsed.
+     */
     static ProjectLock readLock(Path lockFile) throws IOException {
         return readLock(lockFile, Files::readString);
     }
@@ -431,7 +522,13 @@ public final class ProjectLockManager implements AutoCloseable {
         if (!Files.exists(lockFile)) {
             return null;
         }
-        String json = reader.read(lockFile);
+        String json;
+        try {
+            json = reader.read(lockFile);
+        } catch (java.nio.file.NoSuchFileException goneSinceTheCheck) {
+            // Deleted between the check and the read — a release that ran in between (story 333): absent.
+            return null;
+        }
         try {
             return parseJson(json);
         } catch (RuntimeException e) {

@@ -27,7 +27,7 @@ import java.util.Optional;
  * changes what the user authored
  * ({@link MigrationReport#changesAuthoredContent()}; story 330): a load whose
  * migrations only re-express the file format has nothing to review or roll
- * back, and opens without it — {@link #showIfNeeded} applies that gate. Lists
+ * back, and opens without it — {@link #showUnlessSuppressed} applies that gate. Lists
  * what was migrated, offers a "Don't show again for this project" checkbox
  * (via {@link MigrationSuppression}), and — when a rollback action is
  * supplied — a "Roll back…" button that, after a confirmation, reverts
@@ -155,7 +155,7 @@ public final class MigrationReportDialog extends Dialog<Void> {
         // Story 329 (D42) — the converter does its work once per dialog, and
         // only records a confirmed roll-back: the roll-back reloads the
         // project, and may show this dialog's successor, so it runs once this
-        // dialog closed (showIfNeeded), never inside its close.
+        // dialog closed (showUnlessSuppressed), never inside its close.
         setResultConverter(button -> {
             if (converted) {
                 return null;
@@ -171,7 +171,7 @@ public final class MigrationReportDialog extends Dialog<Void> {
 
     /**
      * Runs the roll-back action when the user confirmed {@code Roll back…},
-     * once: a second call does nothing. {@link #showIfNeeded} calls it after
+     * once: a second call does nothing. {@link #showUnlessSuppressed} calls it after
      * the dialog closed. FX thread.
      */
     void runConfirmedRollback() {
@@ -240,33 +240,26 @@ public final class MigrationReportDialog extends Dialog<Void> {
     }
 
     /**
-     * Convenience helper that wires the standard "show after load"
-     * behaviour: if the report indicates that a migration which changes
-     * what the user authored was applied
+     * Wires the standard "show after load" behaviour: if the report indicates
+     * that a migration which changes what the user authored was applied
      * ({@link MigrationReport#changesAuthoredContent()}) and the user has not
-     * previously suppressed the dialog for this project, build and
-     * {@link #showAndWait()} the dialog. A report whose migrations are all
-     * format-only shows nothing.
+     * suppressed the dialog for this project, build and {@link #showAndWait()}
+     * the dialog, then run the roll-back the user confirmed, if any — after
+     * the dialog closed, so the reload it starts never runs under this
+     * dialog. A report whose migrations are all format-only shows nothing.
+     * Whether the user suppressed it ("Don't show again", {@link MigrationSuppression})
+     * is read from disk by the caller, off the FX thread (story 333): this
+     * method reads nothing. FX thread.
      *
-     * <p>Returns {@code true} if the dialog was actually shown.</p>
+     * @param report           the load's migration report, or {@code null}
+     * @param projectDirectory the project's folder, where the checkbox's choice is recorded
+     * @param suppressed       whether the user chose "Don't show again" for this report's version
+     * @param rollbackAction   run when the user clicked "Roll back…" and confirmed, or {@code null} for no Roll back
+     * @return {@code true} if the dialog was shown
      */
-    public static boolean showIfNeeded(MigrationReport report, Path projectDirectory) {
-        return showIfNeeded(report, projectDirectory, null);
-    }
-
-    /**
-     * Variant of {@link #showIfNeeded(MigrationReport, Path)} that
-     * supplies an optional roll-back action, run when the user clicked
-     * "Roll back…" and confirmed — after the dialog closed, so the
-     * reload it starts never runs under this dialog.
-     */
-    public static boolean showIfNeeded(MigrationReport report,
-                                       Path projectDirectory,
-                                       Runnable rollbackAction) {
-        if (report == null || !report.changesAuthoredContent()) {
-            return false;
-        }
-        if (MigrationSuppression.isSuppressed(projectDirectory, report.toVersion())) {
+    public static boolean showUnlessSuppressed(MigrationReport report, Path projectDirectory, boolean suppressed,
+                                               Runnable rollbackAction) {
+        if (report == null || !report.changesAuthoredContent() || suppressed) {
             return false;
         }
         MigrationReportDialog dialog = new MigrationReportDialog(report, projectDirectory, rollbackAction);
