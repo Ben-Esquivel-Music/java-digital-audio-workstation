@@ -1,9 +1,11 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.status.ProjectJournalCoordinator;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointEvent;
+import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
 import com.benesquivelmusic.daw.core.session.SessionManager;
 import com.benesquivelmusic.daw.core.session.WorkingSession;
 
@@ -118,6 +120,12 @@ final class ExitFixture implements AutoCloseable {
     /** Run on the FX thread at each of the close's transport stops, before it (story 333: a test makes it throw). */
     volatile Runnable beforeTheTransportStop = () -> { };
     /**
+     * Run on a door's worker right before the recovery gate closes the open project's journal for the project
+     * replacing it — an open's or a replacement's, such as Import DAWproject Exchange's: a test holds that door
+     * there, its installation pending.
+     */
+    volatile Runnable beforeTheOutgoingJournalCloses = () -> { };
+    /**
      * The project's transport right after each of the close's stops of a real transport controller, recorded on
      * the acting thread: its state, and " post-roll" while it is in one.
      */
@@ -180,7 +188,43 @@ final class ExitFixture implements AutoCloseable {
      */
     ExitFixture(Path workspace, AutoSaveConfig config, boolean journaling, UnaryOperator<JournalEnding> ending,
                 boolean recoveryGate) throws Exception {
-        save = new SaveFlowFixture(workspace, config);
+        this(workspace, config, journaling, ending, recoveryGate, null);
+    }
+
+    /**
+     * @param journaling     whether journaled persistence is on (Song A's journal open and its session opened)
+     * @param ending         wraps the production journal ending (a test holds or fails a seal)
+     * @param recoveryGate   whether the opens run the recovery gate, as the application installs it
+     * @param recentProjects the project manager's recent projects — the list the Welcome window shows — or none
+     *                       when {@code null}
+     */
+    ExitFixture(Path workspace, AutoSaveConfig config, boolean journaling, UnaryOperator<JournalEnding> ending,
+                boolean recoveryGate, com.benesquivelmusic.daw.core.persistence.RecentProjectsStore recentProjects)
+            throws Exception {
+        this(workspace, config, journaling, ending, recoveryGate, recentProjects, new ProjectDeserializer());
+    }
+
+    /**
+     * Journaled persistence on, Song A's journal open, the ending as production builds it, and the opens run the
+     * recovery gate, as the application installs it; the project manager reads the projects it opens with
+     * {@code deserializer} (a test's migration registry).
+     */
+    ExitFixture(Path workspace, AutoSaveConfig config, ProjectDeserializer deserializer) throws Exception {
+        this(workspace, config, true, UnaryOperator.identity(), true, null, deserializer);
+    }
+
+    /**
+     * @param journaling     whether journaled persistence is on (Song A's journal open and its session opened)
+     * @param ending         wraps the production journal ending (a test holds or fails a seal)
+     * @param recoveryGate   whether the opens run the recovery gate, as the application installs it
+     * @param recentProjects the project manager's recent projects — the list the Welcome window shows — or none
+     *                       when {@code null}
+     * @param deserializer   the project manager's reader of the projects it opens
+     */
+    ExitFixture(Path workspace, AutoSaveConfig config, boolean journaling, UnaryOperator<JournalEnding> ending,
+                boolean recoveryGate, com.benesquivelmusic.daw.core.persistence.RecentProjectsStore recentProjects,
+                ProjectDeserializer deserializer) throws Exception {
+        save = new SaveFlowFixture(workspace, config, recentProjects, new FxDispatcher(), deserializer);
         songA = save.songA;
         journal = new ProjectJournalCoordinator(save.progress, onFx(NotificationBar::new), save.dispatcher,
                 () -> journaling, () -> bus, save.checkpoints, sessions, InstantSource.system());
@@ -191,7 +235,10 @@ final class ExitFixture implements AutoCloseable {
             runOnFx(() -> save.lifecycle().enableRecoveryGate(() -> journaling, () -> {
                 Path journalDirectory = journal.currentProjectDirectory();
                 journal.detachFromBus();
-                return () -> journal.closeCurrentFor(journalDirectory, null);
+                return () -> {
+                    beforeTheOutgoingJournalCloses.run();
+                    journal.closeCurrentFor(journalDirectory, null);
+                };
             }, journal::openForRequired));
         }
         if (journaling) {
@@ -506,23 +553,35 @@ final class ExitFixture implements AutoCloseable {
         runOnFx(() -> timers.fire(delay));
     }
 
+    /**
+     * Ends the fixture. The fence is lowered first, before anything that can
+     * throw, and the answerer is removed and the windows hidden even when a
+     * step before them throws: the fence's watch for new windows and the
+     * answerer are both on the global list of windows, so either left there
+     * would act on every window a later test class shows.
+     */
     @Override
     public void close() throws Exception {
         try {
-            handOff.complete(null);
-            save.publishes.releaseAll();
             runOnFx(() -> {
-                Window.getWindows().removeListener(answerer);
-                for (ClosingProgressDialog dialog : surfaces) {
-                    dialog.closeByProtocol();
-                }
                 if (fence != null) {
                     fence.lower();
                 }
-                if (stage != null && stage.isShowing()) {
-                    stage.hide();
-                }
             });
+            try {
+                handOff.complete(null);
+                save.publishes.releaseAll();
+            } finally {
+                runOnFx(() -> {
+                    Window.getWindows().removeListener(answerer);
+                    for (ClosingProgressDialog dialog : surfaces) {
+                        dialog.closeByProtocol();
+                    }
+                    if (stage != null && stage.isShowing()) {
+                        stage.hide();
+                    }
+                });
+            }
             if (journal.isOpen()) {
                 journal.drainWithoutSeal(null);
             } else {

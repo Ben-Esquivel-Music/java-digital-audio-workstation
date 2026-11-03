@@ -96,7 +96,10 @@ surface is the single biggest reason it feels flaky.
 `ProjectLockManager` writes a heartbeat lock file and detects stale locks. The
 `ProjectLockedException` and `LockConflictHandler` interfaces exist, and
 `MainController` wires `LockConflictDialog` via
-`projectManager.setLockConflictHandler(new LockConflictDialog())`. The dialog
+`projectManager.setLockConflictHandler(new LockConflictDialog(java.time.Instant::now, closingDoor))`,
+the closing door read from `ProjectLifecycleController.closingDoor()`: while a
+close runs, the dialog shows nothing and takes its Cancel (story 333, ruling
+R-1.6). The dialog
 surfaces holder identity and staleness and offers Open Read‑Only / Take Over /
 Cancel. However, the UX around this conflict resolution still has gaps — the user
 does not see:

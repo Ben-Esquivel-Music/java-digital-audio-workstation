@@ -34,7 +34,7 @@ class MixerViewHostedWiringTest {
         FxDispatcher viewDispatcher = new FxDispatcher();
         TrackControlWiring hosted = TrackControlWiring.standalone(project, hostDispatcher, null);
         MixerView view = ArrangementStripFixture.onFx(
-                () -> new MixerView(project, new UndoManager(), viewDispatcher, () -> hosted));
+                () -> new MixerView(project, new UndoManager(), viewDispatcher, () -> hosted, () -> true));
         try {
             assertThat(view.standaloneTrackControlWiringBuilds())
                     .as("the constructor's own refresh() bound through the host's generation").isZero();

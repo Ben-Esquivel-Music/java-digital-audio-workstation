@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.DoubleSupplier;
 import java.util.function.Function;
@@ -27,17 +28,52 @@ import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-/** Activates graph inserts and hosts the focused slot's contract editor. */
+/**
+ * Activates graph inserts and hosts the focused slot's contract editor.
+ *
+ * <p>While the window's edit gate says no (a close waits on disk work, or a
+ * project is being installed), a plug-in that finishes loading is not
+ * inserted, the HRTF profile is not changed, and the editor it opens refuses
+ * its frame's and grids' edits (PR #989 review 5711460812).</p>
+ */
 final class PluginViewController {
     private static final Logger LOG = Logger.getLogger(PluginViewController.class.getName());
 
+    /**
+     * Host services of the controller.
+     *
+     * @param projectActionsAllowed the window's edit gate, read on the FX thread
+     *                              when an activation lands, when the HRTF
+     *                              profile is chosen, and by every editor the
+     *                              controller opens (PR #989 review
+     *                              5711460812); the nine-argument constructor
+     *                              passes {@code () -> true}
+     */
     record Deps(DoubleSupplier sampleRate, IntSupplier bufferSize,
                 Supplier<DawProject> project, Runnable markProjectDirty,
                 BiConsumer<String, DawIcon> updateStatusBar,
                 BiConsumer<NotificationLevel, String> showNotification,
                 BiConsumer<List<String>, Node> showEditorInWorkshopPane,
                 Supplier<PluginInvocationSupervisor> faultSupervisor,
-                Runnable openPluginFaultLog) { }
+                Runnable openPluginFaultLog,
+                BooleanSupplier projectActionsAllowed) {
+
+        Deps {
+            Objects.requireNonNull(projectActionsAllowed, "projectActionsAllowed must not be null");
+        }
+
+        /** Host services with no edit gate: every edit is admitted. */
+        Deps(DoubleSupplier sampleRate, IntSupplier bufferSize,
+             Supplier<DawProject> project, Runnable markProjectDirty,
+             BiConsumer<String, DawIcon> updateStatusBar,
+             BiConsumer<NotificationLevel, String> showNotification,
+             BiConsumer<List<String>, Node> showEditorInWorkshopPane,
+             Supplier<PluginInvocationSupervisor> faultSupervisor,
+             Runnable openPluginFaultLog) {
+            this(sampleRate, bufferSize, project, markProjectDirty, updateStatusBar, showNotification,
+                    showEditorInWorkshopPane, faultSupervisor, openPluginFaultLog, () -> true);
+        }
+    }
 
     record Routing(Supplier<MixerChannel> selectedChannel,
                    Supplier<MixerChannel> chooseChannel,
@@ -156,6 +192,14 @@ final class PluginViewController {
                         activationWorker.execute(slot::disposeAfterQuiescence);
                         return;
                     }
+                    if (!deps.projectActionsAllowed().getAsBoolean()) {
+                        // Work started before the gate closed lands while it says no:
+                        // discarded, never deferred (PR #989 review 5711460812).
+                        LOG.info(() -> "The plug-in “" + slot.getName()
+                                + "” finished loading while the project could not be edited; it was not inserted.");
+                        activationWorker.execute(slot::disposeAfterQuiescence);
+                        return;
+                    }
                     try {
                         if (focusExistingSlot(activation)) {
                             activationWorker.execute(slot::disposeAfterQuiescence);
@@ -247,7 +291,7 @@ final class PluginViewController {
         closeActiveEditor(false);
         PluginEditorSession session = PluginEditorSession.open(channel, slot,
                 new PluginEditorSession.Deps(deps.sampleRate(), deps.faultSupervisor(),
-                        deps.openPluginFaultLog(), deps.showNotification()));
+                        deps.openPluginFaultLog(), deps.showNotification(), deps.projectActionsAllowed()));
         activeChannel = channel;
         activeSlot = slot;
         activeEditorSession = session;
@@ -315,10 +359,21 @@ final class PluginViewController {
 
     PluginEditorSession activeEditorSessionForTest() { return activeEditorSession; }
 
+    /**
+     * Opens the HRTF profile browser and applies the chosen profile to the
+     * project. Refused while the window's edit gate says no, before the
+     * browser opens and again when it returns (PR #989 review 5711460812).
+     */
     public void onManageHrtfProfiles() {
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            return;
+        }
         HrtfProfileBrowserDialog dialog = new HrtfProfileBrowserDialog(
                 hrtfProfileLibrary, deps.sampleRate().getAsDouble());
         dialog.showAndWait().ifPresent(selected -> {
+            if (!deps.projectActionsAllowed().getAsBoolean()) {
+                return;
+            }
             String current = deps.project().get().getActiveHrtfProfileName();
             if (!selected.equals(current)) {
                 deps.project().get().setActiveHrtfProfileName(selected);

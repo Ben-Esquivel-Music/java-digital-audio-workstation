@@ -44,15 +44,18 @@ import java.util.Optional;
  * {@code FirstRunWizardHost} idiom: its result converter answers nothing,
  * its buttons belong to the content and run their single-slot actions, and
  * a hidden cancel button ({@link DialogDismissibility#installHiddenCancel})
- * keeps Escape live. Escape, the hidden cancel, the window's close box and a
- * close nobody asked for run the keep action only while the keep button is
- * shown and enabled — so while the keep button is disabled after the
- * journal's detach, or hidden once the release began, they do nothing (a
- * temporary veto, FS book §5.2) — and are consumed
- * unless that action closed the surface: a close nobody asked for whose keep
- * ended the close is let through, so the surface never stays showing with
- * no action left (the stage-6 review N7). The protocol closes it itself
- * ({@link #closeByProtocol()}), which runs neither action.</p>
+ * keeps the dialog closable. An Escape that reaches the dialog's window, the
+ * hidden cancel, the window's close box and a close nobody asked for run the
+ * keep action only while the keep button is shown and enabled — so while the
+ * keep button is disabled after the journal's detach, or hidden once the
+ * release began, they do nothing (a temporary veto, FS book §5.2) — and are
+ * consumed unless that action closed the surface: a close nobody asked for
+ * whose keep ended the close is let through, so the surface never stays
+ * showing with no action left (the stage-6 review N7). The protocol closes it
+ * itself ({@link #closeByProtocol()}), which runs neither action. An Escape
+ * pressed on the keyboard does not reach the window yet: the hidden button's
+ * Escape accelerator consumes it without firing the invisible button, a known
+ * limit (future story 414).</p>
  */
 final class ClosingProgressDialog extends DawgDialog<Void> implements ClosingProgress {
 
@@ -68,7 +71,11 @@ final class ClosingProgressDialog extends DawgDialog<Void> implements ClosingPro
     private Window guardedWindow;
 
     /**
-     * Creates the surface, owned by {@code owner} when there is one.
+     * Creates the surface, owned by {@code owner} when there is one. It
+     * carries the close-surface mark
+     * ({@link WindowInputFence#markCloseSurface(javafx.scene.control.Dialog)}),
+     * so it is not fenced when it shows while the close's fence is up (PR #989
+     * review 5711460812).
      *
      * @param owner the main window
      */
@@ -76,6 +83,7 @@ final class ClosingProgressDialog extends DawgDialog<Void> implements ClosingPro
         Objects.requireNonNull(owner, "owner must not be null");
         initModality(Modality.APPLICATION_MODAL);
         owner.ifPresent(this::initOwner);
+        WindowInputFence.markCloseSurface(this);
 
         step.getStyleClass().add("closing-progress-step");
         step.setWrapText(true);
@@ -104,7 +112,8 @@ final class ClosingProgressDialog extends DawgDialog<Void> implements ClosingPro
             keepRequested();
         });
         setResultConverter(_ -> null);
-        // Escape reaches the dialog's close request (its stage closes the dialog on ESCAPE), as does a close()
+        // An Escape that reaches the window reaches the dialog's close request (its stage closes the dialog on an
+        // unconsumed ESCAPE; a keyboard Escape does not get there yet, future story 414), as does a close()
         // nobody asked for: the keep button's action while it is shown and enabled, then vetoed — unless that
         // action closed the surface itself, whose own close() returned at once inside this close.
         setOnCloseRequest(event -> {

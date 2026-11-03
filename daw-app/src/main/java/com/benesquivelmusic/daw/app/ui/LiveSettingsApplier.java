@@ -25,9 +25,20 @@ final class LiveSettingsApplier {
 
     private LiveSettingsApplier() {}
 
+    /**
+     * Applies {@code model} to the running DAW.
+     *
+     * @param tempoWriteAllowed whether the default tempo may be written to the
+     *                          open project's transport — a value the project
+     *                          file stores, so it is written only while the
+     *                          window's edit gate says yes; the other settings
+     *                          are the application's and are always applied
+     *                          (PR #989 review 5711460812)
+     */
     static void apply(SettingsModel model, String previousPluginPaths,
                       Scene scene, ProjectManager projectManager,
-                      DawProject project, PluginRegistry pluginRegistry) {
+                      DawProject project, PluginRegistry pluginRegistry,
+                      boolean tempoWriteAllowed) {
         if (scene != null && scene.getRoot() != null) {
             double scale = model.getUiScale();
             scene.getRoot().getTransforms().clear();
@@ -40,7 +51,9 @@ final class LiveSettingsApplier {
             checkpointManager.reconfigure(new AutoSaveConfig(newInterval,
                     currentConfig.maxCheckpoints(), currentConfig.enabled()));
         }
-        project.getTransport().setTempo(model.getDefaultTempo());
+        if (tempoWriteAllowed) {
+            project.getTransport().setTempo(model.getDefaultTempo());
+        }
         // Story 315 — LIVE apply class: the transport reads the volatile
         // flag on each Stop, so pushing it here is all a settings Apply
         // needs (no engine re-arm).

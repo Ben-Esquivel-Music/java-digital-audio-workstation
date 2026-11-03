@@ -27,6 +27,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.BooleanSupplier;
 
 /**
  * Side panel that surfaces {@link MixerSnapshotManager}'s saved mixer-scene
@@ -50,6 +51,11 @@ import java.util.Optional;
  * <p>Recall integrates with the project's {@link UndoManager} so the user
  * can undo a recall in one step, restoring the pre-recall mixer state for
  * every channel, insert, and send.</p>
+ *
+ * <p>While the window's edit gate says no (a close waits on disk work, or a
+ * project is being installed), a save — before its name dialog and again
+ * after it — a recall and a delete are refused, whatever raised them, and
+ * nothing changes (PR #989 review 5711460812).</p>
  */
 public final class MixerSnapshotsPanel extends VBox {
 
@@ -61,6 +67,7 @@ public final class MixerSnapshotsPanel extends VBox {
     private final MixerSnapshotManager manager;
     private final Mixer mixer;
     private final UndoManager undoManager;
+    private final BooleanSupplier projectActionsAllowed;
     private final ObservableList<MixerSnapshot> items = FXCollections.observableArrayList();
     private final ListView<MixerSnapshot> list;
     private final Button saveButton;
@@ -73,11 +80,17 @@ public final class MixerSnapshotsPanel extends VBox {
      * @param mixer       the mixer the snapshots capture/recall (must not be {@code null})
      * @param undoManager the undo manager that recall/save go through; may be
      *                    {@code null}, in which case mutations bypass undo
+     * @param projectActionsAllowed the window's edit gate: while it says no, a
+     *                    save, a recall and a delete are refused
+     *                    (PR #989 review 5711460812)
      */
-    public MixerSnapshotsPanel(MixerSnapshotManager manager, Mixer mixer, UndoManager undoManager) {
+    public MixerSnapshotsPanel(MixerSnapshotManager manager, Mixer mixer, UndoManager undoManager,
+                               BooleanSupplier projectActionsAllowed) {
         this.manager = Objects.requireNonNull(manager, "manager must not be null");
         this.mixer = Objects.requireNonNull(mixer, "mixer must not be null");
         this.undoManager = undoManager;
+        this.projectActionsAllowed = Objects.requireNonNull(
+                projectActionsAllowed, "projectActionsAllowed must not be null");
 
         getStyleClass().add("mixer-snapshots-panel");
         setPadding(new Insets(8));
@@ -148,10 +161,15 @@ public final class MixerSnapshotsPanel extends VBox {
      * menus and exposed for testing.
      *
      * @param name the snapshot name
-     * @return the captured snapshot
+     * @return the captured snapshot, or empty when the window's edit gate
+     *         refused the save, which then changes nothing
+     *         (PR #989 review 5711460812)
      */
-    public MixerSnapshot saveSnapshot(String name) {
+    public Optional<MixerSnapshot> saveSnapshot(String name) {
         Objects.requireNonNull(name, "name must not be null");
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return Optional.empty();
+        }
         SaveSnapshotAction action = new SaveSnapshotAction(manager, mixer, name);
         if (undoManager != null) {
             undoManager.execute(action);
@@ -160,7 +178,7 @@ public final class MixerSnapshotsPanel extends VBox {
         }
         refresh();
         onChange.run();
-        return action.getSavedSnapshot();
+        return Optional.of(action.getSavedSnapshot());
     }
 
     /**
@@ -180,10 +198,16 @@ public final class MixerSnapshotsPanel extends VBox {
      * Undo from the Arrangement view would otherwise leave the arrangement's
      * mute / solo showing a state the engine no longer has).</p>
      *
+     * <p>Refused, changing nothing, while the window's edit gate says no
+     * (PR #989 review 5711460812).</p>
+     *
      * @param snapshot the snapshot to recall
      */
     public void recallSnapshot(MixerSnapshot snapshot) {
         Objects.requireNonNull(snapshot, "snapshot must not be null");
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         RecallSnapshotAction recall = new RecallSnapshotAction(mixer, snapshot);
         UndoableAction action = new UndoableAction() {
             @Override
@@ -211,6 +235,9 @@ public final class MixerSnapshotsPanel extends VBox {
     }
 
     private void promptAndSave() {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         TextInputDialog dialog = new TextInputDialog("Snapshot " + (manager.getSnapshotCount() + 1));
         dialog.setTitle("Save Mixer Snapshot");
         dialog.setHeaderText("Save the current mixer state as a snapshot.");
@@ -248,6 +275,9 @@ public final class MixerSnapshotsPanel extends VBox {
                 deleteBtn.setMinWidth(Region.USE_PREF_SIZE);
                 deleteBtn.setTooltip(new Tooltip("Delete this snapshot."));
                 deleteBtn.setOnAction(_ -> {
+                    if (!projectActionsAllowed.getAsBoolean()) {
+                        return;
+                    }
                     manager.removeSnapshot(snapshot);
                     refresh();
                     onChange.run();

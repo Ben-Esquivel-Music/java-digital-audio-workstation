@@ -55,6 +55,7 @@ class LiveMasteringViewTest {
                                 case "masteringChain" -> fixture.engine.getMasteringChain();
                                 case "engineFormat" -> fixture.engine.getFormat();
                                 case "meteringTapBus" -> fixture.engine.meteringTapBus();
+                                case "projectActionsAllowed" -> true;
                                 default -> null;
                             });
                     var root = new javafx.scene.layout.BorderPane(new Label("Arrangement"));

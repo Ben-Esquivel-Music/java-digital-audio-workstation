@@ -16,9 +16,13 @@ import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
+import javafx.stage.Stage;
+import javafx.stage.WindowEvent;
 
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -43,11 +47,19 @@ import java.util.function.Supplier;
  * underlying {@code MidSideWrapperProcessor} stays in sync automatically.</p>
  *
  * <p>The {@link EditorContext#parameterStore() parameter store} is
- * deliberately unused: the wrapper itself exposes no parameters
+ * deliberately unused for writes: the wrapper itself exposes no parameters
  * ({@link MidSideWrapperPlugin#getParameters()} is empty by design), and
  * chain membership plus inner-plugin parameters are plugin-owned state the
  * store cannot express — per this package's conventions they go through the
- * plugin's own accessors.</p>
+ * plugin's own accessors. Each of those writes reads the store's
+ * {@code uiWritesAdmitted()} first: while the host refuses UI writes, the
+ * bypass, a factory preset, an inner chain's Add and Remove and the inner
+ * parameter dialog's controls write nothing, and each control shows what it
+ * showed before (PR #989 review 5711460812).</p>
+ *
+ * <p>Its inner parameter dialogs close with it: {@link #detach()} hides every
+ * one it opened, so none outlives the session whose gate it reads (PR #989
+ * review 5711460812).</p>
  *
  * <p><strong>Threading (§4.7):</strong> {@link #createPanel(EditorContext)}
  * and every control handler it wires run on the JavaFX Application Thread; no
@@ -61,6 +73,20 @@ public final class MidSideWrapperEditor implements PluginEditorFactory.Panel {
     static final String PRESET_CENTER_FOCUS = "Center Focus";
 
     private final MidSideWrapperPlugin wrapper;
+
+    /**
+     * The preset combo's last admitted pick: the wrapper records no preset of
+     * its own, so a refused pick shows this one again. One per editor: the
+     * wrapper returns a new editor from every {@code editorFactory()} call,
+     * and {@code createPanel} is called once.
+     */
+    private String lastPickedPreset = PRESET_NONE;
+
+    /** The inner parameter dialogs this editor's panes opened that still show. FX-confined. */
+    private final List<Stage> innerDialogs = new ArrayList<>();
+
+    /** Set once the host has detached this editor: its panes then admit no edit. FX-confined. */
+    private boolean detached;
 
     /**
      * Creates the editor factory for the given wrapper plugin.
@@ -106,8 +132,17 @@ public final class MidSideWrapperEditor implements PluginEditorFactory.Panel {
                 "Bypass the wrapper. Encode → decode is identity at unity gain, "
               + "so output equals input bit-for-bit (null test)."));
         bypassToggle.setSelected(wrapper.getProcessor().isBypassed());
-        bypassToggle.setOnAction(_ ->
-                wrapper.getProcessor().setBypassed(bypassToggle.isSelected()));
+        bypassToggle.setOnAction(_ -> {
+            boolean bypass = bypassToggle.isSelected();
+            if (bypass == wrapper.getProcessor().isBypassed()) {
+                return;
+            }
+            if (!context.parameterStore().uiWritesAdmitted()) {
+                bypassToggle.setSelected(wrapper.getProcessor().isBypassed());
+                return;
+            }
+            wrapper.getProcessor().setBypassed(bypass);
+        });
 
         HBox header = new HBox(12, title, new Label("Preset:"), presetCombo, bypassToggle);
         header.setAlignment(Pos.CENTER_LEFT);
@@ -115,8 +150,14 @@ public final class MidSideWrapperEditor implements PluginEditorFactory.Panel {
         root.setTop(header);
 
         // ── Two stacked inner chain editors ────────────────────────────
-        InnerChainPane midPane  = new InnerChainPane(wrapper, ChainOwner.MID,  "MID");
-        InnerChainPane sidePane = new InnerChainPane(wrapper, ChainOwner.SIDE, "SIDE");
+        // A live read: the context outlives a reload's store. A disposed
+        // session's gate is gone from the store, which then admits, so a
+        // detached editor refuses on its own flag.
+        BooleanSupplier editsAdmitted = () -> !detached && context.parameterStore().uiWritesAdmitted();
+        InnerChainPane midPane  = new InnerChainPane(wrapper, ChainOwner.MID,  "MID", editsAdmitted,
+                this::trackInnerDialog);
+        InnerChainPane sidePane = new InnerChainPane(wrapper, ChainOwner.SIDE, "SIDE", editsAdmitted,
+                this::trackInnerDialog);
         root.setCenter(new VBox(8, midPane, sidePane));
 
         // Rebuilds both inner-chain lists and the bypass toggle from the
@@ -126,10 +167,31 @@ public final class MidSideWrapperEditor implements PluginEditorFactory.Panel {
             sidePane.refresh();
             bypassToggle.setSelected(wrapper.getProcessor().isBypassed());
         };
-        presetCombo.setOnAction(_ -> applyPreset(presetCombo.getValue(), refreshAll));
+        presetCombo.setOnAction(_ -> onPresetPicked(presetCombo, context, refreshAll));
 
         refreshAll.run();
         return root;
+    }
+
+    /**
+     * A preset pick. Echo guard: the combo already shows the last pick. A
+     * factory preset is refused while the host refuses UI writes: the chains
+     * are untouched and the combo shows the last pick again (PR #989 review
+     * 5711460812). {@link #PRESET_NONE "Custom"} changes no chain, so it is
+     * never refused.
+     */
+    private void onPresetPicked(ComboBox<String> presetCombo, EditorContext context, Runnable refreshAll) {
+        String picked = presetCombo.getValue();
+        if (Objects.equals(picked, lastPickedPreset)) {
+            return;
+        }
+        boolean replacesTheChains = picked != null && !PRESET_NONE.equals(picked);
+        if (replacesTheChains && !context.parameterStore().uiWritesAdmitted()) {
+            presetCombo.setValue(lastPickedPreset);
+            return;
+        }
+        lastPickedPreset = picked;
+        applyPreset(picked, refreshAll);
     }
 
     /**
@@ -141,6 +203,28 @@ public final class MidSideWrapperEditor implements PluginEditorFactory.Panel {
     @Override
     public EditorHints hints() {
         return EditorHints.standard();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Hides every inner parameter dialog this editor opened that still
+     * shows, and its panes admit no edit from then on (PR #989 review
+     * 5711460812).</p>
+     */
+    @Override
+    public void detach() {
+        detached = true;
+        for (Stage dialog : List.copyOf(innerDialogs)) {
+            dialog.hide();
+        }
+        innerDialogs.clear();
+    }
+
+    /** Keeps a parameter dialog a pane opened until it is hidden, so {@link #detach()} can close it. */
+    private void trackInnerDialog(Stage dialog) {
+        innerDialogs.add(dialog);
+        dialog.addEventHandler(WindowEvent.WINDOW_HIDDEN, _ -> innerDialogs.remove(dialog));
     }
 
     // ── Preset application ─────────────────────────────────────────────

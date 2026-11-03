@@ -15,6 +15,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -122,9 +123,9 @@ class MigrationReportDialogTest {
     void showUnlessSuppressedReturnsFalseForNoOpReport(@TempDir Path projectDir) {
         // Pure helper logic — does not need the FX thread because it
         // short-circuits before constructing a dialog.
-        assertThat(MigrationReportDialog.showUnlessSuppressed(MigrationReport.noOp(1), projectDir, false, null))
+        assertThat(MigrationReportDialog.showUnlessSuppressed(MigrationReport.noOp(1), projectDir, false, null, Optional::empty))
                 .isFalse();
-        assertThat(MigrationReportDialog.showUnlessSuppressed(null, projectDir, false, null)).isFalse();
+        assertThat(MigrationReportDialog.showUnlessSuppressed(null, projectDir, false, null, Optional::empty)).isFalse();
     }
 
     @Test
@@ -139,8 +140,8 @@ class MigrationReportDialogTest {
         ), Instant.now());
         assertThat(formatOnly.wasMigrated()).as("fixture: it was migrated").isTrue();
 
-        assertThat(MigrationReportDialog.showUnlessSuppressed(formatOnly, projectDir, false, null)).isFalse();
-        assertThat(MigrationReportDialog.showUnlessSuppressed(formatOnly, projectDir, false, () -> { })).isFalse();
+        assertThat(MigrationReportDialog.showUnlessSuppressed(formatOnly, projectDir, false, null, Optional::empty)).isFalse();
+        assertThat(MigrationReportDialog.showUnlessSuppressed(formatOnly, projectDir, false, () -> { }, Optional::empty)).isFalse();
     }
 
     @Test
@@ -149,7 +150,7 @@ class MigrationReportDialogTest {
                 .suppress(projectDir, 3);
 
         assertThat(MigrationReportDialog.showUnlessSuppressed(sampleReport(), projectDir,
-                com.benesquivelmusic.daw.core.persistence.migration.MigrationSuppression.isSuppressed(projectDir, 3), null)).isFalse();
+                com.benesquivelmusic.daw.core.persistence.migration.MigrationSuppression.isSuppressed(projectDir, 3), null, Optional::empty)).isFalse();
     }
 
     @Test

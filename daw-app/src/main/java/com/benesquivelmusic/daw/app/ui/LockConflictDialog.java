@@ -11,10 +11,12 @@ import javafx.scene.control.ButtonType;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
+import java.util.logging.Logger;
 
 /**
  * Story 187 — JavaFX implementation of {@link LockConflictHandler} that
@@ -26,12 +28,16 @@ import java.util.function.Supplier;
  * lock appears stale (no recent heartbeat). It is safe to invoke from any
  * thread: when called off the FX Application Thread, the dialog is shown
  * via {@link Platform#runLater} and the calling thread blocks on a latch
- * until the user picks an option.</p>
+ * until the user picks an option, or, while a close runs, until the FX
+ * thread has taken Cancel without showing it ({@link #resolve}).</p>
  *
- * <p>Wired into {@code ProjectManager} via
- * {@code projectManager.setLockConflictHandler(new LockConflictDialog())}.
- * For headless tests, supply a deterministic {@link LockConflictHandler}
- * directly instead of this dialog.</p>
+ * <p>Wired into {@code ProjectManager} by {@code MainController}, which
+ * passes the lifecycle controller's closing door:
+ * {@code projectManager.setLockConflictHandler(new LockConflictDialog(java.time.Instant::now, closingDoor))}.
+ * The no-argument and clock-only constructors never read a closing door,
+ * so a dialog built with them is shown while a close runs. For headless
+ * tests, supply a deterministic {@link LockConflictHandler} directly
+ * instead of this dialog.</p>
  */
 @com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
         "migrate to DawgDialog — story 276 follow-up; not a Dialog "
@@ -41,7 +47,11 @@ public final class LockConflictDialog implements LockConflictHandler {
     /** Default cancel resolution when the dialog is dismissed without a choice. */
     static final LockConflictResolution DEFAULT_RESOLUTION = LockConflictResolution.CANCEL;
 
+    private static final Logger LOG = Logger.getLogger(LockConflictDialog.class.getName());
+
     private final Supplier<Instant> clock;
+    /** The name of the door whose close runs now, or empty; read on the FX thread before a dialog shows. */
+    private final Supplier<Optional<String>> closingDoor;
 
     /** Creates a dialog that uses the system clock for "last seen" rendering. */
     public LockConflictDialog() {
@@ -50,9 +60,33 @@ public final class LockConflictDialog implements LockConflictHandler {
 
     /** Visible for tests — allows injecting a fake clock. */
     LockConflictDialog(Supplier<Instant> clock) {
-        this.clock = clock;
+        this(clock, Optional::empty);
     }
 
+    /**
+     * Creates a dialog that shows nothing while a close runs.
+     *
+     * @param clock       the clock of the "last seen" rendering
+     * @param closingDoor the name of the door whose close runs now, or empty
+     *                    while none runs ({@code ProjectLifecycleController.closingDoor});
+     *                    read on the FX thread
+     */
+    LockConflictDialog(Supplier<Instant> clock, Supplier<Optional<String>> closingDoor) {
+        this.clock = clock;
+        this.closingDoor = Objects.requireNonNull(closingDoor, "closingDoor must not be null");
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>While a close runs — the door {@code closingDoor} names, read on the
+     * FX thread in the turn the dialog would show — no dialog is shown: the
+     * resolution is Cancel, logged at INFO. A dialog shown then would be
+     * fenced, one shown after the close's own dialog would also disable it,
+     * being application-modal, and an exit waiting for the work that asks
+     * would wait for the dialog's answer, since that work's worker blocks
+     * here until it comes (ruling R-1.6; PR #989 review 5711460812).</p>
+     */
     @Override
     public LockConflictResolution resolve(ProjectLock existingLock, boolean stale) {
         if (existingLock == null) {
@@ -84,6 +118,10 @@ public final class LockConflictDialog implements LockConflictHandler {
     }
 
     private LockConflictResolution showAndAwait(ProjectLock existingLock, boolean stale) {
+        Optional<String> closing = closingDoor.get();
+        if (closing.isPresent()) {
+            return refusedWhileClosing(existingLock, closing.get());
+        }
         String holder = holderIdentity(existingLock);
 
         ButtonType readOnlyBtn = new ButtonType("Open Read-Only", ButtonType.OK.getButtonData());
@@ -110,13 +148,54 @@ public final class LockConflictDialog implements LockConflictHandler {
     }
 
     /**
+     * The resolution while {@code door}'s close runs: Cancel, without the
+     * dialog, logged at INFO. A dialog shown then would be fenced, one shown
+     * after the close's own dialog would also disable it, being
+     * application-modal, and an exit waiting for the work that asks waits for
+     * its answer (ruling R-1.6; PR #989 review 5711460812). FX thread.
+     */
+    private static LockConflictResolution refusedWhileClosing(ProjectLock existingLock, String door) {
+        String holder = holderIdentity(existingLock);
+        LOG.info(() -> "The Project Locked dialog of " + holder + "'s lock was not shown while " + door
+                + " closes the open project: its Cancel was taken, so the locked folder was neither opened"
+                + " read-only nor taken over, and the lock was left to " + holder + ".");
+        return LockConflictResolution.CANCEL;
+    }
+
+    /**
+     * The take-over confirmation's resolution while {@code door}'s close runs:
+     * Cancel, without the confirmation, logged at INFO ({@link #confirmTakeOver};
+     * ruling R-1.6; PR #989 review 5711460812). FX thread.
+     */
+    private static LockConflictResolution takeOverRefusedWhileClosing(String holder, String door) {
+        LOG.info(() -> "The Confirm Lock Take-Over dialog of " + holder + "'s lock was not shown while " + door
+                + " closes the open project: its Cancel was taken, so the locked folder was neither opened"
+                + " read-only nor taken over, and the lock was left to " + holder + ".");
+        return LockConflictResolution.CANCEL;
+    }
+
+    /**
      * Shows a secondary confirmation dialog before stealing the lock.
      * When the lock is stale (no recent heartbeat), the warning is softer
      * because the holding session has likely crashed. When the lock is
      * active, the warning is stronger to prevent accidental data loss.
+     * While a close runs — the door {@code closingDoor} names, read on the
+     * FX thread once the Project Locked dialog, already up when the close
+     * began, has answered Take Over — the confirmation is not shown: the
+     * resolution is Cancel, logged at INFO, so the lock is not taken over
+     * ({@link #takeOverRefusedWhileClosing}). A confirmation shown then would
+     * be fenced, one shown after the close's own dialog would also disable
+     * it, being application-modal, and an exit waiting for the work that asks
+     * would wait for its answer, since that work's worker blocks in
+     * {@link #resolve} until it comes (ruling R-1.6; PR #989 review
+     * 5711460812).
      */
     private LockConflictResolution confirmTakeOver(ProjectLock existingLock, boolean stale) {
         String holder = holderIdentity(existingLock);
+        Optional<String> closing = closingDoor.get();
+        if (closing.isPresent()) {
+            return takeOverRefusedWhileClosing(holder, closing.get());
+        }
         Alert confirm = new Alert(Alert.AlertType.WARNING);
         confirm.setTitle("Confirm Lock Take-Over");
         if (stale) {

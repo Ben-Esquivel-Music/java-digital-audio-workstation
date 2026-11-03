@@ -74,6 +74,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -430,6 +431,19 @@ public final class MixerView extends VBox implements Dockable {
      * {@link #postFx} tolerates the null.
      */
     private final FxDispatcher fxDispatcher;
+    /**
+     * Whether the project may be edited now — the window's edit gate,
+     * {@code MainController.projectActionsAllowed()}, on the production path;
+     * {@code () -> true} from the pure-unit constructors. Read on the FX thread
+     * where an intent of this view is handled: the standalone wiring's sink, a
+     * strip rename's history entry, the A/B and slot recalls and saves, its
+     * insert racks, and every other edit its controls and children raise but
+     * those of pointer-only handlers, such as a send slider's release, whose
+     * input events the window's fence consumes — the routing combos, sends,
+     * cue buses, return buses, VCAs, links, solo-safe, snapshots and the
+     * Inspector's insert picker (PR #989 review 5711460812).
+     */
+    private final BooleanSupplier projectActionsAllowed;
 
     /**
      * Creates a new mixer view bound to the given project.
@@ -462,7 +476,7 @@ public final class MixerView extends VBox implements Dockable {
      *                     the {@link FxDispatcher#getDefault() app-scoped default}
      */
     public MixerView(DawProject project, UndoManager undoManager, FxDispatcher fxDispatcher) {
-        this(project, undoManager, fxDispatcher, null);
+        this(project, undoManager, fxDispatcher, null, () -> true);
     }
 
     /**
@@ -489,10 +503,20 @@ public final class MixerView extends VBox implements Dockable {
      *                           per project load); {@code null} — or a supplier that
      *                           yields {@code null} — leaves the view to its own
      *                           standalone wiring
+     * @param projectActionsAllowed the window's edit gate: while it says no, the
+     *                           view's own intents — its standalone wiring's
+     *                           commands, a strip rename's history entry, the A/B
+     *                           and slot recalls, its insert racks' edits and the
+     *                           other edits its controls and children raise but
+     *                           those of pointer-only handlers, whose input events
+     *                           the window's fence consumes — are refused (PR #989
+     *                           review 5711460812); must not be {@code null}
      */
     public MixerView(DawProject project, UndoManager undoManager, FxDispatcher fxDispatcher,
-                     Supplier<TrackControlWiring> trackControlWiring) {
+                     Supplier<TrackControlWiring> trackControlWiring, BooleanSupplier projectActionsAllowed) {
         this.project = Objects.requireNonNull(project, "project must not be null");
+        this.projectActionsAllowed = Objects.requireNonNull(
+                projectActionsAllowed, "projectActionsAllowed must not be null");
         this.undoManager = undoManager;
         // May be null in a pure-unit context; postFx() / InsertEffectRack fall
         // back to the static seam, preserving today's behaviour byte-for-byte.
@@ -589,7 +613,8 @@ public final class MixerView extends VBox implements Dockable {
         // it always reads project.getMixerSnapshotManager() so a freshly
         // loaded project's snapshots appear automatically.
         this.snapshotsPanel = new MixerSnapshotsPanel(
-                project.getMixerSnapshotManager(), project.getMixer(), undoManager);
+                project.getMixerSnapshotManager(), project.getMixer(), undoManager,
+                projectActionsAllowed);
         // Story 322 — the panel's own recall writes channels only; heal the
         // Track mirrors after it exactly as the A/B recall does.
         this.snapshotsPanel.setOnChange(() -> {
@@ -628,6 +653,9 @@ public final class MixerView extends VBox implements Dockable {
         mixerMenu.setTooltip(new Tooltip("Mixer options"));
         MenuItem resetSoloSafeItem = new MenuItem("Reset solo safe to defaults");
         resetSoloSafeItem.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             project.getMixer().resetSoloSafeToDefaults();
             refresh();
         });
@@ -762,6 +790,9 @@ public final class MixerView extends VBox implements Dockable {
         saveItem.setOnAction(_ -> saveCurrentStateToSlot(slot));
         MenuItem clearItem = new MenuItem("Clear " + slot.name());
         clearItem.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             project.getMixerSnapshotManager().setSlot(slot, null);
             syncSlotButtons();
         });
@@ -769,14 +800,31 @@ public final class MixerView extends VBox implements Dockable {
         return menu;
     }
 
+    /**
+     * Captures the mixer into an A/B slot. Refused, changing nothing, while
+     * the window's edit gate says no: the slots are saved with the project
+     * (PR #989 review 5711460812).
+     */
     private void saveCurrentStateToSlot(MixerSnapshotManager.Slot slot) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         MixerSnapshot snap = MixerSnapshot.capture(
                 project.getMixer(), "Slot " + slot.name());
         project.getMixerSnapshotManager().setSlot(slot, snap);
         syncSlotButtons();
     }
 
+    /**
+     * Recalls an A/B slot as one compound undoable action. Refused, changing
+     * nothing, while the window's edit gate says no: the recall writes the
+     * channels outside the intent sink, so its entry is where it is gated
+     * (PR #989 review 5711460812).
+     */
     private void recallSlot(MixerSnapshotManager.Slot slot) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         MixerSnapshotManager manager = project.getMixerSnapshotManager();
         MixerSnapshot snap = manager.getSlot(slot);
         if (snap == null) {
@@ -808,9 +856,14 @@ public final class MixerView extends VBox implements Dockable {
     /**
      * Toggles between the A and B snapshot slots, applying the newly active
      * slot's state to the mixer as a single compound undoable action. Bound
-     * to {@link DawAction#MIXER_TOGGLE_AB} (default {@code Shift+A}).
+     * to {@link DawAction#MIXER_TOGGLE_AB} (default {@code Shift+A}). Refused,
+     * changing nothing, while the window's edit gate says no (PR #989 review
+     * 5711460812).
      */
     public void toggleAB() {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         MixerSnapshotManager manager = project.getMixerSnapshotManager();
         MixerSnapshotManager.Slot previous = manager.getActiveSlot();
         MixerSnapshotManager.Slot next =
@@ -1119,7 +1172,7 @@ public final class MixerView extends VBox implements Dockable {
      * Story 322 — injects the host's live {@link TrackControlWiring} supplier
      * (Audio Engine Wiring Design Book §2.10 / §5.6 "one intent path, both
      * surfaces") into a view built without one; the production sites hand it
-     * to the four-argument constructor instead. The supplier is resolved on
+     * to the five-argument constructor instead. The supplier is resolved on
      * every use, never captured, because
      * {@code MainController.rebuildTrackControlWiring()} swaps the wiring per
      * project load. A standalone wiring this view had already built for itself
@@ -1170,7 +1223,8 @@ public final class MixerView extends VBox implements Dockable {
                 standaloneDispatcher = new FxDispatcher();
                 dispatcher = standaloneDispatcher;
             }
-            standaloneTrackControlWiring = TrackControlWiring.standalone(project, dispatcher, meterFeed);
+            standaloneTrackControlWiring = TrackControlWiring.standalone(project, dispatcher, meterFeed,
+                    projectActionsAllowed);
             standaloneTrackControlWiringBuilds++;
         }
         return standaloneTrackControlWiring;
@@ -1466,6 +1520,9 @@ public final class MixerView extends VBox implements Dockable {
                     "Maximum of " + Mixer.MAX_RETURN_BUSES + " return buses reached"));
         }
         addReturnBusBtn.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             int busCount = project.getMixer().getReturnBusCount();
             String busName = "Return " + (busCount + 1);
             if (undoManager != null) {
@@ -1536,7 +1593,7 @@ public final class MixerView extends VBox implements Dockable {
         for (VcaGroup vca : vcaManager.getVcaGroups()) {
             vcaStrips.getChildren().add(new VcaStrip(
                     vca, vcaManager, undoManager, channelLookup,
-                    vcaMuteIntent, vcaSoloIntent, this::refresh));
+                    vcaMuteIntent, vcaSoloIntent, this::refresh, projectActionsAllowed));
         }
     }
 
@@ -1675,6 +1732,9 @@ public final class MixerView extends VBox implements Dockable {
                     boolean already = g.hasMember(channelId);
                     MenuItem item = new MenuItem((already ? "✓ " : "") + g.label());
                     item.setOnAction(_ -> {
+                        if (!projectActionsAllowed.getAsBoolean()) {
+                            return;
+                        }
                         AssignVcaMemberAction action = new AssignVcaMemberAction(
                                 vcaMgr, g.id(), channelId, !already);
                         if (undoManager != null) {
@@ -1892,6 +1952,16 @@ public final class MixerView extends VBox implements Dockable {
             });
 
             sendSlider.valueProperty().addListener((_, _, newVal) -> {
+                if (!projectActionsAllowed.getAsBoolean()) {
+                    // Refused (PR #989 review 5711460812): the slider and its
+                    // indicator show the model's send again; the nested write
+                    // finds the model's level and stops.
+                    Send current = mixerChannel.getSendForTarget(targetBus);
+                    double level = current != null ? current.getLevel() : 0.0;
+                    sendIndicator.setFill(level > 0.0 ? Color.web("#00e676") : Color.web("#555555"));
+                    sendSlider.setValue(level);
+                    return;
+                }
                 double value = newVal.doubleValue();
                 sendIndicator.setFill(value > 0.0 ? Color.web("#00e676") : Color.web("#555555"));
                 Send send = mixerChannel.getSendForTarget(targetBus);
@@ -1970,6 +2040,10 @@ public final class MixerView extends VBox implements Dockable {
             refreshTapButton.run();
 
             Consumer<SendTap> applyTap = newTap -> {
+                if (!projectActionsAllowed.getAsBoolean()) {
+                    refreshTapButton.run();
+                    return;
+                }
                 Send s = mixerChannel.getSendForTarget(targetBus);
                 if (s == null) {
                     return; // nothing to update until the send exists
@@ -2069,7 +2143,8 @@ public final class MixerView extends VBox implements Dockable {
         int channels = project.getFormat().channels();
         double sr = project.getFormat().sampleRate();
         int bs = project.getFormat().bufferSize();
-        InsertEffectRack insertRack = new InsertEffectRack(mixerChannel, channels, sr, bs, undoManager, fxDispatcher);
+        InsertEffectRack insertRack = new InsertEffectRack(mixerChannel, channels, sr, bs, undoManager, fxDispatcher,
+                projectActionsAllowed);
         insertRack.setPluginRegistry(pluginRegistry);
         insertRack.setMixer(project.getMixer());
         insertRack.setOnOpenEditor(onOpenInsertEditor);
@@ -2152,17 +2227,23 @@ public final class MixerView extends VBox implements Dockable {
      * Seeds the strip's I/O captions from the routing selectors' current
      * selection and keeps them following it. The listeners reference only the
      * strip and the combos, which live and die with the column, so no disposer
-     * is needed.
+     * is needed. Each listener reads the combo's live selection, not the
+     * notification's new value: a refused routing change re-selects the
+     * model's option from inside the combo's own notification, and a listener
+     * added after the combo's receives the outer, refused pair afterwards
+     * (PR #989 review 5711460812).
      */
     private static void mirrorIoCaptions(MixerChannelStrip strip,
                                          ComboBox<IoOption> inputRoutingCombo,
                                          ComboBox<IoOption> outputRoutingCombo) {
         strip.setInputLabel(captionOf(inputRoutingCombo.getSelectionModel().getSelectedItem()));
         inputRoutingCombo.getSelectionModel().selectedItemProperty().addListener(
-                (_, _, now) -> strip.setInputLabel(captionOf(now)));
+                (_, _, _) -> strip.setInputLabel(
+                        captionOf(inputRoutingCombo.getSelectionModel().getSelectedItem())));
         strip.setOutputLabel(captionOf(outputRoutingCombo.getSelectionModel().getSelectedItem()));
         outputRoutingCombo.getSelectionModel().selectedItemProperty().addListener(
-                (_, _, now) -> strip.setOutputLabel(captionOf(now)));
+                (_, _, _) -> strip.setOutputLabel(
+                        captionOf(outputRoutingCombo.getSelectionModel().getSelectedItem())));
     }
 
     private static String captionOf(IoOption option) {
@@ -2229,9 +2310,32 @@ public final class MixerView extends VBox implements Dockable {
             project.getCueBusManager().replace(updated);
         };
 
-        gainSlider.valueProperty().addListener((_, _, _) -> applyToManager.run());
-        panSlider.valueProperty().addListener((_, _, _) -> applyToManager.run());
+        // A refused move (PR #989 review 5711460812) shows the model's send
+        // again; the nested write finds the model's value and stops.
+        Runnable showCueSend = () -> {
+            CueBus current = project.getCueBusManager().getById(busId);
+            CueSend send = current != null ? current.findSend(trackId) : null;
+            gainSlider.setValue(send != null ? send.gain() : 0.0);
+            panSlider.setValue(send != null ? send.pan() : 0.0);
+        };
+        gainSlider.valueProperty().addListener((_, _, _) -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                showCueSend.run();
+                return;
+            }
+            applyToManager.run();
+        });
+        panSlider.valueProperty().addListener((_, _, _) -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                showCueSend.run();
+                return;
+            }
+            applyToManager.run();
+        });
         tapBtn.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             tapBtn.setText("F".equals(tapBtn.getText()) ? "P" : "F");
             applyToManager.run();
         });
@@ -2294,6 +2398,9 @@ public final class MixerView extends VBox implements Dockable {
         removeBtn.getStyleClass().add("track-arm-button");
         removeBtn.setTooltip(new Tooltip("Remove Return Bus"));
         removeBtn.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             // Check if any channels have active sends targeting this bus
             boolean hasActiveSends = project.getMixer().getChannels().stream()
                     .map(ch -> ch.getSendForTarget(returnBus))
@@ -2311,6 +2418,10 @@ public final class MixerView extends VBox implements Dockable {
                 if (result.isEmpty() || result.get() != ButtonType.OK) {
                     return;
                 }
+            }
+            // Read again: the gate may have closed while the confirmation asked.
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
             }
 
             if (undoManager != null) {
@@ -2343,7 +2454,8 @@ public final class MixerView extends VBox implements Dockable {
         int channels = project.getFormat().channels();
         double sr = project.getFormat().sampleRate();
         int bs = project.getFormat().bufferSize();
-        InsertEffectRack insertRack = new InsertEffectRack(returnBus, channels, sr, bs, undoManager, fxDispatcher);
+        InsertEffectRack insertRack = new InsertEffectRack(returnBus, channels, sr, bs, undoManager, fxDispatcher,
+                projectActionsAllowed);
         insertRack.setPluginRegistry(pluginRegistry);
         insertRack.setMixer(project.getMixer());
         insertRack.setOnOpenEditor(onOpenInsertEditor);
@@ -2434,6 +2546,14 @@ public final class MixerView extends VBox implements Dockable {
         }
         masterFader.valueProperty().addListener((_, _, v) -> {
             CueBus current = project.getCueBusManager().getById(bus.id());
+            if (!projectActionsAllowed.getAsBoolean()) {
+                // Refused (PR #989 review 5711460812): the fader shows the
+                // model's gain again; the nested write finds it and stops.
+                if (current != null) {
+                    masterFader.setValue(current.masterGain());
+                }
+                return;
+            }
             if (current != null) {
                 project.getCueBusManager().replace(current.withMasterGain(v.doubleValue()));
             }
@@ -2450,6 +2570,9 @@ public final class MixerView extends VBox implements Dockable {
         muteBtn.setTooltip(new Tooltip("Mute Cue Bus"));
         muteBtn.setGraphic(IconNode.of(DawIcon.MUTE, CONTROL_ICON_SIZE));
         muteBtn.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             CueBus current = project.getCueBusManager().getById(bus.id());
             if (current == null) return;
             boolean nowMuted = current.masterGain() > 0.0;
@@ -2481,6 +2604,12 @@ public final class MixerView extends VBox implements Dockable {
         allPreBtn.setSelected(allPre);
         allPreBtn.setOnAction(_ -> {
             CueBus current = project.getCueBusManager().getById(bus.id());
+            if (!projectActionsAllowed.getAsBoolean()) {
+                // Refused: the toggle the gesture flipped shows the model again.
+                allPreBtn.setSelected(current != null && !current.sends().isEmpty()
+                        && current.sends().stream().allMatch(CueSend::preFader));
+                return;
+            }
             if (current == null) return;
             CueBus updated = current;
             for (CueSend s : current.sends()) {
@@ -2502,6 +2631,9 @@ public final class MixerView extends VBox implements Dockable {
         removeBtn.getStyleClass().add("track-arm-button");
         removeBtn.setTooltip(new Tooltip("Remove Cue Bus"));
         removeBtn.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             cueBusPreMuteGain.remove(bus.id());
             project.getCueBusManager().removeCueBus(bus.id());
             refresh();
@@ -2530,9 +2662,14 @@ public final class MixerView extends VBox implements Dockable {
     /**
      * Snapshots every track-channel's current main-mix fader and pan into the
      * cue bus identified by {@code cueBusId}, marking each send as pre-fader.
-     * Wraps {@link CueBusManager#copyMainMix(UUID, Map)}.
+     * Wraps {@link CueBusManager#copyMainMix(UUID, Map)}. Refused, changing
+     * nothing, while the window's edit gate says no (PR #989 review
+     * 5711460812).
      */
     void copyMainMixToCueBus(UUID cueBusId) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         CueBusManager mgr = project.getCueBusManager();
         if (mgr.getById(cueBusId) == null) {
             return;
@@ -2564,8 +2701,15 @@ public final class MixerView extends VBox implements Dockable {
      * channels are greyed with a {@code "Disabled in driver"} tooltip.
      * When the supplier returns no channels (driver not yet open) the
      * dialog falls back to the legacy {@code 0..31} integer range.</p>
+     *
+     * <p>Refused while the window's edit gate says no, before the prompt
+     * opens and again when it returns, so no bus is created (PR #989 review
+     * 5711460812).</p>
      */
     void promptCreateCueBus() {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         Dialog<javafx.util.Pair<String, Integer>> dialog = new Dialog<>();
         dialog.setTitle("New Cue Bus");
         dialog.setHeaderText("Create a headphone / cue mix bus");
@@ -2638,6 +2782,9 @@ public final class MixerView extends VBox implements Dockable {
         });
 
         dialog.showAndWait().ifPresent(pair -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             try {
                 project.getCueBusManager().createCueBus(pair.getKey(), pair.getValue());
                 refresh();
@@ -2928,7 +3075,7 @@ public final class MixerView extends VBox implements Dockable {
 
         var format = project.getFormat();
         masterInsertRack = new InsertEffectRack(master, format.channels(), format.sampleRate(),
-                format.bufferSize(), undoManager, fxDispatcher);
+                format.bufferSize(), undoManager, fxDispatcher, projectActionsAllowed);
         masterInsertRack.setPluginRegistry(pluginRegistry);
         masterInsertRack.setMixer(project.getMixer());
         masterInsertRack.setOnOpenEditor(onOpenInsertEditor);
@@ -2970,6 +3117,18 @@ public final class MixerView extends VBox implements Dockable {
                             String displayName, ChannelKind kind,
                             boolean active, boolean isNoneOrMaster) {
         @Override public String toString() { return displayName; }
+    }
+
+    /**
+     * The routing option matching {@code firstChannel} and
+     * {@code channelCount}, or the first option ("None" / "Master") when none
+     * does.
+     */
+    private static IoOption optionFor(List<IoOption> options, int firstChannel, int channelCount) {
+        return options.stream()
+                .filter(o -> o.firstChannel() == firstChannel && o.channelCount() == channelCount)
+                .findFirst()
+                .orElse(options.getFirst());
     }
 
     private ComboBox<IoOption> buildInputRoutingSelector(Track track) {
@@ -3015,14 +3174,19 @@ public final class MixerView extends VBox implements Dockable {
 
         // Select current routing (matched on first channel + count).
         InputRouting current = track.getInputRouting();
-        IoOption selected = options.stream()
-                .filter(o -> o.firstChannel() == current.firstChannel()
-                        && o.channelCount() == current.channelCount())
-                .findFirst()
-                .orElse(options.getFirst());
-        combo.getSelectionModel().select(selected);
+        combo.getSelectionModel().select(
+                optionFor(options, current.firstChannel(), current.channelCount()));
 
         combo.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                // Refused (PR #989 review 5711460812): the combo shows the
+                // track's route again; the re-select re-enters this handler,
+                // which is refused again on an unchanged value and stops.
+                InputRouting route = track.getInputRouting();
+                combo.getSelectionModel().select(
+                        optionFor(combo.getItems(), route.firstChannel(), route.channelCount()));
+                return;
+            }
             IoOption opt = combo.getSelectionModel().getSelectedItem();
             if (opt == null) {
                 return;
@@ -3068,14 +3232,19 @@ public final class MixerView extends VBox implements Dockable {
         combo.setButtonCell(ioCell());
 
         OutputRouting current = channel.getOutputRouting();
-        IoOption selected = options.stream()
-                .filter(o -> o.firstChannel() == current.firstChannel()
-                        && o.channelCount() == current.channelCount())
-                .findFirst()
-                .orElse(options.getFirst());
-        combo.getSelectionModel().select(selected);
+        combo.getSelectionModel().select(
+                optionFor(options, current.firstChannel(), current.channelCount()));
 
         combo.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                // Refused (PR #989 review 5711460812): the combo shows the
+                // channel's route again; the re-select re-enters this handler,
+                // which is refused again on an unchanged value and stops.
+                OutputRouting route = channel.getOutputRouting();
+                combo.getSelectionModel().select(
+                        optionFor(combo.getItems(), route.firstChannel(), route.channelCount()));
+                return;
+            }
             IoOption opt = combo.getSelectionModel().getSelectedItem();
             if (opt == null) {
                 return;
@@ -3181,6 +3350,12 @@ public final class MixerView extends VBox implements Dockable {
         CheckMenuItem soloSafeItem = new CheckMenuItem("Solo safe");
         soloSafeItem.setSelected(channel.isSoloSafe());
         soloSafeItem.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                // Refused (PR #989 review 5711460812): the check the menu
+                // flipped shows the model again.
+                soloSafeItem.setSelected(channel.isSoloSafe());
+                return;
+            }
             boolean target = soloSafeItem.isSelected();
             SetSoloSafeAction action = new SetSoloSafeAction(channel, target);
             if (undoManager != null) {
@@ -3244,6 +3419,12 @@ public final class MixerView extends VBox implements Dockable {
             }
         };
         soloSafeItem.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                // Refused (PR #989 review 5711460812): the check the menu
+                // flipped shows the model again.
+                soloSafeItem.setSelected(channel.isSoloSafe());
+                return;
+            }
             boolean target = soloSafeItem.isSelected();
             SetSoloSafeAction action = new SetSoloSafeAction(channel, target);
             if (undoManager != null) {
@@ -3311,9 +3492,14 @@ public final class MixerView extends VBox implements Dockable {
      * VCA" flow. Prompts for a name, then auto-assigns a palette color and
      * dispatches a {@link CreateVcaGroupAction} (with the seed members)
      * through the {@link UndoManager}. Falls back to the right-clicked
-     * channel when nothing is multi-selected.
+     * channel when nothing is multi-selected. Refused while the window's
+     * edit gate says no, before the prompt and again when it returns
+     * (PR #989 review 5711460812).
      */
     private void createVcaFromSelection(UUID rightClickedChannelId) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         Set<UUID> seeds = new java.util.LinkedHashSet<>(selectedChannelIds);
         if (seeds.isEmpty()) {
             seeds.add(rightClickedChannelId);
@@ -3331,6 +3517,9 @@ public final class MixerView extends VBox implements Dockable {
         nameDialog.setContentText("Name:");
         Optional<String> result = nameDialog.showAndWait();
         if (result.isEmpty() || result.get().isBlank()) {
+            return;
+        }
+        if (!projectActionsAllowed.getAsBoolean()) {
             return;
         }
         String name = result.get().trim();
@@ -3444,6 +3633,9 @@ public final class MixerView extends VBox implements Dockable {
         }
 
         btn.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             ChannelLink current = linkManager.getLink(leftId);
             boolean isLinkedTogetherNow = current != null
                     && current.involves(leftId) && current.involves(rightId);
@@ -3472,7 +3664,7 @@ public final class MixerView extends VBox implements Dockable {
             ChannelLink current = linkManager.getLink(leftId);
             if (current != null && current.involves(leftId) && current.involves(rightId)) {
                 ChannelLinkPopover popover =
-                        new ChannelLinkPopover(linkManager, undoManager, current);
+                        new ChannelLinkPopover(linkManager, undoManager, current, projectActionsAllowed);
                 popover.show(btn, e.getScreenX(), e.getScreenY());
             }
         });
@@ -3683,7 +3875,7 @@ public final class MixerView extends VBox implements Dockable {
         strip.setDisable(false);
 
         TrackControlBinder binder = new TrackControlBinder(
-                track, trackVm, mixerChannel, channelVm, undoableRenames(wiring.commandSink()));
+                track, trackVm, mixerChannel, channelVm, undoableRenames(wiring));
         stripBindingDisposers.add(binder::dispose);
         binder.bindStrip(strip);
         stripBindingDisposers.add(gatePannerButton(pannerBtn, channelVm));
@@ -3778,25 +3970,38 @@ public final class MixerView extends VBox implements Dockable {
      * it, so a rename the handler refuses (blank) throws out of
      * {@code execute()} before any entry is recorded; the binder catches that
      * and snaps the strip back, exactly as it did against the bare sink.</p>
+     *
+     * <p>A rename raised while the window's edit gate says no is refused
+     * before the history sees it — no entry, no redo stack cleared — and the
+     * binder snaps the strip back to the track's name; every other command
+     * meets the same gate in the wiring's {@link TrackControlWiring#commandSink()
+     * gated sink}. The history entry itself raises through the
+     * {@link TrackControlWiring#correctionSink() ungated sink}: its execute ran
+     * past this gate, and its undo and redo are admitted at the history's own
+     * door, so it never desyncs from the history (PR #989 review 5711460812).</p>
      */
-    private Consumer<TrackCommand> undoableRenames(Consumer<TrackCommand> sink) {
+    private Consumer<TrackCommand> undoableRenames(TrackControlWiring wiring) {
         if (undoManager == null) {
-            return sink;
+            return wiring.commandSink();
         }
         return command -> {
-            if (command instanceof RenameTrackCommand rename && !rename.changesNothing()) {
-                undoManager.execute(new RenameTrackAction(rename, sink));
-            } else {
-                sink.accept(command);
+            if (!(command instanceof RenameTrackCommand rename) || rename.changesNothing()) {
+                wiring.commandSink().accept(command);
+                return;
             }
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return; // the binder snaps the strip back to the track's name
+            }
+            undoManager.execute(new RenameTrackAction(rename, wiring.correctionSink()));
         };
     }
 
     /**
      * A strip rename as a history entry: {@code execute()} raises the command
-     * through the real sink (so redo takes the same intent path as the
-     * gesture), {@code undo()} raises a {@link RenameTrackCommand} back to the
-     * name the track had when the rename was raised.
+     * through the wiring's ungated sink (so redo takes the same intent path as
+     * the gesture, past the gate the history's door already read),
+     * {@code undo()} raises a {@link RenameTrackCommand} back to the name the
+     * track had when the rename was raised.
      */
     private static final class RenameTrackAction implements UndoableAction {
 
@@ -3838,12 +4043,18 @@ public final class MixerView extends VBox implements Dockable {
      * write here, and it is what lets the {@code TrackVM}-bound mute / solo of
      * both surfaces re-seed structurally on recall (§5.6 "Snapshot / A-B
      * recall"). Standalone channels (return buses, master) have no mirror.
+     *
+     * <p>A correctness writer, not an intent: it raises through the wiring's
+     * {@link TrackControlWiring#correctionSink() ungated sink}, so it keeps the
+     * mirrors true even while the window's edit gate says no — after a take
+     * published during a close, or an undo the history admitted (ruling
+     * R-1.4; PR #989 review 5711460812).</p>
      */
     private void healTrackMirrorsFromChannels() {
         if (disposed) {
             return; // a late history event must not resurrect a standalone wiring
         }
-        java.util.function.Consumer<TrackCommand> sink = getTrackControlWiring().commandSink();
+        java.util.function.Consumer<TrackCommand> sink = getTrackControlWiring().correctionSink();
         for (Track track : project.getTracks()) {
             MixerChannel channel = project.getMixerChannelForTrack(track);
             if (channel == null) {

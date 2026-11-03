@@ -243,6 +243,17 @@ final class TransportController implements TransportIntentHandler {
     private Spinner<Integer> postRollSpinner;
     /** Cached container returned by {@link #createPreRollPostRollControls()}. */
     private HBox preRollControlsBox;
+    /**
+     * Whether the project may be edited now — the window's edit gate,
+     * {@code MainController.projectActionsAllowed()}, once the host sets it
+     * ({@link #setProjectActionsAllowed}); always yes until then. Read on the
+     * FX thread by the pre/post-roll controls' one write
+     * ({@link #commitPreRollPostRoll}) and by the rescued take's Review
+     * ({@code RecordCoordinator.rescuedTakeReview}, through
+     * {@link #projectActionsAllowed()}), whatever raised them (PR #989 review
+     * 5711460812).
+     */
+    private BooleanSupplier projectActionsAllowed = () -> true;
 
     /**
      * Bar count a pre/post-roll toggle turns a side on with when that side
@@ -264,6 +275,29 @@ final class TransportController implements TransportIntentHandler {
             postRollTimer.stop();
             postRollTimer = null;
         }
+    }
+
+    /**
+     * Sets the window's edit gate the pre/post-roll controls read: while it
+     * says no, a toggle click or a spinner edit — whatever raised it — writes
+     * nothing, and the controls show the stored value again; the rescued
+     * take's Review reads it too ({@link #projectActionsAllowed()}) (PR #989
+     * review 5711460812). FX thread.
+     *
+     * @param projectActionsAllowed whether the project may be edited now; must not be {@code null}
+     */
+    void setProjectActionsAllowed(BooleanSupplier projectActionsAllowed) {
+        this.projectActionsAllowed = Objects.requireNonNull(
+                projectActionsAllowed, "projectActionsAllowed must not be null");
+    }
+
+    /**
+     * Whether the window's edit gate admits a project action now
+     * ({@link #setProjectActionsAllowed}), for the record coordinator's
+     * rescued-take Review (PR #989 review 5711460812). FX thread.
+     */
+    boolean projectActionsAllowed() {
+        return projectActionsAllowed.getAsBoolean();
     }
 
     TransportController(DawProject project,
@@ -1484,24 +1518,28 @@ final class TransportController implements TransportIntentHandler {
      *       the other side.</li>
      * </ul>
      * A changed value marks the project dirty, with no undo entry
-     * ({@link #commitPreRollPostRoll}).
+     * ({@link #commitPreRollPostRoll}). A click the window's edit gate
+     * refuses writes no status text (PR #989 review 5711460812).
      */
     void onTogglePreRoll() {
         PreRollPostRoll next = toggled(project.getTransport().getPreRollPostRoll(), true);
-        commitPreRollPostRoll(next);
-        statusBarLabel.setText("Pre-roll: " + (rolls(next, true) ? "ON" : "OFF"));
+        if (commitPreRollPostRoll(next)) {
+            statusBarLabel.setText("Pre-roll: " + (rolls(next, true) ? "ON" : "OFF"));
+        }
     }
 
     /**
      * Toggles post-roll without changing whether pre-roll rolls: the mirror
      * of {@link #onTogglePreRoll()}, by the same rules with the sides
      * swapped. A changed value marks the project dirty, with no undo entry
-     * ({@link #commitPreRollPostRoll}).
+     * ({@link #commitPreRollPostRoll}). A click the window's edit gate
+     * refuses writes no status text (PR #989 review 5711460812).
      */
     void onTogglePostRoll() {
         PreRollPostRoll next = toggled(project.getTransport().getPreRollPostRoll(), false);
-        commitPreRollPostRoll(next);
-        statusBarLabel.setText("Post-roll: " + (rolls(next, false) ? "ON" : "OFF"));
+        if (commitPreRollPostRoll(next)) {
+            statusBarLabel.setText("Post-roll: " + (rolls(next, false) ? "ON" : "OFF"));
+        }
     }
 
     /** Whether the pre-roll ({@code pre}) or the post-roll side of {@code prpr} rolls: what its toggle shows. */
@@ -1548,15 +1586,25 @@ final class TransportController implements TransportIntentHandler {
      * synced. No undo entry: pre/post-roll is a dirty-only transport
      * setting, like the loop and the punch region (Control Synchronization
      * Design Book §5.2). No bus event either: no {@code TransportEvent}
-     * exists for pre/post-roll.
+     * exists for pre/post-roll. Refused while the project's actions are not
+     * allowed (the close's gate, whatever raised the edit — a click, a key,
+     * a focus change or an assistive technology's action): the controls are
+     * synced back and nothing is written (PR #989 review 5711460812).
+     *
+     * @return whether the edit was admitted
      */
-    private void commitPreRollPostRoll(PreRollPostRoll next) {
+    private boolean commitPreRollPostRoll(PreRollPostRoll next) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            syncPreRollControls();
+            return false;
+        }
         Transport transport = project.getTransport();
         if (!next.equals(transport.getPreRollPostRoll())) {
             transport.setPreRollPostRoll(next);
             project.markDirty();
         }
         syncPreRollControls();
+        return true;
     }
 
     /**

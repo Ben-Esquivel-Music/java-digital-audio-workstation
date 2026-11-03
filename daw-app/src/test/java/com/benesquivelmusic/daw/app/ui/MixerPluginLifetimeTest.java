@@ -48,7 +48,12 @@ class MixerPluginLifetimeTest {
                         .findFirst().orElseThrow();
                 var host = (ViewNavigationController.Host) Proxy.newProxyInstance(
                         getClass().getClassLoader(), new Class<?>[]{ViewNavigationController.Host.class},
-                        (_, _, _) -> { throw new AssertionError("Replacement must not invoke unrelated host actions"); });
+                        (_, method, _) -> {
+                            if (method.getName().equals("projectActionsAllowed")) {
+                                return true; // reading the edit gate is not a host action
+                            }
+                            throw new AssertionError("Replacement must not invoke unrelated host actions");
+                        });
                 var navigation = new ViewNavigationController(new BorderPane(), new Label(),
                         new ToolbarStateStore(preferences), new Button(), DawView.ARRANGEMENT,
                         EditTool.POINTER, true, GridResolution.SIXTEENTH, host, null);

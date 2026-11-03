@@ -28,7 +28,7 @@ class ArrangementArmInputCheckOffFxTest {
         AtomicReference<String> error=new AtomicReference<>(); CountDownLatch refused=new CountDownLatch(1);
         AtomicInteger armedSignals=new AtomicInteger();
         ArrangementStripFixture.onFx(()->{
-            wiring.set(TrackControlWiring.standalone(project,dispatcher,null,engine,message->{error.set(message);refused.countDown();}));
+            wiring.set(TrackControlWiring.standalone(project,dispatcher,null,engine,message->{error.set(message);refused.countDown();},()->true));
             vox.addChangeListener(kind->{if(kind==Track.ChangeKind.ARM && vox.isArmed())armedSignals.incrementAndGet();});
             vox.setArmed(true);
             assertThat(vox.isArmed()).isFalse();

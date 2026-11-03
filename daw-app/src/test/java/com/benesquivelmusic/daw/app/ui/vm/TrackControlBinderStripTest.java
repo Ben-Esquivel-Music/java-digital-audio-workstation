@@ -351,6 +351,43 @@ class TrackControlBinderStripTest {
         });
     }
 
+    /**
+     * A pan the sink refuses silently — the close's gate returning without a
+     * MUTATE (PR #989 review 5711460812) — snaps the strip's pan back to the
+     * VM's value in the same FX turn; once the gate admits, the same pan is
+     * adopted.
+     */
+    @Test
+    void aRefusedStripPanSnapsTheStripBack() throws InterruptedException {
+        onFx(() -> {
+            Rig rig = new Rig();
+            java.util.concurrent.atomic.AtomicBoolean allowed = new java.util.concurrent.atomic.AtomicBoolean(false);
+            Consumer<TrackCommand> gated = command -> {
+                if (allowed.get()) {
+                    rig.sink.accept(command);
+                }
+            };
+            TrackControlBinder binder = new TrackControlBinder(rig.track, rig.trackVm, rig.channel, rig.channelVm,
+                    gated);
+            MixerChannelStrip strip = new MixerChannelStrip();
+            try {
+                binder.bindStrip(strip);
+
+                strip.setPan(0.3);
+                assertThat(rig.channel.getPan()).as("refused: the model is unchanged").isEqualTo(0.0);
+                assertThat(strip.getPan()).as("and the strip shows the VM again").isEqualTo(0.0);
+
+                allowed.set(true);
+                strip.setPan(0.3);
+                assertThat(rig.channel.getPan()).as("admitted: adopted").isEqualTo(0.3);
+                assertThat(strip.getPan()).isEqualTo(0.3);
+            } finally {
+                binder.dispose();
+                rig.close();
+            }
+        });
+    }
+
     @Test
     void aStripNameEditRaisesRenameAndABlankOneSnapsBack() throws InterruptedException {
         onFx(() -> {

@@ -33,6 +33,13 @@ final class ArrangementCanvasFactory {
         // Story 042 — Time-Stretching and Pitch-Shifting clip context menu.
         void onTimeStretchClip();
         void onPitchShiftClip();
+
+        /**
+         * @return whether the project may be edited now — the window's edit
+         *         gate, read by the clip context menus' items (PR #989 review
+         *         5711460812)
+         */
+        boolean projectActionsAllowed();
     }
 
     record Result(ArrangementCanvas canvas, TimelineRuler ruler, ClipInteractionController clipInteraction) {}
@@ -89,6 +96,7 @@ final class ArrangementCanvasFactory {
                         () -> host.project().getTransport().getTempo(),
                         host::onTimeStretchClip,
                         host::onPitchShiftClip,
+                        host::projectActionsAllowed,
                         // Read live: the project is swapped on Open / New.
                         () -> host.project().markDirty()));
         clipInteraction.install();

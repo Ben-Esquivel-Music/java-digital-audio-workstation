@@ -252,7 +252,8 @@ the Command Palette — end in the same call: Save As… runs
 `ProjectLifecycleController.onSaveProjectAs()`, and Close Project and Exit ask
 `ExitCoordinator.request(...)`, which the window's close box also asks through the primary stage's
 close-request filter, so one coordinator runs the exit protocol whatever the input
-(`PERSISTENCE_INTEGRITY_DESIGN_BOOK.md` §5.4).*
+(`PERSISTENCE_INTEGRITY_DESIGN_BOOK.md` §5.4).
+While a close waits, the close's gate sits at this boundary too, so a click, a shortcut and an assistive technology's action are refused alike, and a refused control shows the model again (PR #989 review 5711460812).*
 
 ---
 

@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.List;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -267,6 +268,358 @@ class ExitCoordinatorSourceTest {
         String coordinator = code("ExitCoordinator.java").replaceAll("\\s+", " ");
         assertThat(coordinator).contains("return current != null && (current.isRecordingInFlight()"
                 + " || current.isCountingIn());");
+    }
+
+    /**
+     * The studio engineer's ruling R-3.3 (PR #989 review 5711460812): while
+     * it is up, the fence also covers every window shown, so a window the
+     * close itself shows takes input only through the close-surface mark —
+     * one it misses can be answered only by its close box, an unanswerable
+     * close. The six builders of the close's windows mark them; and, as a
+     * category ({@link CloseSurfaceRule}), every dialog class the protocol's
+     * files declare marks in each of its constructors, and every window built
+     * there — through {@code new}, a static call on a type whose name ends in
+     * {@code Dialog} or {@code Alert}, such as a {@code DawgDialog} factory,
+     * or a {@code ::new} reference — is built in a member that marks or is of
+     * a dialog class whose constructors mark.
+     */
+    @Test
+    void everyWindowTheCloseShowsCarriesTheCloseSurfaceMark() throws IOException {
+        record Builder(String file, String signature) { }
+        String mark = "WindowInputFence.markCloseSurface(";
+        for (Builder builder : List.of(
+                new Builder("ProjectClosePrompts.java", "public StopTakeAnswer confirmStopTake(String header)"),
+                new Builder("ProjectClosePrompts.java", "public TakenOverAnswer takenOver(TakenOverPrompt prompt)"),
+                new Builder("ProjectClosePrompts.java", "public void refuseSaveAsTarget(String message)"),
+                new Builder("ProjectLifecycleController.java",
+                        "UnsavedChangesAnswer askAboutUnsavedChanges(UnsavedChangesPrompt prompt)"),
+                new Builder("ClosingProgressDialog.java", "ClosingProgressDialog(Optional<Window> owner)"),
+                new Builder("SaveAsProgressDialog.java", "SaveAsProgressDialog(Optional<Window> owner)"))) {
+            assertThat(methodBodyOf(code(builder.file()).replaceAll("\\s+", " "), builder.signature()))
+                    .as("%s, %s: a window the close shows must carry the close-surface mark (R-3.3)",
+                            builder.file(), builder.signature())
+                    .contains(mark);
+        }
+
+        java.util.Map<String, String> protocolFiles = new java.util.LinkedHashMap<>();
+        for (String file : List.of("ExitCoordinator.java", "ProjectClosePrompts.java", "SaveAsFlow.java",
+                "ClosingProgressDialog.java", "SaveAsProgressDialog.java")) {
+            protocolFiles.put(file, code(file));
+        }
+        CloseSurfaceRule rule = CloseSurfaceRule.over(protocolFiles);
+        assertThat(rule.unmarked()).as("a window the close shows must carry the close-surface mark (R-3.3)")
+                .isEmpty();
+        assertThat(rule.markingDialogClasses()).as("non-vacuity: the two progress dialogs are found, and mark")
+                .containsExactlyInAnyOrder("ClosingProgressDialog", "SaveAsProgressDialog");
+        String unsavedPrompt = methodBodyOf(code("ProjectLifecycleController.java").replaceAll("\\s+", " "),
+                "UnsavedChangesAnswer askAboutUnsavedChanges(UnsavedChangesPrompt prompt)");
+        Matcher built = CloseSurfaceRule.WINDOW.matcher(unsavedPrompt);
+        int constructions = rule.windowsBuilt() + rule.constructorsChecked();
+        while (built.find()) {
+            constructions++;
+            assertThat(unsavedPrompt)
+                    .as("ProjectLifecycleController.java, %s in askAboutUnsavedChanges: a window the close shows"
+                            + " must carry the close-surface mark (R-3.3)", built.group())
+                    .contains("markCloseSurface(");
+        }
+        assertThat(constructions).as("non-vacuity: the close's Alerts, its Save As refusal, the Save As surface's"
+                + " reference and the two progress dialogs' constructors are found").isGreaterThanOrEqualTo(7);
+    }
+
+    /**
+     * The category rule sees an unmarked window of each shape it names — a
+     * {@code new} of a type whose name ends in {@code Dialog}, {@code Alert}
+     * or {@code Stage} ({@code new Alert(}, {@code new TextInputDialog(},
+     * {@code new ChoiceDialog<>(}, {@code new Stage(},
+     * {@code new DawgDialog<>(}, {@code new Dialog<>(}, {@code new} of a
+     * dialog class), a static call on a type whose name ends in
+     * {@code Dialog} or {@code Alert} (a {@code DawgDialog} factory, another
+     * dialog class's own helper) and a {@code ::new} reference to one of the
+     * first shape's types — and a dialog class, generic or not, with a
+     * constructor that does not mark, or with none; and passes each once it
+     * marks, a dialog class once it declares constructors that each mark.
+     * That is its bound, as a category. A dialog that another class's own
+     * helper builds is outside the rule unless that helper's class is in the
+     * scanned set and marks: the rule reports a static call of the helper on
+     * a type so named, and passes it once that type is a dialog class of the
+     * scanned set that marks, or once the calling member marks, which cannot
+     * mark the dialog the helper builds; a helper of another kind it does not
+     * see at all. A popup ({@code ContextMenu}, {@code Tooltip},
+     * {@code Popup}), which no shape names, is outside the rule: the fence
+     * exempts it only through the mark or, as every popup today, through an
+     * owner chain that reaches a marked surface ({@code WindowInputFence}'s
+     * owner rule).
+     */
+    @Test
+    void theCloseSurfaceRuleCatchesAnUnmarkedWindowOfEveryShape() {
+        String unmarked = """
+                final class Fixture {
+                    void alert() { Alert alert = new Alert(Alert.AlertType.WARNING); }
+                    void factory() { DawgDialog<ButtonType> refusal = DawgDialog.warn(title, message); }
+                    void helper() { Optional<ButtonType> answer = SealFailedDialog.ask(owner); }
+                    void textInput() { TextInputDialog name = new TextInputDialog(initial); }
+                    void choice() { ChoiceDialog<String> choice = new ChoiceDialog<>(first, choices); }
+                    void stage() { Stage stage = new Stage(); }
+                    void dawgDialog() { DawgDialog<Void> dialog = new DawgDialog<>(); }
+                    void dialog() { Dialog<ButtonType> dialog = new Dialog<>(); }
+                    void subclass() { LateDialog late = new LateDialog(owner); }
+                    private Function<Window, LateDialog> dialogs = LateDialog::new;
+                }
+
+                final class LateDialog extends DawgDialog<Void> {
+                    LateDialog(Window owner) {
+                        initOwner(owner);
+                    }
+                }
+
+                final class BareDialog extends Dialog<Void> { }
+
+                final class LateAnswer<T> extends DawgDialog<T> {
+                    LateAnswer(Window owner) {
+                        initOwner(owner);
+                    }
+                }
+                """;
+        CloseSurfaceRule caught = CloseSurfaceRule.over(java.util.Map.of("Fixture.java", fixture(unmarked)));
+        assertThat(caught.unmarked()).as("one offender per shape").hasSize(13)
+                .anySatisfy(offender -> assertThat(offender).endsWith("the constructor of LateDialog does not mark"))
+                .anySatisfy(offender -> assertThat(offender)
+                        .endsWith("the constructor of BareDialog does not mark (it has none)"))
+                .anySatisfy(offender -> assertThat(offender).endsWith("the constructor of LateAnswer does not mark"));
+        for (String shape : List.of("new Alert(", "DawgDialog.warn(", "SealFailedDialog.ask(", "new TextInputDialog(",
+                "new ChoiceDialog<>(", "new Stage(", "new DawgDialog<>(", "new Dialog<>(", "new LateDialog(",
+                "LateDialog::new")) {
+            assertThat(caught.unmarked()).as("an unmarked %s is caught", shape)
+                    .anySatisfy(offender -> assertThat(offender).endsWith(shape));
+        }
+        assertThat(caught.markingDialogClasses()).as("a dialog class whose constructor does not mark").isEmpty();
+
+        String marked = """
+                final class Fixture {
+                    void alert() {
+                        Alert alert = new Alert(Alert.AlertType.WARNING);
+                        WindowInputFence.markCloseSurface(alert);
+                    }
+                    void factory() {
+                        DawgDialog<ButtonType> refusal = DawgDialog.warn(title, message);
+                        WindowInputFence.markCloseSurface(refusal);
+                    }
+                    void textInput() {
+                        TextInputDialog name = new TextInputDialog(initial);
+                        WindowInputFence.markCloseSurface(name);
+                    }
+                    void choice() {
+                        ChoiceDialog<String> choice = new ChoiceDialog<>(first, choices);
+                        WindowInputFence.markCloseSurface(choice);
+                    }
+                    void stage() {
+                        Stage stage = new Stage();
+                        WindowInputFence.markCloseSurface(stage);
+                    }
+                    void dawgDialog() {
+                        DawgDialog<Void> dialog = new DawgDialog<>();
+                        WindowInputFence.markCloseSurface(dialog);
+                    }
+                    void dialog() {
+                        Dialog<ButtonType> dialog = new Dialog<>();
+                        WindowInputFence.markCloseSurface(dialog);
+                    }
+                    void subclass() { MarkingDialog surface = new MarkingDialog(owner); }
+                    void helper() { Optional<Void> answer = MarkingDialog.ask(owner); }
+                    private Function<Window, MarkingDialog> dialogs = MarkingDialog::new;
+                }
+
+                final class MarkingDialog extends DawgDialog<Void> {
+                    MarkingDialog(Window owner) {
+                        WindowInputFence.markCloseSurface(this);
+                    }
+
+                    MarkingDialog() {
+                        this(null);
+                    }
+
+                    static Optional<Void> ask(Window owner) {
+                        return new MarkingDialog(owner).showAndWait();
+                    }
+                }
+
+                final class MarkedAnswer<T> extends DawgDialog<T> {
+                    MarkedAnswer(Window owner) {
+                        WindowInputFence.markCloseSurface(this);
+                    }
+                }
+                """;
+        CloseSurfaceRule passed = CloseSurfaceRule.over(java.util.Map.of("Fixture.java", fixture(marked)));
+        assertThat(passed.unmarked()).as("every shape, marked, passes").isEmpty();
+        assertThat(passed.markingDialogClasses()).containsExactlyInAnyOrder("MarkedAnswer", "MarkingDialog");
+        assertThat(passed.windowsBuilt()).as("and each is still seen, the helper's own window with them")
+                .isEqualTo(11);
+        assertThat(passed.constructorsChecked()).isEqualTo(3);
+    }
+
+    private static String fixture(String source) {
+        return SourceScanSupport.stripStringLiterals(SourceScanSupport.stripComments(source));
+    }
+
+    /**
+     * Ruling R-3.3's category over a set of files (name to code, comments and
+     * literals stripped). A dialog class is one a file declares as extending
+     * a type whose name ends in {@code Dialog}, {@code Alert} or
+     * {@code Stage}; it marks when each of its constructors calls
+     * {@code markCloseSurface(} or delegates to another with {@code this(},
+     * and it has at least one. A window is built by {@code new} of such a
+     * type — {@code new Alert(}, {@code new Stage(}, {@code new DawgDialog<>(},
+     * {@code new Dialog<>(}, a subclass's {@code new} — by a static call of a
+     * lower-case method on a type whose name begins upper-case and ends in
+     * {@code Dialog} or {@code Alert} — a {@code DawgDialog} factory, or a
+     * dialog class's own helper — or by a {@code ::new} reference to a type
+     * whose name ends in {@code Dialog}, {@code Alert} or {@code Stage}; it
+     * is marked when the member that builds it calls
+     * {@code markCloseSurface(}, or when its type is a dialog class that
+     * marks.
+     *
+     * @param unmarked             each offender, as {@code <file>: <what>}
+     * @param markingDialogClasses the dialog classes that mark
+     * @param windowsBuilt         how many windows the files build
+     * @param constructorsChecked  how many dialog-class constructors were checked
+     */
+    private record CloseSurfaceRule(List<String> unmarked, java.util.Set<String> markingDialogClasses,
+                                    int windowsBuilt, int constructorsChecked) {
+
+        static final Pattern WINDOW = Pattern.compile(
+                "\\bnew\\s+(?:\\w+\\.)*(\\w*(?:Dialog|Alert|Stage))\\s*(?:<[^<>;{}()]*>)?\\s*\\("
+                        + "|\\b([A-Z]\\w*(?:Dialog|Alert))\\s*\\.\\s*[a-z]\\w*\\s*\\("
+                        + "|\\b(?:\\w+\\.)*(\\w*(?:Dialog|Alert|Stage))\\s*::\\s*new\\b");
+        private static final Pattern DIALOG_CLASS = Pattern.compile(
+                "\\bclass\\s+(\\w+)\\s*(?:<[^{]*?>)?\\s+extends\\s+(?:\\w+\\.)*\\w*(?:Dialog|Alert|Stage)\\b");
+
+        CloseSurfaceRule {
+            unmarked = List.copyOf(unmarked);
+            markingDialogClasses = java.util.Set.copyOf(markingDialogClasses);
+        }
+
+        static CloseSurfaceRule over(java.util.Map<String, String> files) {
+            List<String> unmarked = new java.util.ArrayList<>();
+            java.util.Set<String> marking = new java.util.TreeSet<>();
+            int constructors = 0;
+            for (java.util.Map.Entry<String, String> file : files.entrySet()) {
+                Matcher declared = DIALOG_CLASS.matcher(file.getValue());
+                while (declared.find()) {
+                    String name = declared.group(1);
+                    List<String> bodies = constructorBodies(file.getValue(), name);
+                    constructors += bodies.size();
+                    boolean marks = !bodies.isEmpty();
+                    for (String body : bodies) {
+                        String statements = body.substring(1).strip();
+                        if (!body.contains("markCloseSurface(") && !statements.startsWith("this(")) {
+                            marks = false;
+                            unmarked.add(file.getKey() + ": the constructor of " + name + " does not mark");
+                        }
+                    }
+                    if (bodies.isEmpty()) {
+                        unmarked.add(file.getKey() + ": the constructor of " + name + " does not mark (it has none)");
+                    }
+                    if (marks) {
+                        marking.add(name);
+                    }
+                }
+            }
+            int windows = 0;
+            for (java.util.Map.Entry<String, String> file : files.entrySet()) {
+                Matcher built = WINDOW.matcher(file.getValue());
+                while (built.find()) {
+                    windows++;
+                    String type = built.group(1) != null ? built.group(1)
+                            : built.group(2) != null ? built.group(2) : built.group(3);
+                    if (!marking.contains(type)
+                            && !enclosingMember(file.getValue(), built.start()).contains("markCloseSurface(")) {
+                        unmarked.add(file.getKey() + ": " + built.group().replaceAll("\\s+", " "));
+                    }
+                }
+            }
+            return new CloseSurfaceRule(unmarked, marking, windows, constructors);
+        }
+
+        /** The balanced bodies of {@code name}'s constructors declared in {@code code}. */
+        private static List<String> constructorBodies(String code, String name) {
+            List<String> bodies = new java.util.ArrayList<>();
+            Matcher declared = Pattern.compile("(?m)^[ \\t]*(?:(?:public|protected|private)\\s+)?"
+                    + Pattern.quote(name) + "\\s*\\(").matcher(code);
+            while (declared.find()) {
+                int close = matchingParenthesis(code, declared.end() - 1);
+                Matcher head = Pattern.compile("\\s*(?:throws\\s+[\\w.,\\s]+?)?\\s*\\{").matcher(code)
+                        .region(close + 1, code.length());
+                if (head.lookingAt()) {
+                    bodies.add(balanced(code, head.end() - 1));
+                }
+            }
+            return bodies;
+        }
+
+        private static int matchingParenthesis(String code, int open) {
+            int depth = 0;
+            for (int i = open; i < code.length(); i++) {
+                char c = code.charAt(i);
+                if (c == '(') {
+                    depth++;
+                } else if (c == ')' && --depth == 0) {
+                    return i;
+                }
+            }
+            throw new AssertionError("unbalanced parentheses");
+        }
+    }
+
+    /**
+     * The member of the class body — a declaration starting at its
+     * indentation, four spaces — that holds {@code position} of {@code code}:
+     * from its declaration to its body's closing brace, or, for a field, to
+     * the semicolon that ends its initializer.
+     */
+    private static String enclosingMember(String code, int position) {
+        Matcher declarations = Pattern.compile("(?m)^ {4}(?=[^\\s}@])").matcher(code);
+        int start = -1;
+        while (declarations.find() && declarations.start() < position) {
+            start = declarations.start();
+        }
+        assertThat(start).as("a member is declared before position %d", position).isNotNegative();
+        int end = memberEnd(code, start);
+        assertThat(end).as("position %d lies in the member", position).isGreaterThan(position);
+        return code.substring(start, end);
+    }
+
+    /**
+     * Where the member declared at {@code start} ends: past its balanced body,
+     * or, for a field — an {@code =} or a {@code ;} before any body, outside
+     * parentheses — past the {@code ;} that ends it outside parentheses and
+     * braces (an initializer may hold a lambda's block).
+     */
+    private static int memberEnd(String code, int start) {
+        int parentheses = 0;
+        for (int i = start; i < code.length(); i++) {
+            char c = code.charAt(i);
+            if (c == '(') {
+                parentheses++;
+            } else if (c == ')') {
+                parentheses--;
+            } else if (parentheses == 0 && c == '{') {
+                return i + balanced(code, i).length();
+            } else if (parentheses == 0 && (c == '=' || c == ';')) {
+                int depth = 0;
+                for (int j = i; j < code.length(); j++) {
+                    char d = code.charAt(j);
+                    if (d == '(' || d == '{') {
+                        depth++;
+                    } else if (d == ')' || d == '}') {
+                        depth--;
+                    } else if (d == ';' && depth == 0) {
+                        return j + 1;
+                    }
+                }
+                return code.length();
+            }
+        }
+        return code.length();
     }
 
     @Test

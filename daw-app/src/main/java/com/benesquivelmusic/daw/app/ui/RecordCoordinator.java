@@ -863,10 +863,12 @@ final class RecordCoordinator {
      * entry lives, so it can be clicked during a later take's count-in,
      * when the transport is held STOPPED at the record position: it is a
      * user seek and asks {@code TransportController.refuseSeekWhileCountingIn()}
-     * first, like every other seek entry (story 328 review round 2) — a
+     * before it seeks, like every other seek entry (story 328 review round 2) — a
      * refused review moves nothing and says so in the status line.
      * Package-visible so the gate can be pinned without a device loss. FX
-     * thread.
+     * thread. It reads the window's edit gate first: while it says no the
+     * review moves nothing and writes no status, and the notification history
+     * keeps the action for later (PR #989 review 5711460812).
      *
      * @param anchor          the take's start anchor, in beats
      * @param takeDirectory   the take's folder, for the review status
@@ -874,6 +876,7 @@ final class RecordCoordinator {
      */
     Runnable rescuedTakeReview(double anchor, Path takeDirectory, double recordedSeconds) {
         return () -> {
+            if (!transport.projectActionsAllowed()) return;
             if (transport.refuseSeekWhileCountingIn()) return;
             Transport transportModel = project.getTransport();
             TransportState transportState = transportModel.getState();

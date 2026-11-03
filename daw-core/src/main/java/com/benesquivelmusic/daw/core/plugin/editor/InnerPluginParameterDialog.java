@@ -3,6 +3,8 @@ package com.benesquivelmusic.daw.core.plugin.editor;
 import com.benesquivelmusic.daw.core.plugin.MidSideWrapperPlugin.ChainOwner;
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
+import javafx.beans.value.ChangeListener;
+import javafx.beans.value.ObservableValue;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
@@ -19,6 +21,7 @@ import javafx.stage.Stage;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
 
 /**
  * Modest parameter editor opened when the user double-clicks an inner-chain
@@ -45,18 +48,25 @@ final class InnerPluginParameterDialog {
      * Opens a non-modal stage titled with the plugin name and owning chain,
      * containing one labelled control per parameter.
      *
-     * @param plugin the inner-chain plugin whose parameters are edited
-     * @param owner  the chain the plugin lives in (title context only)
+     * @param plugin        the inner-chain plugin whose parameters are edited
+     * @param owner         the chain the plugin lives in (title context only)
+     * @param editsAdmitted whether a control's write may land now, read on the
+     *                      FX thread at each write: while it says no, the
+     *                      plugin is not written and the control shows the
+     *                      value it showed before (PR #989 review 5711460812)
+     * @return the shown stage, so the editor that opened it can close it with
+     *         itself
      */
-    static void open(DawPlugin plugin, ChainOwner owner) {
+    static Stage open(DawPlugin plugin, ChainOwner owner, BooleanSupplier editsAdmitted) {
         Objects.requireNonNull(plugin, "plugin must not be null");
         Objects.requireNonNull(owner, "owner must not be null");
+        Objects.requireNonNull(editsAdmitted, "editsAdmitted must not be null");
 
         List<PluginParameter> params = plugin.getParameters();
         VBox content = new VBox(8);
         content.setPadding(new Insets(12));
         for (PluginParameter param : params) {
-            content.getChildren().add(parameterRow(plugin, param));
+            content.getChildren().add(parameterRow(plugin, param, editsAdmitted));
         }
 
         ScrollPane scroller = new ScrollPane(content);
@@ -67,15 +77,19 @@ final class InnerPluginParameterDialog {
                 + owner + " chain)");
         stage.setScene(new Scene(scroller, 420, 320));
         stage.show();
+        return stage;
     }
 
     /**
      * One row per parameter. Boolean parameters keep the ON/OFF toggle
      * affordance the host parameter surfaces use rather than collapsing into
      * a 0..1 slider with a numeric readout; everything else gets the
-     * labelled slider ported from the retired panel.
+     * labelled slider ported from the retired panel. The plugin has no read
+     * of its parameters, so a refused write shows the value the control
+     * showed before: the toggle flips back, and the slider returns to the
+     * value it last wrote.
      */
-    private static VBox parameterRow(DawPlugin plugin, PluginParameter param) {
+    private static VBox parameterRow(DawPlugin plugin, PluginParameter param, BooleanSupplier editsAdmitted) {
         Label name = new Label(param.name());
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
@@ -86,6 +100,10 @@ final class InnerPluginParameterDialog {
             toggle.setSelected(initiallyOn);
             toggle.setOnAction(_ -> {
                 boolean on = toggle.isSelected();
+                if (!editsAdmitted.getAsBoolean()) {
+                    toggle.setSelected(!on);
+                    return;
+                }
                 toggle.setText(on ? "ON" : "OFF");
                 plugin.setAutomatableParameter(param.id(), on ? 1.0 : 0.0);
             });
@@ -100,10 +118,24 @@ final class InnerPluginParameterDialog {
         Slider slider = new Slider(param.minValue(), param.maxValue(), param.defaultValue());
         slider.setShowTickLabels(true);
         slider.setShowTickMarks(true);
-        slider.valueProperty().addListener((_, _, newVal) -> {
-            double v = newVal.doubleValue();
-            plugin.setAutomatableParameter(param.id(), v);
-            value.setText(formatValue(v));
+        slider.valueProperty().addListener(new ChangeListener<Number>() {
+            /** The value this slider last wrote to the plugin (its default until the first write). */
+            private double written = param.defaultValue();
+
+            @Override
+            public void changed(ObservableValue<? extends Number> observable, Number was, Number now) {
+                double v = now.doubleValue();
+                if (v == written) {
+                    return; // echo: the slider shows the value it last wrote
+                }
+                if (!editsAdmitted.getAsBoolean()) {
+                    slider.setValue(written);
+                    return;
+                }
+                written = v;
+                plugin.setAutomatableParameter(param.id(), v);
+                value.setText(formatValue(v));
+            }
         });
 
         return new VBox(2, labelRow, slider);

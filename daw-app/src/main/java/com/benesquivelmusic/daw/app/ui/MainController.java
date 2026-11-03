@@ -617,7 +617,9 @@ public final class MainController {
      * generation: a live {@code TrackChannelRegistry} over {@link #project}
      * (with the app's {@link #dispatcher()} and {@link #meterFeed()}), a
      * {@code CoreTrackIntentHandler} and the {@code LinkedTrackCommandDispatcher}
-     * sink. The previous generation is disposed first (its own lifecycle,
+     * sink behind {@link #projectActionsAllowed()}, so a track or mixer intent
+     * raised while it says no changes nothing, whatever raised it
+     * (PR #989 review 5711460812). The previous generation is disposed first (its own lifecycle,
      * separate from {@link #vmDisposers} — see {@link #trackControlWiring}).
      * Must run BEFORE {@link #createViewNavigationController()} /
      * {@link #createTrackStripController()} on the init path and as the FIRST
@@ -634,7 +636,7 @@ public final class MainController {
         FxDispatcher disp = dispatcher();
         if (disp != null) {
             trackControlWiring = TrackControlWiring.standalone(project, disp, meterFeed(), audioEngine,
-                    message -> notificationBar.show(NotificationLevel.ERROR, message));
+                    message -> notificationBar.show(NotificationLevel.ERROR, message), this::projectActionsAllowed);
         }
     }
 
@@ -891,13 +893,25 @@ public final class MainController {
     /**
      * Whether a project action may run now: not while a project is being
      * installed ({@link #noProjectInstallationPending()}), and not while the
-     * window is input-inert because a close of the open project waits on
-     * disk work (story 333, design §1.5) — which also fences a programmatic
-     * transport command. An input gate: its consumers are the menus, the
-     * accelerators, the palette, the transport commands and the snapshot
-     * actions, which read it when they fire; Stop and Exit pass whatever it
-     * says. The autosave's capture gate ({@link #autosaveCaptureAllowed()})
-     * is not among them (ruling 4 Q4). FX thread.
+     * window is input-inert because a close of the open project waits on disk
+     * work (story 333, design §1.5) — which also fences a programmatic
+     * transport command. An input gate, and the edit gate of every intent the
+     * windows raise: its consumers are the menus, the accelerators, the
+     * palette, the transport commands, the snapshot actions, the track and
+     * mixer intents (through the sink {@link #rebuildTrackControlWiring()}
+     * builds), the control handlers of the views that edit what the project
+     * file stores or start a project action of their own, such as an export or
+     * an archive, and the work those started that lands while it says no, which
+     * read it when they act, whatever raised the act — a click, a key, a focus
+     * change or an assistive technology's action (PR #989 review 5711460812);
+     * Stop and Exit pass whatever it says. A plug-in editor body's writes
+     * answer to it too: the editor session installs it as a UI-write gate on
+     * the slot's parameter store, so the store refuses a body's write while it
+     * says no, and the built-in bodies that write their plug-in directly read
+     * that gate, a Stop-like act that only ends work already running excepted;
+     * a third-party body's write around its store is outside what
+     * the host can refuse. The autosave's capture gate ({@link #autosaveCaptureAllowed()}) is not among
+     * them (ruling 4 Q4). FX thread.
      */
     private boolean projectActionsAllowed() {
         return noProjectInstallationPending() && (exitCoordinator == null || !exitCoordinator.isWindowInert());
@@ -1274,8 +1288,13 @@ public final class MainController {
         // Story 187 — install the JavaFX lock-conflict dialog so opening a
         // project that is already locked by another session prompts the
         // user with Open Read-Only / Take Over / Cancel rather than
-        // throwing ProjectLockedException unconditionally.
-        projectManager.setLockConflictHandler(new LockConflictDialog());
+        // throwing ProjectLockedException unconditionally. While a close runs it
+        // shows nothing and takes its Cancel (ruling R-1.6; PR #989 review
+        // 5711460812): each time the dialog would show, it reads the closing
+        // door of the lifecycle controller, which this method builds later.
+        projectManager.setLockConflictHandler(new LockConflictDialog(java.time.Instant::now,
+                () -> projectLifecycleController == null ? Optional.empty()
+                        : projectLifecycleController.closingDoor()));
         // Story 190 — Snapshot History Browser. The data-only service
         // and the (lazy) browser dialog are owned by SnapshotsController,
         // which is composed here once for the lifetime of the session
@@ -2024,6 +2043,7 @@ public final class MainController {
                         : com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN,
                 this::onOpenAudioSettings,
                 dispatcher());
+        transportController.setProjectActionsAllowed(this::projectActionsAllowed);
         if (audioEngineController instanceof DefaultAudioEngineController controller) {
             transportController.recordCoordinator().setLatencyCalibrationSupplier(controller::recordingLatencyCalibration);
             controller.setRecordConfigurationGuard(() -> transportController.recordCoordinator().requestConfigurationChange());
@@ -2133,13 +2153,22 @@ public final class MainController {
                 () -> metronomeSideOutputRouter);
         // Story 308 §7 Stage 4 — "Click Routing…" deep-links into the
         // Settings surface's Recording category (dialog absorbed).
-        metronomeController.setClickRoutingSettingsOpener(() -> {
-            status("Opening recording settings...", DawIcon.METRONOME);
-            SettingsDialog dialog = createSettingsDialog();
-            dialog.selectCategory("recording");
-            dialog.showAndWait();
-            status("Recording settings closed", DawIcon.STATUS);
-        });
+        metronomeController.setClickRoutingSettingsOpener(this::onOpenRecordingSettings);
+    }
+
+    /**
+     * Opens Settings at its Recording category, for whichever surface offers
+     * it, such as the metronome menu's Click Routing item. Refused as
+     * {@link #onOpenSettings()} is, whichever asked (PR #989 review
+     * 5711460812).
+     */
+    void onOpenRecordingSettings() {
+        if (!projectActionsAllowed()) return;
+        status("Opening recording settings...", DawIcon.METRONOME);
+        SettingsDialog dialog = createSettingsDialog();
+        dialog.selectCategory("recording");
+        dialog.showAndWait();
+        status("Recording settings closed", DawIcon.STATUS);
     }
 
     /** Story 135 — shared side-output router; lazily created in
@@ -2189,6 +2218,9 @@ public final class MainController {
         // that is current at that moment.
         projectLifecycleController.setTakeBeingWrittenCheck(this::isTakeBeingWritten);
         projectLifecycleController.setRecordingInFlightCheck(this::isRecordingInFlight);
+        // PR #989 review 5711460812 — the missing-assets relink edits the
+        // project, so it reads the window's edit gate.
+        projectLifecycleController.setProjectActionsAllowed(this::projectActionsAllowed);
         // Story 333 — New creates its project's folder off the FX thread, after the UI was rebuilt for the
         // new project: the folder-dependent part of that rebuild follows once the folder exists.
         projectLifecycleController.setProjectFolderChangedHook(this::projectFolderChanged);
@@ -2428,7 +2460,8 @@ public final class MainController {
         // Story 322 — FIRST: a fresh registry + intent path over the new
         // project, before any strip of either surface is (re)built below.
         rebuildTrackControlWiring();
-        MixerView newMixerView = new MixerView(project, undoManager, dispatcher(), this::trackControlWiring);
+        MixerView newMixerView = new MixerView(project, undoManager, dispatcher(), this::trackControlWiring,
+                this::projectActionsAllowed);
         newMixerView.setPluginRegistry(pluginRegistry);
         wirePluginRackEditors(newMixerView);
         if (pluginViewController != null) pluginViewController.reconcileGraph();
@@ -2769,6 +2802,8 @@ public final class MainController {
                     @Override public TrackControlWiring trackControlWiring() {
                         return MainController.this.trackControlWiring();
                     }
+                    // The window's edit gate the MixerView reads where its intents are handled.
+                    @Override public boolean projectActionsAllowed() { return MainController.this.projectActionsAllowed(); }
                     @Override public com.benesquivelmusic.daw.core.mastering.MasteringChain masteringChain() {
                         return audioEngine.getMasteringChain();
                     }
@@ -2831,7 +2866,9 @@ public final class MainController {
                 // Story 322 — the live control wiring the arrangement strips bind through,
                 // and the session input the per-track input dialog preselects as a fallback.
                 this::trackControlWiring,
-                sessionInputSelection);
+                sessionInputSelection,
+                // The window's edit gate the lane's own handlers read (PR #989 review 5711460812).
+                this::projectActionsAllowed);
         // Story 329 (D19, D28) — "Export as WAV" asks the open's audio first, in export words.
         trackStripController.setRenderGuard(
                 tracks -> mayRenderClipAudio(RenderReadinessGuard.RenderPath.EXPORT, tracks));
@@ -2870,7 +2907,8 @@ public final class MainController {
                     if (pluginFaultUiController != null) {
                         pluginFaultUiController.openFaultLog();
                     }
-                }));
+                },
+                this::projectActionsAllowed));
         pluginViewController.setAnalyzerFeeds(analyzerFeeds);
         pluginViewController.setMeterFeed(meterFeed);
         // Virtual threads (JEP 444, final since Java 21) isolate plugin loading from FX.
@@ -3018,6 +3056,7 @@ public final class MainController {
     }
 
     private void showInspectorInsertPicker(MixerChannel selected) {
+        if (!projectActionsAllowed()) return;
         MixerChannel channel = selected == null ? choosePluginChannel() : selected;
         if (channel == null) return;
         MixerView mixerView = viewNavigationController.getMixerView();
@@ -3070,7 +3109,11 @@ public final class MainController {
                             ? viewNavigationController.getGridResolution() : gridResolution;
                     int beatsPerBar = project.getTransport().getTimeSignatureNumerator();
                     return res.beatsPerGrid(beatsPerBar);
-                }));
+                },
+                // PR #989 review 5711460812 — the pills' Undo goes through the
+                // gated history door, and every clip edit reads the edit gate.
+                this::onUndo,
+                this::projectActionsAllowed));
     }
 
     private void createRippleModeController() {
@@ -3082,7 +3125,8 @@ public final class MainController {
                 () -> project,
                 () -> project.markDirty(),
                 notificationBar,
-                toolbarStateStore, rippleModeButton, rippleBannerLabel);
+                toolbarStateStore, rippleModeButton, rippleBannerLabel,
+                this::projectActionsAllowed);
     }
 
     private void createTrackCreationController() {
@@ -3103,7 +3147,8 @@ public final class MainController {
                         this::status,
                         (level, message) -> notificationBar.show(level, message),
                         // Story 322 — the session input the new-track dialog preselects (read-only).
-                        sessionInputSelection),
+                        sessionInputSelection,
+                        this::projectActionsAllowed),
                 deviceManager);
     }
 
@@ -3124,7 +3169,8 @@ public final class MainController {
                 this::syncMenuStateIfPresent,
                 () -> project.markDirty(),
                 this::status,
-                (level, message) -> notificationBar.show(level, message)));
+                (level, message) -> notificationBar.show(level, message),
+                this::projectActionsAllowed));
     }
 
     /**
@@ -3146,7 +3192,8 @@ public final class MainController {
                         () -> rootPane.getScene() != null
                                 ? rootPane.getScene().getWindow() : null,
                         (level, message) -> notificationBar.show(level, message),
-                        () -> viewNavigationController.getMixerView().refresh()));
+                        () -> viewNavigationController.getMixerView().refresh(),
+                        this::projectActionsAllowed));
     }
 
     /**
@@ -3198,6 +3245,8 @@ public final class MainController {
         // Story 329 (D19, D28) — a freeze asks the open's audio before it renders, in freeze words.
         trackFreezeController.setRenderGuard(
                 tracks -> mayRenderClipAudio(RenderReadinessGuard.RenderPath.FREEZE, tracks));
+        // PR #989 review 5711460812 — a freeze edits the project: it reads the edit gate.
+        trackFreezeController.setProjectActionsAllowed(this::projectActionsAllowed);
     }
 
     private void createHistoryPanelController() {
@@ -3586,8 +3635,13 @@ public final class MainController {
         return trackId;
     }
 
-    /** Opens the per-channel CPU-budget dialog. Re-registers the channel on Apply. */
+    /**
+     * Opens the per-channel CPU-budget dialog. Re-registers the channel on
+     * Apply. Refused before the dialog opens, and its Apply refused, while
+     * the window's edit gate says no (PR #989 review 5711460812).
+     */
     private void openChannelCpuBudgetDialog(com.benesquivelmusic.daw.core.mixer.MixerChannel channel) {
+        if (!projectActionsAllowed()) return;
         if (channel == null) {
             return;
         }
@@ -3603,7 +3657,7 @@ public final class MainController {
                     return;
                 }
             }
-        });
+        }, this::projectActionsAllowed);
         dialog.showAndWait();
     }
 
@@ -3617,7 +3671,8 @@ public final class MainController {
     private void initializePluginFaultIsolation() {
         try {
             pluginSupervisor = new PluginInvocationSupervisor();
-            pluginFaultUiController = new PluginFaultUiController(pluginSupervisor, notificationBar, dispatcher());
+            pluginFaultUiController = new PluginFaultUiController(pluginSupervisor, notificationBar, dispatcher(),
+                    this::projectActionsAllowed);
             // Mixer.setPluginSupervisor both installs the supervisor on every
             // current channel/bus/master AND remembers it so channels added
             // later (new tracks, return buses) inherit it automatically.
@@ -3666,7 +3721,8 @@ public final class MainController {
                 () -> undoManager,
                 this::syncMenuStateIfPresent,
                 this::status,
-                notificationBar);
+                notificationBar,
+                this::projectActionsAllowed);
         tempoEditController.install();
     }
 
@@ -3691,6 +3747,7 @@ public final class MainController {
                     }
                     @Override public void onTimeStretchClip() { MainController.this.onTimeStretchClip(); }
                     @Override public void onPitchShiftClip() { MainController.this.onPitchShiftClip(); }
+                    @Override public boolean projectActionsAllowed() { return MainController.this.projectActionsAllowed(); }
                 },
                 this::seekToPosition);
         arrangementCanvas = result.canvas();
@@ -4119,9 +4176,12 @@ public final class MainController {
         telemetryView = new TelemetryView();
         telemetryView.setProject(project);
         telemetryView.setOnDirtyChanged(this::setProjectDirtyFromTelemetry);
+        // PR #989 review 5711460812 — its saves write the project: they read the edit gate.
+        telemetryView.setProjectActionsAllowed(this::projectActionsAllowed);
     }
 
     private void setProjectDirtyFromTelemetry() {
+        if (!projectActionsAllowed()) return;
         project.markDirty();
         if (menuBarController != null) menuBarController.syncMenuState();
     }
@@ -5074,6 +5134,7 @@ public final class MainController {
 
     // ── Lane folding (Issue 568) ────────────────────────────────────────────
     private void onToggleFoldFocusedTrack() {
+        if (!projectActionsAllowed()) return;
         if (arrangementCanvas == null) {
             return;
         }
@@ -5089,6 +5150,7 @@ public final class MainController {
     }
 
     private void onToggleFoldSelectedTracks() {
+        if (!projectActionsAllowed()) return;
         if (arrangementCanvas == null) {
             return;
         }
@@ -5107,6 +5169,7 @@ public final class MainController {
     }
 
     private void onFoldAllAutomation() {
+        if (!projectActionsAllowed()) return;
         if (arrangementCanvas == null) {
             return;
         }
@@ -5178,7 +5241,10 @@ public final class MainController {
     @FXML private void onRecentProjects() { projectLifecycleController.onRecentProjects(); }
     @FXML private void onImportSession() { projectLifecycleController.onImportSession(); }
     @FXML private void onExportSession() { projectLifecycleController.onExportSession(); }
-    @FXML private void onManagePlugins() { pluginViewController.onManagePlugins(pluginRegistry); }
+    @FXML private void onManagePlugins() {
+        if (!projectActionsAllowed()) return;
+        pluginViewController.onManagePlugins(pluginRegistry);
+    }
 
     @FXML private void onUndo() {
         if (!projectActionsAllowed()) return;
@@ -5203,14 +5269,28 @@ public final class MainController {
         syncMenuStateIfPresent();
     }
 
+    /**
+     * Opens Settings. Refused while {@link #projectActionsAllowed()} says no,
+     * whatever asked: its apply writes the open project's tempo, and no
+     * dialog opens while the window is inert (PR #989 review 5711460812).
+     */
     @FXML private void onOpenSettings() {
+        if (!projectActionsAllowed()) return;
         status("Opening settings...", DawIcon.SETTINGS);
         SettingsDialog dialog = createSettingsDialog();
         dialog.showAndWait();
         status("Settings closed", DawIcon.STATUS);
     }
 
+    /**
+     * Opens Settings at its Audio category, for whichever surface offers it,
+     * such as the menu's Audio Settings item, the Performance Stage's overlay
+     * and the notification of an audio failure. Refused as
+     * {@link #onOpenSettings()} is, whichever asked (PR #989 review
+     * 5711460812).
+     */
     void onOpenAudioSettings() {
+        if (!projectActionsAllowed()) return;
         status("Opening audio settings...", DawIcon.HEADPHONES);
         SettingsDialog dialog = createSettingsDialog();
         dialog.selectCategory("audio");
@@ -5339,7 +5419,7 @@ public final class MainController {
             return;
         }
         atmosAbView = new com.benesquivelmusic.daw.app.ui.spatial.AtmosAbView(
-                project.getReferenceTrackManager());
+                project.getReferenceTrackManager(), this::projectActionsAllowed);
         atmosAbStage = new Stage(javafx.stage.StageStyle.UTILITY);
         atmosAbStage.setTitle("Immersive A/B — QC");
         javafx.scene.Scene scene = new javafx.scene.Scene(createFloatingProjectRoot(atmosAbView));
@@ -5977,6 +6057,6 @@ public final class MainController {
 
     private void applyLiveSettings(SettingsModel model, String previousPluginPaths) {
         LiveSettingsApplier.apply(model, previousPluginPaths, rootPane.getScene(),
-                projectManager, project, pluginRegistry);
+                projectManager, project, pluginRegistry, projectActionsAllowed());
     }
 }

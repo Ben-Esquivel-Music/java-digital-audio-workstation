@@ -206,8 +206,11 @@ final class ProjectClosePrompts implements ClosePromptAnswers {
      * made the default button explicitly — a cancel button is not one by
      * itself — and given the focus when the window shows, so Enter and Space
      * both keep recording (the studio engineer's N1). Owned by the main
-     * window, restored and brought to the front first. FX thread, outside a
-     * pulse.
+     * window, restored and brought to the front first. It carries the
+     * close-surface mark
+     * ({@link WindowInputFence#markCloseSurface(javafx.scene.control.Dialog)}),
+     * so it is not fenced when it shows while the close's fence is up (PR #989
+     * review 5711460812). FX thread, outside a pulse.
      *
      * @param header the header ({@link #stopTakeHeader})
      * @return the answer; the window closed without an answer keeps recording
@@ -216,6 +219,7 @@ final class ProjectClosePrompts implements ClosePromptAnswers {
     public StopTakeAnswer confirmStopTake(String header) {
         Objects.requireNonNull(header, "header must not be null");
         Alert alert = new Alert(Alert.AlertType.WARNING);
+        WindowInputFence.markCloseSurface(alert);
         alert.setTitle(ProjectCloseText.text("close.recording.title"));
         alert.setHeaderText(header);
         alert.setContentText(ProjectCloseText.text("close.recording.content"));
@@ -319,8 +323,11 @@ final class ProjectClosePrompts implements ClosePromptAnswers {
      * {@code Save As…} is the default button and has the focus; the
      * prompt's last button is the cancel button, pressed by Escape and the
      * window's close box. A minimised owner is restored and brought to the
-     * front first, as for {@link #askBeforeClosing}. FX thread, outside a
-     * pulse.
+     * front first, as for {@link #askBeforeClosing}. It carries the
+     * close-surface mark
+     * ({@link WindowInputFence#markCloseSurface(javafx.scene.control.Dialog)}),
+     * so it is not fenced when it shows while the close's fence is up (PR #989
+     * review 5711460812). FX thread, outside a pulse.
      *
      * @param prompt the prompt
      * @return the answer; the window closed without an answer is a {@link TakenOverAnswer#CANCEL}
@@ -329,6 +336,7 @@ final class ProjectClosePrompts implements ClosePromptAnswers {
     public TakenOverAnswer takenOver(TakenOverPrompt prompt) {
         Objects.requireNonNull(prompt, "prompt must not be null");
         Alert alert = new Alert(Alert.AlertType.WARNING);
+        WindowInputFence.markCloseSurface(alert);
         alert.setTitle(ProjectCloseText.text("takeover.title"));
         alert.setHeaderText(prompt.header());
         alert.setContentText(prompt.content());
@@ -363,7 +371,10 @@ final class ProjectClosePrompts implements ClosePromptAnswers {
      * Refuses a Save As target (ruling Q6): a modal warning titled "Save
      * Project As", owned by the main window, with {@code message} and one
      * {@code OK} — the default button, also pressed by Escape and the close
-     * box — and waits for it. FX thread, outside a pulse.
+     * box — and waits for it. It carries the close-surface mark
+     * ({@link WindowInputFence#markCloseSurface(javafx.scene.control.Dialog)}),
+     * so it is not fenced when it shows while the close's fence is up (PR #989
+     * review 5711460812). FX thread, outside a pulse.
      *
      * @param message the refusal, one of ruling R5's three texts
      */
@@ -371,6 +382,7 @@ final class ProjectClosePrompts implements ClosePromptAnswers {
     public void refuseSaveAsTarget(String message) {
         DawgDialog<ButtonType> refusal = DawgDialog.warn(ProjectCloseText.text("saveAs.title"),
                 Objects.requireNonNull(message, "message must not be null"));
+        WindowInputFence.markCloseSurface(refusal);
         owner.get().ifPresent(refusal::initOwner);
         refusal.showAndWait();
     }

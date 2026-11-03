@@ -234,16 +234,25 @@ public final class ConvolutionReverbEditor implements PluginEditorFactory.Panel 
      * Opens the WAV file chooser and hands the picked file to the processor's
      * asynchronous IR loader; the completion marshals back to the FX thread
      * with {@link Platform#runLater(Runnable)} (§4.7) to update the status
-     * label and repaint the waveform.
+     * label and repaint the waveform. While the host refuses UI writes
+     * ({@code PluginParameterStore#uiWritesAdmitted()} says no), it opens no
+     * chooser, and a file picked while the chooser was open is not loaded. A
+     * load already started when the host begins refusing still lands, off the
+     * FX thread; what it installs is not stored in the project (PR #989
+     * review 5711460812).
      */
     private void openImpulseResponseFile() {
+        if (!context.parameterStore().uiWritesAdmitted()) {
+            return;
+        }
         FileChooser chooser = new FileChooser();
         chooser.setTitle("Load Impulse Response");
         chooser.getExtensionFilters().add(
                 new FileChooser.ExtensionFilter("WAV files", "*.wav"));
         Window owner = root.getScene() == null ? null : root.getScene().getWindow();
         File f = chooser.showOpenDialog(owner);
-        if (f != null) {
+        // Read again: the host may have begun refusing while the chooser was open.
+        if (f != null && context.parameterStore().uiWritesAdmitted()) {
             statusLabel.setText("Loading…");
             processor.loadImpulseResponseFromFileAsync(Path.of(f.getAbsolutePath()))
                     .whenComplete((_, ex) -> Platform.runLater(() -> {

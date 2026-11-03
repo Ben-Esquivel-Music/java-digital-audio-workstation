@@ -258,6 +258,10 @@ public final class VirtualKeyboardEditor implements PluginEditorFactory.Panel {
                 if (candidate == processor.getPreset().defaultVelocity()) {
                     return;
                 }
+                if (!editsAdmitted()) {
+                    velocitySlider.setValue(processor.getPreset().defaultVelocity());
+                    return;
+                }
                 processor.setPreset(processor.getPreset().withDefaultVelocity(candidate));
             });
 
@@ -384,10 +388,29 @@ public final class VirtualKeyboardEditor implements PluginEditorFactory.Panel {
         }
 
         // ── Event Handlers ─────────────────────────────────────────────────
+        //
+        // While the host refuses UI writes, an act that starts sound or a
+        // capture, changes a setting or deletes recorded content writes
+        // nothing, and its control shows the processor again; Stop and
+        // Record-off end work the processor is already running, so they pass
+        // as Stop does (PR #989 review 5711460812).
+
+        /** Whether the host admits a UI write now: the editor's live read of its store's gates. */
+        private boolean editsAdmitted() {
+            return context.parameterStore().uiWritesAdmitted();
+        }
 
         private void onPresetChanged() {
             KeyboardPreset selected = presetCombo.getValue();
             if (selected != null) {
+                // Stateless echo guard: the combo already shows the processor's preset.
+                if (Objects.equals(selected, processor.getPreset())) {
+                    return;
+                }
+                if (!editsAdmitted()) {
+                    presetCombo.setValue(processor.getPreset());
+                    return;
+                }
                 // Push the new preset to the processor first, so the three
                 // control writes below land as echoes of the processor's own
                 // current state — each listener's stateless echo-guard then
@@ -406,6 +429,10 @@ public final class VirtualKeyboardEditor implements PluginEditorFactory.Panel {
             // picks the curve the processor already holds, so it no-ops here.
             VelocityCurve curve = curveCombo.getValue();
             if (curve != null && curve != processor.getPreset().velocityCurve()) {
+                if (!editsAdmitted()) {
+                    curveCombo.getSelectionModel().select(processor.getPreset().velocityCurve());
+                    return;
+                }
                 processor.setPreset(processor.getPreset().withVelocityCurve(curve));
             }
         }
@@ -414,12 +441,21 @@ public final class VirtualKeyboardEditor implements PluginEditorFactory.Panel {
             // Stateless echo-guard: a programmatic spinner write (onPresetChanged)
             // sets the transpose the processor already holds, so it no-ops here.
             if (newValue != processor.getPreset().transpose()) {
+                if (!editsAdmitted()) {
+                    transposeSpinner.getValueFactory().setValue(processor.getPreset().transpose());
+                    return;
+                }
                 processor.setPreset(processor.getPreset().withTranspose(newValue));
             }
         }
 
         private void onRecordToggle() {
             if (recordButton.isSelected()) {
+                // Record-on starts a capture: refused while the host refuses UI writes.
+                if (!editsAdmitted()) {
+                    recordButton.setSelected(processor.isRecording());
+                    return;
+                }
                 int velocity = (int) velocitySlider.getValue();
                 processor.setPreset(processor.getPreset().withDefaultVelocity(Math.max(1, velocity)));
                 processor.startRecording(120.0, 0);
@@ -429,6 +465,9 @@ public final class VirtualKeyboardEditor implements PluginEditorFactory.Panel {
         }
 
         private void onPlay() {
+            if (!editsAdmitted()) {
+                return; // Play starts sound
+            }
             if (!processor.isPlaying()) {
                 processor.startPlayback(120.0);
                 if (processor.isPlaying()) {
@@ -449,6 +488,9 @@ public final class VirtualKeyboardEditor implements PluginEditorFactory.Panel {
         }
 
         private void onClear() {
+            if (!editsAdmitted()) {
+                return; // Clear deletes the recorded clip
+            }
             processor.clearClip();
         }
 

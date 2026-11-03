@@ -20,7 +20,9 @@ import javafx.stage.Modality;
 import javafx.stage.Stage;
 
 import java.time.format.DateTimeFormatter;
+import java.util.Objects;
 import java.util.concurrent.Flow;
+import java.util.function.BooleanSupplier;
 
 /**
  * Non-modal window that lists {@link PluginFault} events, each with an
@@ -28,6 +30,11 @@ import java.util.concurrent.Flow;
  *
  * <p>The dialog subscribes to {@link PluginInvocationSupervisor#publisher()}
  * and marshals incoming events onto the JavaFX application thread.</p>
+ *
+ * <p>With the window's edit gate ({@code MainController.projectActionsAllowed()}),
+ * a row's Re-enable is refused while the gate says no, whatever raised it:
+ * the slot stays bypassed and the button as it was (PR #989 review
+ * 5711460812).</p>
  */
 @com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
         "migrate to DawgDialog — story 276 follow-up; not a Dialog "
@@ -39,10 +46,18 @@ public final class PluginFaultLogDialog {
     private final Stage stage;
     private final ObservableList<FaultRow> rows = FXCollections.observableArrayList();
     private final PluginInvocationSupervisor supervisor;
+    private final BooleanSupplier projectActionsAllowed;
     private final FaultSubscriber subscriber = new FaultSubscriber();
 
-    public PluginFaultLogDialog(PluginInvocationSupervisor supervisor) {
+    /**
+     * @param supervisor            the supervisor whose faults the log lists
+     * @param projectActionsAllowed the window's edit gate, read on the FX thread by a row's Re-enable;
+     *                              must not be {@code null}
+     */
+    public PluginFaultLogDialog(PluginInvocationSupervisor supervisor, BooleanSupplier projectActionsAllowed) {
         this.supervisor = supervisor;
+        this.projectActionsAllowed = Objects.requireNonNull(projectActionsAllowed,
+                "projectActionsAllowed must not be null");
         this.stage = new Stage();
         stage.setTitle("Plugin Fault Log");
         stage.initModality(Modality.NONE);
@@ -156,6 +171,9 @@ public final class PluginFaultLogDialog {
             Button reenable = new Button("Re-enable plugin");
             reenable.setDisable(f.slot() == null || !f.slot().isInGraph());
             reenable.setOnAction(_ -> {
+                if (!projectActionsAllowed.getAsBoolean()) {
+                    return;
+                }
                 if (!f.slot().isInGraph()) {
                     reenable.setText("Plugin removed");
                     reenable.setDisable(true);

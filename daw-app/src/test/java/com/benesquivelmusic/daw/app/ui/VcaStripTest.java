@@ -38,7 +38,7 @@ class VcaStripTest {
     private static final BiConsumer<MixerChannel, Boolean> SOLO_INTENT = (ch, v) -> ch.setSolo(v);
 
     private static VcaStrip newStrip(VcaGroup vca, VcaGroupManager manager, Function<UUID, MixerChannel> lookup) {
-        return new VcaStrip(vca, manager, null, lookup, MUTE_INTENT, SOLO_INTENT, () -> {});
+        return new VcaStrip(vca, manager, null, lookup, MUTE_INTENT, SOLO_INTENT, () -> {}, () -> true);
     }
 
     private <T> T runFx(java.util.concurrent.Callable<T> task) throws Exception {

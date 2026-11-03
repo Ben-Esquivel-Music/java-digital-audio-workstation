@@ -86,7 +86,8 @@ final class ArrangementStripFixture {
                 () -> null,   // the editor view is only reached from the context menu
 
                 () -> wiring,
-                sessionInputSelection);
+                sessionInputSelection,
+                () -> true);
     }
 
     ArrangementStripFixture(DawProject project, boolean executeCommands) {

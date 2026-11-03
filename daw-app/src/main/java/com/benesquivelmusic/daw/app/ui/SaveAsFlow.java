@@ -73,10 +73,13 @@ import java.util.logging.Logger;
  *       ({@link SaveAsProgressDialog}), then the plan and the copy on one
  *       {@code daw-save-as} worker. A refused target — taken, inside the
  *       project, not enough space — is said in a modal warning and the
- *       chooser opens again (ruling Q6). Cancel while the plan runs ends the
- *       Save As at once and drops the plan's late result; Cancel while the
- *       files are copied stops the copy, which deletes what it created; from
- *       {@code project.daw}'s write on there is no Cancel.</li>
+ *       chooser opens again (ruling Q6), except for a user's Save As while a
+ *       close runs, whose refusal goes to the log at INFO and which ends as
+ *       the chooser's Cancel ends it (ruling R-1.6). Cancel while the plan
+ *       runs ends the Save As at once and drops the plan's late result;
+ *       Cancel while the files are copied stops the copy, which deletes what
+ *       it created; from {@code project.daw}'s write on there is no
+ *       Cancel.</li>
  *   <li>A user's Save As then takes the copy's lock on the worker and checks
  *       it before the open project is touched: a copy that cannot be locked
  *       is remembered in Recent Projects and reported, and the open project
@@ -164,7 +167,11 @@ final class SaveAsFlow {
         }
     }
 
-    /** The chooser was cancelled: nothing was copied, and nothing is said. */
+    /**
+     * The chooser was cancelled: nothing was copied, and nothing is said. A
+     * user's Save As whose target is refused while a close runs ends so too,
+     * its refusal logged at INFO ({@link #targetRefused}).
+     */
     record ChooserCancelled() implements SaveAsResult { }
 
     /** The progress dialog's Cancel: nothing was left of the copy (R5's INFO says so). */
@@ -207,6 +214,14 @@ final class SaveAsFlow {
 
         /** Whether a take is still being written. */
         boolean takeBeingWritten();
+
+        /**
+         * The name of the door whose close runs now, or empty while none runs
+         * ({@code ProjectLifecycleController.closingDoor}). FX thread.
+         *
+         * @return the closing door's name, or empty
+         */
+        Optional<String> closingDoor();
 
         /**
          * The copy became the open project: the strip starts over with the
@@ -1003,17 +1018,36 @@ final class SaveAsFlow {
      * A refused target (ruling Q6): the modal warning, then the chooser again
      * — a taken name with the first free name in the same folder, a folder
      * inside the project with the typed name in the original's parent, not
-     * enough space with the same folder and name. FX thread, outside a pulse.
+     * enough space with the same folder and name. A user's Save As refused
+     * while a close runs ({@link Lifecycle#closingDoor}) shows neither: the
+     * refusal goes to the log at INFO, nothing has been copied, and the Save
+     * As ends as the chooser's Cancel ends it. Shown after the close's own
+     * dialog, the refusal would disable it, being application-modal, and an
+     * exit waiting for this Save As would wait for the refusal's answer and
+     * then the chooser's (ruling R-1.6; PR #989 review 5711460812). A close's
+     * own Save As still asks again. FX thread, outside a pulse.
      */
     private void targetRefused(Run run, SaveAsPlan plan) {
         if (!run.phase.compareAndSet(Phase.PLANNING, Phase.CHOOSING)) {
             return;
         }
         hideTheDialog(run);
+        String refusal = refusalText(plan, run.newName, run.oldName);
+        Optional<String> closing = run.purpose == Purpose.REPLACE_OPEN ? deps.lifecycle().closingDoor()
+                : Optional.empty();
+        if (closing.isPresent()) {
+            String door = closing.get();
+            String name = run.newName;
+            LOG.info(() -> "The Save Project As refusal of “" + name + "” was not shown while " + door
+                    + " closes the open project: " + refusal + " The chooser was not opened again, so the Save As"
+                    + " ended as its Cancel ends it, and nothing was copied.");
+            end(run, new ChooserCancelled());
+            return;
+        }
         if (run.purpose == Purpose.REPLACE_OPEN) {
             deps.lifecycle().saveAsCopying(false);
         }
-        deps.prompts().refuseSaveAsTarget(refusalText(plan, run.newName, run.oldName));
+        deps.prompts().refuseSaveAsTarget(refusal);
         if (run.ended) {
             return;
         }

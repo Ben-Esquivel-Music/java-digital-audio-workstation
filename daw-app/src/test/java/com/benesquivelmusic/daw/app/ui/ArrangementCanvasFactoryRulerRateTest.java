@@ -181,6 +181,7 @@ class ArrangementCanvasFactoryRulerRateTest {
         @Override public void showNotification(NotificationLevel level, String message) { }
         @Override public void onTimeStretchClip() { }
         @Override public void onPitchShiftClip() { }
+        @Override public boolean projectActionsAllowed() { return true; }
     }
 
     private static <T> T computeOnFx(Callable<T> action) throws Exception {

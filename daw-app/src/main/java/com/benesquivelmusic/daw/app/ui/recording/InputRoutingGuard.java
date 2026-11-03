@@ -10,15 +10,27 @@ import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import java.util.*;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.logging.Logger;
 
-/** Arm validation owns the driver walk on a virtual thread (JEP 444, final in Java 21). */
+/**
+ * Arm validation owns the driver walk on a virtual thread (JEP 444, final in Java 21).
+ *
+ * <p>The origin rule (PR #989 review 5711460812): a user's arm is an intent, so when its
+ * validation lands while {@code projectActionsAllowed} says no — a project is being installed,
+ * or a close of the open project waits on disk work — it is not completed, the track stays
+ * unarmed, and that is logged at INFO; the guard's own corrective disarm and re-arm keep the
+ * model consistent and are never refused.</p>
+ */
 public final class InputRoutingGuard implements AutoCloseable {
+    private static final Logger LOG = Logger.getLogger(InputRoutingGuard.class.getName());
     private final DawProject project;
     private final AudioEngine engine;
     private final FxDispatcher dispatcher;
     private final Consumer<String> errors;
     private final Consumer<TrackCommand> commandSink;
+    private final BooleanSupplier projectActionsAllowed;
     private final Map<Track, Runnable> listeners = new IdentityHashMap<>();
     private final Map<Track, Long> generations = new IdentityHashMap<>();
     private final Runnable unregisterProject;
@@ -28,21 +40,28 @@ public final class InputRoutingGuard implements AutoCloseable {
      * A queued arm. The provision is deliberately not frozen here: each validation run reads the
      * engine's current provision when it starts, so a request that outlives a provision swap is
      * re-validated against the replacement instead of being dropped (track silently left disarmed)
-     * or accepted on a proof taken against the outgoing provision.
+     * or accepted on a proof taken against the outgoing provision. {@code userIntent} says whether
+     * the user asked for it ({@link #requestArm}) or the guard re-arms a track it disarmed itself.
      */
-    private record PendingArm(Runnable accept, long generation, CaptureRoutingPlan.Route route) { }
+    private record PendingArm(Runnable accept, long generation, CaptureRoutingPlan.Route route,
+                              boolean userIntent) { }
     private final Map<Track, PendingArm> pendingArms = new LinkedHashMap<>();
     private boolean validationRunning;
     public void cancelArm(Track track) { generations.merge(track, 1L, Long::sum); pendingArms.remove(track); }
 
     /**
-     * @param commandSink the shared intent sink; it must execute commands synchronously
-     *                    on the FX thread so validated re-entry stays within its acceptance scope
+     * @param commandSink           the shared intent sink, ungated: it carries the guard's corrective
+     *                              disarm and re-arm; it must execute commands synchronously on the FX
+     *                              thread so validated re-entry stays within its acceptance scope
+     * @param projectActionsAllowed whether a user's arm whose validation lands now may complete
+     *                              (the window's edit gate; PR #989 review 5711460812)
      */
     public InputRoutingGuard(DawProject project, AudioEngine engine, FxDispatcher dispatcher,
-                             Consumer<String> errors, Consumer<TrackCommand> commandSink) {
+                             Consumer<String> errors, Consumer<TrackCommand> commandSink,
+                             BooleanSupplier projectActionsAllowed) {
         this.project = project; this.engine = engine; this.dispatcher = dispatcher; this.errors = errors;
         this.commandSink = Objects.requireNonNull(commandSink);
+        this.projectActionsAllowed = Objects.requireNonNull(projectActionsAllowed);
         unregisterProject = project.addChangeListener(kind -> { if (kind == DawProject.ChangeKind.TRACKS) { if (dispatcher.isFxThread()) reconcile(); else dispatcher.onFx(this::reconcile); } });
         reconcile();
     }
@@ -73,24 +92,31 @@ public final class InputRoutingGuard implements AutoCloseable {
         if (!track.isArmed()) {
             PendingArm pending = pendingArms.get(track);
             cancelArm(track);
-            if (kind == Track.ChangeKind.INPUT_ROUTING && pending != null) requestArm(track, pending.accept());
+            if (kind == Track.ChangeKind.INPUT_ROUTING && pending != null) {
+                request(track, pending.accept(), pending.userIntent());
+            }
             return;
         }
         if (track.getType() == TrackType.MIDI || track.getInputRouting().isNone()) return;
         accepting = track;
         try { commandSink.accept(new ToggleArmCommand(track, false)); } finally { accepting = null; }
-        requestArm(track, () -> commandSink.accept(new ToggleArmCommand(track, true)));
+        request(track, () -> commandSink.accept(new ToggleArmCommand(track, true)), false);
     }
+    /** The user's arm, from the intent handler's arm validator: a user intent (the origin rule). */
     public void requestArm(Track track, Runnable accept) {
+        request(track, accept, true);
+    }
+    private void request(Track track, Runnable accept, boolean userIntent) {
         if (closed) return;
         if (accepting == track || track.getType() == TrackType.MIDI || track.getInputRouting().isNone()) { accept.run(); return; }
         long generation = generations.merge(track, 1L, Long::sum);
-        pendingArms.put(track, new PendingArm(accept, generation, CaptureRoutingPlan.snapshot(List.of(track)).getFirst()));
+        pendingArms.put(track, new PendingArm(accept, generation,
+                CaptureRoutingPlan.snapshot(List.of(track)).getFirst(), userIntent));
         startNextArm();
     }
     private void startNextArm() {
         if (closed || validationRunning || pendingArms.isEmpty()) return;
-        var entry = pendingArms.entrySet().iterator().next();
+        Map.Entry<Track, PendingArm> entry = pendingArms.entrySet().iterator().next();
         Track track = entry.getKey(); PendingArm request = entry.getValue();
         List<Track> proposed = project.getTracks().stream()
                 .filter(t -> t.getType() != TrackType.MIDI && (t.isArmed() || t == track)).toList();
@@ -120,17 +146,26 @@ public final class InputRoutingGuard implements AutoCloseable {
                     if (stale) { startNextArm(); return; }
                     pendingArms.remove(track);
                     if (result == null) {
-                        accepting = track;
-                        try { request.accept().run(); } finally { accepting = null; }
+                        if (request.userIntent() && !projectActionsAllowed.getAsBoolean()) {
+                            LOG.info(() -> "Arming “" + track.getName()
+                                    + "” was not completed: the project could not be edited.");
+                        } else {
+                            accepting = track;
+                            try { request.accept().run(); } finally { accepting = null; }
+                        }
                     } else {
-                        commandSink.accept(new ToggleArmCommand(track, false));
-                        String message = result.getMessage();
-                        errors.accept(message == null || message.isBlank() ? result.getClass().getName() : message);
+                        disarmAfterAFailedValidation(track, result);
                     }
                 } else if (pendingArms.get(track) == request) pendingArms.remove(track);
                 startNextArm();
             });
         });
+    }
+    /** A failed validation leaves the track disarmed and reports why: a correctness write, never refused. */
+    private void disarmAfterAFailedValidation(Track track, Throwable result) {
+        commandSink.accept(new ToggleArmCommand(track, false));
+        String message = result.getMessage();
+        errors.accept(message == null || message.isBlank() ? result.getClass().getName() : message);
     }
     @Override public void close() {
         closed = true; pendingArms.clear(); unregisterProject.run();

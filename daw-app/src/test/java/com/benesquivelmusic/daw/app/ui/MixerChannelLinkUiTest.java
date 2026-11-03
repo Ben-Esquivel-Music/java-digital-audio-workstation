@@ -287,7 +287,7 @@ class MixerChannelLinkUiTest {
         fxRun(() -> mgr.link(ChannelLink.ofPair(f.leftId, f.rightId)));
 
         ChannelLinkPopover popover = fxGet(() ->
-                new ChannelLinkPopover(mgr, new UndoManager(), mgr.getLink(f.leftId)));
+                new ChannelLinkPopover(mgr, new UndoManager(), mgr.getLink(f.leftId), () -> true));
 
         fxRun(() -> {
             popover.getSendsBox().setSelected(false);

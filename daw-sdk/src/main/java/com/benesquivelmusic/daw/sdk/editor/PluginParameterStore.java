@@ -1,11 +1,13 @@
 package com.benesquivelmusic.daw.sdk.editor;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.plugin.PluginMeterSnapshot;
@@ -32,6 +34,14 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
  *       publishes the new value, then posts the parameter's index onto a
  *       coalescing pending set the audio thread drains in
  *       {@code process(...)} via {@link #drainToAudio(IndexConsumer)}.</li>
+ *   <li>A UI write answers to the gates the host installs
+ *       ({@link #addUiWriteGate(BooleanSupplier, IndexConsumer)}): while any
+ *       gate says no, {@link #writeFromUi(int, double)} changes nothing —
+ *       neither the value nor the pending set — and calls each gate's refusal
+ *       callback with the parameter's index at once, inside the write, so the
+ *       editor shows the kept value again. The gates are FX-confined; no
+ *       audio-thread method reads them, and
+ *       {@link #writeFromAudio(int, double)} is never refused.</li>
  *   <li>{@link #writeFromAudio(int, double)} runs on the audio thread and is
  *       {@link RealTimeSafe}: it clamps and publishes, then posts onto a
  *       <em>separate</em> pending set the FX thread drains via
@@ -59,13 +69,24 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 public final class PluginParameterStore {
 
     /**
-     * Allocation-free callback for draining parameter changes. Receives the dense
-     * index of a parameter whose value changed; read the new value with
+     * Allocation-free callback receiving the dense index of a parameter — a
+     * drained change, or a UI write a gate refused. Read the value with
      * {@link PluginParameterStore#value(int)}.
      */
     @FunctionalInterface
     public interface IndexConsumer {
         void accept(int parameterIndex);
+    }
+
+    /**
+     * One gate on FX-thread writes: whether a UI write may land now, and what
+     * is called with the index of a refused one.
+     */
+    private record UiWriteGate(BooleanSupplier admitted, IndexConsumer refused) {
+        private UiWriteGate {
+            Objects.requireNonNull(admitted, "admitted must not be null");
+            Objects.requireNonNull(refused, "refused must not be null");
+        }
     }
 
     private final PluginParameter[] parameters;
@@ -81,6 +102,14 @@ public final class PluginParameterStore {
     private final long[] uiSeen;
     private final AtomicReference<PluginMeterSnapshot> meterSnapshot =
             new AtomicReference<>(PluginMeterSnapshot.SILENT);
+    /**
+     * The installed UI-write gates in installation order, replaced (never
+     * changed in place) by each install and removal; {@code null} while none
+     * is installed. FX-confined, as is {@link #refusingUiWrite}.
+     */
+    private UiWriteGate[] uiWriteGates;
+    /** Set while the refusal callbacks of a refused UI write run. */
+    private boolean refusingUiWrite;
 
     /**
      * Creates a store for the given ordered parameter list. Each parameter's
@@ -191,14 +220,35 @@ public final class PluginParameterStore {
      * FX-thread write (a knob turn): clamps the value into the parameter's
      * declared range, publishes it as the new coherent value, and notifies the
      * audio thread. Drain the notification on the audio thread with
-     * {@link #drainToAudio(IndexConsumer)}.
+     * {@link #drainToAudio(IndexConsumer)}. While a gate installed with
+     * {@link #addUiWriteGate(BooleanSupplier, IndexConsumer)} says no, the
+     * write changes nothing and each gate's refusal callback receives
+     * {@code index} once; a write refused while those callbacks run calls
+     * none.
      *
      * @param index a dense index in {@code [0, parameterCount())}
      * @param value the requested value (clamped to the parameter's range)
+     * @throws IndexOutOfBoundsException if {@code index} is out of range
      */
     public void writeFromUi(int index, double value) {
-        values.set(index, Double.doubleToRawLongBits(clamp(index, value)));
-        uiToAudio.set(index, ++uiGeneration[index]);
+        UiWriteGate[] gates = uiWriteGates;
+        if (admits(gates)) {
+            values.set(index, Double.doubleToRawLongBits(clamp(index, value)));
+            uiToAudio.set(index, ++uiGeneration[index]);
+            return;
+        }
+        Objects.checkIndex(index, parameters.length);
+        if (refusingUiWrite) {
+            return;
+        }
+        refusingUiWrite = true;
+        try {
+            for (UiWriteGate gate : gates) {
+                gate.refused().accept(index);
+            }
+        } finally {
+            refusingUiWrite = false;
+        }
     }
 
     /**
@@ -211,6 +261,74 @@ public final class PluginParameterStore {
      */
     public void writeFromUiById(int parameterId, double value) {
         writeFromUi(indexOf(parameterId), value);
+    }
+
+    /**
+     * Installs a gate on FX-thread writes. FX thread. Gates combine with AND,
+     * so a gate can only refuse: while any installed gate's {@code admitted}
+     * says no, {@link #writeFromUi(int, double)} changes nothing and calls
+     * every installed gate's {@code refused} with the parameter's index, in
+     * installation order, inside that write. The host installs one while an
+     * editor shows this store; a gate a plug-in installs refuses writes to
+     * this store only, the host's own included.
+     *
+     * @param admitted whether a UI write may land now, read at each write
+     * @param refused  called with the index of each refused write
+     * @return removes this gate; idempotent
+     */
+    public Runnable addUiWriteGate(BooleanSupplier admitted, IndexConsumer refused) {
+        UiWriteGate gate = new UiWriteGate(admitted, refused);
+        UiWriteGate[] gates = uiWriteGates;
+        UiWriteGate[] grown = gates == null ? new UiWriteGate[1] : Arrays.copyOf(gates, gates.length + 1);
+        grown[grown.length - 1] = gate;
+        uiWriteGates = grown;
+        return () -> removeUiWriteGate(gate);
+    }
+
+    /**
+     * Whether a UI write would land now: true when every installed gate
+     * admits, and when none is installed. FX thread. An editor handler that
+     * writes its plug-in's state other than through this store reads it
+     * first.
+     *
+     * @return whether {@link #writeFromUi(int, double)} would change the store now
+     */
+    public boolean uiWritesAdmitted() {
+        return admits(uiWriteGates);
+    }
+
+    /** Short-circuit AND over {@code gates}, in installation order; {@code null} admits. */
+    private static boolean admits(UiWriteGate[] gates) {
+        if (gates == null) {
+            return true;
+        }
+        for (UiWriteGate gate : gates) {
+            if (!gate.admitted().getAsBoolean()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Removes {@code gate} by identity, if it is still installed; the last one gone leaves {@code null}. */
+    private void removeUiWriteGate(UiWriteGate gate) {
+        UiWriteGate[] gates = uiWriteGates;
+        if (gates == null) {
+            return;
+        }
+        for (int i = 0; i < gates.length; i++) {
+            if (gates[i] == gate) {
+                if (gates.length == 1) {
+                    uiWriteGates = null;
+                    return;
+                }
+                UiWriteGate[] shrunk = new UiWriteGate[gates.length - 1];
+                System.arraycopy(gates, 0, shrunk, 0, i);
+                System.arraycopy(gates, i + 1, shrunk, i, gates.length - i - 1);
+                uiWriteGates = shrunk;
+                return;
+            }
+        }
     }
 
     /**

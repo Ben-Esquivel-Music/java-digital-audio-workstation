@@ -19,7 +19,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -45,6 +47,10 @@ final class AudioImportController {
      * is kept: an import adds a clip to an existing track, which does not change
      * the track LIST, so the canvas needs an explicit repaint the reactive
      * {@code ProjectVM.tracks} binding does not cover.
+     * {@code projectActionsAllowed} is the window's edit gate: while it says
+     * no, an import is refused, silently — before the file chooser opens, and
+     * at {@link #importAudioFile}, which the chooser's result and a canvas
+     * drop both reach (PR #989 review 5711460812).
      */
     record Deps(
             Supplier<DawProject> project,
@@ -58,7 +64,11 @@ final class AudioImportController {
             Runnable updateUndoRedoState,
             Runnable markProjectDirty,
             BiConsumer<String, DawIcon> updateStatusBar,
-            BiConsumer<NotificationLevel, String> showNotification) {
+            BiConsumer<NotificationLevel, String> showNotification,
+            BooleanSupplier projectActionsAllowed) {
+        Deps {
+            Objects.requireNonNull(projectActionsAllowed, "projectActionsAllowed must not be null");
+        }
     }
 
     private final Deps deps;
@@ -68,6 +78,9 @@ final class AudioImportController {
     }
 
     void onImportAudioFile() {
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            return;
+        }
         Stage stage = deps.primaryStage().get();
         FileChooser chooser = new FileChooser();
         chooser.setTitle("Import Audio File");
@@ -108,9 +121,14 @@ final class AudioImportController {
      *                      create a new audio track
      * @param placementBeat the beat position where the clip should start
      * @return {@code true} if the import succeeded, {@code false} if it failed
-     *         (the failure has already been notified to the user)
+     *         (the failure has already been notified to the user) or the
+     *         window's edit gate refused it, silently, changing nothing
+     *         (PR #989 review 5711460812)
      */
     boolean importAudioFile(Path file, Track targetTrack, double placementBeat) {
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            return false;
+        }
         DawProject project = deps.project().get();
         AudioFileImporter importer = new AudioFileImporter(project);
         boolean createdNewTrack = (targetTrack == null);

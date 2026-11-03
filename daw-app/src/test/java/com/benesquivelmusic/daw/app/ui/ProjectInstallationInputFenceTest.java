@@ -254,6 +254,78 @@ class ProjectInstallationInputFenceTest {
         }
     }
 
+    /**
+     * The gate's first half (PR #989 review 5711460812; ruling R-6.3 (d)):
+     * the track-control wiring {@code MainController} builds refuses a mute
+     * an assistive technology's action raises while a project is being
+     * installed, and admits the same action once the installation ended. The
+     * controller is partial, as above; its wiring is built by its own private
+     * {@code rebuildTrackControlWiring()}.
+     */
+    @Test void aMuteIsRefusedWhileAProjectIsBeingInstalled() throws Exception {
+        try (SaveFlowFixture fixture = new SaveFlowFixture(workspace, AutoSaveConfig.DEFAULT.withEnabled(false))) {
+            fixture.save(); fixture.settle();
+            Path target = fixture.anotherProjectOnDisk("Incoming");
+            DawProject outgoing = fixture.project.get();
+            com.benesquivelmusic.daw.core.track.Track vox = outgoing.getTracks().getFirst();
+            com.benesquivelmusic.daw.core.mixer.MixerChannel channel = outgoing.getMixerChannelForTrack(vox);
+            com.benesquivelmusic.daw.core.audio.AudioEngine engine =
+                    new com.benesquivelmusic.daw.core.audio.AudioEngine(outgoing.getFormat());
+            CountDownLatch sealing = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicReference<com.benesquivelmusic.daw.app.ui.vm.TrackControlWiring> built = new AtomicReference<>();
+            AtomicReference<com.benesquivelmusic.daw.app.ui.vm.TrackControlBinder> binder = new AtomicReference<>();
+            try {
+                Button mute = onFx(() -> {
+                    MainController main = new MainController();
+                    setField(main, "project", outgoing);
+                    setField(main, "fxDispatcher", fixture.dispatcher);
+                    setField(main, "notificationBar", new NotificationBar());
+                    setField(main, "audioEngine", engine);
+                    setField(main, "projectLifecycleController", fixture.lifecycle());
+                    try {
+                        java.lang.reflect.Method rebuild =
+                                MainController.class.getDeclaredMethod("rebuildTrackControlWiring");
+                        rebuild.setAccessible(true); rebuild.invoke(main);
+                    } catch (ReflectiveOperationException failure) { throw new AssertionError(failure); }
+                    com.benesquivelmusic.daw.app.ui.vm.TrackControlWiring wiring = main.trackControlWiring();
+                    built.set(wiring);
+                    Button button = new Button("M");
+                    com.benesquivelmusic.daw.app.ui.vm.TrackControlBinder bound =
+                            new com.benesquivelmusic.daw.app.ui.vm.TrackControlBinder(vox,
+                                    wiring.registry().trackVm(UUID.fromString(vox.getId())), channel,
+                                    wiring.registry().channelVm(channel.getId()), wiring.commandSink());
+                    bound.bindMute(button);
+                    binder.set(bound);
+                    fixture.lifecycle().enableRecoveryGate(() -> true, () -> () -> {
+                        sealing.countDown(); await(release);
+                    }, _ -> { });
+                    fixture.lifecycle().loadProjectFromPath(target);
+                    return button;
+                });
+                assertThat(sealing.await(15, TimeUnit.SECONDS)).isTrue();
+                runOnFx(() -> {
+                    assertThat(fixture.lifecycle().isProjectInstallationPending()).isTrue();
+                    mute.executeAccessibleAction(javafx.scene.AccessibleAction.FIRE);
+                    assertThat(vox.isMuted() || channel.isMuted())
+                            .as("refused while the project is being installed").isFalse();
+                });
+                release.countDown();
+                fixture.awaitOnFx(() -> !fixture.lifecycle().isProjectInstallationPending(), "incoming installation");
+                runOnFx(() -> mute.executeAccessibleAction(javafx.scene.AccessibleAction.FIRE));
+                assertThat(onFx(() -> vox.isMuted() && channel.isMuted()))
+                        .as("the same action mutes once the installation ended").isTrue();
+            } finally {
+                release.countDown();
+                runOnFx(() -> {
+                    if (binder.get() != null) binder.get().dispose();
+                    if (built.get() != null) built.get().dispose();
+                });
+                engine.shutdown();
+            }
+        }
+    }
+
     @Test void anAlreadyOpenImmersiveWindowCannotMutateReferencesDuringInstallationAndClosesOnReplacement() throws Exception {
         try (SaveFlowFixture fixture = new SaveFlowFixture(workspace, AutoSaveConfig.DEFAULT.withEnabled(false))) {
             Path incoming = fixture.anotherProjectOnDisk("Immersive target");

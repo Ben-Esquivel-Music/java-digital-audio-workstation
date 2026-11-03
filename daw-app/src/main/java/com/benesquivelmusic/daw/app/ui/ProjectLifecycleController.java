@@ -761,11 +761,17 @@ final class ProjectLifecycleController {
         });
     }
 
+    /**
+     * The open recovery gate's choice, asked on the FX thread from the gate's worker: the recovery dialog's
+     * answer, or Cancel without the dialog while a close runs ({@link #closing}), as {@link #presentRecovery}
+     * does (ruling R-1.6; PR #989 review 5711460812).
+     */
     private RecoveryChoice chooseRecoveryOnFx(RecoverySummary summary) {
         CompletableFuture<RecoveryChoice> answer = new CompletableFuture<>();
         postFx(() -> {
             try {
-                RecoveryChoice choice = recoveryDialogs.apply(summary).showAndWait().orElse(RecoveryChoice.CANCEL);
+                RecoveryChoice choice = closing != null ? recoveryRefusedWhileClosing()
+                        : recoveryDialogs.apply(summary).showAndWait().orElse(RecoveryChoice.CANCEL);
                 if (choice == RecoveryChoice.INSPECT_EVENTS) showInspectEvents(summary);
                 answer.complete(choice);
             } catch (RuntimeException | Error failure) { answer.completeExceptionally(failure); }
@@ -971,6 +977,16 @@ final class ProjectLifecycleController {
     private BooleanSupplier recordingInFlight = () -> false;
 
     /**
+     * The window's edit gate, {@code MainController.projectActionsAllowed},
+     * set through {@link #setProjectActionsAllowed}; the pure-unit default
+     * never refuses. Read live by the missing-assets relink, whose edits it
+     * refuses while it says no, and by the archive ({@link #onArchiveProject}),
+     * which it refuses before its chooser and again after each of its dialogs
+     * (PR #989 review 5711460812). FX thread.
+     */
+    private BooleanSupplier projectActionsAllowed = () -> true;
+
+    /**
      * Story 329 (decision D41) — the number of {@link #loadProjectFromPath}
      * calls so far. A migration dialog's Roll back re-enters the method while
      * the outer call waits for the dialog; the outer call, its number no
@@ -1145,8 +1161,11 @@ final class ProjectLifecycleController {
      * close set it ({@code ExitCoordinator.closeAtTheStop}) or the fallback
      * took over a close that had set it, so a stale continuation is refused:
      * the door's name, or {@code null}. While it is set every door and every
-     * later switch is refused at FINE — the window is input-inert then, so
-     * only a stale programmatic continuation can reach one — and the close's
+     * later switch is refused at FINE — what still asks for one while the
+     * window is inert is a stale programmatic continuation or a control
+     * activated without an input event, such as an assistive technology's
+     * action on the toolbar's Save or the Performance Stage's New, Open,
+     * Recent and Save (PR #989 review 5711460812) — and the close's
      * own nested work (its first-save chooser and create, its Save As copy)
      * runs under it. It is not part of {@link #switchPending}, which the
      * close itself waits on. Written only by {@link #setClosing}. FX thread.
@@ -1298,14 +1317,16 @@ final class ProjectLifecycleController {
      * {@code question} — Discard switches, Save makes the one save request
      * and starts again from (1) once it is {@link SaveOutcome.Saved} for the
      * same project, Cancel, a failed save and a cancelled location prompt run
-     * {@code notSwitched}.
+     * {@code notSwitched}, as do a Save and a Discard answered while a close
+     * runs, refused at FINE ({@link #switchIfTheAnswerCovers}).
      *
      * @param name        the switch's name, as a refusal names it
      * @param answered    what the door's answer covered
      * @param refused     step (1); {@code true} ends the switch
      * @param question    the prompt's content text
      * @param switchNow   what replaces the open project
-     * @param notSwitched what follows when the user kept the project open
+     * @param notSwitched what follows when the project stays open: Cancel, a failed save or a cancelled location
+     *                    prompt, or a Save or Discard refused while a close runs
      * @param stoppedAfterItsWork what "Stop waiting" reports for a late switch that already did its work, or
      *                    empty for a door ({@link DoorWait})
      */
@@ -1357,6 +1378,14 @@ final class ProjectLifecycleController {
      */
     private Function<RecoverySummary, RecoveryDialog> recoveryDialogs = RecoveryDialog::new;
 
+    /**
+     * Where {@link #onArchiveProject} asks for the archive's file, over the
+     * window it is given: by default the {@code FileChooser}
+     * ({@link #chooseArchiveTarget}); a test sets its own
+     * ({@link #setArchiveTargetChooser}). FX thread.
+     */
+    private Function<Window, Optional<Path>> archiveTargetChooser = this::chooseArchiveTarget;
+
     ProjectLifecycleController(ProjectManager projectManager,
                                SessionInterchangeController sessionInterchangeController,
                                NotificationBar notificationBar,
@@ -1400,7 +1429,8 @@ final class ProjectLifecycleController {
         this.assetRelink = new AssetRelinkFlow(openProjectAudio, audioDispatcher, notificationBar,
                 deps.repaintArrangement(), this::chooseRelinkFile, this::chooseRelinkFolder,
                 message -> confirm(ProjectAudioText.text("missingAssets.confirm.title"), message,
-                        ProjectAudioText.text("missingAssets.confirm.button")));
+                        ProjectAudioText.text("missingAssets.confirm.button")),
+                () -> projectActionsAllowed.getAsBoolean());
         this.renderGuard = new RenderReadinessGuard(openProjectAudio, notificationBar, this::confirm);
         this.doorWaitTimers = CloseTimers.onFx(fxDispatcher);
         // Story 333 — switchPending follows the installation fence too. The listener re-reads the fence
@@ -1446,9 +1476,17 @@ final class ProjectLifecycleController {
      * the write runs on the project manager's save writer, and its outcome
      * reaches the strip and the notification bar on a later FX turn. Save
      * stays enabled while a save runs: a second request is coalesced by the
-     * project manager (ruling F2). FX thread.
+     * project manager (ruling F2). Refused at FINE while the close protocol
+     * runs ({@link #closing}), whatever asked — the toolbar's Save, the
+     * Performance Stage's or a save failure's Retry (PR #989 review
+     * 5711460812); the close's own FLUSH saves through
+     * {@link #saveOpenProject}. FX thread.
      */
     void onSaveProject() {
+        if (closing != null) {
+            refuseWhileASwitchIsPending();
+            return;
+        }
         saveOpenProject(SaveFollowUp.NONE, () -> { });
     }
 
@@ -1468,11 +1506,12 @@ final class ProjectLifecycleController {
 
     /**
      * Story 333 — what {@link SaveAsFlow} needs of this controller: the Save
-     * As as the one switch pending, the recording and take facts, the
-     * installation of the adopted copy as the strip's new project and the
-     * folder-dependent work that follows a folder change, and the copy's
-     * journal open (the gate's, so a failure throws). FX thread, but for
-     * the journal's open, which runs on the Save As worker.
+     * As as the one switch pending, the recording and take facts, the closing
+     * door ({@link #closingDoor()}), the installation of the adopted copy as
+     * the strip's new project and the folder-dependent work that follows a
+     * folder change, and the copy's journal open (the gate's, so a failure
+     * throws). FX thread, but for the journal's open, which runs on the Save
+     * As worker.
      *
      * @return the flow's view of this controller
      */
@@ -1515,6 +1554,11 @@ final class ProjectLifecycleController {
             }
 
             @Override
+            public Optional<String> closingDoor() {
+                return ProjectLifecycleController.this.closingDoor();
+            }
+
+            @Override
             public void copyAdopted(ProjectMetadata adopted, Optional<LockStolenException> lockLost) {
                 projectReplaced(adopted.lastModified());
                 adoptedUnderALostLock = lockLost.orElse(null);
@@ -1545,10 +1589,16 @@ final class ProjectLifecycleController {
     /**
      * Prompts for a durable named snapshot, saves, and copies the saved
      * {@code project.daw} into {@code snapshots/} off the FX thread
-     * ({@link #createNamedSnapshot}).
+     * ({@link #createNamedSnapshot}). Refused at FINE while the close protocol
+     * runs ({@link #closing}), whatever asked, before its dialog opens (PR #989
+     * review 5711460812).
      */
     void onCreateNamedSnapshot() {
         if (isProjectInstallationPending()) return;
+        if (closing != null) {
+            refuseWhileASwitchIsPending();
+            return;
+        }
         TextInputDialog dialog = new TextInputDialog("");
         dialog.setTitle("Snapshot");
         dialog.setHeaderText("Create a named snapshot of the current project.");
@@ -1579,10 +1629,16 @@ final class ProjectLifecycleController {
      * ERROR). Nothing is queued when no save was requested — a cancelled
      * location prompt, a project that could not be created. A first save
      * creates the project's folder off the FX thread (story 333): its copy is
-     * queued in the FX step that submits that save, right behind it. FX
-     * thread.
+     * queued in the FX step that submits that save, right behind it. Refused
+     * at FINE while the close protocol runs ({@link #closing}), whatever
+     * asked — a close that began while the name dialog was open included
+     * (PR #989 review 5711460812). FX thread.
      */
     void createNamedSnapshot(String name) {
+        if (closing != null) {
+            refuseWhileASwitchIsPending();
+            return;
+        }
         String snapshotName = name == null || name.trim().isEmpty()
                 ? "Snapshot"
                 : name.trim();
@@ -2465,9 +2521,16 @@ final class ProjectLifecycleController {
      * that is just filenames"). Appendix A: "menu retains a 'Project Hub…'
      * item". The File-menu entry now opens this full-window browser, which
      * surfaces last-opened, size-on-disk, a health badge, search, and a
-     * per-project detail strip instead of bare filenames.
+     * per-project detail strip instead of bare filenames. Refused at FINE
+     * while the close protocol runs ({@link #closing}), whatever asked — the
+     * Performance Stage's Recent included — so no Hub opens then (PR #989
+     * review 5711460812).
      */
     void onRecentProjects() {
+        if (closing != null) {
+            refuseWhileASwitchIsPending();
+            return;
+        }
         projectHubPresenter.accept(buildProjectHub());
     }
 
@@ -2532,6 +2595,13 @@ final class ProjectLifecycleController {
         });
     }
 
+    /**
+     * While a close runs ({@link #closing}) the Import Summary is not shown:
+     * its text goes to the log at INFO. A dialog shown then would be fenced,
+     * one shown after the close's own dialog would also disable it, being
+     * application-modal, and an exit waiting for this replacement waits for
+     * its answer (ruling R-1.6; PR #989 review 5711460812).
+     */
     private void installImportedSessionAfterClose(Path source, SessionImportResult result) {
         deps.setProject().accept(new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY));
         projectReplaced(null);
@@ -2543,19 +2613,34 @@ final class ProjectLifecycleController {
         rebuildUI();
 
         String summary = sessionInterchangeController.buildImportSummary(result);
-        Alert summaryDialog = new Alert(Alert.AlertType.INFORMATION);
-        summaryDialog.setTitle("Import Summary");
-        summaryDialog.setHeaderText("DAWproject Exchange imported successfully");
-        summaryDialog.setContentText(summary);
-        ThemeManager.getDefault().applyTo(summaryDialog.getDialogPane());
-        summaryDialog.showAndWait();
+        if (closing != null) {
+            String door = closing;
+            LOG.info(() -> "The import summary of " + source + " was not shown while " + door
+                    + " closes the open project: " + summary);
+        } else {
+            Alert summaryDialog = new Alert(Alert.AlertType.INFORMATION);
+            summaryDialog.setTitle("Import Summary");
+            summaryDialog.setHeaderText("DAWproject Exchange imported successfully");
+            summaryDialog.setContentText(summary);
+            ThemeManager.getDefault().applyTo(summaryDialog.getDialogPane());
+            summaryDialog.showAndWait();
+        }
 
         notificationBar.show(NotificationLevel.SUCCESS,
                 "Imported DAWproject Exchange: " + result.sessionData().projectName());
         LOG.info("Imported DAWproject session from " + source);
     }
 
+    /**
+     * File ▸ Export DAWproject Exchange: refused, silently, while the project
+     * may not be edited ({@link #projectActionsAllowed}); otherwise the
+     * folder chooser, then {@link #exportSessionTo} with the folder it
+     * returned. FX thread.
+     */
     void onExportSession() {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         DirectoryChooser chooser = new DirectoryChooser();
         chooser.setTitle("Export DAWproject Exchange");
         Stage stage = (Stage) rootPane.getScene().getWindow();
@@ -2563,9 +2648,34 @@ final class ProjectLifecycleController {
         if (selected == null) {
             return;
         }
+        exportSessionTo(selected.toPath());
+    }
+
+    /**
+     * Exports the open project as a DAWproject Exchange into {@code folder},
+     * the folder Export DAWproject Exchange's chooser returned. It reads the
+     * project's edit gate ({@link #projectActionsAllowed}) again, since a
+     * close may have begun while the chooser was open — the chooser is
+     * native, so the window's fence never covers it, and with no switch
+     * pending the close neither refused it nor waits for it: while the gate
+     * says no, nothing is written, logged at INFO, since the user named the
+     * folder (ruling R-1.1 (e), in ruling 3 G4a's shape; PR #989 review
+     * 5711460812). Package-private so a test drives it without the chooser.
+     * FX thread.
+     *
+     * @param folder the folder the chooser returned
+     * @return whether the export was admitted
+     */
+    boolean exportSessionTo(Path folder) {
+        DawProject project = deps.project().get();
+        if (!projectActionsAllowed.getAsBoolean()) {
+            LOG.info(() -> "The DAWproject Exchange export of “" + project.getName() + "” to “"
+                    + folder.toAbsolutePath() + "” was not written: the project could not be edited.");
+            return false;
+        }
         try {
             SessionExportResult result = sessionInterchangeController.exportSession(
-                    deps.project().get(), selected.toPath(), deps.project().get().getName());
+                    project, folder, project.getName());
 
             String message = "DAWproject Exchange exported to " + result.outputPath().getFileName();
             if (!result.warnings().isEmpty()) {
@@ -2592,6 +2702,7 @@ final class ProjectLifecycleController {
                     "Export failed: " + e.getMessage());
             LOG.log(Level.WARNING, "Failed to export DAWproject Exchange", e);
         }
+        return true;
     }
 
     // ── Project Archive (Story 189 — Project Archive (ZIP With Assets)) ────
@@ -2605,41 +2716,77 @@ final class ProjectLifecycleController {
      * referenced by the project to detect missing asset files, asks for
      * per-asset decisions, then runs the ZIP I/O on a background virtual
      * thread. Progress is published to the status strip, not a modal.</p>
+     *
+     * <p>Refused while the window's edit gate says no
+     * ({@link #projectActionsAllowed}), whichever surface asked, such as the
+     * File menu, the Command Palette, a shortcut the user bound or the
+     * missing-assets report's link: silently before its chooser, and, logged
+     * at INFO, when the gate says no once the chooser or the plan dialog
+     * returns (PR #989 review 5711460812).</p>
      */
     void onArchiveProject() {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         DawProject current = deps.project().get();
         if (current == null) {
             notificationBar.show(NotificationLevel.ERROR, "No project to archive");
             return;
         }
 
-        FileChooser chooser = new FileChooser();
-        chooser.setTitle("Archive Project");
-        chooser.setInitialFileName(safeFileName(current.getName()) + ProjectArchiver.ARCHIVE_EXTENSION);
-        chooser.getExtensionFilters().add(
-                new FileChooser.ExtensionFilter("DAW Archive (*.dawz)", "*.dawz"));
-        Stage stage = (Stage) rootPane.getScene().getWindow();
-        java.io.File selected = chooser.showSaveDialog(stage);
-        if (selected == null) {
+        Window owner = rootPane.getScene() == null ? null : rootPane.getScene().getWindow();
+        Optional<Path> selected = archiveTargetChooser.apply(owner);
+        if (selected.isEmpty()) {
             return;
         }
-        Path archivePath = selected.toPath();
+        Path archivePath = selected.get();
         // FileChooser on some platforms does not append the extension.
         if (!archivePath.getFileName().toString().toLowerCase(java.util.Locale.ROOT)
                 .endsWith(ProjectArchiver.ARCHIVE_EXTENSION)) {
             archivePath = archivePath.resolveSibling(
                     archivePath.getFileName() + ProjectArchiver.ARCHIVE_EXTENSION);
         }
+        if (!projectActionsAllowed.getAsBoolean()) {
+            logArchiveNotWritten(current, archivePath);
+            return;
+        }
 
         long estimatedAssetBytes = estimateArchiveAssetBytes(current, ArchiveOptions.defaults());
         List<String> missing = collectMissingAssetPaths(current);
-        Window owner = rootPane.getScene().getWindow();
         Optional<ArchiveSummaryDialog.ArchivePlan> plan =
                 ArchiveSummaryDialog.chooseArchivePlan(missing, estimatedAssetBytes, owner);
         if (plan.isEmpty()) {
             return;
         }
+        if (!projectActionsAllowed.getAsBoolean()) {
+            logArchiveNotWritten(current, archivePath);
+            return;
+        }
         archiveInBackground(current, archivePath, plan.get());
+    }
+
+    /**
+     * The archive's file, asked with a {@code FileChooser} over {@code owner}: titled "Archive Project", the
+     * project's safe file name with the {@code .dawz} extension as its initial name, and the {@code .dawz} filter;
+     * empty when the user cancels. The default of {@link #archiveTargetChooser}. FX thread.
+     */
+    private Optional<Path> chooseArchiveTarget(Window owner) {
+        DawProject current = deps.project().get();
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Archive Project");
+        chooser.setInitialFileName(safeFileName(current.getName()) + ProjectArchiver.ARCHIVE_EXTENSION);
+        chooser.getExtensionFilters().add(
+                new FileChooser.ExtensionFilter("DAW Archive (*.dawz)", "*.dawz"));
+        return Optional.ofNullable(chooser.showSaveDialog(owner)).map(java.io.File::toPath);
+    }
+
+    /**
+     * The INFO line of an archive refused once the user named its file: nothing in the window can show that it
+     * was not written (PR #989 review 5711460812). FX thread.
+     */
+    private static void logArchiveNotWritten(DawProject project, Path archivePath) {
+        LOG.info(() -> "The archive of “" + project.getName() + "” to “" + archivePath
+                + "” was not written: the project could not be edited.");
     }
 
     /**
@@ -3007,14 +3154,29 @@ final class ProjectLifecycleController {
                 pending.stoppedAfterItsWork());
     }
 
-    /** Step (3) of an {@link AnsweredSwitch}: no app write is pending. FX thread. */
+    /**
+     * Step (3) of an {@link AnsweredSwitch}: no app write is pending. A Save
+     * or Discard the prompt answers while a close runs ({@link #closing}),
+     * read once the prompt has returned, is refused at FINE and does what its
+     * Cancel does — {@code notSwitched} runs — as in
+     * {@link #proceedUnlessCancelled}: the prompt was already up when the
+     * close began, and either answer would save or replace the project the
+     * close is closing (ruling R-1.1 (e); PR #989 review 5711460812). FX
+     * thread.
+     */
     private void switchIfTheAnswerCovers(AnsweredSwitch pending) {
         DawProject open = deps.project().get();
         if (!open.isDirty() || pending.answered().covers(open)) {
             pending.switchNow().run();
             return;
         }
-        switch (askAboutUnsavedChanges(UnsavedChangesPrompt.door(pending.question()))) {
+        UnsavedChangesAnswer answer = askAboutUnsavedChanges(UnsavedChangesPrompt.door(pending.question()));
+        if (answer != UnsavedChangesAnswer.CANCEL && closing != null) {
+            refuseWhileASwitchIsPending();
+            pending.notSwitched().run();
+            return;
+        }
+        switch (answer) {
             case DISCARD -> pending.switchNow().run();
             case CANCEL -> pending.notSwitched().run();
             case SAVE -> saveThenJudgeAgain(pending.name(), () -> judgeTheAnsweredSwitch(pending),
@@ -3250,7 +3412,10 @@ final class ProjectLifecycleController {
      *       edit made during the write asks again); a failed save — reported
      *       as every save failure is — cancels the door (ruling G1 (3)). A
      *       failed save the door did not ask for leaves the project dirty, so
-     *       the prompt asks.</li>
+     *       the prompt asks. While a close runs ({@link #closing}), a Save or
+     *       Discard the prompt answers is refused at FINE and does what its
+     *       Cancel does: the prompt was already up when the close began
+     *       ({@link #proceedUnlessCancelled}).</li>
      * </ol>
      *
      * @param door    the door's name, as the menus name it (the refusal INFO names it)
@@ -3272,13 +3437,28 @@ final class ProjectLifecycleController {
                 () -> proceedUnlessCancelled(door, proceed), Optional.empty());
     }
 
-    /** Step 4 of {@link #whenProjectMayClose}: no app write is pending. FX thread. */
+    /**
+     * Step 4 of {@link #whenProjectMayClose}: no app write is pending. A Save
+     * or Discard the prompt answers while a close runs ({@link #closing}),
+     * read once the prompt has returned, is refused at FINE and does what its
+     * Cancel does: the prompt was already up when the close began, with no
+     * switch pending, so the close neither refused the door nor waits for it,
+     * and an assistive technology's action still answers the prompt through
+     * the window's fence; but either answer would save or replace the
+     * project the close is closing, or open the door's file dialog (ruling
+     * R-1.1 (e); PR #989 review 5711460812). FX thread.
+     */
     private void proceedUnlessCancelled(String door, Runnable proceed) {
         if (!deps.project().get().isDirty()) {
             proceed.run();
             return;
         }
-        switch (askAboutUnsavedChanges(UnsavedChangesPrompt.DOOR)) {
+        UnsavedChangesAnswer answer = askAboutUnsavedChanges(UnsavedChangesPrompt.DOOR);
+        if (answer != UnsavedChangesAnswer.CANCEL && closing != null) {
+            refuseWhileASwitchIsPending();
+            return;
+        }
+        switch (answer) {
             case CANCEL -> { }
             case DISCARD -> proceed.run();
             // A failed save at the prompt cancels the door; its ERROR is already shown.
@@ -3329,8 +3509,10 @@ final class ProjectLifecycleController {
      * {@code switchNow}, Cancel ends the door with no message, Save makes the
      * one save request and starts again from (1) once it is
      * {@link SaveOutcome.Saved} for the same project, and a failed save or a
-     * cancelled location prompt end the door, its ERROR already shown. With
-     * no edit since the door's judgment nothing more is asked. FX thread.
+     * cancelled location prompt end the door, its ERROR already shown. While
+     * a close runs, a Save or Discard is refused at FINE and ends the door as
+     * its Cancel does ({@link #switchIfTheAnswerCovers}). With no edit since
+     * the door's judgment nothing more is asked. FX thread.
      */
     private void switchAfterItsDialog(DoorDialog dialog, Runnable switchNow) {
         handOver(dialog);
@@ -3761,7 +3943,10 @@ final class ProjectLifecycleController {
      * Story 333 (design §1.4, §3.1) — the close protocol starts waiting on
      * disk work: from now until {@link #endClosing()} its run is the one
      * switch pending, so a door or a later switch a stale continuation
-     * starts is refused, at FINE. FX thread.
+     * starts is refused, at FINE, as is a Save or Discard that a door's
+     * unsaved-changes prompt, already up when it began, answers
+     * ({@link #proceedUnlessCancelled}, {@link #switchIfTheAnswerCovers}). FX
+     * thread.
      *
      * @param door the close's name, as a log line or a late switch's refusal names it
      */
@@ -3772,6 +3957,18 @@ final class ProjectLifecycleController {
     /** Story 333 — the close protocol's run ended; no switch of it is pending any more. FX thread. */
     void endClosing() {
         setClosing(null);
+    }
+
+    /**
+     * The name of the door whose close runs now ({@link #closing}), or empty:
+     * what a window that work lands on the FX thread reads before it shows,
+     * as the project-lock conflict dialog does, so that it shows none while
+     * a close runs (ruling R-1.6; PR #989 review 5711460812). FX thread.
+     *
+     * @return the closing door's name, or empty while no close runs
+     */
+    Optional<String> closingDoor() {
+        return Optional.ofNullable(closing);
     }
 
     /**
@@ -3974,13 +4171,17 @@ final class ProjectLifecycleController {
      * left, Save is the default button (Enter) and Cancel the cancel button
      * (Escape and the window's close box); without it the buttons are the
      * doors' own, as before. Owned by the prompt's owner, when it names one.
-     * FX thread.
+     * It carries the close-surface mark
+     * ({@link WindowInputFence#markCloseSurface(Dialog)}), so it is not fenced
+     * when it shows while the close's fence is up (PR #989 review
+     * 5711460812). FX thread.
      *
      * @param prompt what the prompt says, and its buttons
      * @return the answer; the window closed without an answer is a Cancel
      */
     UnsavedChangesAnswer askAboutUnsavedChanges(UnsavedChangesPrompt prompt) {
         Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
+        WindowInputFence.markCloseSurface(alert);
         alert.setTitle("Unsaved Changes");
         alert.setHeaderText(prompt.header());
         alert.setContentText(prompt.content());
@@ -4032,8 +4233,10 @@ final class ProjectLifecycleController {
      * late switch that already did something is refused with a WARNING
      * instead ({@link #whenNoAppWriteIsPending(String, String, BooleanSupplier, Runnable)}).
      * While the close protocol runs ({@link #closing}, story 333) the refusal
-     * is a FINE log, not a toast: every window is input-inert then, so only a
-     * stale programmatic continuation is refused. FX thread.
+     * is a FINE log, not a toast: the window is inert then, and what still
+     * asks is a stale programmatic continuation or a control activated
+     * without an input event, such as an assistive technology's action
+     * (PR #989 review 5711460812). FX thread.
      */
     void refuseWhileASwitchIsPending() {
         if (closing != null) {
@@ -4394,7 +4597,19 @@ final class ProjectLifecycleController {
      * {@code project.daw.v<n>.*.bak} (created by the first save after a
      * previous migrated load) and reloads the project. When no backup
      * exists yet, rolling back simply abandons the in-memory migrated
-     * state — the on-disk file is still the pre-migration original.
+     * state — the on-disk file is still the pre-migration original. While a
+     * close runs ({@link #closing}) the dialog is not shown, so Roll back is
+     * not offered and "Don't show again" is not asked: a report the dialog
+     * would have shown goes to the log at INFO instead, and project.daw keeps
+     * its older version until the project is saved, so an open before then
+     * shows the report again. A dialog shown then would be fenced, one shown
+     * after the close's own dialog would also disable it, being
+     * application-modal, and an exit waiting for this open's install waits
+     * for its answer (ruling R-1.6; PR #989 review 5711460812). A report
+     * already up when a close begins still answers through the window's
+     * fence, but its Roll back… then asks no confirmation and rolls nothing
+     * back: the closing door passed to the dialog is read when it is pressed
+     * ({@code MigrationReportDialog.confirmRollback}).
      *
      * <p>Package-private so tests can drive it directly without going
      * through a directory chooser.</p>
@@ -4407,8 +4622,17 @@ final class ProjectLifecycleController {
         if (report == null || !report.changesAuthoredContent()) {
             return;
         }
+        if (closing != null) {
+            if (!suppressed) {
+                String door = closing;
+                LOG.info(() -> "The migration report for " + projectDir + " was not shown while " + door
+                        + " closes the open project; Roll back was not offered, and project.daw is still v"
+                        + report.fromVersion() + ", so an open before the project is saved shows the report again.");
+            }
+            return;
+        }
         MigrationReportDialog.showUnlessSuppressed(report, projectDir, suppressed,
-                () -> rollbackMigration(projectDir, report));
+                () -> rollbackMigration(projectDir, report), this::closingDoor);
     }
 
     void showMigrationHistoryForCurrentProject() {
@@ -4796,7 +5020,8 @@ final class ProjectLifecycleController {
      * {@link #recoverAction}, by default {@link #beginRecovery(Path, Runnable)}
      * (story 298's journal-replay recovery). Each gated action dismisses the
      * window inside its gate's proceed, so a refused one leaves it up (story
-     * 331); "Discard recovery", which nothing gates, dismisses it first.
+     * 331); "Discard recovery", which no switch gate refuses, is refused while
+     * a close runs and otherwise dismisses it first.
      *
      * @return a new Welcome view
      */
@@ -4820,9 +5045,17 @@ final class ProjectLifecycleController {
                 // overridable seam, which dismisses the launch window once
                 // the recovery may begin.
                 projectDir -> recoverAction.accept(projectDir, dismissWelcome),
-                // Discard replaces no project, so no gate refuses it: it
-                // dismisses, then confirm-deletes the journal/ dir.
-                projectDir -> { dismiss(ref[0]); discardAction.accept(projectDir); },
+                // Discard replaces no project, so no switch gate refuses it; it is refused while
+                // a close runs, before the window is dismissed, as the other doors are (PR #989 review
+                // 5711460812). Otherwise it dismisses, then confirm-deletes the journal/ dir.
+                projectDir -> {
+                    if (closing != null) {
+                        refuseWhileASwitchIsPending();
+                        return;
+                    }
+                    dismiss(ref[0]);
+                    discardAction.accept(projectDir);
+                },
                 () -> openProject(dismissWelcome),
                 () -> restoreFromArchive(dismissWelcome),
                 () -> importSession(dismissWelcome));
@@ -5002,7 +5235,12 @@ final class ProjectLifecycleController {
      * Inspect and Cancel end the recovery; so does anything thrown here,
      * which is logged at SEVERE with its stack, shown as the ERROR "Recovery
      * failed: &lt;reason&gt;" ({@link #failureReason}), and shows the Welcome
-     * window again — nothing is left pending.
+     * window again — nothing is left pending. While a close runs
+     * ({@link #closing}) the dialog is not shown: the choice is Cancel, logged
+     * at INFO, and the Welcome window is not shown again, because a dialog
+     * shown then would be fenced, and one shown after the close's own dialog
+     * would also disable it, being application-modal (ruling R-1.6; PR #989
+     * review 5711460812).
      */
     private void presentRecovery(Path projectDir, RecoverySummary summary) {
         try {
@@ -5012,7 +5250,8 @@ final class ProjectLifecycleController {
                         this::refuseWhileATakeIsRecordingOrBeingWritten, () -> loadProjectFromPath(projectDir)));
                 return;
             }
-            RecoveryChoice choice = recoveryDialogs.apply(summary).showAndWait().orElse(RecoveryChoice.CANCEL);
+            RecoveryChoice choice = closing != null ? recoveryRefusedWhileClosing()
+                    : recoveryDialogs.apply(summary).showAndWait().orElse(RecoveryChoice.CANCEL);
             switch (choice) {
                 // The wait for the app's saves before the replay keeps the
                 // recovery pending as the switch waiting; the replay's worker
@@ -5046,13 +5285,30 @@ final class ProjectLifecycleController {
     }
 
     /**
+     * The recovery decision while a close runs ({@link #closing}): Cancel, without the dialog, logged at INFO.
+     * A dialog shown then would be fenced, and one shown after the close's own dialog would also disable it, being
+     * application-modal (ruling R-1.6; PR #989 review 5711460812). FX thread.
+     */
+    private RecoveryChoice recoveryRefusedWhileClosing() {
+        String door = closing;
+        LOG.info(() -> "The recovery dialog was not shown while " + door
+                + " closes the open project; the project was not opened, and what it offered to recover was kept.");
+        return RecoveryChoice.CANCEL;
+    }
+
+    /**
      * Re-presents the Welcome launch screen after a recovery outcome that did
      * not open a project (Inspect / Cancel / Discard). The Recover and Discard
      * actions dismiss the launch window up-front; without re-presenting it the
      * user would be stranded on the empty main window with no way back to the
-     * recover candidates (story 298 review).
+     * recover candidates (story 298 review). While a close runs
+     * ({@link #closing}) it shows nothing (ruling R-1.6; PR #989 review
+     * 5711460812).
      */
     private void reshowWelcomeAfterRecovery() {
+        if (closing != null) {
+            return;
+        }
         showWelcome();
     }
 
@@ -5296,10 +5552,23 @@ final class ProjectLifecycleController {
      * worded from the summary only ({@link RecoveryDialog#inspectEventsText}) —
      * the changes journaled after the recovery point, the journal's segment-file
      * count and the change types, never a session record — leaving the project
-     * unopened so the user can decide their next step.
+     * unopened so the user can decide their next step. While a close runs ({@link #closing}) it is not shown: its
+     * text goes to the log at INFO, and the recovery then ends as after the dialog, as its Cancel ends it. The
+     * recovery dialog was already up when the close began and still answers through the window's fence, but a
+     * dialog shown now would be fenced, one shown after the close's own dialog would also disable it, being
+     * application-modal, and an exit waiting for the gated open would wait for its answer (ruling R-1.6; PR #989
+     * review 5711460812). FX thread.
      */
     private void showInspectEvents(RecoverySummary summary) {
-        DawgDialog.info("Captured events", RecoveryDialog.inspectEventsText(summary)).showAndWait();
+        String events = RecoveryDialog.inspectEventsText(summary);
+        if (closing != null) {
+            String door = closing;
+            LOG.info(() -> "The Captured events dialog of the recovery was not shown while " + door
+                    + " closes the open project: the project was not opened, and what it offered to recover was"
+                    + " kept. It would have said: " + events);
+            return;
+        }
+        DawgDialog.info("Captured events", events).showAndWait();
     }
 
     /**
@@ -5334,9 +5603,13 @@ final class ProjectLifecycleController {
         discardConfirmedRecovery(projectDir);
     }
 
-    /** Holds an independent writable target lease for the entire confirmed discard. */
+    /**
+     * Holds an independent writable target lease for the entire confirmed discard. Refused while a recovery is
+     * pending, and while a close runs ({@link #closing}) — a close that began while its confirmation asked
+     * included (PR #989 review 5711460812).
+     */
     void discardConfirmedRecovery(Path projectDir) {
-        if (recovering) { refuseWhileASwitchIsPending(); return; }
+        if (recovering || closing != null) { refuseWhileASwitchIsPending(); return; }
         long attempt = ++loadAttempts;
         raiseInstallationFence(RECOVER_SESSION_DOOR);
         try {
@@ -5880,6 +6153,17 @@ final class ProjectLifecycleController {
     }
 
     /**
+     * Sets where {@link #onArchiveProject} asks for the archive's file: given
+     * the window, the chosen file, or empty for a cancel. The default is the
+     * {@code FileChooser}. FX thread.
+     *
+     * @param chooser asks for the archive's file; must not be {@code null}
+     */
+    void setArchiveTargetChooser(Function<Window, Optional<Path>> chooser) {
+        this.archiveTargetChooser = Objects.requireNonNull(chooser, "chooser must not be null");
+    }
+
+    /**
      * Sets the story-298 journal-open hook, invoked with a project directory
      * after a successful open / new so {@code MainController}'s
      * {@code ProjectJournalCoordinator} can start the write-ahead journal. A
@@ -5929,6 +6213,17 @@ final class ProjectLifecycleController {
      */
     void setRecordingInFlightCheck(BooleanSupplier check) {
         this.recordingInFlight = Objects.requireNonNull(check, "check must not be null");
+    }
+
+    /**
+     * Sets the window's edit gate the missing-assets relink and the archive
+     * read (PR #989 review 5711460812).
+     *
+     * @param projectActionsAllowed whether the project may be edited now
+     */
+    void setProjectActionsAllowed(BooleanSupplier projectActionsAllowed) {
+        this.projectActionsAllowed = Objects.requireNonNull(
+                projectActionsAllowed, "projectActionsAllowed must not be null");
     }
 
     /** Invokes the journal-open hook when one is installed (story 298). */

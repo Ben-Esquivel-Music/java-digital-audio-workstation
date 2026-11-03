@@ -20,6 +20,7 @@ import java.util.Optional;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -67,6 +68,13 @@ import java.util.logging.Logger;
  * {@link RowStatus.Working}). Every effect is fenced: a result of an open
  * that is no longer the current one — another project was opened, a new one
  * made, the window closed — does nothing.</p>
+ *
+ * <p>A relink edits the project, so it reads the window's edit gate (PR #989
+ * review 5711460812). While the gate says no, Locate file and Locate folder
+ * are refused before their chooser and again after it returns, silently; a
+ * check, a search or a confirmation that lands then is discarded, its rows
+ * are idle again and it is logged at INFO. Skip and a search's cancel change
+ * only the session's report, and are not refused.</p>
  */
 final class AssetRelinkFlow {
 
@@ -165,6 +173,7 @@ final class AssetRelinkFlow {
     private final FxDispatcher dispatcher;
     private final NotificationBar notificationBar;
     private final Runnable repaint;
+    private final BooleanSupplier projectActionsAllowed;
     private FileLocator fileLocator;
     private FolderLocator folderLocator;
     private Confirmation confirmation;
@@ -186,10 +195,14 @@ final class AssetRelinkFlow {
      * @param folderLocator   asks for a folder to search
      * @param confirmation    asks whether to use a located file that needs
      *                        the user's consent ({@link #confirmationText})
+     * @param projectActionsAllowed the window's edit gate, read on the FX thread
+     *                        (PR #989 review 5711460812)
      */
     AssetRelinkFlow(OpenProjectAudio audio, FxDispatcher dispatcher, NotificationBar notificationBar,
                     Runnable repaint, FileLocator fileLocator, FolderLocator folderLocator,
-                    Confirmation confirmation) {
+                    Confirmation confirmation, BooleanSupplier projectActionsAllowed) {
+        this.projectActionsAllowed = Objects.requireNonNull(
+                projectActionsAllowed, "projectActionsAllowed must not be null");
         this.audio = Objects.requireNonNull(audio, "audio must not be null");
         this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher must not be null");
         this.notificationBar = Objects.requireNonNull(notificationBar, "notificationBar must not be null");
@@ -214,6 +227,9 @@ final class AssetRelinkFlow {
      */
     void locateFile(OpenProjectAudio.Generation generation, MissingAsset row) {
         Objects.requireNonNull(row, "row must not be null");
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         Session owner = sessionFor(generation);
         AssetReference asset = row.reference();
         if (owner == null || !actionable(owner, asset)) {
@@ -222,7 +238,8 @@ final class AssetRelinkFlow {
         Optional<Path> picked = fileLocator.locate(row,
                 AssetRelinker.locateFileDirectory(asset, audio.projectDirectory().orElse(null)));
         // The chooser ran a nested event loop: the open, or the row, may have changed meanwhile.
-        if (picked.isEmpty() || session != owner || !audio.isCurrent(generation) || !actionable(owner, asset)) {
+        if (picked.isEmpty() || session != owner || !audio.isCurrent(generation) || !actionable(owner, asset)
+                || !projectActionsAllowed.getAsBoolean()) {
             return;
         }
         AssetRelinker.Request request = AssetRelinker.request(generation.project(), asset);
@@ -230,10 +247,11 @@ final class AssetRelinkFlow {
         owner.statuses.put(asset, new RowStatus.Working(job));
         refresh(owner);
         Path file = picked.get();
+        String locatedName = String.valueOf(file.getFileName());
         start(owner, job, () -> {
             RelinkPreparation prepared = prepare(asset, file.toString(), () -> relinker.prepare(request, file));
             if (prepared != null) {
-                post(owner, job, () -> located(owner, job, prepared));
+                post(owner, job, () -> located(owner, job, prepared, locatedName));
             }
         });
     }
@@ -268,12 +286,16 @@ final class AssetRelinkFlow {
      * @param generation the open the report belongs to
      */
     void locateFolder(OpenProjectAudio.Generation generation) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         Session owner = sessionFor(generation);
         if (owner == null || owner.search != null) {
             return;
         }
         Optional<Path> picked = folderLocator.locate(audio.projectDirectory());
-        if (picked.isEmpty() || session != owner || !audio.isCurrent(generation) || owner.search != null) {
+        if (picked.isEmpty() || session != owner || !audio.isCurrent(generation) || owner.search != null
+                || !projectActionsAllowed.getAsBoolean()) {
             return;
         }
         Map<AssetReference, AssetRelinker.Request> requests = new LinkedHashMap<>();
@@ -453,9 +475,19 @@ final class AssetRelinkFlow {
 
     // ── the FX side of a job ─────────────────────────────────────────────────
 
-    /** A Locate file check ended. */
-    private void located(Session owner, long job, RelinkPreparation prepared) {
+    /**
+     * A Locate file check ended. One that lands while the window's edit gate
+     * says no is discarded (PR #989 review 5711460812).
+     *
+     * @param locatedName the name of the file the user picked
+     */
+    private void located(Session owner, long job, RelinkPreparation prepared, String locatedName) {
         if (!waitsFor(owner, prepared.asset(), job)) {
+            return;
+        }
+        if (!projectActionsAllowed.getAsBoolean()) {
+            discardLanding(owner, prepared.asset(), "The relink of “" + locatedName
+                    + "” was not applied: the project could not be edited.");
             return;
         }
         switch (prepared) {
@@ -474,13 +506,24 @@ final class AssetRelinkFlow {
         }
     }
 
-    /** A folder search ended. */
+    /**
+     * A folder search ended. One that lands while the window's edit gate says
+     * no relinks nothing: its rows are idle again (PR #989 review 5711460812).
+     */
     private void searched(Session owner, long job, FolderOutcome outcome) {
         if (owner.search == null || owner.search.job() != job) {
             return;
         }
         Path folder = owner.search.folder();
         owner.search = null;
+        if (!projectActionsAllowed.getAsBoolean()) {
+            owner.statuses.values().removeIf(status -> status instanceof RowStatus.Working working
+                    && working.job() == job);
+            refresh(owner);
+            LOG.info(() -> "The search of “" + folder
+                    + "” relinked nothing: the project could not be edited.");
+            return;
+        }
         switch (outcome) {
             case FolderOutcome.Failed failed -> {
                 owner.statuses.values().removeIf(status -> status instanceof RowStatus.Working working
@@ -549,26 +592,50 @@ final class AssetRelinkFlow {
      * modal, and the result handlers run as the dispatcher's per-frame work,
      * during which JavaFX forbids a nested event loop: the question is asked
      * on a later turn of the FX event loop, and the open and the row are
-     * checked again on each side of it.
+     * checked again on each side of it. The window's edit gate is read on
+     * each side too: while it says no, the question is not asked, or its yes
+     * is not applied, and the relink is discarded (PR #989 review
+     * 5711460812).
      */
     private void confirmThenApply(Session owner, long job, RelinkPreparation.Candidate candidate) {
         AssetReference asset = candidate.asset();
+        String refused = "The relink of “" + candidate.locatedName()
+                + "” was not applied: the project could not be edited.";
         dispatcher.onFx(() -> {
             if (!waitsFor(owner, asset, job)) {
+                return;
+            }
+            if (!projectActionsAllowed.getAsBoolean()) {
+                discardLanding(owner, asset, refused);
                 return;
             }
             boolean useIt = confirmation.confirm(confirmationText(candidate));
             if (!waitsFor(owner, asset, job)) {
                 return;
             }
-            if (useIt) {
-                apply(owner, candidate);
-                repaint.run();
-            } else {
+            if (!useIt) {
                 owner.statuses.remove(asset);
                 refresh(owner);
+                return;
             }
+            if (!projectActionsAllowed.getAsBoolean()) {
+                discardLanding(owner, asset, refused);
+                return;
+            }
+            apply(owner, candidate);
+            repaint.run();
         });
+    }
+
+    /**
+     * Discards a relink that landed while the window's edit gate said no: the
+     * row is idle again and still listed as missing, and the discard is
+     * logged at INFO (PR #989 review 5711460812).
+     */
+    private void discardLanding(Session owner, AssetReference asset, String text) {
+        owner.statuses.remove(asset);
+        refresh(owner);
+        LOG.info(text);
     }
 
     /**

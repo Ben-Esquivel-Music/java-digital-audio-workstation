@@ -19,10 +19,13 @@ import javafx.scene.control.MenuItem;
 import javafx.scene.control.Tooltip;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
+import javafx.stage.Stage;
 
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -40,6 +43,12 @@ import java.util.logging.Logger;
  * {@link MidSideWrapperPlugin#removePlugin(ChainOwner, DawPlugin)} so the
  * DSP chain stays wired. Double-clicking an entry opens
  * {@link InnerPluginParameterDialog} on that inner plugin's parameters.</p>
+ *
+ * <p>Every edit reads {@code editsAdmitted} — the editor's live read of the
+ * host's UI-write admission — when it acts: Add before its picker opens and
+ * again once the picker returns, Remove before it removes. While it says no,
+ * the chain is untouched and the list shows it as it is (PR #989 review
+ * 5711460812).</p>
  */
 final class InnerChainPane extends VBox {
 
@@ -51,11 +60,24 @@ final class InnerChainPane extends VBox {
 
     private final ChainOwner owner;
     private final MidSideWrapperPlugin wrapper;
+    private final BooleanSupplier editsAdmitted;
+    private final Consumer<Stage> dialogOpened;
     private final ListView<DawPlugin> listView;
 
-    InnerChainPane(MidSideWrapperPlugin wrapper, ChainOwner owner, String displayLabel) {
+    /**
+     * @param editsAdmitted whether an edit may land now, read on the FX thread
+     *                      at each edit: the editor's live read, no once the
+     *                      editor is detached and otherwise
+     *                      {@code context.parameterStore().uiWritesAdmitted()}
+     * @param dialogOpened  handed each parameter dialog this pane opens, on the
+     *                      FX thread, so the editor can close it with itself
+     */
+    InnerChainPane(MidSideWrapperPlugin wrapper, ChainOwner owner, String displayLabel,
+            BooleanSupplier editsAdmitted, Consumer<Stage> dialogOpened) {
         this.wrapper = Objects.requireNonNull(wrapper, "wrapper must not be null");
         this.owner = Objects.requireNonNull(owner, "owner must not be null");
+        this.editsAdmitted = Objects.requireNonNull(editsAdmitted, "editsAdmitted must not be null");
+        this.dialogOpened = Objects.requireNonNull(dialogOpened, "dialogOpened must not be null");
         Objects.requireNonNull(displayLabel, "displayLabel must not be null");
         setSpacing(4);
         setPadding(new Insets(6));
@@ -112,6 +134,9 @@ final class InnerChainPane extends VBox {
     }
 
     private void showPicker() {
+        if (!editsAdmitted.getAsBoolean()) {
+            return; // no picker opens while an edit cannot land
+        }
         List<EffectChoice> choices = effectMenuEntries(BuiltInDawPlugin.menuEntries())
                 .stream()
                 .map(EffectChoice::new)
@@ -124,7 +149,11 @@ final class InnerChainPane extends VBox {
         dialog.setHeaderText("Select an effect to add to the " + owner + " chain");
         dialog.setContentText("Effect:");
         Optional<EffectChoice> picked = dialog.showAndWait();
-        picked.ifPresent(choice -> addBuiltIn(choice.entry()));
+        // Read again: the host may have begun refusing while the picker was open.
+        if (picked.isEmpty() || !editsAdmitted.getAsBoolean()) {
+            return;
+        }
+        addBuiltIn(picked.get().entry());
     }
 
     private void addBuiltIn(BuiltInDawPlugin.MenuEntry entry) {
@@ -162,6 +191,9 @@ final class InnerChainPane extends VBox {
             ContextMenu menu = new ContextMenu();
             MenuItem remove = new MenuItem("Remove");
             remove.setOnAction(_ -> {
+                if (!editsAdmitted.getAsBoolean()) {
+                    return; // the list already shows the chain
+                }
                 wrapper.removePlugin(owner, item);
                 refresh();
             });
@@ -180,7 +212,7 @@ final class InnerChainPane extends VBox {
             if (params == null || params.isEmpty()) {
                 return;
             }
-            InnerPluginParameterDialog.open(plugin, owner);
+            dialogOpened.accept(InnerPluginParameterDialog.open(plugin, owner, editsAdmitted));
         }
     }
 }

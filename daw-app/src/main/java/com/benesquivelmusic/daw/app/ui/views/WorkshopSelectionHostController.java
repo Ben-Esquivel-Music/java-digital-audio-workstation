@@ -217,6 +217,13 @@ public final class WorkshopSelectionHostController {
     private InspectorSelection lastApplied;
 
     /**
+     * The window's edit gate, handed to every plug-in panel this controller
+     * builds; {@code () -> true} from the six-argument constructor (PR #989
+     * review 5711460812).
+     */
+    private final BooleanSupplier projectActionsAllowed;
+
+    /**
      * Creates the wiring controller. The selection-model listener is
      * installed immediately; the current selection is applied if Workshop
      * is already active.
@@ -253,6 +260,28 @@ public final class WorkshopSelectionHostController {
                                             BooleanSupplier workshopActiveSupplier,
                                             java.util.ResourceBundle messages,
                                             EventBus eventBus) {
+        this(workshopView, selectionModel, projectSupplier, workshopActiveSupplier, messages, eventBus,
+                () -> true);
+    }
+
+    /**
+     * Creates the wiring controller whose plug-in panels read the window's
+     * edit gate: while it says no, a parameter change, a preset load and an
+     * A/B toggle on a panel are refused and the panel shows the processor
+     * again (PR #989 review 5711460812). The other parameters are as the
+     * six-argument constructor's.
+     *
+     * @param projectActionsAllowed the window's edit gate; must not be {@code null}
+     */
+    public WorkshopSelectionHostController(WorkshopView workshopView,
+                                            InspectorSelectionModel selectionModel,
+                                            Supplier<DawProject> projectSupplier,
+                                            BooleanSupplier workshopActiveSupplier,
+                                            java.util.ResourceBundle messages,
+                                            EventBus eventBus,
+                                            BooleanSupplier projectActionsAllowed) {
+        this.projectActionsAllowed = Objects.requireNonNull(projectActionsAllowed,
+                "projectActionsAllowed must not be null");
         this.workshopView = Objects.requireNonNull(workshopView,
                 "workshopView must not be null");
         this.selectionModel = Objects.requireNonNull(selectionModel,
@@ -667,6 +696,10 @@ public final class WorkshopSelectionHostController {
                 panel.getState().loadValues(currentValues);
                 panel.refreshControls();
             }
+            // A refused edit shows the processor's values again (PR #989
+            // review 5711460812); the publishing handler stays unwrapped.
+            panel.setEditGate(projectActionsAllowed,
+                    () -> InsertEffectFactory.getParameterValues(type, slot.getProcessor()));
             panel.setOnParameterChanged(
                     InsertEffectFactory.createPublishingParameterHandler(slot, type));
             return panel;

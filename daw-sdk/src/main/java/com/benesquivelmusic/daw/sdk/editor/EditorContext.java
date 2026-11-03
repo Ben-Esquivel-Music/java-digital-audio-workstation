@@ -4,9 +4,9 @@ import javafx.beans.value.ObservableValue;
 
 /**
  * The narrow set of host services a plugin editor may call (Plugin View Design
- * Book §4.1). Handed to {@link PluginEditorFactory.Panel#createPanel(EditorContext)}
- * and available to a {@link PluginEditorFactory.Canvas} through the surface the
- * host attaches.
+ * Book §4.1). Handed to {@link PluginEditorFactory.Panel#createPanel(EditorContext)}.
+ * A {@link PluginEditorFactory.Canvas} is not handed one: it receives only the
+ * {@link CanvasSurface} the host attaches.
  *
  * <p>This interface is deliberately kept small (§9 rejection #2 — no god-object
  * {@code EditorContext}): it exposes only theme, the parameter store, the
@@ -50,7 +50,12 @@ public interface EditorContext {
      * Returns the host-owned, real-time-safe parameter store. This is the only
      * channel between the editor (FX thread) and the audio processor (audio
      * thread); the editor cannot reach the {@code AudioProcessor} directly
-     * (§2.6).
+     * (§2.6). While the host refuses UI writes, a write through it changes
+     * nothing and the host echoes the kept value back (to a Panel body through
+     * {@link PluginEditorFactory.Panel#parameterChanged(int, double)}; see
+     * {@code PluginParameterStore#addUiWriteGate}); a handler that writes its
+     * plug-in some other way reads
+     * {@link PluginParameterStore#uiWritesAdmitted()} first.
      *
      * @return the parameter store, never {@code null}
      */

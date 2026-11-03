@@ -55,7 +55,10 @@ import com.benesquivelmusic.daw.sdk.editor.Theme;
  * <p>The {@code TunerPlugin} exposes no {@code PluginParameter}-backed state,
  * so the spinner commits through the plugin's own
  * {@link TunerPlugin#setReferencePitchHz(double)} accessor — the plugin
- * editing its own state is within the contract (§2.6).</p>
+ * editing its own state is within the contract (§2.6). While the host refuses
+ * UI writes ({@code PluginParameterStore#uiWritesAdmitted()} says no), the
+ * spinner commits nothing and shows the plugin's pitch again (PR #989 review
+ * 5711460812).</p>
  */
 public final class TunerEditor implements PluginEditorFactory.Panel {
 
@@ -149,6 +152,17 @@ public final class TunerEditor implements PluginEditorFactory.Panel {
                     int clamped = Math.max(minPitch, Math.min(maxPitch, newVal));
                     if (clamped != newVal) {
                         refPitchSpinner.getValueFactory().setValue(clamped);
+                        return;
+                    }
+                    // Stateless echo guard: the spinner already shows the plug-in's pitch.
+                    int shown = (int) Math.round(plugin.getReferencePitchHz());
+                    if (clamped == shown) {
+                        return;
+                    }
+                    // Refused while the host refuses UI writes: the spinner shows the
+                    // plug-in's pitch again (PR #989 review 5711460812).
+                    if (!context.parameterStore().uiWritesAdmitted()) {
+                        refPitchSpinner.getValueFactory().setValue(shown);
                         return;
                     }
                     plugin.setReferencePitchHz(clamped);

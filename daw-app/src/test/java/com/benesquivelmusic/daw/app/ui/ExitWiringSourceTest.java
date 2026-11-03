@@ -30,7 +30,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * hosts — the menu's and the keyboard's, and so the palette's — to it, and
  * is the disposal's only caller through the coordinator. The menu and the
  * palette read one Close Project predicate; Exit passes the input fences as
- * Stop does; the window-inert bit fences every other project action. A
+ * Stop does; the window-inert bit fences every other project action; the
+ * project-lock conflict dialog it installs reads the lifecycle controller's
+ * closing door (ruling R-1.6; PR #989 review 5711460812); and the lifecycle
+ * controller's two door prompts read the close before their answer acts
+ * (ruling 8 R8-2). A
  * source scan, not a reflection consumer (dawg-annotations-reflection §4,
  * "Adding a new reflection consumer").
  */
@@ -130,6 +134,91 @@ class ExitWiringSourceTest {
         assertThat(scanned).as("non-vacuity: the application's sources were scanned").isGreaterThan(100);
     }
 
+    /**
+     * Ruling R-1.6 (PR #989 review 5711460812): the one project-lock conflict
+     * dialog the application installs reads the lifecycle controller's
+     * closing door, so a lock that work an exit waits for meets shows no
+     * dialog while the close runs ({@link ExitDuringAPendingSwitchTest} is
+     * the behaviour, over a dialog built the same way).
+     */
+    @Test
+    void theLockConflictDialogTheApplicationInstallsReadsTheClosingDoor() throws IOException {
+        String main = flat(code(UI.resolve("MainController.java")));
+
+        assertThat(body(main, "private void initialize()"))
+                .contains("projectManager.setLockConflictHandler(new LockConflictDialog(java.time.Instant::now,"
+                        + " () -> projectLifecycleController == null ? Optional.empty()"
+                        + " : projectLifecycleController.closingDoor()));");
+        assertThat(occurrences(main, "setLockConflictHandler(")).as("the one handler the application installs")
+                .isEqualTo(1);
+        int built = 0;
+        try (Stream<Path> sources = Files.walk(APP)) {
+            for (Path source : sources.filter(path -> path.toString().endsWith(".java")).toList()) {
+                built += occurrences(SourceScanSupport.stripComments(Files.readString(source, StandardCharsets.UTF_8)),
+                        "new LockConflictDialog(");
+            }
+        }
+        assertThat(built).as("no other main source builds a dialog that never reads the closing door").isEqualTo(1);
+    }
+
+    /**
+     * Ruling 8 R8-2 (PR #989 review 5711460812): both door prompts — a door's
+     * own at its judgment and an answered switch's after its dialog — reach
+     * their answer only through the closing read, which refuses a Save or a
+     * Discard while a close runs, before the answer saves, switches or opens
+     * a file dialog ({@link ExitDuringAPendingSwitchTest} is the behaviour);
+     * the close's own prompt, asked through {@code ProjectClosePrompts}, is
+     * not one of them. A source scan, not a reflection consumer
+     * (dawg-annotations-reflection §4, "Adding a new reflection consumer").
+     */
+    @Test
+    void bothDoorPromptsReachTheirAnswerOnlyThroughTheClosingRead() throws IOException {
+        String lifecycle = flat(code(UI.resolve("ProjectLifecycleController.java")))
+                .replaceAll("\\(\\s+", "(").replaceAll("\\s+\\)", ")");
+
+        assertThat(occurrences(lifecycle, "askAboutUnsavedChanges("))
+                .as("its declaration and the two door prompts: no other unsaved-changes prompt the lifecycle controller asks")
+                .isEqualTo(3);
+        assertThat(occurrences(lifecycle, "::askAboutUnsavedChanges"))
+                .as("nor one through a method reference").isZero();
+        assertThat(body(lifecycle, "private void proceedUnlessCancelled(String door, Runnable proceed)"))
+                .as("a door's own prompt reads the close before its answer acts")
+                .contains("UnsavedChangesAnswer answer = askAboutUnsavedChanges(UnsavedChangesPrompt.DOOR);"
+                        + " if (answer != UnsavedChangesAnswer.CANCEL && closing != null) {"
+                        + " refuseWhileASwitchIsPending(); return; } switch (answer) {");
+        assertThat(body(lifecycle, "private void switchIfTheAnswerCovers(AnsweredSwitch pending)"))
+                .as("an answered switch's prompt reads the close before its answer acts, then ends as its Cancel")
+                .contains("UnsavedChangesAnswer answer ="
+                        + " askAboutUnsavedChanges(UnsavedChangesPrompt.door(pending.question()));"
+                        + " if (answer != UnsavedChangesAnswer.CANCEL && closing != null) {"
+                        + " refuseWhileASwitchIsPending(); pending.notSwitched().run(); return; } switch (answer) {");
+    }
+
+    /**
+     * Ruling 8 R8-5 (PR #989 review 5711460812): Export DAWproject Exchange
+     * reads the project's edit gate at its entry and hands the folder its
+     * native chooser returned to {@code exportSessionTo}, which reads the
+     * same gate again before the lifecycle controller's one export call, since
+     * a close may begin while the chooser is open
+     * ({@link ExitDuringAPendingSwitchTest} drives {@code exportSessionTo} as
+     * the behaviour). A source scan, not a reflection consumer
+     * (dawg-annotations-reflection §4, "Adding a new reflection consumer").
+     */
+    @Test
+    void exportDawprojectExchangeReadsTheGateAgainOnceItsChooserReturns() throws IOException {
+        String lifecycle = flat(code(UI.resolve("ProjectLifecycleController.java")));
+
+        assertThat(body(lifecycle, "void onExportSession()"))
+                .as("Export DAWproject Exchange reads the gate first and hands the chooser's folder to exportSessionTo")
+                .startsWith("{ if (!projectActionsAllowed.getAsBoolean()) { return; }")
+                .endsWith("exportSessionTo(selected.toPath()); }");
+        assertThat(occurrences(lifecycle, "sessionInterchangeController.exportSession("))
+                .as("one export, in exportSessionTo").isEqualTo(1);
+        assertThat(body(lifecycle, "boolean exportSessionTo(Path folder)")).as("its gate read comes before the export")
+                .startsWith("{ DawProject project = deps.project().get(); if (!projectActionsAllowed.getAsBoolean()) {")
+                .contains("sessionInterchangeController.exportSession(");
+    }
+
     @Test
     void theDisposalHandsTheEngineStopToItsThreadEvenAfterAFailureAndNamesTheStorysHiddenDisposal()
             throws IOException {
@@ -206,6 +295,130 @@ class ExitWiringSourceTest {
         assertThat(body(main, "private boolean noProjectInstallationPending()"))
                 .isEqualTo("{ return projectLifecycleController == null"
                         + " || !projectLifecycleController.isProjectInstallationPending(); }");
+    }
+
+    /**
+     * PR #989 review 5711460812 (ruling R-6.5): the window's edit gate is
+     * handed to every surface whose intents it fences — the one
+     * {@code this::projectActionsAllowed}, never a second predicate and never
+     * the autosave's capture gate — and the doors that open a project action's
+     * dialog read it first. The behaviour is
+     * {@code AccessibleActionsWhileACloseWaitsEditNothingTest}'s; these pins
+     * keep the production wiring from drifting to a seam the tests do not see.
+     */
+    @Test
+    void everyEditSurfaceIsHandedTheProjectActionGate() throws IOException {
+        String main = flat(code(UI.resolve("MainController.java")));
+
+        String rebuild = body(main, "private void rebuildTrackControlWiring()");
+        assertThat(rebuild).as("the window's track-control wiring is built behind the gate")
+                .contains("TrackControlWiring.standalone(project, disp, meterFeed(), audioEngine,")
+                .contains(", this::projectActionsAllowed);")
+                .doesNotContain("autosaveCaptureAllowed").doesNotContain("() -> true");
+        assertThat(body(main, "private void handleProjectRebuild()"))
+                .contains("new MixerView(project, undoManager, dispatcher(), this::trackControlWiring,"
+                        + " this::projectActionsAllowed)");
+        assertThat(body(main, "private void createViewNavigationController()"))
+                .as("the navigation host hands the MixerView it builds the same gate")
+                .contains("@Override public boolean projectActionsAllowed() {"
+                        + " return MainController.this.projectActionsAllowed(); }");
+        assertThat(flat(code(UI.resolve("ViewNavigationController.java"))))
+                .contains("host::trackControlWiring, host::projectActionsAllowed)");
+        assertThat(body(main, "private void createTrackStripController()")).contains("this::projectActionsAllowed);");
+        assertThat(body(main, "private void createTempoEditController()")).contains("this::projectActionsAllowed);");
+        assertThat(body(main, "private void createTransportController()"))
+                .contains("transportController.setProjectActionsAllowed(this::projectActionsAllowed);");
+        assertThat(body(main, "private void applyLiveSettings(SettingsModel model, String previousPluginPaths)"))
+                .contains("projectManager, project, pluginRegistry, projectActionsAllowed());");
+        for (String door : List.of("private void onManagePlugins()", "private void onOpenSettings()")) {
+            assertThat(body(main, door)).as("%s reads the gate first", door)
+                    .startsWith("{ if (!projectActionsAllowed()) return;");
+        }
+        assertThat(main).as("void onOpenAudioSettings() reads the gate first")
+                .contains("void onOpenAudioSettings() { if (!projectActionsAllowed()) return;");
+        assertThat(main).as("the metronome menu's Click Routing opens Settings through the door that reads the gate")
+                .contains("void onOpenRecordingSettings() { if (!projectActionsAllowed()) return;")
+                .contains("metronomeController.setClickRoutingSettingsOpener(this::onOpenRecordingSettings);");
+        assertThat(main).as("the Plugin Fault Log's Re-enable is handed the gate")
+                .contains("new PluginFaultUiController(pluginSupervisor, notificationBar, dispatcher(),"
+                        + " this::projectActionsAllowed)");
+
+        String mixer = flat(code(UI.resolve("MixerView.java")));
+        assertThat(occurrences(mixer, "new InsertEffectRack(")).as("the mixer's three racks").isEqualTo(3);
+        Matcher racks = Pattern.compile("new InsertEffectRack\\(([^;]*)\\);").matcher(mixer);
+        int racksSeen = 0;
+        while (racks.find()) {
+            assertThat(racks.group(1)).as("each rack is handed the view's gate").endsWith(", projectActionsAllowed");
+            racksSeen++;
+        }
+        assertThat(racksSeen).isEqualTo(3);
+        assertThat(mixer).as("a view whose host wiring is gone still refuses")
+                .contains("TrackControlWiring.standalone(project, dispatcher, meterFeed, projectActionsAllowed)");
+    }
+
+    /**
+     * PR #989 review 5711460812 (design §4.6, the third pass): the rest of the
+     * views and controllers that edit the project are handed the one gate,
+     * {@code this::projectActionsAllowed}, and the doors and commands of
+     * {@code MainController} that edit read it first.
+     */
+    @Test
+    void theRestOfTheEditSurfacesAreHandedTheProjectActionGate() throws IOException {
+        String main = flat(code(UI.resolve("MainController.java")));
+
+        assertThat(flat(code(UI.resolve("ViewNavigationController.java"))))
+                .as("the Workshop's host controller is handed the navigation host's gate")
+                .contains("EventBusPublisher.getDefault(), host::projectActionsAllowed);");
+        for (String factory : List.of("private void createRippleModeController()",
+                "private void createClipEditController()", "private void createTrackTemplateController()",
+                "private void createPluginViewController()", "private void createTrackCreationController()",
+                "private void createAudioImportController()")) {
+            assertThat(body(main, factory)).as("%s hands over the gate", factory)
+                    .contains("this::projectActionsAllowed");
+        }
+        assertThat(main).as("the Immersive A/B view is handed the gate (its host overrides come first, so a contains)")
+                .contains("new com.benesquivelmusic.daw.app.ui.spatial.AtmosAbView("
+                        + " project.getReferenceTrackManager(), this::projectActionsAllowed);");
+        assertThat(body(main, "private void createClipEditController()"))
+                .as("the clip editor's pills undo through the gated history door").contains("this::onUndo,");
+        assertThat(body(main, "private void createArrangementCanvas()"))
+                .as("the arrangement canvas's host answers the gate")
+                .contains("@Override public boolean projectActionsAllowed() {"
+                        + " return MainController.this.projectActionsAllowed(); }");
+        assertThat(body(main, "private void createTrackFreezeController()"))
+                .contains("trackFreezeController.setProjectActionsAllowed(this::projectActionsAllowed);");
+        assertThat(body(main, "private void createTelemetryView()"))
+                .contains("telemetryView.setProjectActionsAllowed(this::projectActionsAllowed);");
+        assertThat(body(main, "private void createProjectLifecycleController()"))
+                .contains("projectLifecycleController.setProjectActionsAllowed(this::projectActionsAllowed);");
+        String cpuBudget = body(main, "private void openChannelCpuBudgetDialog(");
+        assertThat(cpuBudget).as("the CPU budget door reads the gate first and hands it to its dialog's Apply")
+                .startsWith("{ if (!projectActionsAllowed()) return;")
+                .contains("}, this::projectActionsAllowed);");
+        for (String door : List.of("private void showInspectorInsertPicker(MixerChannel selected)",
+                "private void onToggleFoldFocusedTrack()", "private void onToggleFoldSelectedTracks()",
+                "private void onFoldAllAutomation()", "private void setProjectDirtyFromTelemetry()")) {
+            assertThat(body(main, door)).as("%s reads the gate first", door)
+                    .startsWith("{ if (!projectActionsAllowed()) return;");
+        }
+
+        String mixer = flat(code(UI.resolve("MixerView.java")));
+        assertThat(mixer).as("the mixer's children are handed the view's gate")
+                .contains("vcaMuteIntent, vcaSoloIntent, this::refresh, projectActionsAllowed));")
+                .contains("new ChannelLinkPopover(linkManager, undoManager, current, projectActionsAllowed);")
+                .contains("project.getMixerSnapshotManager(), project.getMixer(), undoManager, projectActionsAllowed);");
+        assertThat(flat(code(UI.resolve("PluginViewController.java"))))
+                .as("every editor the controller opens is handed its gate")
+                .contains("new PluginEditorSession.Deps(deps.sampleRate(), deps.faultSupervisor(),"
+                        + " deps.openPluginFaultLog(), deps.showNotification(), deps.projectActionsAllowed()));");
+        assertThat(flat(code(UI.resolve("ProjectLifecycleController.java"))))
+                .as("the missing-assets relink reads the lifecycle controller's gate live")
+                .contains("ProjectAudioText.text(\"\")),"
+                        + " () -> projectActionsAllowed.getAsBoolean());");
+        assertThat(body(flat(code(UI.resolve("views/WorkshopSelectionHostController.java"))),
+                "private Node buildPluginPanel(InsertSlot slot)"))
+                .as("the Workshop's plug-in panel refuses an edit and shows the processor again")
+                .contains("panel.setEditGate(projectActionsAllowed,");
     }
 
     /**

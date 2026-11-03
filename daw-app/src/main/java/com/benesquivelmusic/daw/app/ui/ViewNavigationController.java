@@ -81,6 +81,17 @@ final class ViewNavigationController {
          */
         default TrackControlWiring trackControlWiring() { return null; }
 
+        /**
+         * @return whether the project may be edited now — the window's edit
+         *         gate, {@code MainController.projectActionsAllowed()} —
+         *         read on the FX thread by the {@link MixerView} built here
+         *         wherever one of its intents is handled, and by the
+         *         Workshop's plug-in panels
+         *         (PR #989 review 5711460812); resolved live via
+         *         {@code host::projectActionsAllowed}, never captured
+         */
+        boolean projectActionsAllowed();
+
         com.benesquivelmusic.daw.core.mastering.MasteringChain masteringChain();
 
         default com.benesquivelmusic.daw.core.audio.AudioFormat engineFormat() { return project().getFormat(); }
@@ -271,7 +282,7 @@ final class ViewNavigationController {
         // constructor's first refresh() already binds every strip through it,
         // so no standalone wiring is ever built for this view (fix round, N1).
         mixerView = new MixerView(host.project(), host.undoManager(), fxDispatcher,
-                host::trackControlWiring);
+                host::trackControlWiring, host::projectActionsAllowed);
         // Story 318 — subscribe the freshly built track / return / master strip
         // meters to the engine's tap bus. Done here (not only by the host)
         // because this controller owns the view's construction; the host
@@ -465,7 +476,8 @@ final class ViewNavigationController {
                         workshopView, sm, host::project,
                         () -> activeView == DawView.WORKSHOP,
                         host.messages(),
-                        EventBusPublisher.getDefault());
+                        EventBusPublisher.getDefault(),
+                        host::projectActionsAllowed);
 
         viewCache.put(DawView.WORKSHOP, workshopView);
     }

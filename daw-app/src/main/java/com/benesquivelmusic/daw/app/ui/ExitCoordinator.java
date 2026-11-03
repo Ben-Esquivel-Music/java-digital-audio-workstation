@@ -68,7 +68,10 @@ import java.util.logging.Logger;
  *       another switch is pending, any door while a file dialog is open;
  *       then a recording in flight asks "Stop the take and close" first —
  *       {@code Keep recording} ends the close before any step; then the
- *       window goes input-inert ({@link WindowInputFence}) and the close is
+ *       window goes input-inert (its input consumed by the
+ *       {@link WindowInputFence}, its edits refused by the gate that reads
+ *       {@link #isWindowInert()}, a third-party plug-in body's write around
+ *       its parameter store excepted) and the close is
  *       the switch pending, and it waits — never blocking the FX thread —
  *       for every save queued before it to report, for the take to be
  *       written and published, and, for an exit, for another pending switch
@@ -516,7 +519,8 @@ final class ExitCoordinator {
      * @param progressSurface makes the progress surface of a close
      * @param strip           the session strip, which shows "Finishing take…" during the take wait
      * @param notifications   the notification bar
-     * @param fence           the input-inert window
+     * @param fence           the fence that consumes the input of every window but the close's own surfaces and
+     *                        the windows they own while a close waits
      * @param timers          the clock seam of the surface, the note, the detach, the engine's bound and the
      *                        application stop's deadlines
      * @param nanoClock       the monotonic clock of the second request's rate limit, of DISPOSE's hand-off start

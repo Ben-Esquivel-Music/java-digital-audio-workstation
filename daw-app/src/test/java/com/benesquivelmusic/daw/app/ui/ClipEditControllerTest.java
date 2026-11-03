@@ -657,7 +657,9 @@ class ClipEditControllerTest {
                     },
                     () -> null,
                     project::getRippleMode,
-                    () -> 1.0);
+                    () -> 1.0,
+                    () -> undoManager.undo(),
+                    () -> true);
         }
     }
 }

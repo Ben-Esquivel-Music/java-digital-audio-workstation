@@ -162,6 +162,8 @@ class UnsavedChangesPromptAtExitTest {
     /** Song A closed with Close Project (nothing to save), then an edit of the Untitled project: no folder. */
     private ExitFixture aProjectNeverSaved() throws Exception {
         ExitFixture made = new ExitFixture(workspace, AutoSaveConfig.DEFAULT);
+        // Assigned before it is driven, so that the fixture is closed, and its fence lowered, whatever fails below.
+        fixture = made;
         made.closeProject().toCompletableFuture().get(ExitFixture.GUARD.toMillis(), TimeUnit.MILLISECONDS);
         assertThat(made.save.projectManager.getCurrentProject()).as("fixture: no folder is open").isNull();
         made.edit("Keys");

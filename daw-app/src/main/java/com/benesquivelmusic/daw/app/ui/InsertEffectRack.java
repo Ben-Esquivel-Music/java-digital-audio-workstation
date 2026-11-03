@@ -27,6 +27,7 @@ import javafx.stage.Stage;
 
 import java.util.*;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 import java.util.logging.Logger;
 
 /**
@@ -45,6 +46,15 @@ import java.util.logging.Logger;
  *
  * <p>When an {@link UndoManager} is provided, all insert add/remove/reorder
  * operations are registered as undoable actions.</p>
+ *
+ * <p>Every edit the rack's controls raise — add (the plug-in browser
+ * included), remove, reorder, bypass, the "Expensive" flag and the sidechain
+ * source — reads the window's edit gate when it is handled, whatever raised
+ * it: while the gate says no, the edit changes nothing, the control that
+ * raised it shows the slot again, and an external plug-in that finishes
+ * loading then is not inserted (PR #989 review 5711460812). The editor the
+ * rack opens in its own window is handed the same gate for its frame and
+ * parameter grid.</p>
  */
 public final class InsertEffectRack extends VBox {
 
@@ -65,6 +75,12 @@ public final class InsertEffectRack extends VBox {
      * {@link #postFx} tolerates the null.
      */
     private final FxDispatcher fxDispatcher;
+    /**
+     * Whether the project may be edited now: the window's edit gate on the
+     * production path, {@code () -> true} from the shorter constructors. FX
+     * thread (PR #989 review 5711460812).
+     */
+    private final BooleanSupplier projectActionsAllowed;
     private PluginRegistry pluginRegistry;
     private Mixer mixer;
     private Runnable onSlotsChanged;
@@ -114,7 +130,29 @@ public final class InsertEffectRack extends VBox {
     public InsertEffectRack(MixerChannel channel, int audioChannels, double sampleRate,
                             int bufferSize, UndoManager undoManager,
                             FxDispatcher fxDispatcher) {
+        this(channel, audioChannels, sampleRate, bufferSize, undoManager, fxDispatcher, () -> true);
+    }
+
+    /**
+     * Creates a new insert-effects rack whose edits read the window's edit
+     * gate (PR #989 review 5711460812).
+     *
+     * @param channel               the mixer channel to manage inserts for
+     * @param audioChannels         the number of audio channels (e.g., 2 for stereo)
+     * @param sampleRate            the project sample rate in Hz
+     * @param bufferSize            the project buffer size in sample frames
+     * @param undoManager           the undo manager (may be {@code null})
+     * @param fxDispatcher          the FX-thread marshalling seam, or {@code null} to use
+     *                              the {@link FxDispatcher#getDefault() app-scoped default}
+     * @param projectActionsAllowed whether the project may be edited now; while it says no, every
+     *                              edit the rack's controls raise is refused; must not be {@code null}
+     */
+    public InsertEffectRack(MixerChannel channel, int audioChannels, double sampleRate,
+                            int bufferSize, UndoManager undoManager,
+                            FxDispatcher fxDispatcher, BooleanSupplier projectActionsAllowed) {
         this.channel = Objects.requireNonNull(channel, "channel must not be null");
+        this.projectActionsAllowed = Objects.requireNonNull(
+                projectActionsAllowed, "projectActionsAllowed must not be null");
         this.audioChannels = audioChannels;
         this.sampleRate = sampleRate;
         this.bufferSize = bufferSize;
@@ -274,7 +312,8 @@ public final class InsertEffectRack extends VBox {
      * @param slotIndex the slot index at which to insert the plugin
      * @param plugin    the initialized plugin to insert
      * @return {@code true} if the plugin was inserted, {@code false} if it
-     *         does not support audio processing
+     *         does not support audio processing or the window's edit gate
+     *         refused the insert (PR #989 review 5711460812)
      */
     public boolean insertPlugin(int slotIndex, DawPlugin plugin) {
         Objects.requireNonNull(plugin, "plugin must not be null");
@@ -282,7 +321,9 @@ public final class InsertEffectRack extends VBox {
         if (optSlot.isEmpty()) {
             return false;
         }
-        addEffect(slotIndex, optSlot.get());
+        if (!addEffect(slotIndex, optSlot.get())) {
+            return false;
+        }
         if (plugin instanceof com.benesquivelmusic.daw.core.plugin.LiveAnalyzerPlugin) plugin.activate();
         return true;
     }
@@ -316,6 +357,12 @@ public final class InsertEffectRack extends VBox {
         bypassBtn.setMinSize(12, 14);
         bypassBtn.setTooltip(new Tooltip("Bypass"));
         bypassBtn.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                // The press already flipped the toggle: the same node shows the slot again.
+                bypassBtn.setSelected(!slot.isBypassed());
+                bypassBtn.setStyle(bypassButtonStyle(!slot.isBypassed()));
+                return;
+            }
             boolean active = bypassBtn.isSelected();
             boolean newBypassed = !active;
             if (undoManager != null) {
@@ -350,6 +397,10 @@ public final class InsertEffectRack extends VBox {
                 new javafx.scene.control.CheckMenuItem("Expensive (eligible for bypass)");
         expensiveItem.setSelected(slot.isExpensive());
         expensiveItem.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                expensiveItem.setSelected(slot.isExpensive());
+                return;
+            }
             boolean newExpensive = expensiveItem.isSelected();
             if (undoManager != null) {
                 undoManager.execute(new ToggleExpensiveAction(channel, slotIndex, newExpensive));
@@ -431,6 +482,9 @@ public final class InsertEffectRack extends VBox {
      */
     public void showEffectPicker(int slotIndex) {
         if (disposed) return;
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return; // no browser opens while the project cannot be edited
+        }
         if (channel.getInsertCount() >= MixerChannel.MAX_INSERT_SLOTS) return;
         String channelName = channel.getName();
         String targetLabel = (channelName == null || channelName.isBlank())
@@ -439,17 +493,33 @@ public final class InsertEffectRack extends VBox {
 
         PluginBrowser browser = new PluginBrowser(pluginRegistry, audioChannels == 2, targetLabel);
         browser.setFxDispatcher(fxDispatcher);
-        browser.showAndWait().ifPresent(selection -> {
-            switch (selection) {
-                case PluginBrowser.BuiltInSelection builtIn -> {
-                    InsertSlot slot = InsertEffectFactory.createSlot(
-                            builtIn.type(), audioChannels, sampleRate);
-                    addEffect(slotIndex, slot);
-                }
-                case PluginBrowser.ExternalSelection external ->
-                        loadAndInsertExternalPlugin(slotIndex, external.entry());
+        browser.showAndWait().ifPresent(selection -> applyPickerSelection(slotIndex, selection));
+    }
+
+    /**
+     * Applies the plug-in browser's choice for the empty slot at
+     * {@code slotIndex}: a built-in effect is inserted at once, an external
+     * plug-in is loaded on a worker and inserted when it lands. Read again
+     * after the browser returns, the window's edit gate refuses a choice made
+     * while it says no, silently: no load starts, the rack does not grey, and
+     * the empty slot shows the model (PR #989 review 5711460812). FX thread.
+     *
+     * @param slotIndex the empty slot the browser was opened for
+     * @param selection the user's choice
+     */
+    void applyPickerSelection(int slotIndex, PluginBrowser.Selection selection) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
+        switch (selection) {
+            case PluginBrowser.BuiltInSelection builtIn -> {
+                InsertSlot slot = InsertEffectFactory.createSlot(
+                        builtIn.type(), audioChannels, sampleRate);
+                addEffect(slotIndex, slot);
             }
-        });
+            case PluginBrowser.ExternalSelection external ->
+                    loadAndInsertExternalPlugin(slotIndex, external.entry());
+        }
     }
 
     /**
@@ -477,11 +547,23 @@ public final class InsertEffectRack extends VBox {
         });
     }
 
-    /** Applies a worker result on FX only while this rack still belongs to a live view. */
+    /**
+     * Applies a worker result on FX only while this rack still belongs to a
+     * live view. A load started before the window's edit gate said no, that
+     * lands while it says no, is not inserted: its slot is disposed as a
+     * cancelled load's is, no editor opens, and that is logged at INFO
+     * (ruling R-1.5; PR #989 review 5711460812).
+     */
     void completeExternalInsert(int slotIndex, InsertSlot slot) {
         setDisable(false);
         if (disposed) {
             Thread.ofVirtual().name("cancelled-plugin-dispose").start(slot::disposeAfterQuiescence);
+            return;
+        }
+        if (!projectActionsAllowed.getAsBoolean()) {
+            LOG.info(() -> "The plug-in “" + slot.getName()
+                    + "” finished loading while the project could not be edited; it was not inserted.");
+            Thread.ofVirtual().name("refused-plugin-dispose").start(slot::disposeAfterQuiescence);
             return;
         }
         try {
@@ -505,7 +587,16 @@ public final class InsertEffectRack extends VBox {
 
     // ── Undo-aware operations ───────────────────────────────────────────────
 
-    private void addEffect(int index, InsertSlot slot) {
+    /**
+     * Inserts {@code slot} at {@code index}, unless the window's edit gate
+     * says no (PR #989 review 5711460812).
+     *
+     * @return whether the slot was inserted
+     */
+    private boolean addEffect(int index, InsertSlot slot) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return false;
+        }
         int safeIndex = Math.min(index, channel.getInsertCount());
         if (undoManager != null) {
             undoManager.execute(new InsertEffectAction(channel, safeIndex, slot));
@@ -513,9 +604,13 @@ public final class InsertEffectRack extends VBox {
             channel.insertInsert(safeIndex, slot);
         }
         rebuildSlots();
+        return true;
     }
 
     private void removeEffect(int index) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         if (undoManager != null) {
             undoManager.execute(new RemoveEffectAction(channel, index));
         } else {
@@ -525,6 +620,9 @@ public final class InsertEffectRack extends VBox {
     }
 
     private void reorderEffect(int fromIndex, int toIndex) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         if (undoManager != null) {
             undoManager.execute(new ReorderEffectAction(channel, fromIndex, toIndex));
         } else {
@@ -553,7 +651,7 @@ public final class InsertEffectRack extends VBox {
         }
         var session = com.benesquivelmusic.daw.app.ui.plugin.PluginEditorSession.open(
                 channel, slot, new com.benesquivelmusic.daw.app.ui.plugin.PluginEditorSession.Deps(
-                        () -> sampleRate, null, null, null));
+                        () -> sampleRate, null, null, null, projectActionsAllowed));
         if (meterFeed != null) session.bindInsertMeters(meterFeed, slot.getPluginInstanceId());
         Stage stage = new Stage();
         stage.initOwner(getScene().getWindow());
@@ -634,25 +732,34 @@ public final class InsertEffectRack extends VBox {
         combo.setTooltip(new Tooltip("Sidechain source"));
 
         // Select current source
-        MixerChannel current = slot.getSidechainSource();
-        int selectedIndex = 0;
-        if (current != null) {
-            for (int i = 1; i < sources.size(); i++) {
-                if (sources.get(i) == current) {
-                    selectedIndex = i;
-                    break;
-                }
-            }
-        }
-        combo.getSelectionModel().select(selectedIndex);
+        combo.getSelectionModel().select(sidechainIndex(sources, slot));
 
         combo.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                // The same combo shows the slot's source again; the re-select
+                // re-enters here only if it changed, and is refused again.
+                combo.getSelectionModel().select(sidechainIndex(sources, slot));
+                return;
+            }
             int idx = combo.getSelectionModel().getSelectedIndex();
             MixerChannel source = (idx >= 0 && idx < sources.size()) ? sources.get(idx) : null;
             slot.setSidechainSource(source);
         });
 
         return combo;
+    }
+
+    /** The index in {@code sources} of {@code slot}'s sidechain source; 0 ("None") when it has none. */
+    private static int sidechainIndex(List<MixerChannel> sources, InsertSlot slot) {
+        MixerChannel current = slot.getSidechainSource();
+        if (current != null) {
+            for (int i = 1; i < sources.size(); i++) {
+                if (sources.get(i) == current) {
+                    return i;
+                }
+            }
+        }
+        return 0;
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────

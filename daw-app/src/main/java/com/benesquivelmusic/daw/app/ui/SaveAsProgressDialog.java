@@ -34,13 +34,16 @@ import java.util.function.BooleanSupplier;
  * "Custom controls: the Control + Skin pattern": a one-off dialog body is
  * not a Control), styled by role classes over the theme's tokens — no
  * inline style. The buttons belong to the content; a hidden cancel button
- * ({@link DialogDismissibility#installHiddenCancel}) keeps Escape and the
- * window's close box live, and both reach one close-request guard: they
- * cancel while Cancel is enabled and do nothing otherwise — from
- * {@code project.daw}'s write on, when the copy can no longer be cancelled,
- * the dialog cannot be dismissed (Failure Surfacing book §5.2, a temporary
- * veto). The flow closes it itself ({@link #closeByFlow()}), which runs no
- * callback. No animation: the bar is determinate and the step line static
+ * ({@link DialogDismissibility#installHiddenCancel}) keeps the window's close
+ * box, and an Escape that reaches the dialog's window, live, and both reach
+ * one close-request guard: they cancel while Cancel is enabled and do nothing
+ * otherwise — from {@code project.daw}'s write on, when the copy can no
+ * longer be cancelled, the dialog cannot be dismissed (Failure Surfacing book
+ * §5.2, a temporary veto). An Escape pressed on the keyboard does not reach
+ * the window yet: the hidden button's Escape accelerator consumes it without
+ * firing the invisible button, a known limit (future story 414). The flow
+ * closes it itself ({@link #closeByFlow()}), which runs no callback. No
+ * animation: the bar is determinate and the step line static
  * (javafx skill §10).</p>
  */
 final class SaveAsProgressDialog extends DawgDialog<Void> {
@@ -57,7 +60,11 @@ final class SaveAsProgressDialog extends DawgDialog<Void> {
     private Window guardedWindow;
 
     /**
-     * Creates the dialog, owned by {@code owner} when there is one.
+     * Creates the dialog, owned by {@code owner} when there is one. It
+     * carries the close-surface mark
+     * ({@link WindowInputFence#markCloseSurface(javafx.scene.control.Dialog)}),
+     * so it is not fenced when it shows while the close's fence is up (PR #989
+     * review 5711460812).
      *
      * @param owner the main window
      */
@@ -67,6 +74,7 @@ final class SaveAsProgressDialog extends DawgDialog<Void> {
         setHeaderText(ProjectCloseText.text("saveAs.title"));
         initModality(Modality.APPLICATION_MODAL);
         owner.ifPresent(this::initOwner);
+        WindowInputFence.markCloseSurface(this);
 
         status.getStyleClass().add("save-as-progress-status");
         bar.getStyleClass().add("save-as-progress-bar");

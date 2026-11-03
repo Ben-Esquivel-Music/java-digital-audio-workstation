@@ -68,7 +68,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * bar whose history the tests read.
  * The unsaved-changes prompt is answered on the FX thread by pressing
  * {@link #promptAnswer}'s button, or hidden (a cancel) when it is
- * {@code null}. Every FX action and wait is bounded by {@link #GUARD}.
+ * {@code null} — unless the test answers it by input
+ * ({@link #answersByInput}). Every FX action and wait is bounded by
+ * {@link #GUARD}.
  */
 final class SaveFlowFixture implements AutoCloseable {
 
@@ -139,6 +141,13 @@ final class SaveFlowFixture implements AutoCloseable {
     /** Run on the FX thread while each takeover dialog asks, before it is answered (story 333). */
     volatile Runnable whileTheTakeoverAsks = () -> { };
     /**
+     * Asked first, on the FX thread, by each answer of the unsaved-changes prompt, the takeover dialog and a
+     * Save As refusal: {@code true} when the test answers that window itself — by real input, a click or a key
+     * the window's event filters see (PR #989 review 5711460812) — and this fixture then neither records nor
+     * answers it.
+     */
+    volatile Predicate<Stage> answersByInput = _ -> false;
+    /**
      * Where the closer of the open folder runs a journal end: its own virtual
      * worker unless a test holds the end before it begins (story 333: a task
      * submitted and never run is a journal end not begun).
@@ -200,12 +209,21 @@ final class SaveFlowFixture implements AutoCloseable {
 
     SaveFlowFixture(Path workspace, AutoSaveConfig config, RecentProjectsStore recentProjects,
                     FxDispatcher dispatcher) throws Exception {
+        this(workspace, config, recentProjects, dispatcher, new ProjectDeserializer());
+    }
+
+    /**
+     * As {@link #SaveFlowFixture(Path, AutoSaveConfig, RecentProjectsStore)}, over {@code dispatcher}, with
+     * {@code deserializer} as the project manager's reader of the projects it opens (a test's migration registry).
+     */
+    SaveFlowFixture(Path workspace, AutoSaveConfig config, RecentProjectsStore recentProjects,
+                    FxDispatcher dispatcher, ProjectDeserializer deserializer) throws Exception {
         this.workspace = workspace;
         this.dispatcher = dispatcher;
         this.progress = new ProjectOperationProgress(dispatcher);
         this.checkpoints = new CheckpointManager(config, writer);
         this.projectManager = new ProjectManager(checkpoints, recentProjects, new ProjectLockManager(),
-                new ProjectDeserializer(), writer);
+                deserializer, writer);
         // The strip's listener is wired before Song A's checkpoints start, as
         // the application wires it before any project opens.
         runOnFx(() -> {
@@ -487,8 +505,14 @@ final class SaveFlowFixture implements AutoCloseable {
 
     // ── the prompt ───────────────────────────────────────────────────────────
 
-    /** Presses the button the test chose on the prompt, or hides it. FX thread, inside its showAndWait. */
+    /**
+     * Presses the button the test chose on the prompt, or hides it — unless the test answers it by input
+     * ({@link #answersByInput}). FX thread, inside its showAndWait.
+     */
     private void answer(Stage prompt) {
+        if (answersByInput.test(prompt)) {
+            return;
+        }
         String text = promptAnswer;
         Node found = prompt.getScene().getRoot().lookup(".dialog-pane");
         if (found instanceof DialogPane shown) {
@@ -509,9 +533,13 @@ final class SaveFlowFixture implements AutoCloseable {
     /**
      * Records the takeover dialog — its header, content, buttons in order and
      * default button — then presses {@link #takeoverAnswer}'s button, or hides
-     * it (its Escape answer). FX thread, inside its showAndWait.
+     * it (its Escape answer) — unless the test answers it by input
+     * ({@link #answersByInput}). FX thread, inside its showAndWait.
      */
     private void answerTakeover(Stage dialog) {
+        if (answersByInput.test(dialog)) {
+            return;
+        }
         Node found = dialog.getScene().getRoot().lookup(".dialog-pane");
         if (!(found instanceof DialogPane pane)) {
             dialog.hide();
@@ -544,10 +572,14 @@ final class SaveFlowFixture implements AutoCloseable {
 
     /**
      * Records a Save As target refusal's message (ruling Q6) and presses its
-     * OK; Save As's progress dialog, which has the same title, is left alone.
+     * OK; Save As's progress dialog, which has the same title, is left alone —
+     * as is any window the test answers by input ({@link #answersByInput}).
      * FX thread, inside the refusal's showAndWait.
      */
     private void answerSaveAsRefusal(Stage dialog) {
+        if (answersByInput.test(dialog)) {
+            return;
+        }
         Node message = dialog.getScene().getRoot().lookup(".dawg-dialog-message");
         if (!(message instanceof javafx.scene.control.Label label)) {
             return;

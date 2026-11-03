@@ -394,6 +394,7 @@ through `EditorContext`. Key invariants:
   plugin) post a value to a separate ring the FX thread drains for
   display update.
 - Reads on either thread return a coherent snapshot.
+- A host may refuse an FX-thread write: while a gate the host installs (`addUiWriteGate`) says no, `writeFromUi` changes nothing and the host shows the parameter again — in its grid, or through `PluginEditorFactory.Panel#parameterChanged`, at once, or once `createPanel` returns for a write made while it runs. A body that writes its plug-in some other way reads `uiWritesAdmitted()` first; one that does not is outside what the host can refuse (§2.6) (story 333, PR #989 review 5711460812).
 
 This is the type that makes Principle §2.6 enforceable — the plugin's
 `Editor` cannot reach the `AudioProcessor` directly. Both sides talk to
@@ -411,6 +412,7 @@ the store.
 | `PluginEditorFactory.Canvas#attach(...)` / `detach(...)` | FX thread | yes | no |
 | `PluginEditorFactory.Canvas#render(RenderTick)` | FX thread | preferably no | **no** |
 | Reads of `EditorContext#parameterStore()` | FX thread | no allocation needed | no |
+| A UI-write gate's predicate and refusal callback (`PluginParameterStore#addUiWriteGate`), run inside `writeFromUi` | FX thread | no allocation needed | no |
 
 The host wraps every callback in a fault harness that catches `Throwable`
 and routes to the fault banner (§6.6).

@@ -135,8 +135,12 @@ class ApplicationStopFallbackTest {
     void close() throws Exception {
         try {
             if (fixture != null) {
-                unwindTheStop();
-                fixture.close();
+                // The fixture is closed, and its fence lowered, even when the stop does not let go in time.
+                try {
+                    unwindTheStop();
+                } finally {
+                    fixture.close();
+                }
             }
         } finally {
             coordinatorLog.removeHandler(recording);

@@ -287,8 +287,11 @@ public enum DawAction {
      * protocol, as the window's close box does. {@code Shortcut+Q} (ruling
      * R12 #5). Like {@link #STOP}, its handler passes the project-action
      * fence, so Ctrl+Q works while a project is being installed; while a
-     * close makes the window input-inert, only the window's close box
-     * reaches the exit protocol.
+     * close makes the window input-inert its keys are consumed, so
+     * Shortcut+Q does nothing then; an Exit that still reaches the exit
+     * protocol — the window's close box, or File ▸ Exit activated by an
+     * assistive technology — is merged into the running close (PR #989
+     * review 5711460812).
      */
     EXIT("Exit", Category.APPLICATION,
             new KeyCodeCombination(KeyCode.Q, KeyCombination.SHORTCUT_DOWN)),
