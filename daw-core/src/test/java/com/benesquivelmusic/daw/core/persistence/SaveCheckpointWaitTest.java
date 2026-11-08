@@ -14,12 +14,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 import static com.benesquivelmusic.daw.core.persistence.CheckpointTestSupport.checkpointNames;
 import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.CHECKPOINT;
 import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.HEAD;
 import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.SHORT_CHECKPOINT_WAIT;
+import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.TIMEOUT_SECONDS;
 import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.await;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -51,7 +53,7 @@ class SaveCheckpointWaitTest {
         if (held != null) {
             held.release();
         }
-        manager.abandonProject();
+        await(manager.closeProject());
     }
 
     @Test
@@ -75,7 +77,10 @@ class SaveCheckpointWaitTest {
         assertThat(Files.readString(directory.resolve("project.daw"))).contains("name=\"Vox\"");
         assertThat(project.isDirty()).isFalse();
         await(idle);
-        assertThat(held.isReached()).as("non-vacuity: the checkpoint is held").isTrue();
+        // Saves going idle does not wait for the checkpoint writer to reach its publish: under load it may still be
+        // on its way, so the hold is awaited (bounded, longer than every wait inside) before it is asserted.
+        assertThat(held.awaitReached(TIMEOUT_SECONDS, TimeUnit.SECONDS)).as("non-vacuity: the checkpoint is held")
+                .isTrue();
         assertThat(checkpointMover.publishes(CHECKPOINT)).as("and still being written").isEmpty();
         assertThat(recorder.events(CheckpointEvent.Written.class)).isEmpty();
 
@@ -105,7 +110,8 @@ class SaveCheckpointWaitTest {
         });
         assertThat(crash.getSuppressed()).singleElement().isInstanceOfSatisfying(TimeoutException.class,
                 timeout -> assertThat(timeout).hasMessage("the safety copy was still being written after 300 ms"));
-        assertThat(held.isReached()).as("non-vacuity: the safety copy is held").isTrue();
+        assertThat(held.awaitReached(TIMEOUT_SECONDS, TimeUnit.SECONDS)).as("non-vacuity: the safety copy is held")
+                .isTrue();
 
         held.release();
         recorder.awaitWritten(1);

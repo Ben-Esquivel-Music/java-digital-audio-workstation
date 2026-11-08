@@ -17,7 +17,7 @@ Story 332's resolution of PR 988 review 5666358306 gave the recovered commit the
 - **A failed check fails the save as itself.** The outcome is `SaveOutcome.Failed` with the `LockStolenException`, or the check's plain `IOException`, as its cause. Nothing more is written and the project stays dirty. A `LockStolenException` writes no safety checkpoint (`failedAfterTheRender`, as today). A check that fails before the backup leaves the backup owed.
 - **The failure text stays true.** `ProjectLifecycleController.saveFailureMessage` ends a stolen-lock failure with "— nothing was written". When the backup was written before the last check failed, the text says instead that `project.daw` was not replaced. If story 333's Save-As flow has landed, it carries the same truth.
 - **The class note says so.** `ProjectManager`'s class note ("The save") states the new order and the residual: a takeover between the last check and the head's rename is not seen.
-- **Every head write that checks the lease is swept.** The other head writes that check the lease get the same shape, for example `saveForClose`'s metadata-only branch (`verifyOurs`, then `writeProjectFile`).
+- **Every head write that checks the lease is swept.** Since story 333 the save writer's `ProjectManager.write` is the only head write that checks the lease (`target.lease().verifyOurs();`): `saveForClose` is gone, because `closeProject()` no longer saves. A head write added later that checks the lease gets the same shape.
 
 ## Acceptance Criteria
 
@@ -42,7 +42,7 @@ These tests are binding acceptance criteria. They run headless, and none of them
 
 ## Technical Notes
 
-- Code locators: `ProjectManager.write`, `backUpIfOwed`, `failedAfterTheRender`, `replaceProjectFile`, `saveForClose`; `ProjectLockManager.verifyOurs`; `ProjectLifecycleController.saveFailureMessage`.
+- Code locators: `ProjectManager.write`, `backUpIfOwed`, `failedAfterTheRender`, `replaceProjectFile`; `ProjectLockManager.verifyOurs`; `ProjectLifecycleController.saveFailureMessage`.
 - The precedent is `OpenRecoveryGate.replaceHead`, which hands the commit the lease check to run as its last step before the replace and lets a failed check leave as itself.
 - Ruled by the studio engineer in the first fix round of story 332's resolution of PR 988 review 5666358306, found by that round's verification.
 - Design references: Persistence Integrity design book §5.2 (the write contract, its head row) and §8 Stage 3 (atomic saves, story 331).

@@ -19,7 +19,10 @@ import javafx.scene.layout.VBox;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Supplier;
+import java.util.logging.Logger;
 
 /**
  * Modal dialog shown after a project file has been migrated through one
@@ -27,11 +30,13 @@ import java.util.Optional;
  * changes what the user authored
  * ({@link MigrationReport#changesAuthoredContent()}; story 330): a load whose
  * migrations only re-express the file format has nothing to review or roll
- * back, and opens without it — {@link #showIfNeeded} applies that gate. Lists
+ * back, and opens without it — {@link #showUnlessSuppressed} applies that gate. Lists
  * what was migrated, offers a "Don't show again for this project" checkbox
  * (via {@link MigrationSuppression}), and — when a rollback action is
  * supplied — a "Roll back…" button that, after a confirmation, reverts
- * the in-memory migrated project to the pre-migration version.
+ * the in-memory migrated project to the pre-migration version. Built with
+ * a closing door, that confirmation is not asked while a close runs, and
+ * nothing is rolled back ({@link #confirmRollback}).
  *
  * <p>The dialog is purely informational — closing it does not commit
  * the migration to disk. Per the original story, migrations stay in
@@ -58,6 +63,17 @@ public final class MigrationReportDialog extends Dialog<Void> {
      */
     static final ButtonType OK_BUTTON_TYPE =
             new ButtonType(ButtonType.OK.getText(), ButtonBar.ButtonData.CANCEL_CLOSE);
+
+    private static final Logger LOG = Logger.getLogger(MigrationReportDialog.class.getName());
+
+    /** The report this dialog shows, named by the log line of a roll-back not asked while a close runs. */
+    private final MigrationReport report;
+
+    /**
+     * The name of the door whose close runs now, or empty while none runs;
+     * read on the FX thread when {@code Roll back…} is pressed ({@link #confirmRollback}).
+     */
+    private final Supplier<Optional<String>> closingDoor;
 
     private final CheckBox suppressFutureCheckbox;
 
@@ -87,7 +103,9 @@ public final class MigrationReportDialog extends Dialog<Void> {
     }
 
     /**
-     * Creates a dialog for the given report.
+     * Creates a dialog for the given report. Its {@code Roll back…} reads no
+     * closing door, so it asks while a close runs; {@link #showUnlessSuppressed}
+     * passes the lifecycle controller's closing door.
      *
      * @param report           the migration report — must be non-null and
      *                         {@link MigrationReport#wasMigrated()}
@@ -104,10 +122,40 @@ public final class MigrationReportDialog extends Dialog<Void> {
     public MigrationReportDialog(MigrationReport report,
                                  Path projectDirectory,
                                  Runnable rollbackAction) {
+        this(report, projectDirectory, rollbackAction, Optional::empty);
+    }
+
+    /**
+     * Creates a dialog for the given report whose {@code Roll back…} asks
+     * nothing while a close runs ({@link #confirmRollback}).
+     *
+     * @param report           the migration report — must be non-null and
+     *                         {@link MigrationReport#wasMigrated()}
+     * @param projectDirectory the project directory; may be {@code null},
+     *                         in which case the suppression checkbox is
+     *                         shown but disabled
+     * @param rollbackAction   optional action run on the FX thread, by
+     *                         {@link #runConfirmedRollback()} once the
+     *                         dialog closed, when the user clicked
+     *                         "Roll back…" and confirmed the destructive
+     *                         prompt. When {@code null}, no roll-back button
+     *                         is shown.
+     * @param closingDoor      the name of the door whose close runs now, or
+     *                         empty while none runs
+     *                         ({@code ProjectLifecycleController.closingDoor});
+     *                         read on the FX thread when {@code Roll back…}
+     *                         is pressed
+     */
+    MigrationReportDialog(MigrationReport report,
+                          Path projectDirectory,
+                          Runnable rollbackAction,
+                          Supplier<Optional<String>> closingDoor) {
         if (report == null || !report.wasMigrated()) {
             throw new IllegalArgumentException(
                     "MigrationReportDialog requires a non-empty migration report");
         }
+        this.report = report;
+        this.closingDoor = Objects.requireNonNull(closingDoor, "closingDoor must not be null");
         this.rollbackAction = rollbackAction;
 
         setTitle("Project Migrated");
@@ -155,7 +203,7 @@ public final class MigrationReportDialog extends Dialog<Void> {
         // Story 329 (D42) — the converter does its work once per dialog, and
         // only records a confirmed roll-back: the roll-back reloads the
         // project, and may show this dialog's successor, so it runs once this
-        // dialog closed (showIfNeeded), never inside its close.
+        // dialog closed (showUnlessSuppressed), never inside its close.
         setResultConverter(button -> {
             if (converted) {
                 return null;
@@ -171,7 +219,7 @@ public final class MigrationReportDialog extends Dialog<Void> {
 
     /**
      * Runs the roll-back action when the user confirmed {@code Roll back…},
-     * once: a second call does nothing. {@link #showIfNeeded} calls it after
+     * once: a second call does nothing. {@link #showUnlessSuppressed} calls it after
      * the dialog closed. FX thread.
      */
     void runConfirmedRollback() {
@@ -219,11 +267,29 @@ public final class MigrationReportDialog extends Dialog<Void> {
      * Shows a confirmation dialog asking the user to confirm discarding
      * the migrated version. Returns {@code true} if the user confirms.
      *
+     * <p>While a close runs — the door {@code closingDoor} names, read on the
+     * FX thread when {@code Roll back…} is pressed — it is not shown and
+     * returns {@code false}, logged at INFO, so the press is consumed:
+     * nothing is rolled back, and the report stays open. The report was
+     * already up when the close began and still answers through the window's
+     * fence, but a confirmation shown then would be fenced, one shown after
+     * the close's own dialog would also disable it, being application-modal,
+     * and an exit waiting for the open's install would wait for its answer
+     * (ruling R-1.6; PR #989 review 5711460812).</p>
+     *
      * <p>Package-private so tests can stub destructive UI, and so the
      * confirmation is part of the dialog's behaviour rather than the
      * caller's.</p>
      */
     boolean confirmRollback() {
+        Optional<String> closing = closingDoor.get();
+        if (closing.isPresent()) {
+            String door = closing.get();
+            LOG.info(() -> "The “Roll back migration?” dialog of the migration from v" + report.fromVersion()
+                    + " to v" + report.toVersion() + " was not shown while " + door + " closes the open project:"
+                    + " its Cancel was taken, so nothing was rolled back, and the migration report stays open.");
+            return false;
+        }
         Alert confirm = new Alert(Alert.AlertType.CONFIRMATION);
         confirm.setTitle("Roll back migration?");
         confirm.setHeaderText("Discard the migrated version?");
@@ -240,36 +306,34 @@ public final class MigrationReportDialog extends Dialog<Void> {
     }
 
     /**
-     * Convenience helper that wires the standard "show after load"
-     * behaviour: if the report indicates that a migration which changes
-     * what the user authored was applied
+     * Wires the standard "show after load" behaviour: if the report indicates
+     * that a migration which changes what the user authored was applied
      * ({@link MigrationReport#changesAuthoredContent()}) and the user has not
-     * previously suppressed the dialog for this project, build and
-     * {@link #showAndWait()} the dialog. A report whose migrations are all
-     * format-only shows nothing.
+     * suppressed the dialog for this project, build and {@link #showAndWait()}
+     * the dialog, then run the roll-back the user confirmed, if any — after
+     * the dialog closed, so the reload it starts never runs under this
+     * dialog. A report whose migrations are all format-only shows nothing.
+     * Whether the user suppressed it ("Don't show again", {@link MigrationSuppression})
+     * is read from disk by the caller, off the FX thread (story 333): this
+     * method reads nothing from disk. FX thread.
      *
-     * <p>Returns {@code true} if the dialog was actually shown.</p>
+     * @param report           the load's migration report, or {@code null}
+     * @param projectDirectory the project's folder, where the checkbox's choice is recorded
+     * @param suppressed       whether the user chose "Don't show again" for this report's version
+     * @param rollbackAction   run when the user clicked "Roll back…" and confirmed, or {@code null} for no Roll back
+     * @param closingDoor      the name of the door whose close runs now, or empty while none runs
+     *                         ({@code ProjectLifecycleController.closingDoor}); read on the FX thread when
+     *                         {@code Roll back…} is pressed
+     * @return {@code true} if the dialog was shown
      */
-    public static boolean showIfNeeded(MigrationReport report, Path projectDirectory) {
-        return showIfNeeded(report, projectDirectory, null);
-    }
-
-    /**
-     * Variant of {@link #showIfNeeded(MigrationReport, Path)} that
-     * supplies an optional roll-back action, run when the user clicked
-     * "Roll back…" and confirmed — after the dialog closed, so the
-     * reload it starts never runs under this dialog.
-     */
-    public static boolean showIfNeeded(MigrationReport report,
-                                       Path projectDirectory,
-                                       Runnable rollbackAction) {
-        if (report == null || !report.changesAuthoredContent()) {
+    public static boolean showUnlessSuppressed(MigrationReport report, Path projectDirectory, boolean suppressed,
+                                               Runnable rollbackAction, Supplier<Optional<String>> closingDoor) {
+        Objects.requireNonNull(closingDoor, "closingDoor must not be null");
+        if (report == null || !report.changesAuthoredContent() || suppressed) {
             return false;
         }
-        if (MigrationSuppression.isSuppressed(projectDirectory, report.toVersion())) {
-            return false;
-        }
-        MigrationReportDialog dialog = new MigrationReportDialog(report, projectDirectory, rollbackAction);
+        MigrationReportDialog dialog = new MigrationReportDialog(report, projectDirectory, rollbackAction,
+                closingDoor);
         dialog.showAndWait();
         dialog.runConfirmedRollback();
         return true;

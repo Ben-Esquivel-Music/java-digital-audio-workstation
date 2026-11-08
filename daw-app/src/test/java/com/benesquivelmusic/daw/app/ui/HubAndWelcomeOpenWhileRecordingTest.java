@@ -150,7 +150,7 @@ class HubAndWelcomeOpenWhileRecordingTest {
                     joinTheCardScans();
                 } finally {
                     try {
-                        projectManager.abandonProject();
+                        projectManager.closeProject().join();
                     } finally {
                         recentProjectsNode.removeNode();
                     }
@@ -253,7 +253,7 @@ class HubAndWelcomeOpenWhileRecordingTest {
     private Path anotherProjectOnDisk(String name) throws IOException {
         ProjectManager other = new ProjectManager(new CheckpointManager(AutoSaveConfig.DEFAULT));
         Path directory = other.createProject(name, workspace).projectPath();
-        other.closeProject();
+        other.closeProject().join();
         return directory;
     }
 

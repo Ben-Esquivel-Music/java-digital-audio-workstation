@@ -28,6 +28,7 @@ import javafx.scene.shape.Rectangle;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
 import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
@@ -56,6 +57,12 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * sample rate via {@link #updateBuffers(float[][], float[][], double)} so it
  * has no direct dependency on the audio engine — the embedding controller
  * pumps fresh buffers in whenever the user requests a comparison.</p>
+ *
+ * <p>The A/B state and the trims are saved with the project, so the toggle,
+ * its key and the auto-trim read the window's edit gate: while it says no,
+ * they are refused, whatever raised them, and the toggle shows the manager's
+ * state again. Compare only analyses, and is not refused (PR #989 review
+ * 5711460812).</p>
  */
 @HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class AtmosAbView extends BorderPane {
@@ -65,6 +72,7 @@ public final class AtmosAbView extends BorderPane {
             new KeyCodeCombination(KeyCode.BACK_QUOTE);
 
     private final ReferenceTrackManager manager;
+    private final BooleanSupplier projectActionsAllowed;
     private final GridPane channelGrid = new GridPane();
     private final Canvas waveformCanvas = new Canvas(420, 96);
     // Story 266 / §3.2 — these labels display numeric measurements (dB,
@@ -95,9 +103,14 @@ public final class AtmosAbView extends BorderPane {
      *
      * @param manager the reference-track manager that holds the active
      *                reference track and the A/B toggle state
+     * @param projectActionsAllowed the window's edit gate: while it says no,
+     *                the toggle and the auto-trim are refused (PR #989 review
+     *                5711460812)
      */
-    public AtmosAbView(ReferenceTrackManager manager) {
+    public AtmosAbView(ReferenceTrackManager manager, BooleanSupplier projectActionsAllowed) {
         this.manager = Objects.requireNonNull(manager, "manager must not be null");
+        this.projectActionsAllowed = Objects.requireNonNull(
+                projectActionsAllowed, "projectActionsAllowed must not be null");
         setPadding(new Insets(8));
         setTop(buildHeader());
         setCenter(channelGrid);
@@ -107,7 +120,14 @@ public final class AtmosAbView extends BorderPane {
         compareButton.setOnAction(e -> doCompare());
         autoTrimButton.setOnAction(e -> doAutoTrim());
         abToggle.setSelected(manager.isReferenceActive());
-        abToggle.setOnAction(e -> manager.setReferenceActive(abToggle.isSelected()));
+        abToggle.setOnAction(e -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                // Refused: the check box the gesture flipped shows the manager again.
+                abToggle.setSelected(manager.isReferenceActive());
+                return;
+            }
+            manager.setReferenceActive(abToggle.isSelected());
+        });
         // Bind a key handler for the single-key A/B toggle.  Embedders
         // typically install this on the parent scene.
         addEventHandler(KeyEvent.KEY_PRESSED, this::onKeyPressed);
@@ -150,9 +170,14 @@ public final class AtmosAbView extends BorderPane {
      * toggle from a higher level (e.g. a global accelerator). Crossfading
      * between A and B with level-matched output is the responsibility of
      * the audio engine controller observing
-     * {@link ReferenceTrackManager#isReferenceActive()}.
+     * {@link ReferenceTrackManager#isReferenceActive()}. Refused, changing
+     * nothing, while the window's edit gate says no (PR #989 review
+     * 5711460812).
      */
     public void toggleAb() {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         manager.toggleAB();
         abToggle.setSelected(manager.isReferenceActive());
         status.set(manager.isReferenceActive() ? "Monitoring: B (reference)"
@@ -211,6 +236,9 @@ public final class AtmosAbView extends BorderPane {
     }
 
     private void doAutoTrim() {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         if (mixBuffer == null || referenceBuffer == null) {
             status.set("No buffers available for auto-trim.");
             return;

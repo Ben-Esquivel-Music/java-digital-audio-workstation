@@ -193,6 +193,7 @@ final class PerformanceStageActivationTest {
             return new com.benesquivelmusic.daw.core.mastering.MasteringChain();
         }
         @Override public UndoManager undoManager() { return new UndoManager(); }
+        @Override public boolean projectActionsAllowed() { return true; }
         @Override public void onEditorTrim() { }
         @Override public void onEditorFadeIn() { }
         @Override public void onEditorFadeOut() { }

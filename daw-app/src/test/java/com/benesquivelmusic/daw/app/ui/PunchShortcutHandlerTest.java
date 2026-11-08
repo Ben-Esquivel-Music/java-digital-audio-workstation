@@ -76,6 +76,9 @@ final class PunchShortcutHandlerTest {
         @Override public void onUndo() { }
         @Override public void onRedo() { }
         @Override public void onSaveProject() { }
+        @Override public void onSaveProjectAs() { }
+        @Override public void onCloseProject() { }
+        @Override public void onExit() { }
         @Override public void onNewProject() { }
         @Override public void onOpenProject() { }
         @Override public void onImportSession() { }

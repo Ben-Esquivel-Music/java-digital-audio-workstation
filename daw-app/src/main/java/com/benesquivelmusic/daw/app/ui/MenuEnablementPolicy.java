@@ -32,6 +32,10 @@ public final class MenuEnablementPolicy {
      * @param hasTracks    whether the project contains at least one track
      * @param hasUnresolvedAssets whether the open's missing-assets report
      *                     still has rows (story 329)
+     * @param closeProjectAvailable whether File ▸ Close Project has anything
+     *                     to close: a project folder is open, or the
+     *                     in-memory project has unsaved changes (story 333,
+     *                     ruling R10)
      */
     public record MenuState(boolean projectDirty,
                             boolean canUndo,
@@ -39,7 +43,8 @@ public final class MenuEnablementPolicy {
                             boolean hasClipboard,
                             boolean hasSelection,
                             boolean hasTracks,
-                            boolean hasUnresolvedAssets) { }
+                            boolean hasUnresolvedAssets,
+                            boolean closeProjectAvailable) { }
 
     /**
      * Resolved enable/disable flags for each state-sensitive menu item.
@@ -54,7 +59,8 @@ public final class MenuEnablementPolicy {
                                  boolean cutDisabled,
                                  boolean pasteDisabled,
                                  boolean duplicateDisabled,
-                                 boolean deleteDisabled) { }
+                                 boolean deleteDisabled,
+                                 boolean closeProjectDisabled) { }
 
     /**
      * Computes which menu items should be disabled for the given state.
@@ -73,7 +79,8 @@ public final class MenuEnablementPolicy {
                 !state.hasSelection(),
                 !state.hasClipboard(),
                 !state.hasSelection(),
-                !state.hasSelection()
+                !state.hasSelection(),
+                !state.closeProjectAvailable()
         );
     }
 }

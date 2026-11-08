@@ -1,9 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
-import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
-import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
-import com.benesquivelmusic.daw.core.persistence.journal.JournalRecord;
 import com.benesquivelmusic.daw.core.persistence.journal.ProjectContext;
 import com.benesquivelmusic.daw.core.project.DawProject;
 
@@ -22,15 +19,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Instant;
 import java.util.List;
-import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -490,35 +481,7 @@ class RecoverSessionIsTheOnePendingSwitchTest {
      * {@link #JOURNALED_CHANGES} changes after it.
      */
     private Path aProjectWithACheckpointAndAJournal(String name) throws IOException {
-        Path directory = fixture.anotherProjectOnDisk(name);
-        DawProject checkpointed = new DawProject(name, AudioFormat.CD_QUALITY);
-        checkpointed.createAudioTrack("Vocals");
-        ProjectContext context = ProjectContext.forProject(directory);
-        Files.createDirectories(context.checkpointDirectory());
-        // Only this checkpoint: the save that made the project wrote one of its own.
-        for (Path written : SaveFlowFixture.checkpointFiles(directory)) {
-            Files.delete(written);
-        }
-        String checkpointXml = new ProjectSerializer().serialize(checkpointed);
-        Files.writeString(context.checkpointDirectory().resolve("checkpoint-999-20260101T000000.daw"),
-                checkpointXml, StandardCharsets.UTF_8);
-        ByteArrayOutputStream frames = new ByteArrayOutputStream();
-        Files.createDirectories(context.journalDirectory());
-        Path base = Files.writeString(context.journalDirectory().resolve(
-                com.benesquivelmusic.daw.core.persistence.journal.JournalState.BASE_FILE), checkpointXml);
-        byte[] baseHash = com.benesquivelmusic.daw.core.persistence.journal.JournalState.hash(base)
-                .getBytes(StandardCharsets.UTF_8);
-        new JournalRecord(0L, Instant.EPOCH, JournalRecord.SESSION_START_TYPE, null, baseHash)
-                .writeTo(java.nio.channels.Channels.newChannel(frames));
-        for (int sequence = 0; sequence < JOURNALED_CHANGES; sequence++) {
-            ByteBuffer frame = JournalRecord.ofMutation(sequence + 1L, Instant.ofEpochMilli(1_000L + sequence),
-                    "MixerEvent.MuteChanged", UUID.randomUUID(), null).toBuffer();
-            byte[] bytes = new byte[frame.remaining()];
-            frame.get(bytes);
-            frames.writeBytes(bytes);
-        }
-        Files.createDirectories(context.journalDirectory());
-        Files.write(context.journalDirectory().resolve("segment-000.bin"), frames.toByteArray());
-        return directory;
+        // Story 333 moved the helper beside its second user (an exit during a recovery); same project, same journal.
+        return RecoverableProjects.withACheckpointAndAJournal(fixture, name, JOURNALED_CHANGES);
     }
 }

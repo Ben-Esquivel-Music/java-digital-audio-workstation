@@ -179,7 +179,7 @@ class UnreadItemsQualifyTheOpenAnnouncementTest {
     private Path projectFolderHolding(String name, String xml) throws IOException {
         ProjectManager other = new ProjectManager(new CheckpointManager(AutoSaveConfig.DEFAULT));
         Path directory = other.createProject(name, workspace).projectPath();
-        other.abandonProject();
+        other.closeProject().join();
         Files.writeString(directory.resolve("project.daw"), xml);
         return directory;
     }

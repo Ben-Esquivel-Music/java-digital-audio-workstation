@@ -98,6 +98,7 @@ class ClipInteractionControllerTest {
                 () -> 120.0,
                 () -> { /* onTimeStretchClip no-op */ },
                 () -> { /* onPitchShiftClip no-op */ },
+                () -> true,
                 () -> project.markDirty());
     }
 

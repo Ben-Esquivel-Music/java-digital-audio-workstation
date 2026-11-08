@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
+import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.plugin.MidiEffectPlugin;
 import com.benesquivelmusic.daw.core.plugin.builtin.midi.MidiMessage;
 import com.benesquivelmusic.daw.core.plugin.builtin.midi.MidiProcessContext;
@@ -141,9 +142,26 @@ class CheckpointCaptureFailureReachesTheStripTest {
                 .contains("checkpointStatus = new com.benesquivelmusic.daw.app.ui.status.CheckpointStatusListener("
                         + " projectOperationProgress, projectManager.getCheckpointManager(), notificationBar,")
                 .as("and the autosave captures the live project through the FX post")
-                .contains("checkpointStatusRemoval = wireAutosave(projectManager.getCheckpointManager(),"
-                        + " this::postFx, () -> project, checkpointStatus, this::projectActionsAllowed);")
+                .contains("checkpointStatusRemoval = wireTheWindowsAutosave();")
                 .contains("snapshotsController.setCheckpointStatus(checkpointStatus);");
+        // Story 333, ruling 4 Q4 (the stage-7 review S2) and the app-fix-2 review S1: the capture gate is not an input
+        // gate — a close's input-inert window pauses no scheduled checkpoint — and it shuts for good once DISPOSE
+        // begins.
+        assertThat(methodBody(code, "Runnable wireTheWindowsAutosave()"))
+                .isEqualTo("{ return wireAutosave(projectManager, this::postFx, () -> project, checkpointStatus,"
+                        + " this::autosaveCaptureAllowed); }");
+        assertThat(methodBody(code, "private boolean autosaveCaptureAllowed()"))
+                .isEqualTo("{ return !windowLifetimeEnding && noProjectInstallationPending(); }");
+        assertThat(methodBody(code, "java.util.concurrent.CompletionStage<Void> disposeWindowLifetime()"))
+                .as("the gate shuts before any of DISPOSE's steps runs")
+                .startsWith("{ if (windowLifetimeDisposal != null) { return windowLifetimeDisposal; }"
+                        + " windowLifetimeEnding = true;");
+        assertThat(code).as("one writer of the flag, never cleared").containsOnlyOnce("windowLifetimeEnding = ");
+        assertThat(methodBody(code, "private boolean noProjectInstallationPending()"))
+                .as("which reads the installation alone")
+                .isEqualTo("{ return projectLifecycleController == null"
+                        + " || !projectLifecycleController.isProjectInstallationPending(); }");
+        assertThat(code).as("the autosave is wired once, there").containsOnlyOnce("wireAutosave(projectManager,");
         assertThat(methodBody(code, "private void postFx(Runnable work)"))
                 .as("the FX post is the dispatcher's un-keyed one")
                 .isEqualTo("{ FxDispatcher.runOnFx(fxDispatcher, work); }");
@@ -164,7 +182,8 @@ class CheckpointCaptureFailureReachesTheStripTest {
             status.set(new CheckpointStatusListener(progress, checkpoints, bar, ownerDispatcher,
                     InstantSource.system(), ZoneId.systemDefault()));
         });
-        removal = MainController.wireAutosave(checkpoints, ownerDispatcher::onFx, () -> project, status.get());
+        removal = MainController.wireAutosave(new ProjectManager(checkpoints), ownerDispatcher::onFx, () -> project,
+                status.get(), () -> true);
         checkpoints.start(folder).get(GUARD.toMillis(), TimeUnit.MILLISECONDS);
         return folder;
     }

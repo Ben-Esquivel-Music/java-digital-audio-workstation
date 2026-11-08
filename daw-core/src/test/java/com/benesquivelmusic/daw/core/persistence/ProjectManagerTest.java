@@ -17,6 +17,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.prefs.Preferences;
 
+import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.await;
 import static com.benesquivelmusic.daw.core.persistence.SaveTestSupport.saved;
 import static org.assertj.core.api.Assertions.*;
 
@@ -53,6 +54,26 @@ class ProjectManagerTest {
         assertThat(metadata.projectPath().resolve("project.daw")).exists();
     }
 
+    /**
+     * Stage 2's review N8: the recent projects are written by workers (an
+     * open, a create, a Save As), so a reader gets a snapshot, which a later
+     * record never changes and which iterating can never race.
+     */
+    @Test
+    void theRecentProjectsAreASnapshotALaterRecordNeverChanges() throws IOException {
+        ProjectManager manager = createProjectManager();
+        manager.createProject("Song A", tempDir);
+        java.util.Map<String, ProjectMetadata> before = manager.getRecentProjects();
+        await(manager.closeProject());
+
+        manager.createProject("Song B", tempDir);
+
+        assertThat(before).as("the snapshot taken before").hasSize(1);
+        assertThat(manager.getRecentProjects()).hasSize(2);
+        assertThatThrownBy(() -> before.clear()).isInstanceOf(UnsupportedOperationException.class);
+        await(manager.closeProject());
+    }
+
     @Test
     void audioDirectoryIsTheProjectsAudioFolderAndCreateProjectCreatesIt() throws IOException {
         ProjectManager manager = createProjectManager();
@@ -66,7 +87,7 @@ class ProjectManagerTest {
 
         assertThat(metadata.projectPath()).isEqualTo(someProject);
         assertThat(ProjectManager.audioDirectory(metadata.projectPath())).isDirectory();
-        manager.abandonProject();
+        await(manager.closeProject());
     }
 
     @Test
@@ -100,7 +121,7 @@ class ProjectManagerTest {
                 .contains("source-file=\"" + relative + "\"")
                 .contains("<source-segment path=\"" + relative + "\"/>")
                 .doesNotContain(projectDir.toString());
-        manager.abandonProject();
+        await(manager.closeProject());
 
         ProjectManager reopened = createProjectManager();
         reopened.openProject(projectDir);
@@ -110,7 +131,7 @@ class ProjectManagerTest {
         assertThat(head.startsWith(projectDir.toAbsolutePath())).isTrue();
         assertThat(head).isRegularFile();
         assertThat(loaded.getSourceSegmentPaths()).containsExactly(head.toString());
-        reopened.abandonProject();
+        await(reopened.closeProject());
     }
 
     @Test
@@ -120,7 +141,7 @@ class ProjectManagerTest {
         ProjectMetadata first = manager.createProject("Untitled Project", tempDir);
         Path firstDir = first.projectPath();
         Files.writeString(firstDir.resolve("marker.txt"), "first project's data");
-        manager.abandonProject(); // release the lock so a second create can run
+        await(manager.closeProject()); // release the lock so a second create can run
 
         ProjectMetadata second = manager.createProject("Untitled Project", tempDir);
         Path secondDir = second.projectPath();
@@ -151,24 +172,25 @@ class ProjectManagerTest {
         ProjectManager manager = createProjectManager();
 
         manager.createProject("Song A", tempDir);
-        manager.closeProject();
+        await(manager.closeProject());
 
         assertThat(manager.getRecentProjects()).hasSize(1);
     }
 
     @Test
-    void closingAProjectWithNoDocumentRewritesItsMetadataFileAndWritesNoCheckpoint() throws IOException {
+    void closingAProjectWritesNothingIntoItsFolder() throws Exception {
         ProjectManager manager = createProjectManager();
         ProjectMetadata created = manager.createProject("Test", tempDir);
         Path projectFile = created.projectPath().resolve("project.daw");
         Files.delete(projectFile);
 
-        manager.closeProject();
+        manager.closeProject().get(10, java.util.concurrent.TimeUnit.SECONDS);
 
-        assertThat(Files.readString(projectFile)).as("the final save wrote the metadata file").contains("name=Test");
-        assertThat(manager.getCheckpointManager().getCheckpointCount())
-                .as("a metadata-only file is no project document: no checkpoint holds it (story 331)")
-                .isZero();
+        assertThat(projectFile).as("a close is no save (story 333, ruling R9): nothing rewrote the project file")
+                .doesNotExist();
+        assertThat(manager.getCheckpointManager().getCheckpointCount()).as("and no checkpoint was written").isZero();
+        assertThat(created.projectPath().resolve(ProjectLockManager.LOCK_FILE_NAME)).as("its lock was released")
+                .doesNotExist();
     }
 
     @Test
@@ -200,7 +222,7 @@ class ProjectManagerTest {
         ProjectManager manager = createProjectManager();
         manager.createProject("Test", tempDir);
 
-        manager.closeProject();
+        await(manager.closeProject());
 
         assertThat(manager.getCurrentProject()).isNull();
         assertThat(manager.getCheckpointManager().isRunning()).isFalse();
@@ -210,36 +232,32 @@ class ProjectManagerTest {
     void shouldCloseProjectIdempotently() throws IOException {
         ProjectManager manager = createProjectManager();
 
-        manager.closeProject();
+        await(manager.closeProject());
         assertThat(manager.getCurrentProject()).isNull();
     }
 
     @Test
-    void shouldAbandonProjectWithoutSaving() throws IOException {
+    void shouldCloseAProjectWithUnsavedChangesWithoutSavingThem() throws IOException {
         ProjectManager manager = createProjectManager();
-        manager.createProject("Abandon Test", tempDir);
+        manager.createProject("Close Test", tempDir);
 
-        DawProject dawProject = new DawProject("Abandon Test", AudioFormat.CD_QUALITY);
+        DawProject dawProject = new DawProject("Close Test", AudioFormat.CD_QUALITY);
         dawProject.setMetadata(manager.getCurrentProject());
         saved(manager, dawProject);
+        Path projectFile = manager.getCurrentProject().projectPath().resolve("project.daw");
+        byte[] lastSave = Files.readAllBytes(projectFile);
 
-        // Mark dirty, then abandon — should NOT persist the dirty state
+        // Mark dirty, then close — should NOT persist the dirty state
+        dawProject.createAudioTrack("Unsaved");
         dawProject.markDirty();
         assertThat(manager.hasUnsavedChanges()).isTrue();
 
-        manager.abandonProject();
+        await(manager.closeProject());
 
         assertThat(manager.getCurrentProject()).isNull();
         assertThat(manager.getCurrentDawProject()).isNull();
         assertThat(manager.getCheckpointManager().isRunning()).isFalse();
-    }
-
-    @Test
-    void shouldAbandonProjectIdempotently() {
-        ProjectManager manager = createProjectManager();
-
-        manager.abandonProject();
-        assertThat(manager.getCurrentProject()).isNull();
+        assertThat(Files.readAllBytes(projectFile)).as("project.daw keeps its last save").isEqualTo(lastSave);
     }
 
     @Test
@@ -247,7 +265,7 @@ class ProjectManagerTest {
         ProjectManager manager = createProjectManager();
         ProjectMetadata created = manager.createProject("Original", tempDir);
         Path projectDir = created.projectPath();
-        manager.closeProject();
+        await(manager.closeProject());
 
         ProjectMetadata opened = manager.openProject(projectDir);
 
@@ -325,7 +343,7 @@ class ProjectManagerTest {
         assertThat(metadata.name()).isEqualTo("Corrupted");
         assertThat(metadata.createdAt()).isNotNull();
         assertThat(metadata.lastModified()).isNotNull();
-        manager.closeProject();
+        await(manager.closeProject());
     }
 
     @Test
@@ -335,7 +353,7 @@ class ProjectManagerTest {
         manager.createProject("Test", tempDir);
 
         assertThat(manager.getCheckpointManager().isRunning()).isTrue();
-        manager.closeProject();
+        await(manager.closeProject());
     }
 
     @Test
@@ -345,7 +363,7 @@ class ProjectManagerTest {
         manager.createProject("Song A", tempDir);
 
         assertThat(manager.getRecentProjectPaths()).hasSize(1);
-        manager.closeProject();
+        await(manager.closeProject());
     }
 
     @Test
@@ -353,13 +371,13 @@ class ProjectManagerTest {
         ProjectManager manager = createProjectManagerWithRecentStore();
         ProjectMetadata created = manager.createProject("Song B", tempDir);
         Path projectDir = created.projectPath();
-        manager.closeProject();
+        await(manager.closeProject());
 
         manager.openProject(projectDir);
 
         // Created + opened = same project, so still 1 entry
         assertThat(manager.getRecentProjectPaths()).hasSize(1);
-        manager.closeProject();
+        await(manager.closeProject());
     }
 
     @Test
@@ -421,7 +439,7 @@ class ProjectManagerTest {
 
         saved(manager, original);
         Path projectDir = manager.getCurrentProject().projectPath();
-        manager.closeProject();
+        await(manager.closeProject());
 
         // Re-open and verify
         manager.openProject(projectDir);
@@ -437,7 +455,7 @@ class ProjectManagerTest {
         assertThat(restored.getTransport().getTimeSignatureNumerator()).isEqualTo(3);
         assertThat(restored.getMixer().getMasterChannel().getVolume()).isCloseTo(0.85, within(0.001));
         assertThat(restored.isDirty()).isFalse();
-        manager.closeProject();
+        await(manager.closeProject());
     }
 
     @Test
@@ -445,12 +463,12 @@ class ProjectManagerTest {
         ProjectManager manager = createProjectManager();
         manager.createProject("Legacy", tempDir);
         Path projectDir = manager.getCurrentProject().projectPath();
-        manager.closeProject();
+        await(manager.closeProject());
 
         // The default create writes a legacy text file
         manager.openProject(projectDir);
         assertThat(manager.getCurrentDawProject()).isNull();
-        manager.closeProject();
+        await(manager.closeProject());
     }
 
     @Test
@@ -469,7 +487,7 @@ class ProjectManagerTest {
 
         saved(manager, dawProject);
         assertThat(manager.hasUnsavedChanges()).isFalse();
-        manager.closeProject();
+        await(manager.closeProject());
     }
 
     @Test
@@ -481,7 +499,7 @@ class ProjectManagerTest {
         dawProject.setMetadata(manager.getCurrentProject());
         saved(manager, dawProject);
 
-        manager.closeProject();
+        await(manager.closeProject());
 
         assertThat(manager.getCurrentDawProject()).isNull();
         assertThat(manager.hasUnsavedChanges()).isFalse();
@@ -495,6 +513,6 @@ class ProjectManagerTest {
         assertThatThrownBy(() -> manager.save(null))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessage("project must not be null");
-        manager.abandonProject();
+        await(manager.closeProject());
     }
 }

@@ -29,6 +29,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalDouble;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 import java.util.function.DoubleSupplier;
 import java.util.function.Supplier;
 
@@ -38,6 +39,13 @@ import java.util.function.Supplier;
  *
  * <p>Extracted from {@code MainController} to separate clip editing concerns
  * from the main coordinator.</p>
+ *
+ * <p>Every edit reads the window's edit gate first
+ * ({@link Deps#projectActionsAllowed()}), whatever raised it: while it says
+ * no, nothing changes — no history entry, no dirty mark, no status text; the
+ * time-stretch and pitch-shift prompts do not open. Copy changes only the
+ * clipboard and is not refused. A notification pill's Undo goes through the
+ * history's gated door (PR #989 review 5711460812).</p>
  */
 final class ClipEditController {
 
@@ -71,6 +79,14 @@ final class ClipEditController {
      * @param editorView             the live editor view
      * @param rippleMode             the live ripple mode
      * @param gridStepBeats          grid step in beats (keyboard slip shortcuts)
+     * @param undoLastAction         the history's gated Undo door — the
+     *                               notification pills' Undo goes through it,
+     *                               as the arrangement lane's pills do
+     *                               (PR #989 review 5711460812)
+     * @param projectActionsAllowed  the window's edit gate: while it says no,
+     *                               every clip edit this controller makes is
+     *                               refused, changing nothing (PR #989 review
+     *                               5711460812)
      */
     record Deps(Supplier<com.benesquivelmusic.daw.core.project.DawProject> project,
                 Supplier<UndoManager> undoManager,
@@ -84,7 +100,13 @@ final class ClipEditController {
                 BiConsumer<NotificationLevel, String> showNotification,
                 Supplier<EditorView> editorView,
                 Supplier<RippleMode> rippleMode,
-                DoubleSupplier gridStepBeats) {
+                DoubleSupplier gridStepBeats,
+                Runnable undoLastAction,
+                BooleanSupplier projectActionsAllowed) {
+        Deps {
+            Objects.requireNonNull(undoLastAction, "undoLastAction must not be null");
+            Objects.requireNonNull(projectActionsAllowed, "projectActionsAllowed must not be null");
+        }
     }
 
     private final Deps deps;
@@ -104,6 +126,9 @@ final class ClipEditController {
     }
 
     void onCut() {
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            return;
+        }
         List<ClipboardEntry> selected = deps.selectionModel().getSelectedClips();
         if (selected.isEmpty()) {
             return;
@@ -126,6 +151,9 @@ final class ClipEditController {
     }
 
     void onPaste() {
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            return;
+        }
         ClipboardManager clipboard = deps.clipboardManager();
         if (!clipboard.hasContent()) {
             return;
@@ -155,6 +183,9 @@ final class ClipEditController {
     }
 
     void onDuplicate() {
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            return;
+        }
         List<ClipboardEntry> selected = deps.selectionModel().getSelectedClips();
         if (selected.isEmpty()) {
             return;
@@ -205,6 +236,9 @@ final class ClipEditController {
      *                  content right on the timeline)
      */
     void onSlipSelectionByBeats(double beatDelta) {
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            return;
+        }
         if (beatDelta == 0.0) {
             return;
         }
@@ -357,6 +391,9 @@ final class ClipEditController {
     private void applyNudge(List<java.util.Map.Entry<Track, AudioClip>> entries,
                             double beatDelta,
                             NudgeSettings settings, double directionMultiplier) {
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            return;
+        }
         NudgeClipsAction action = NudgeService.buildAction(entries, beatDelta);
         if (action == null) {
             return;
@@ -464,6 +501,9 @@ final class ClipEditController {
     }
 
     void onDeleteSelection() {
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            return;
+        }
         List<ClipboardEntry> selected = deps.selectionModel().getSelectedClips();
         if (selected.isEmpty()) {
             return;
@@ -532,6 +572,9 @@ final class ClipEditController {
     // ── Editor audio handle actions ─────────────────────────────────────────
 
     void onEditorTrim() {
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            return;
+        }
         EditorView editorView = deps.editorView().get();
         Track track = editorView.getSelectedTrack();
         if (track == null || track.getClips().isEmpty()) {
@@ -570,11 +613,14 @@ final class ClipEditController {
         deps.syncMenuState().run();
         editorView.getWaveformDisplay().refresh();
         deps.showNotificationWithUndo().show(NotificationLevel.SUCCESS,
-                "Trimmed: " + track.getName(), () -> deps.undoManager().get().undo());
+                "Trimmed: " + track.getName(), deps.undoLastAction());
         deps.markProjectDirty().run();
     }
 
     void onEditorFadeIn() {
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            return;
+        }
         EditorView editorView = deps.editorView().get();
         Track track = editorView.getSelectedTrack();
         if (track == null || track.getClips().isEmpty()) {
@@ -604,11 +650,14 @@ final class ClipEditController {
         deps.syncMenuState().run();
         editorView.getWaveformDisplay().refresh();
         deps.showNotificationWithUndo().show(NotificationLevel.SUCCESS,
-                "Fade in applied: " + track.getName(), () -> deps.undoManager().get().undo());
+                "Fade in applied: " + track.getName(), deps.undoLastAction());
         deps.markProjectDirty().run();
     }
 
     void onEditorFadeOut() {
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            return;
+        }
         EditorView editorView = deps.editorView().get();
         Track track = editorView.getSelectedTrack();
         if (track == null || track.getClips().isEmpty()) {
@@ -638,7 +687,7 @@ final class ClipEditController {
         deps.syncMenuState().run();
         editorView.getWaveformDisplay().refresh();
         deps.showNotificationWithUndo().show(NotificationLevel.SUCCESS,
-                "Fade out applied: " + track.getName(), () -> deps.undoManager().get().undo());
+                "Fade out applied: " + track.getName(), deps.undoLastAction());
         deps.markProjectDirty().run();
     }
 
@@ -685,6 +734,9 @@ final class ClipEditController {
      *                 the host so tests can inject a deterministic stub
      */
     void onTimeStretchSelected(TimeStretchPrompter prompter) {
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            return;
+        }
         Objects.requireNonNull(prompter, "prompter must not be null");
         List<AudioClip> clips = collectSelectedAudioClips();
         if (clips.isEmpty()) {
@@ -713,6 +765,9 @@ final class ClipEditController {
      *                 the host so tests can inject a deterministic stub
      */
     void onPitchShiftSelected(PitchShiftPrompter prompter) {
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            return;
+        }
         Objects.requireNonNull(prompter, "prompter must not be null");
         List<AudioClip> clips = collectSelectedAudioClips();
         if (clips.isEmpty()) {
@@ -756,6 +811,9 @@ final class ClipEditController {
      */
     private void applyAsCompound(List<AudioClip> clips, String description,
                                  java.util.function.Function<AudioClip, UndoableAction> factory) {
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            return;
+        }
         UndoableAction action;
         if (clips.size() == 1) {
             action = factory.apply(clips.get(0));

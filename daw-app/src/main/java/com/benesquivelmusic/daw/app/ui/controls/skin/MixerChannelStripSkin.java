@@ -35,6 +35,7 @@ import javafx.scene.shape.Circle;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 
 /**
  * Skin for {@link MixerChannelStrip} — lays out the canonical
@@ -328,8 +329,12 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
         control.outputLabelProperty().addListener(outputLabelListener);
         registeredListenerCount++;
 
+        // The live value, as for the M/S/R legs below: the binder snaps a
+        // refused rename back from inside channelNameProperty's own
+        // notification, and a later listener of that nested change is handed
+        // the outer, refused name (PR #989 review 5711460812).
         nameListener = (obs, was, now) ->
-                nameLabel.setText(now == null ? "" : now);
+                nameLabel.setText(Objects.requireNonNullElse(control.getChannelName(), ""));
         control.channelNameProperty().addListener(nameListener);
         registeredListenerCount++;
 

@@ -31,6 +31,8 @@ class LockStatusIndicatorTest {
         });
 
         assertThat(indicator.getText()).isEmpty();
+        assertThat(indicator.getStyleClass()).containsExactly("label", "lock-status-indicator");
+        assertThat(indicator.getStyle()).as("story 333: no inline style").isEmpty();
     }
 
     @Test
@@ -46,6 +48,8 @@ class LockStatusIndicatorTest {
 
         assertThat(indicator.getText()).contains("Locked");
         assertThat(indicator.getTooltip().getText()).contains("alice").contains("studio-mac");
+        assertThat(indicator.getStyleClass()).containsExactly("label", "lock-status-indicator", "lock-held");
+        assertThat(indicator.getStyle()).as("story 333: the fill is the stylesheet's, by role").isEmpty();
     }
 
     @Test
@@ -57,6 +61,8 @@ class LockStatusIndicatorTest {
         });
 
         assertThat(indicator.getText()).contains("Read-only");
+        assertThat(indicator.getStyleClass()).containsExactly("label", "lock-status-indicator", "lock-read-only");
+        assertThat(indicator.getStyle()).isEmpty();
     }
 
     @Test
@@ -68,6 +74,29 @@ class LockStatusIndicatorTest {
         });
 
         assertThat(indicator.getText()).contains("Lock stolen");
+        assertThat(indicator.getStyleClass()).containsExactly("label", "lock-status-indicator", "lock-stolen");
+        assertThat(indicator.getStyle()).isEmpty();
+        assertThat(indicator.getTooltip().getText()).as("ruling R7: it names File ▸ Save As…").isEqualTo(
+                "Another session has taken over this project's lock. Use File ▸ Save As… to keep your changes in a"
+                        + " new project.");
+    }
+
+    @Test
+    void aStatusChangeLeavesExactlyOneStateClass() throws Exception {
+        LockStatusIndicator indicator = onFx(() -> {
+            LockStatusIndicator i = new LockStatusIndicator();
+            i.show(LockStatus.HELD, null);
+            i.show(LockStatus.STOLEN, null);
+            i.show(LockStatus.READ_ONLY, null);
+            return i;
+        });
+        assertThat(indicator.getStyleClass()).containsExactly("label", "lock-status-indicator", "lock-read-only");
+
+        onFx(() -> {
+            indicator.show(LockStatus.NONE, null);
+            return indicator;
+        });
+        assertThat(indicator.getStyleClass()).containsExactly("label", "lock-status-indicator");
     }
 
     @Test

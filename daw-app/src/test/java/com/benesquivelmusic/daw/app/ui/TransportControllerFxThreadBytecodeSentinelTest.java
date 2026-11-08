@@ -83,7 +83,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * ({@code finishWrittenTake}), the publishing turn that read posts
  * ({@code publishWrittenTake}),
  * the delayed warning ({@code warnTakeStillWriting}), the end of an
- * abandoned start ({@code abandonedStartCleanedUp}), {@code retire}, and
+ * abandoned start ({@code abandonedStartCleanedUp}), {@code retire}, the
+ * take fact the close protocol reads ({@code takeBeingWrittenProperty},
+ * {@code takePublicationsWithClips}; story 333), and
  * the production storage executor ({@code onAVirtualThread}): that method
  * runs on the thread that hands it a task, which is the FX thread whenever
  * the hand-off is made there — the allocation Record hands off, and the
@@ -153,7 +155,8 @@ final class TransportControllerFxThreadBytecodeSentinelTest {
     private static final List<String> FX_ENTRY_POINTS = List.of(
             "toggleRecord", "stopAudioTake", "onTakeDirectoryAllocated", "onTakeReady", "finishUnannouncedTake",
             "cancelPendingStartByUser", "cancelPendingStart", "abandonStart", "finishWrittenTake",
-            "publishWrittenTake", "warnTakeStillWriting", "abandonedStartCleanedUp", "retire", "onAVirtualThread", "requestConfigurationChange");
+            "publishWrittenTake", "warnTakeStillWriting", "abandonedStartCleanedUp", "retire", "onAVirtualThread", "requestConfigurationChange",
+            "takeBeingWrittenProperty", "takePublicationsWithClips");
 
     private static final Set<String> STORAGE_TASKS = Set.of(
             "allocateTakeDirectory", "deleteEmptyTakeDirectory", "readRecordedAudio");
@@ -262,14 +265,18 @@ final class TransportControllerFxThreadBytecodeSentinelTest {
      */
     @Test
     void theTransportFacadeAlsoTouchesNoStorageAndNeverWaits() throws IOException {
-        Walk walk = walk(parse(TransportController.class), List.of("toggleRecord", "stop", "finishPostRoll", "retire"), Set.of());
-        for (String root : List.of("toggleRecord", "stop", "finishPostRoll", "retire")) {
+        Walk walk = walk(parse(TransportController.class), List.of("toggleRecord", "stop", "finishPostRoll", "retire", "stopForClose"), Set.of());
+        for (String root : List.of("toggleRecord", "stop", "finishPostRoll", "retire", "stopForClose")) {
             assertThat(walk.roots().get(root)).as("facade root %s", root).isEqualTo(1);
         }
         assertThat(walk.findings()).isEmpty();
         assertThat(walk.calls()).contains("com/benesquivelmusic/daw/app/ui/RecordCoordinator#toggleRecord",
                 "com/benesquivelmusic/daw/app/ui/RecordCoordinator#stopAudioTake",
                 "com/benesquivelmusic/daw/app/ui/RecordCoordinator#cancelPendingStartByUser");
+        // Story 333: the close's Stop (stopForClose) is a facade root too, and it ends a post-roll now.
+        assertThat(callsOf(parse(TransportController.class), "stopForClose")).as("stopForClose stops and ends the post-roll on this turn")
+                .contains("com/benesquivelmusic/daw/app/ui/TransportController#stop",
+                        "com/benesquivelmusic/daw/app/ui/TransportController#finishPostRoll");
     }
 
     @Test

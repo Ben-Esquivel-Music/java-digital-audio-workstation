@@ -21,6 +21,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -117,6 +118,17 @@ public final class TrackFreezeController {
      * FX thread.
      */
     private Predicate<List<Track>> renderGuard = _ -> true;
+
+    /**
+     * The window's edit gate (PR #989 review 5711460812): a freeze or an
+     * unfreeze asked while it says no is refused at its entry, and a freeze
+     * is read again after its render check, which can ask a question first.
+     * A freeze whose worker started before the gate closed is discarded when
+     * its render turn lands. {@code MainController} wires
+     * {@code projectActionsAllowed}; the pure-unit default never refuses. FX
+     * thread.
+     */
+    private BooleanSupplier projectActionsAllowed = () -> true;
 
     /**
      * The project and undo manager one gesture runs against, read once from
@@ -259,9 +271,15 @@ public final class TrackFreezeController {
     /**
      * Freezes the given track through the undo manager. If the track
      * is null, already frozen, or has no associated mixer channel,
-     * the request is silently ignored with a status-bar message.
+     * the request is silently ignored with a status-bar message. Refused,
+     * silently, while the window's edit gate says no — at entry, and again
+     * after the render check, which can ask a question first (PR #989 review
+     * 5711460812).
      */
     public void freezeTrack(Track track) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         Generation generation = currentGeneration();
         if (track == null) {
             statusReporter.accept("No track selected to freeze", DawIcon.INFO_CIRCLE);
@@ -279,15 +297,24 @@ public final class TrackFreezeController {
         if (!renderGuard.test(List.of(track))) {
             return;
         }
+        // Read again: the gate may have closed while the check asked.
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         runFreezeAsync(new FreezeRun(generation, List.of(track), false));
     }
 
     /**
      * Unfreezes the given track through the undo manager. If the
      * track is null, not frozen, or has no associated mixer channel,
-     * the request is silently ignored with a status-bar message.
+     * the request is silently ignored with a status-bar message. Refused,
+     * silently, while the window's edit gate says no (PR #989 review
+     * 5711460812).
      */
     public void unfreezeTrack(Track track) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         Generation generation = currentGeneration();
         if (track == null) {
             statusReporter.accept("No track selected to unfreeze", DawIcon.INFO_CIRCLE);
@@ -317,9 +344,14 @@ public final class TrackFreezeController {
      * undo step (via {@link BatchFreezeTracksAction}). The offline
      * render runs on a background virtual thread; per-track progress
      * is reported through a modeless {@link TaskProgressIndicator}
-     * with a Cancel button that rolls the partial batch back.
+     * with a Cancel button that rolls the partial batch back. Refused,
+     * silently, while the window's edit gate says no — at entry, and again
+     * after the render check (PR #989 review 5711460812).
      */
     public void freezeTracks(List<Track> selection) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         Generation generation = currentGeneration();
         List<Track> targets = selection == null ? List.of() : selection.stream()
                 .filter(t -> t != null && !t.isFrozen() && generation.channelFor(t) != null)
@@ -329,6 +361,10 @@ public final class TrackFreezeController {
             return;
         }
         if (!renderGuard.test(targets)) {
+            return;
+        }
+        // Read again: the gate may have closed while the check asked.
+        if (!projectActionsAllowed.getAsBoolean()) {
             return;
         }
         runFreezeAsync(new FreezeRun(generation, targets, true));
@@ -345,12 +381,27 @@ public final class TrackFreezeController {
     }
 
     /**
+     * Sets the window's edit gate the freezes and unfreezes read (PR #989
+     * review 5711460812).
+     *
+     * @param projectActionsAllowed whether the project may be edited now
+     */
+    void setProjectActionsAllowed(BooleanSupplier projectActionsAllowed) {
+        this.projectActionsAllowed = Objects.requireNonNull(
+                projectActionsAllowed, "projectActionsAllowed must not be null");
+    }
+
+    /**
      * Unfreezes every frozen track in {@code selection} as a single
      * undo step (via {@link BatchUnfreezeTracksAction}). Unfreezing
      * is fast (it just discards the rendered audio buffer), so no
-     * progress indicator is shown.
+     * progress indicator is shown. Refused, silently, while the window's
+     * edit gate says no (PR #989 review 5711460812).
      */
     public void unfreezeTracks(List<Track> selection) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         Generation generation = currentGeneration();
         List<Track> targets = selection == null ? List.of() : selection.stream()
                 .filter(t -> t != null && t.isFrozen() && generation.channelFor(t) != null)
@@ -389,6 +440,12 @@ public final class TrackFreezeController {
         private volatile String status;
         /** Whether a cancelled batch was rolled back on {@link #generation}'s undo manager. */
         private volatile boolean rolledBack;
+        /**
+         * Whether the render turn landed while the window's edit gate said no,
+         * so nothing ran (PR #989 review 5711460812); FX-written, read by the
+         * worker after the turn and by {@link #finishFreeze}.
+         */
+        private volatile boolean refused;
 
         FreezeRun(Generation generation, List<Track> targets, boolean batch) {
             this.generation = generation;
@@ -454,7 +511,16 @@ public final class TrackFreezeController {
                             FreezeTrackAction action = new FreezeTrackAction(
                                     t, generation.channelFor(t),
                                     generation.sampleRate(), generation.tempo(), generation.channels());
-                            runOnFxThreadAndWait(() -> generation.undoManager().execute(action));
+                            runOnFxThreadAndWait(() -> {
+                                if (!projectActionsAllowed.getAsBoolean()) {
+                                    run.refused = true;
+                                    return;
+                                }
+                                generation.undoManager().execute(action);
+                            });
+                            if (run.refused) {
+                                return;
+                            }
                             run.rendered.put(t.getId(), new FreezeRecord(CacheState.FRESH, start));
                             succeeded.add(t);
                             progress.update(1.0, "Frozen: " + t.getName());
@@ -482,7 +548,16 @@ public final class TrackFreezeController {
                                                 progress.update((double) (i + 1) / total,
                                                         "Frozen (" + (i + 1) + "/" + total + "): " + t.getName());
                                             });
-                            runOnFxThreadAndWait(() -> generation.undoManager().execute(batchAction));
+                            runOnFxThreadAndWait(() -> {
+                                if (!projectActionsAllowed.getAsBoolean()) {
+                                    run.refused = true;
+                                    return;
+                                }
+                                generation.undoManager().execute(batchAction);
+                            });
+                            if (run.refused) {
+                                return;
+                            }
                             succeeded.addAll(batchAction.frozenByThisAction());
                             partial = batchAction.wasCancelled();
                         }
@@ -499,10 +574,7 @@ public final class TrackFreezeController {
                             // cancelled partial-freeze does not linger as a
                             // confusing "Redo" option.
                             int rolledBack = succeeded.size();
-                            runOnFxThreadAndWait(() -> {
-                                generation.undoManager().undo();
-                                generation.undoManager().clearRedoStack();
-                            });
+                            runOnFxThreadAndWait(() -> rollBackCancelledBatch(generation));
                             run.rolledBack = true;
                             run.status = "Freeze cancelled — rolled back " + rolledBack + " track(s)";
                         } else {
@@ -524,15 +596,35 @@ public final class TrackFreezeController {
     }
 
     /**
+     * Rolls a cancelled batch back on the run's captured undo manager and
+     * clears the redo stack. It completes a cancel the user made on a freeze
+     * the gate already admitted, so it does not read the gate. FX thread.
+     */
+    private void rollBackCancelledBatch(Generation generation) {
+        generation.undoManager().undo();
+        generation.undoManager().clearRedoStack();
+    }
+
+    /**
      * Ends a freeze gesture on the FX thread. If the project the gesture
      * started on is no longer the current one (the user opened, created or
      * restored another project meanwhile), the finished freeze belongs to a
      * closed project: nothing is refreshed or recorded and the status reads
      * "Freeze discarded — project closed". Otherwise the gesture's cache
      * provenance is recorded (or, for a rolled-back batch, cleared), its
-     * status reported and the host's refresh callback run.
+     * status reported and the host's refresh callback run. A freeze whose
+     * render turn landed while the window's edit gate said no did not run:
+     * it is logged at INFO and changes nothing else, with no status text
+     * (PR #989 review 5711460812).
      */
     private void finishFreeze(FreezeRun run) {
+        if (run.refused) {
+            LOG.info(() -> run.batch
+                    ? "The freeze of " + run.targets.size() + " tracks did not run: the project could not be edited."
+                    : "The freeze of “" + run.targets.get(0).getName()
+                            + "” did not run: the project could not be edited.");
+            return;
+        }
         if (!isCurrent(run.generation)) {
             for (Track t : run.targets) records.remove(t.getId());
             statusReporter.accept("Freeze discarded — project closed", DawIcon.INFO_CIRCLE);

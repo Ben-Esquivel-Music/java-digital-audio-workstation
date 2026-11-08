@@ -48,7 +48,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@link AudioEngine} on a {@link MockAudioBackend} (or a backend the test
  * supplies) into the project's {@code audio/takes}; or a MIDI-only take on
  * an armed MIDI track whose input device is a stub, handed to the
- * controller through {@code setMidiInputDeviceResolverForTest}. A test of
+ * controller through {@code setMidiInputDeviceResolverForTest}; or a mixed
+ * take, both at once, which records as an audio take does. A test of
  * the guard hands the controller's {@code isRecordingInFlight} and
  * {@code isTakeBeingWritten} to the {@link ProjectLifecycleController} it
  * drives, as {@code MainController} does for its current controller.
@@ -87,11 +88,14 @@ final class RecordingInFlightFixture implements AutoCloseable {
     private static final Duration FX_TURN_BUDGET = Duration.ofSeconds(5);
 
     private final DawProject project;
+    /** The armed track: the audio track of an audio or a mixed take, the MIDI track of a MIDI-only take. */
     private final Track armed;
-    /** The MIDI-only take's input device; {@code null} for an audio take. */
+    /** The input device of a MIDI-only or a mixed take's MIDI track; {@code null} for an audio take. */
     private final StubMidiInput midiInput;
     private final AudioEngine engine;
     private final TransportController controller;
+    /** The controller's status bar, built and read on the FX thread. */
+    private final Label statusBar;
     /** The audio take's directory, read on the FX thread when the take starts. */
     private volatile Path takeDirectory;
 
@@ -104,7 +108,10 @@ final class RecordingInFlightFixture implements AutoCloseable {
                 List.of(new BackendStreamRung(backend, DeviceId.defaultFor(backend.name()))));
         AtomicReference<AudioEngine> engineRef = new AtomicReference<>();
         AtomicReference<TransportController> controllerRef = new AtomicReference<>();
+        AtomicReference<Label> statusBarRef = new AtomicReference<>();
         runOnFx(() -> {
+            Label statusBarLabel = new Label();
+            statusBarRef.set(statusBarLabel);
             AudioEngine audioEngine = new AudioEngine(project.getFormat());
             audioEngine.setStreamingProvision(provision);
             engineRef.set(audioEngine);
@@ -114,7 +121,7 @@ final class RecordingInFlightFixture implements AutoCloseable {
             recIndicator.setVisible(false);
             recIndicator.setManaged(false);
             TransportController transport = new TransportController(project, audioEngine, new UndoManager(),
-                    notificationBar, new Label(), new Label(), recIndicator, new Button(), new Button(),
+                    notificationBar, new Label(), statusBarLabel, recIndicator, new Button(), new Button(),
                     () -> false,
                     () -> GridResolution.QUARTER,
                     () -> CountInMode.OFF,
@@ -129,6 +136,7 @@ final class RecordingInFlightFixture implements AutoCloseable {
         });
         this.engine = engineRef.get();
         this.controller = controllerRef.get();
+        this.statusBar = statusBarRef.get();
     }
 
     /** An armed audio track, "Vox", added to {@code project} and recorded through a {@link MockAudioBackend}. */
@@ -155,8 +163,39 @@ final class RecordingInFlightFixture implements AutoCloseable {
         return new RecordingInFlightFixture(project, keys, new MockAudioBackend(), new StubMidiInput());
     }
 
+    /**
+     * A mixed take: an armed audio track, "Vox", recorded through a
+     * {@link MockAudioBackend}, and beside it an armed MIDI track, "Keys",
+     * its input the stub device, both added to {@code project}. Record
+     * prepares the audio take, and the MIDI recorder starts with its capture.
+     */
+    static RecordingInFlightFixture mixed(DawProject project) throws Exception {
+        Track vox = project.createAudioTrack("Vox");
+        vox.setArmed(true);
+        Track keys = new Track("Keys", TrackType.MIDI);
+        keys.setArmed(true);
+        keys.setMidiInputDeviceName(STUB_MIDI_INPUT);
+        project.addTrack(keys);
+        return new RecordingInFlightFixture(project, vox, new MockAudioBackend(), new StubMidiInput());
+    }
+
     TransportController controller() {
         return controller;
+    }
+
+    /** The armed track: an audio or a mixed take's audio track, a MIDI-only take's MIDI track. */
+    Track armed() {
+        return armed;
+    }
+
+    /** The controller's status bar's text. FX thread. */
+    String statusText() {
+        return statusBar.getText();
+    }
+
+    /** Whether the take records audio: an audio or a mixed take. */
+    private boolean recordsAudio() {
+        return armed.getType() == TrackType.AUDIO;
     }
 
     /**
@@ -170,7 +209,7 @@ final class RecordingInFlightFixture implements AutoCloseable {
      */
     void startOnFx() {
         controller.toggleRecord();
-        if (midiInput == null) {
+        if (recordsAudio()) {
             assertThat(controller.isPreparingTake()).as("fixture: the audio take is being prepared").isTrue();
         } else {
             assertThat(project.getTransport().getState()).as("fixture: the transport records")
@@ -187,7 +226,7 @@ final class RecordingInFlightFixture implements AutoCloseable {
      */
     void start() throws Exception {
         runOnFx(this::startOnFx);
-        if (midiInput == null) {
+        if (recordsAudio()) {
             awaitTheAudioTakeRecording();
             awaitABlockOnDisk();
         }
@@ -220,13 +259,13 @@ final class RecordingInFlightFixture implements AutoCloseable {
      * track still recording and its input still connected.
      */
     void assertStillRecording() throws Exception {
-        if (midiInput == null) {
+        if (recordsAudio()) {
             awaitTheAudioTakeRecording();
         }
         assertThat(onFx(controller::isRecordingInFlight)).as("the recording is still in flight").isTrue();
         assertThat(onFx(() -> project.getTransport().getState())).as("the transport is still RECORDING")
                 .isEqualTo(TransportState.RECORDING);
-        if (midiInput == null) {
+        if (recordsAudio()) {
             assertThat(onFx(engine::getRecordingCallback)).as("the engine's recording callback is still installed")
                     .isNotNull();
             assertThat(onFx(controller::activeTakeDirectory)).as("the same take is still active")
@@ -251,14 +290,14 @@ final class RecordingInFlightFixture implements AutoCloseable {
      * notes played through {@link #holdANote()}).
      */
     void stop() throws Exception {
-        if (midiInput == null) {
+        if (recordsAudio()) {
             awaitTheAudioTakeRecording();
             awaitABlockOnDisk();
         }
         runOnFx(controller::stop);
         assertThat(onFx(controller::isRecordingInFlight)).as("fixture: the Stop ended the recording").isFalse();
         awaitNothingBeingWritten();
-        if (midiInput == null) {
+        if (recordsAudio()) {
             assertThat(onFx(() -> List.copyOf(armed.getClips()))).as("fixture: the Stop published the take")
                     .hasSize(1);
             assertThat(onFx(project::isDirty)).as("fixture: publishing the take marked the project dirty")
@@ -269,13 +308,14 @@ final class RecordingInFlightFixture implements AutoCloseable {
     }
 
     /**
-     * Holds one note down on a MIDI-only take's stub input: the stub's
+     * Holds one note down on a MIDI-only or a mixed take's stub input, once
+     * its recorder has started: the stub's
      * transmitter hands a note-on (middle C, channel 1, velocity 100) to the
      * recorder's receiver, and the Stop finalises the held note into the
      * track's MIDI clip. Any thread.
      */
     void holdANote() throws InvalidMidiDataException {
-        assertThat(midiInput).as("fixture: a MIDI-only take").isNotNull();
+        assertThat(midiInput).as("fixture: a MIDI-only or a mixed take").isNotNull();
         StubTransmitter transmitter = midiInput.transmitter;
         assertThat(transmitter).as("fixture: the take's recorder took the stub's transmitter").isNotNull();
         Receiver receiver = transmitter.receiver;
@@ -306,7 +346,7 @@ final class RecordingInFlightFixture implements AutoCloseable {
     }
 
     /** Waits, bounded, until no take of the controller is being written or having its files removed. */
-    private void awaitNothingBeingWritten() {
+    void awaitNothingBeingWritten() {
         await(() -> !onFxUnchecked(controller::isTakeBeingWritten), TAKE_BUDGET_NANOS,
                 "fixture: the stopped take was published and nothing is being written");
     }

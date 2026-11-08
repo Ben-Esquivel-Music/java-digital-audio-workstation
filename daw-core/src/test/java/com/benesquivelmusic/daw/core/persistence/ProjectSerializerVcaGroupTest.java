@@ -184,7 +184,7 @@ class ProjectSerializerVcaGroupTest {
             manager.openProject(directory);
             saved(manager, manager.getCurrentDawProject());
         } finally {
-            manager.abandonProject();
+            manager.closeProject().join();
         }
         assertThat(backupsIn(directory)).as("a v2 save owes no backup").isEmpty();
     }
@@ -234,7 +234,7 @@ class ProjectSerializerVcaGroupTest {
             manager.openProject(directory);
             saved(manager, manager.getCurrentDawProject());
         } finally {
-            manager.abandonProject();
+            manager.closeProject().join();
         }
         List<Path> backups = backupsIn(directory);
         assertThat(backups).singleElement().satisfies(backup ->
@@ -270,7 +270,7 @@ class ProjectSerializerVcaGroupTest {
     private Path projectHolding(String xml) throws IOException {
         ProjectManager creator = manager();
         Path directory = creator.createProject("Song", tempDir).projectPath();
-        creator.abandonProject();
+        creator.closeProject().join();
         Files.writeString(directory.resolve("project.daw"), xml);
         return directory;
     }

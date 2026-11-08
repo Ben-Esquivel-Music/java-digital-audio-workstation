@@ -35,7 +35,7 @@ class RecoveryTempsReadLinksTest {
             assertThat(manager.openProject(folder).name()).isEqualTo("Song");
             assertThat(manager.getCurrentDawProject()).isNotNull();
         } finally {
-            manager.abandonProject();
+            manager.closeProject().join();
         }
     }
 

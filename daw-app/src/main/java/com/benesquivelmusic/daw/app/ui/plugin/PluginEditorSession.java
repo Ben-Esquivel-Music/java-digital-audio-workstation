@@ -50,11 +50,13 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.MissingResourceException;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.ResourceBundle;
 import java.util.UUID;
 import java.util.ArrayList;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 import java.util.function.DoubleSupplier;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -186,11 +188,34 @@ public final class PluginEditorSession {
      *                         {@code [ⓘ]} action, §6.6); nullable
      * @param showNotification the toast sink for host-side failures (e.g. a
      *                         preset that cannot be written, §6.4); nullable
+     * @param projectActionsAllowed the window's edit gate, read on the FX thread
+     *                         where the editor's frame and grids raise an edit
+     *                         and installed as a UI-write gate on the store for
+     *                         the body's writes through it: while it says no, a
+     *                         grid gesture, a bypass, an A/B swap, a preset load
+     *                         and a write the body makes through the store are
+     *                         refused and the editor shows the plug-in again
+     *                         (PR #989 review 5711460812). Not nullable; the
+     *                         four-argument constructor passes
+     *                         {@code () -> true}
      */
     public record Deps(DoubleSupplier sampleRate,
                        Supplier<PluginInvocationSupervisor> faultSupervisor,
                        Runnable openPluginFaultLog,
-                       BiConsumer<NotificationLevel, String> showNotification) {
+                       BiConsumer<NotificationLevel, String> showNotification,
+                       BooleanSupplier projectActionsAllowed) {
+
+        public Deps {
+            Objects.requireNonNull(projectActionsAllowed, "projectActionsAllowed must not be null");
+        }
+
+        /** Host services with no edit gate: every edit is admitted. */
+        public Deps(DoubleSupplier sampleRate,
+                    Supplier<PluginInvocationSupervisor> faultSupervisor,
+                    Runnable openPluginFaultLog,
+                    BiConsumer<NotificationLevel, String> showNotification) {
+            this(sampleRate, faultSupervisor, openPluginFaultLog, showNotification, () -> true);
+        }
     }
 
     // ── Immutable session identity / services ────────────────────────────
@@ -222,6 +247,12 @@ public final class PluginEditorSession {
     private final ParameterPresetManager presetManager;
     /** Loaded presets by name — backs the §6.4 footer selector. */
     private final Map<String, ParameterPreset> presetsByName = new LinkedHashMap<>();
+    /**
+     * The preset the plug-in holds, as far as the session set it: the last
+     * admitted pick or save, or the frame's selection at open. A refused pick
+     * shows it again (PR #989 review 5711460812).
+     */
+    private Optional<String> appliedPreset = Optional.empty();
     private CompletableFuture<Void> presetOperation = CompletableFuture.completedFuture(null);
 
     // ── Timer / render plumbing (pre-allocated — per-tick work stays light) ─
@@ -263,12 +294,25 @@ public final class PluginEditorSession {
     private Window trackedWindow;
     private final ChangeListener<Boolean> bypassListener = this::onBypassChanged;
 
+    /**
+     * The frame's bypass toggle writes the slot. Refused while the window's
+     * edit gate says no: the frame shows the slot's bypass again, at once
+     * (the frame skin reconciles its button after the nested write), and the
+     * slot is not touched (PR #989 review 5711460812).
+     */
     private void onBypassChanged(ObservableValue<? extends Boolean> observable, Boolean was, Boolean now) {
-        bypassed = now;
-        if (slot != null && slot.isBypassed() != now) {
-            int index = channel.getInsertSlots().indexOf(slot);
-            if (index >= 0) channel.setInsertBypassed(index, now);
+        if (slot == null || slot.isBypassed() == now) {
+            bypassed = now;
+            return;
         }
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            bypassed = slot.isBypassed();
+            frame.setBypassed(slot.isBypassed());
+            return;
+        }
+        bypassed = now;
+        int index = channel.getInsertSlots().indexOf(slot);
+        if (index >= 0) channel.setInsertBypassed(index, now);
     }
 
     // ── Per-build editor state (replaced wholesale by a reload) ──────────
@@ -285,6 +329,15 @@ public final class PluginEditorSession {
     private FxCanvasSurface surface;
     private Canvas canvas;
     private boolean canvasAttached;
+
+    /**
+     * Removes the UI-write gate this session installed on {@link #store}: each
+     * build replaces it, and {@link #dispose()} removes it (PR #989 review
+     * 5711460812).
+     */
+    private Runnable removeUiWriteGate = () -> { };
+    /** True while {@link #buildEditor} builds the body; see {@link #onUiWriteRefused(int)}. */
+    private boolean buildingBody;
 
     /** §6.6 swap-once guard: the placeholder is substituted at most once per build. */
     private boolean bodyFaulted;
@@ -376,6 +429,7 @@ public final class PluginEditorSession {
                 () -> frame.fireEvent(new DetachPluginRequestedEvent()));
         frame.setOnAbToggleRequested(this::onAbToggle);
         frame.setOnAbCopyRequested(this::onAbCopy);
+        appliedPreset = Optional.ofNullable(frame.getSelectedPreset());
         frame.setOnPresetSelected(this::onPresetSelected);
         frame.setOnSavePresetRequested(this::onSavePreset);
         frame.setOnSaveAsPresetRequested(this::onSaveAsPreset);
@@ -455,6 +509,8 @@ public final class PluginEditorSession {
             return;
         }
         disposed = true;
+        removeUiWriteGate.run();
+        removeUiWriteGate = () -> { };
         timer.stop();
         unbindInsertMeters();
         if (analyzerBinding != null) analyzerBinding.close();
@@ -585,6 +641,10 @@ public final class PluginEditorSession {
             parameters = List.of();
             store = new PluginParameterStore(parameters);
         }
+        // The window's edit gate refuses the body's writes to the store too; a
+        // reload replaces only this session's own gate (PR #989 review 5711460812).
+        removeUiWriteGate.run();
+        removeUiWriteGate = store.addUiWriteGate(deps.projectActionsAllowed(), this::onUiWriteRefused);
         state = new PluginParameterState(parameters);
         refreshStateFromStore();
         abComparison = new ABComparison(state);
@@ -597,13 +657,32 @@ public final class PluginEditorSession {
         frame.setResizePolicy(hints.resize());
         frame.setChromePolicy(hints.chrome());
 
-        switch (factory) {
-            case PluginEditorFactory.Declarative _ -> buildDeclarativeBody(parameters);
-            case PluginEditorFactory.Panel p -> buildPanelBody(p);
-            case PluginEditorFactory.Canvas c -> buildCanvasBody(c);
-            case PluginEditorFactory.Faulted f -> buildFaultedBody(f);
+        buildingBody = true;
+        try {
+            switch (factory) {
+                case PluginEditorFactory.Declarative _ -> buildDeclarativeBody(parameters);
+                case PluginEditorFactory.Panel p -> buildPanelBody(p);
+                case PluginEditorFactory.Canvas c -> buildCanvasBody(c);
+                case PluginEditorFactory.Faulted f -> buildFaultedBody(f);
+            }
+        } finally {
+            buildingBody = false;
         }
         echoAllParameters();
+    }
+
+    /**
+     * A UI write the store refused: shows the store's value again at once, as
+     * an audio-side change is shown (PR #989 review 5711460812). Nothing is
+     * shown here while the body is being built: a Panel body is not called
+     * before its createPanel returns, and buildEditor's echoAllParameters then
+     * shows every parameter.
+     */
+    private void onUiWriteRefused(int index) {
+        if (disposed || buildingBody) {
+            return;
+        }
+        onStoreIndexDrained(index);
     }
 
     /**
@@ -652,7 +731,16 @@ public final class PluginEditorSession {
         frame.setBody(grid);
     }
 
+    /**
+     * A grid or fallback-body gesture writes the store. Refused while the
+     * window's edit gate says no: the control shows the store's value again
+     * (PR #989 review 5711460812).
+     */
     private void onGridGesture(int parameterId, double newValue) {
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            onStoreIndexDrained(store.indexOf(parameterId));
+            return;
+        }
         state.setValue(parameterId, newValue);
         store.writeFromUiById(parameterId, newValue);
     }
@@ -842,10 +930,14 @@ public final class PluginEditorSession {
      * {@link PluginParameterState} mirror is refreshed from the store at
      * every snapshot point before {@link ABComparison} captures / loads;
      * afterwards the loaded slot is pushed back into the store and echoed
-     * into the grid.
+     * into the grid. Refused, changing nothing, while the window's edit gate
+     * says no (PR #989 review 5711460812).
      */
     private void onAbToggle() {
         if (disposed) {
+            return;
+        }
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
             return;
         }
         refreshStateFromStore();
@@ -924,8 +1016,18 @@ public final class PluginEditorSession {
         Thread.ofVirtual().name("plugin-presets-load").start(task);
     }
 
+    /**
+     * §6.4 — a footer pick loads the preset into the plug-in. Refused while
+     * the window's edit gate says no: the selector shows the preset applied
+     * last again, and the plug-in is not touched (PR #989 review
+     * 5711460812).
+     */
     private void onPresetSelected(String name) {
         if (disposed || name == null) {
+            return;
+        }
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            frame.setSelectedPreset(appliedPreset.orElse(null));
             return;
         }
         ParameterPreset preset = presetsByName.get(name);
@@ -936,6 +1038,7 @@ public final class PluginEditorSession {
         state.loadValues(preset.values());
         pushStateToStoreAndGrid();
         frame.setSelectedPreset(name);
+        appliedPreset = Optional.of(name);
     }
 
     /** §6.4 {@code [Save…]} — overwrite the selected preset, else fall through to Save As. */
@@ -992,6 +1095,8 @@ public final class PluginEditorSession {
                 presetsByName.put(name, preset);
                 if (!frame.getPresetItems().contains(name)) frame.getPresetItems().add(name);
                 frame.setSelectedPreset(name);
+                // The saved preset holds the plug-in's current values.
+                appliedPreset = Optional.of(name);
             }
             completed.complete(null);
         });

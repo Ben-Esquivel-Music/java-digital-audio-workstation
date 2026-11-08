@@ -28,6 +28,7 @@ import javafx.scene.paint.Color;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
@@ -58,6 +59,13 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  *
  * <p>The visual layout matches a stripped-down output channel: badge → name
  * field → color swatch → level/fader → mute / solo / delete button row.</p>
+ *
+ * <p>While the window's edit gate says no (a close waits on disk work, or a
+ * project is being installed), a rename, a colour, a gain move, a delete or a
+ * member removal the strip's controls raise is refused, whatever raised it,
+ * and the control shows the group again (PR #989 review 5711460812). The
+ * fader's release and the drop are pointer gestures the window's input fence
+ * consumes; mute and solo reach the host's gated intent path.</p>
  */
 @HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class VcaStrip extends VBox {
@@ -80,6 +88,7 @@ public final class VcaStrip extends VBox {
     private final Function<UUID, MixerChannel> channelLookup;
     private final BiConsumer<MixerChannel, Boolean> muteIntent;
     private final BiConsumer<MixerChannel, Boolean> soloIntent;
+    private final BooleanSupplier projectActionsAllowed;
 
     private final TextField nameField;
     private final Slider gainFader;
@@ -106,9 +115,13 @@ public final class VcaStrip extends VBox {
      * @param onChange      callback invoked after any structural change
      *                      (rename, color, delete, member-add/remove) so
      *                      {@link MixerView} can re-render dependent strips
+     * @param projectActionsAllowed the window's edit gate: while it says no,
+     *                      the strip's edits are refused and its controls show
+     *                      the group again (PR #989 review 5711460812)
      * @throws NullPointerException if {@code group}, {@code manager},
-     *                              {@code channelLookup}, {@code muteIntent}
-     *                              or {@code soloIntent} is {@code null}
+     *                              {@code channelLookup}, {@code muteIntent},
+     *                              {@code soloIntent} or
+     *                              {@code projectActionsAllowed} is {@code null}
      */
     public VcaStrip(VcaGroup group,
                     VcaGroupManager manager,
@@ -116,7 +129,8 @@ public final class VcaStrip extends VBox {
                     Function<UUID, MixerChannel> channelLookup,
                     BiConsumer<MixerChannel, Boolean> muteIntent,
                     BiConsumer<MixerChannel, Boolean> soloIntent,
-                    Runnable onChange) {
+                    Runnable onChange,
+                    BooleanSupplier projectActionsAllowed) {
         this.group = Objects.requireNonNull(group, "group must not be null");
         this.manager = Objects.requireNonNull(manager, "manager must not be null");
         this.undoManager = undoManager;
@@ -124,6 +138,8 @@ public final class VcaStrip extends VBox {
         this.muteIntent = Objects.requireNonNull(muteIntent, "muteIntent must not be null");
         this.soloIntent = Objects.requireNonNull(soloIntent, "soloIntent must not be null");
         this.onChange = onChange != null ? onChange : () -> {};
+        this.projectActionsAllowed = Objects.requireNonNull(
+                projectActionsAllowed, "projectActionsAllowed must not be null");
 
         getStyleClass().addAll("mixer-channel", "vca-strip");
         setAlignment(Pos.TOP_CENTER);
@@ -149,6 +165,10 @@ public final class VcaStrip extends VBox {
             String newName = nameField.getText();
             VcaGroup current = manager.getById(group.id());
             if (current == null) return;
+            if (!projectActionsAllowed.getAsBoolean()) {
+                nameField.setText(current.label());
+                return;
+            }
             if (newName != null && !newName.isBlank()
                     && !newName.equals(current.label())) {
                 manager.replace(current.withLabel(newName));
@@ -170,6 +190,14 @@ public final class VcaStrip extends VBox {
             colorPicker.setValue(Color.web(group.color().getHexColor()));
         }
         colorPicker.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                VcaGroup current = manager.getById(group.id());
+                if (current != null) {
+                    colorPicker.setValue(current.color() != null
+                            ? Color.web(current.color().getHexColor()) : Color.WHITE);
+                }
+                return;
+            }
             Color picked = colorPicker.getValue();
             if (picked == null) return;
             VcaGroup current = manager.getById(group.id());
@@ -197,6 +225,13 @@ public final class VcaStrip extends VBox {
             dragStart[0] = current != null ? current.masterGainDb() : group.masterGainDb();
         });
         gainFader.valueProperty().addListener((_, _, v) -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                VcaGroup current = manager.getById(group.id());
+                if (current != null) {
+                    gainFader.setValue(current.masterGainDb());
+                }
+                return;
+            }
             // Apply directly so meters / member previews update in real time.
             manager.setMasterGainDb(group.id(), v.doubleValue());
         });
@@ -234,6 +269,9 @@ public final class VcaStrip extends VBox {
         deleteBtn.getStyleClass().add("track-arm-button");
         deleteBtn.setTooltip(new Tooltip("Delete VCA group"));
         deleteBtn.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             manager.removeVcaGroup(group.id());
             onChange.run();
         });
@@ -254,6 +292,9 @@ public final class VcaStrip extends VBox {
                 String name = ch != null ? ch.getName() : memberId.toString();
                 MenuItem remove = new MenuItem("Remove “" + name + "”");
                 remove.setOnAction(_ -> {
+                    if (!projectActionsAllowed.getAsBoolean()) {
+                        return;
+                    }
                     AssignVcaMemberAction action =
                             new AssignVcaMemberAction(manager, group.id(), memberId, false);
                     if (undoManager != null) {

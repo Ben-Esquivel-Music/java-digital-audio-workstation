@@ -126,6 +126,9 @@ class SingleSaveRequestTest {
                 .anyMatch(frame -> frame.endsWith("ProjectManager.drainSaves"))
                 .noneMatch(frame -> frame.contains("ProjectLifecycleController"));
         assertThat(fixture.publishes.done(SaveFlowFixture::isHead)).as("nothing was written").isEmpty();
+        // Story 333 (ruling R7) — the takeover dialog, answered "Not now", replaces 331's ERROR toast.
+        fixture.awaitOnFx(() -> fixture.takeoverHeaders.size() == 1, "the takeover dialog");
+        assertThat(fixture.notifications()).as("no toast").isEmpty();
     }
 
     @Test

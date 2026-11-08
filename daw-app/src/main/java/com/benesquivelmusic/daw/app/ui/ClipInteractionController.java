@@ -83,6 +83,12 @@ final class ClipInteractionController {
      * @param projectTempoBpm  project tempo in BPM (slip source-length math)
      * @param onTimeStretchClip opens the time-stretch dialog (story 042)
      * @param onPitchShiftClip  opens the pitch-shift dialog (story 042)
+     * @param projectActionsAllowed the window's edit gate, read by the clip
+     *                          context menus' items, which an assistive
+     *                          technology can activate without an input
+     *                          event (PR #989 review 5711460812); the canvas's
+     *                          pointer gestures are input events the window's
+     *                          fence consumes while a close waits
      * @param markProjectDirty  marks the live project dirty — for a change
      *                          that is not an undo entry and so escapes the
      *                          undo-history dirty path (a take audition that
@@ -107,6 +113,7 @@ final class ClipInteractionController {
                 DoubleSupplier projectTempoBpm,
                 Runnable onTimeStretchClip,
                 Runnable onPitchShiftClip,
+                BooleanSupplier projectActionsAllowed,
                 Runnable markProjectDirty) {
     }
 
@@ -1203,6 +1210,9 @@ final class ClipInteractionController {
         for (FadeCurveType curveType : FadeCurveType.values()) {
             MenuItem item = new MenuItem(curveLabel(curveType));
             item.setOnAction(e -> {
+                if (!deps.projectActionsAllowed().getAsBoolean()) {
+                    return;
+                }
                 FadeCurveType currentIn = clip.getFadeInCurveType();
                 FadeCurveType currentOut = clip.getFadeOutCurveType();
                 FadeCurveType newIn = isFadeIn ? curveType : currentIn;

@@ -58,6 +58,12 @@ public final class DawMenuBarController {
         void onNewProject();
         void onOpenProject();
         void onSaveProject();
+        /**
+         * Story 333 — File ▸ Save As… (ruling R5): the open project copied
+         * into a new folder, which becomes the open project. Abstract, so no
+         * host drops it silently.
+         */
+        void onSaveProjectAs();
         void onRecentProjects();
         void onImportSession();
         void onExportSession();
@@ -95,6 +101,18 @@ public final class DawMenuBarController {
          * no-op for tests.
          */
         default void onRelinkMissingAssets() { }
+        /**
+         * Story 333 — File ▸ Close Project (ruling R10): the open project
+         * closes through the exit protocol and a fresh Untitled project
+         * takes its place. Abstract, so no host drops it silently.
+         */
+        void onCloseProject();
+        /**
+         * Story 333 — File ▸ Exit: the application closes through the exit
+         * protocol, as the window's close box does. Abstract, so no host
+         * drops it silently.
+         */
+        void onExit();
 
         // Edit actions
         void onUndo();
@@ -206,6 +224,7 @@ public final class DawMenuBarController {
     private final BooleanSupplier hasSelection;
     private final BooleanSupplier hasTracks;
     private final BooleanSupplier hasUnresolvedAssets;
+    private final BooleanSupplier closeProjectAvailable;
 
     private MenuConstructionService.SyncableItems syncableItems;
 
@@ -223,6 +242,11 @@ public final class DawMenuBarController {
      * @param hasUnresolvedAssets live "the open's missing-assets report has
      *                            rows" query (story 329 — enables
      *                            "Relink Missing Assets…")
+     * @param closeProjectAvailable live "Close Project has something to
+     *                            close" query (story 333, ruling R10: a
+     *                            project folder is open or the in-memory
+     *                            project has unsaved changes) — the same
+     *                            predicate the Command Palette's entry reads
      */
     public DawMenuBarController(MenuActions actions,
                                 KeyBindingManager keyBindingManager,
@@ -232,7 +256,8 @@ public final class DawMenuBarController {
                                 BooleanSupplier hasClipboardContent,
                                 BooleanSupplier hasSelection,
                                 BooleanSupplier hasTracks,
-                                BooleanSupplier hasUnresolvedAssets) {
+                                BooleanSupplier hasUnresolvedAssets,
+                                BooleanSupplier closeProjectAvailable) {
         Objects.requireNonNull(actions, "actions must not be null");
         this.constructionService = new MenuConstructionService(actions,
                 Objects.requireNonNull(keyBindingManager, "keyBindingManager must not be null"));
@@ -245,6 +270,8 @@ public final class DawMenuBarController {
         this.hasTracks = Objects.requireNonNull(hasTracks, "hasTracks must not be null");
         this.hasUnresolvedAssets = Objects.requireNonNull(hasUnresolvedAssets,
                 "hasUnresolvedAssets must not be null");
+        this.closeProjectAvailable = Objects.requireNonNull(closeProjectAvailable,
+                "closeProjectAvailable must not be null");
         this.menuBar = new MenuBar();
         this.menuBar.getStyleClass().add("daw-menu-bar");
         this.menuBar.setUseSystemMenuBar(false);
@@ -294,11 +321,13 @@ public final class DawMenuBarController {
                         hasClipboardContent.getAsBoolean(),
                         hasSelection.getAsBoolean(),
                         hasTracks.getAsBoolean(),
-                        hasUnresolvedAssets.getAsBoolean()));
+                        hasUnresolvedAssets.getAsBoolean(),
+                        closeProjectAvailable.getAsBoolean()));
 
         syncableItems.saveItem().setDisable(enablement.saveDisabled());
         syncableItems.exportSessionItem().setDisable(enablement.exportSessionDisabled());
         syncableItems.relinkMissingAssetsItem().setDisable(enablement.relinkMissingAssetsDisabled());
+        syncableItems.closeProjectItem().setDisable(enablement.closeProjectDisabled());
 
         syncableItems.undoItem().setDisable(enablement.undoDisabled());
         syncableItems.redoItem().setDisable(enablement.redoDisabled());

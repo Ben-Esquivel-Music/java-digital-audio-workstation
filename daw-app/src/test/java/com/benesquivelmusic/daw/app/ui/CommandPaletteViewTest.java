@@ -83,6 +83,35 @@ class CommandPaletteViewTest {
         assertThat(store.load()).containsExactly("NEW_TRACK");
     }
 
+    /**
+     * Story 333 (the studio engineer's stage-7 N3): an Exit run from the
+     * palette is never recorded as a recent command — the next session's
+     * first recent entry, auto-selected on an empty query, would make
+     * Ctrl+K then Enter quit. Another command run from it still is.
+     */
+    @Test
+    void anExitRunFromThePaletteIsNeverRecordedAsARecentCommand(@TempDir Path tmp) throws Exception {
+        var store = new CommandPaletteRecentsStore(tmp.resolve("recents.json"));
+        AtomicInteger exits = new AtomicInteger();
+        var entries = List.of(
+                entry(DawAction.EXIT.name(), "Exit", exits::incrementAndGet),
+                entry("OPEN_SETTINGS", "Settings", () -> {}));
+
+        onFx(() -> {
+            CommandPaletteView view = new CommandPaletteView(() -> entries, store);
+            view.refreshFromSupplierForTesting();
+            view.searchField().setText("settings");
+            view.invokeSelected();
+            view.refreshFromSupplierForTesting();
+            view.searchField().setText("exit");
+            view.invokeSelected();
+            return null;
+        });
+
+        assertThat(exits).as("the palette's Exit ran").hasValue(1);
+        assertThat(store.load()).as("only the other command is a recent one").containsExactly("OPEN_SETTINGS");
+    }
+
     @Test
     void recentsSurfacedAtTopOfEmptyQuery(@TempDir Path tmp) throws Exception {
         var store = new CommandPaletteRecentsStore(tmp.resolve("recents.json"));

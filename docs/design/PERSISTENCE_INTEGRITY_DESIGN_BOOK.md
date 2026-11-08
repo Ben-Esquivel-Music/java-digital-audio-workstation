@@ -226,6 +226,21 @@ There is no exit protocol at all:
   feature that does not exist. (That indicator also styles itself with an inline hex colour; a token
   violation for `UI_DESIGN_BOOK.md`, noted in passing.)
 
+*Since story 333, the §5.4 protocol runs: the exit coordinator's event filter consumes the primary
+stage's close request (`ExitCoordinator.installOn`) until the protocol decides, and GUARD's Cancel
+is the veto. The primary stage has no hidden handler: DISPOSE runs
+`MainController.disposeWindowLifetime()`, and `DawApplication.stop()` runs the application-stop
+fallback when the protocol has not run, then tears the event bus and the dispatcher down.
+`ProjectManager.closeProject()` saves nothing (ruling R9: the exit's FLUSH is the save), and the
+protocol's RELEASE is one of its production callers; the lock file is deleted, if it is still this
+session's, once the work this session still owes in the folder has ended. The File menu has Close
+Project, Save As… and Exit. `LockStolenException` is caught as itself and leads to the “Project
+Taken Over” dialog, whose Save As… keeps the changes in a new project (ruling R7; §5.4's note); the
+lock indicator's stolen-lock tooltip names File ▸ Save As…, and its states are style classes over
+role tokens (§7.3's note). The prompt the doors and the exits share is
+`ProjectLifecycleController.askAboutUnsavedChanges(UnsavedChangesPrompt)`; story 331 had already
+replaced `confirmDiscardUnsavedChanges`.*
+
 ### 1.8 Checkpoint retention is amnesiac, and the Backups category prunes a ghost directory
 
 - The checkpoint index is an in-memory list (`CheckpointManager.java:53`) that `start(...)` never
@@ -366,6 +381,12 @@ dispose — not a side effect of a window disappearing (§1.7). Every step publi
 *before* the terminal state, so observers never see a half-closed world. The same protocol runs for
 File▸Exit, the window close button, and workspace switch; input source is irrelevant past the
 intent boundary (Control Synchronization book §2.8).
+
+*As built in story 333: a closing checkpoint comes between the flush and the seal (§5.4's note).
+File ▸ Close Project and the application-stop fallback — which `Application.stop()` runs when the
+toolkit ended without the protocol — go through the same coordinator. No workspace switch exists
+yet: the close-then-continue primitive it will call (`ExitCoordinator.closeOpenProjectThenContinue`)
+has no production caller (story 333's known limit 11).*
 
 ### 2.8 A setting is read by the thing it claims to control
 
@@ -669,6 +690,16 @@ journal coordinator's open/rotation hooks (fixing §1.6's self-erasure):
   is the *only* caller of the prompt + `closeProject` sequence; workspace switch and project close
   reuse it. `setOnHidden` remains dispose-only — disposal happens *after* the protocol, never
   instead of it.
+
+  *As built in story 333: `ExitCoordinator` (daw-app `ui`) adds an event filter that consumes the
+  primary stage's `WINDOW_CLOSE_REQUEST` (`installOn`), so no later `setOnCloseRequest` can take the
+  request from it; the close box, File ▸ Exit and File ▸ Close Project ask it through
+  `request(CloseDoor)`, and `Application.stop()` reaches it through
+  `MainController.applicationStopping()`. The primary stage has no `setOnHidden` handler: DISPOSE
+  calls `MainController.disposeWindowLifetime()`, whose only caller is the coordinator. The tail —
+  CLOSING_CHECKPOINT, SEAL, RELEASE — is `ProjectFolderCloser`. `ProjectManager.closeProject()`
+  saves nothing (ruling R9) and is not the coordinator's alone: the doors that replace the open
+  project, and Save As's close of the original, call it too.*
 - **Retention unification** (stories 331 + 335): the checkpoint index seeds from the on-disk
   `checkpoints/` directory at start so pruning counts files across sessions (§1.8); the Settings
   ▸ Backups `BackupRetentionPolicy` is delivered to `CheckpointManager.setRetentionPolicy` for the
@@ -712,6 +743,12 @@ Every durable write in the system, normalised:
 Invariants: one writer per file (PM book §5.3); the FX thread never performs disk I/O; a single
 manual save produces exactly **one** head write and at most **one** checkpoint (§1.5 retired);
 every failure row lands in a surface the user can see.
+
+*As built in story 333 (ruling R12 #6), for the session seal's row: a seal that cannot be written
+stops the close before RELEASE, visibly. The progress dialog says the journal could not be sealed
+and offers Quit anyway (Close anyway for Close Project), which releases the folder with its journal
+left unsealed, beside the keep button (Don't quit, or Keep project open), which keeps the project
+open with its journaling paused. After Discard and close a seal failure does not stop the close.*
 
 ### 5.3 The open contract (ordered)
 
@@ -759,6 +796,65 @@ better interim. Once story 332's journal is live and healthy for the session, st
 PM-book behaviour — seal-and-close without interrogation — with the prompt retained only for
 degraded cases (journal opted off, save failure, stolen lock). The prompt is scaffolding with a
 defined demolition condition; this paragraph is the record of that intent.
+
+**The maturity rule's record, as built in story 333 (ruling R11).** The prompt ships
+unconditionally: no “journal healthy, skip the prompt” logic and no degraded-case marker were
+built, and no toggle waits in code; the demolition condition is tracked in the paragraph above and
+in the story only. That paragraph stands, with one addition: “field-proven healthy” is necessary
+but not enough. While journal records carry no state, a healthy journal still cannot rebuild an
+unsaved edit (story 387), and the end state also needs the Project Manager book §2.5's Undo Close
+affordance, which does not exist yet. So the demolition also needs story 387 (replay rebuilds
+changes, or a save is a capture point) plus an Undo Close toast.
+
+**As built in story 333.** The protocol has eight steps — `ExitCoordinator.ExitStep` is INTERCEPT,
+GUARD, FLUSH, CLOSING_CHECKPOINT, SEAL, RELEASE, DISPOSE, HIDE — and differs from the list above
+where these notes say:
+
+- **Doors.** The window's close box, `File ▸ Exit` and `File ▸ Close Project`, which stops after
+  RELEASE and installs a fresh Untitled project with the Welcome window (ruling R10); the
+  close-then-continue primitive, which closes as Close Project does and has no production caller
+  until the workspace switch exists (story 333's known limit 11); and the application-stop
+  fallback, which `Application.stop()` runs when the toolkit ended without the protocol: it asks
+  nothing more and starts no save of its own (ruling R4).
+- **INTERCEPT** is an event filter that consumes `WINDOW_CLOSE_REQUEST` (§4.8's note).
+- **GUARD** runs the take rule first (`RECORDING_RELIABILITY_DESIGN_BOOK.md` §5.2's note): a
+  recording in flight asks “Recording in Progress” — Stop the take and close │ Keep recording, the
+  default, which ends the close at GUARD, before any later step — and a take still being written is waited out,
+  never refused. GUARD then waits for every save queued before the request: one that failed stops
+  the close while its head failure still stands (ruling R9), and with unsaved changes a lost lock,
+  already known or met by one of those saves, shows the takeover dialog in place of the prompt.
+  The dirty check reads `DawProject.isDirty()` (§7.3's note). Step 2's ▸ maturity line is not
+  built (the record above).
+- **FLUSH.** A `LockStolenException` opens the “Project Taken Over” dialog (ruling R7): Save As…
+  — the copy published beside the folder and remembered, not opened (ruling R5) — Quit without
+  saving (Close without saving for Close Project), or Cancel. A read-only open's Save and close…
+  is the same Save As, pre-filled `<folder> copy`. Ctrl+S under a lost lock gets the dialog with
+  Save As… and Not now.
+- **CLOSING_CHECKPOINT** (ruling R3) writes one checkpoint of the live project, origin `CLOSING`,
+  when a journal record was offered outside every capture, for a Discard (or Save As's original)
+  whose revision is not checkpointed, or in the application-stop fallback with unsaved changes;
+  never for a read-only open, a lost lock or a project with no folder. One that fails is logged and
+  the close goes on.
+- **SEAL** runs on the `daw-journal-seal` worker, always before RELEASE, so the closing
+  checkpoint's marker reaches the journal before the checkpoints stop; its failure is §5.2's note.
+- **RELEASE.** `closeProject()` no longer saves (ruling R9); the lock file is deleted once the
+  work this session still owes in the folder has ended, and Close Project does not wait for that.
+- **DISPOSE** is `MainController.disposeWindowLifetime()`; the event bus and the dispatcher go down
+  last, in `Application.stop()`. **HIDE** comes once the audio engine's stop, handed to its own
+  thread, has ended, or after 5 s (ruling 2 OQ-3).
+- **The way out (ruling R8).** After half a second of waiting a modal progress dialog shows the step
+  and Don't quit (Keep project open for Close Project); after ten seconds a note follows and, for
+  an exit, Quit anyway, which skips the steps not yet begun and leaves the lock, as after a crash —
+  never during the take wait or while the audio engine stops.
+- **A lost lock while a close is pending** (the studio engineer's final ruling F1): A save that
+  meets a lock another session took while a close is pending shows no takeover dialog of its own:
+  an interactive close meets the loss itself — at GUARD when it is already known, or at its FLUSH —
+  in the takeover dialog whose Save As can run (ruling R7); after an exit's HIDE, or while the
+  application-stop fallback runs, nothing asks (ruling 4 Q6.2 item 4). A project kept open shows
+  the loss in its lock cell, and its next save asks again.
+
+What story 333 knowingly leaves undone is recorded in its Resolution as known-limit categories,
+each with its owner.
 
 ### 5.5 The recovery decision table
 
@@ -886,6 +982,12 @@ rules are in `docs/project-migrations.md`, "The Degraded-Open Backup".
   placeholder slots render in its rack idiom.
 - **UI_DESIGN_BOOK.md** — every surface named here uses its tokens; §1.7's inline-hex indicator
   is corrected in passing when touched.
+
+*As built in story 333: GUARD reads the open project's own dirty bit, `DawProject.isDirty()`,
+through `ProjectLifecycleController.closeReadiness()` — the bit `ProjectVM.dirty` mirrors on the FX
+thread — and the lock indicator (`LockStatusIndicator`) shows its three states with the
+`lock-held`, `lock-read-only` and `lock-stolen` style classes over the `-ok`, `-warn` and `-danger`
+role tokens, with no inline colour.*
 
 ---
 
@@ -1069,14 +1171,14 @@ Where each construct in this book attaches to today's tree.
 |---|---|---|
 | Atomic-replace writer (§4.1) | landed in 331: `AtomicFileWriter` in `daw-core` `persistence` — a temp sibling with a new name per write, forced, moved with `ATOMIC_MOVE` and a `REPLACE_EXISTING` fallback, then a best-effort folder fsync; the head and metadata writes (`ProjectManager.replaceProjectFile`), the checkpoints, the migration and degraded-open backups, the `.dawz` publish, `SnapshotStore`, the lock's takeover and heartbeat, the session manifest, and daw-app's recovered-file, archive-restore and roll-back writes go through it; `DurableWritesGoThroughTheAtomicWriterTest` and `AppProjectWritesGoThroughTheAtomicWriterTest` hold every other write primitive of the persistence path to a declared allow-list | `DawLauncher`, `FloatingWindowStore` and `DawProjectSessionExporter` adopt it (377); `TakeManifest` adopts it (350) |
 | Checkpoint snapshot isolation (§4.2) | landed in 331: a tick posts the capture to the owner executor (`CheckpointManager.setCaptureSource(Executor, CheckpointSource)`; the FX thread, through `MainController.wireAutosave`), where `ProjectSerializer.capture` walks the model into a `ProjectDocument`; the checkpoint writer renders and writes it; every `Throwable` is logged and reported once (`onCheckpointFailed`, `CheckpointEvent.Failed`) and reaches the strip's checkpoint state through `CheckpointStatusListener`; the archive captures on the FX thread (`ProjectArchiver.capture`) and writes on its worker (`ProjectArchiver.write`) | the copy-on-write capture, FX cost O(changed) (Project Manager book §5.3), its duration logged first (378) |
-| Single-save collapse (§4.2) | landed in 331: `ProjectManager.save(DawProject)` → `CompletableFuture<SaveOutcome>` is the one save, and `saveProject()` and `saveDawProject` are gone; the caller only captures, and the save writer runs the generation fence, the lock check, one render, the owed backup, the head write and at most one checkpoint of the same bytes; daw-app's `ProjectLifecycleController.submitSave` follows the outcome through the `FxDispatcher` | the exit coordinator waits for the save writer, and `createProject` and the open path leave the FX thread (333) |
+| Single-save collapse (§4.2) | landed in 331: `ProjectManager.save(DawProject)` → `CompletableFuture<SaveOutcome>` is the one save, and `saveProject()` and `saveDawProject` are gone; the caller only captures, and the save writer runs the generation fence, the lock check, one render, the owed backup, the head write and at most one checkpoint of the same bytes; daw-app's `ProjectLifecycleController.submitSave` follows the outcome through the `FxDispatcher` | landed in 333: the exit's FLUSH is this save (`ProjectLifecycleController.saveBeforeClosing` → `saveOpenProject` → `submitSave`, as Ctrl+S) and the protocol waits for the save writer; `createProject` runs on the `daw-project-create` worker and the gated open on the recovery gate's worker; the ungated open, reached only from test fixtures, still opens on the FX thread (384) |
 | Clip rehydrator (§4.3) | absent — `ProjectDeserializer.java:539` path-only clips; consumers `RenderPipeline.java:894-895`, `:1069`, `ClipOverlayRenderer.java:152`; `AudioClip.java:327` never load-called | new load-side service in the open pipeline (329) |
 | Missing-assets surface (§4.3) | collected at `ProjectDeserializer.java:532`, `:535`; accessor `:133` test-only; unconditional success `ProjectLifecycleController.java:866` | report + relink UI; qualified open outcome (329) |
 | Parity harness (§4.4) | landed in 330, all `daw-core` tests in `persistence`: `ProjectSchemaParityContractTest` (every written element path, attribute and text is read and every name the reader asks for is written; source-derived guards over the writer and reader files; `FaultInjection` hides one item per read idiom — `midi-effect-chain`, `midi-effect@plugin-id`, `transport@pre-roll-bars`, `@pre-roll-enabled`, `@punch-start-frames`, `midi-clip`, `midi-clip/notes/note`, `track@id`, `metadata/name#text` — and the report names it; `everyLegacyInputIsReadWhenPresentAndNeverWritten` pins the schema-1 names still read and never written: `send@mode` and `midi-effect@class`); `ProjectRoundTripInventoryTest` (the `full` inventory project saved and reopened through `ProjectSerializer`/`ProjectDeserializer` and through `ProjectManager`, compared fact by fact per §3.1 row; every family variant's audio format round-trips); helpers `XmlSchemaParity`, `DomReadRecorder`, `PersistenceSourceScan` | every later schema stage adds its items and assertions in the same PR (334) |
 | Plugin-slot descriptor (§4.5) | `InsertEffectFactory.java:86-107` null types; `ProjectSerializer.java:510-512` guard; `ProjectDeserializer.java:893-902` drop; `PluginRegistry.java:25-37` in-memory registry | descriptor + placeholder + persisted registry (334) |
 | Tempo-map / take schema (§4.6) | `Transport.java:74` map unserialized (`ProjectSerializer.java:235`); `Track.java:98-99` takes unserialized; ruler already map-driven `TimelineRulerModel.java:58` | schema additions under migration registry (334) |
 | Recovery gate (§4.7) | Welcome-only `ProjectLifecycleController.java:1248`; staleness gate `ProjectHealthScanner.java:173-178` + `ProjectLockManager.java:65`; rotation hazard `ProjectJournalCoordinator.java:358-372`; dark default `SettingsModel.java:78`, `ProjectJournalCoordinator.java:185-191` | gate inside `loadProjectFromPath` before journal open; seal-based detection; default ON (332) |
-| Exit coordinator (§4.8) | `MainController.java:1007` dispose-only; `DawApplication.java:98`; `ProjectManager.java:339-359` zero callers; no Exit/Save As in `MenuConstructionService.java:141-182`; stolen-lock swallow `ProjectLifecycleController.java:370-376`, `ProjectManager.java:346-349`, `LockStolenException.java:6-11`, `LockStatusIndicator.java:110-111` | close-request protocol + menu items + Save-As flow + first `closeProject` caller (333) |
+| Exit coordinator (§4.8) | landed in 333: `ExitCoordinator` in daw-app `ui` — the primary stage's close-request filter, File ▸ Exit, File ▸ Close Project and the close-then-continue primitive ask it, and `Application.stop()` runs its application-stop fallback (§4.8's note); the tail is `ProjectFolderCloser` and DISPOSE is `MainController.disposeWindowLifetime()`; the closing checkpoint is `CheckpointOrigin.CLOSING`; `ProjectManager.closeProject()` saves nothing and retires the lease after the owed work; Save As is `SaveAsFlow`, and the stolen-lock path is the “Project Taken Over” dialog (`ProjectClosePrompts`); `LockStolenException`'s Javadoc and `LockStatusIndicator`'s tooltip describe what is built | the maturity rule's demolition: story 387 plus an Undo Close toast (§5.4's record); the close-then-continue primitive's first caller: future story 405, project workspaces and the workspace switcher (Project Manager book §3.1); story 333's other known limits, each with its owner, in its Resolution |
 | Retention unification (§4.8) | index seeding landed in 331: `CheckpointManager.start` seeds the index from `checkpoints/` (only names `CheckpointFileName.parse` accepts), and the prune counts and deletes across sessions; still today: no-op policy (`applyRetentionPolicy`, with no policy set), orphan setter (`setRetentionPolicy`, no production caller); ghost directory `BackupRetentionController.java:94-95`, `:127-129`; rows `SettingsDialog.java:146` | policy delivered to the real directory, counting only checkpoints and keeping 331's prune exemption (335) |
 | Settings truth (§5.6) | `MainController.java:822` + `AutoSaveConfig.java:23-24` vs `SettingsModel.java:70`; `LiveSettingsApplier.java:30-33`, `:35-41`, `:42`; `SettingsDialog.java:2042`; `SettingsModel.java:492-493` + `MainController.java:2197` | per-row authority wiring at startup + apply (335) |
 

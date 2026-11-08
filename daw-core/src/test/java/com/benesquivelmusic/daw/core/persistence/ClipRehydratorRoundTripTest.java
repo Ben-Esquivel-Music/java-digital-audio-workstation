@@ -58,7 +58,7 @@ class ClipRehydratorRoundTripTest {
         AudioClip imported = new AudioFileImporter(project).importFile(source, 0.0).clip();
         float[][] beforeSave = imported.getAudioData();
         saved(manager, project);
-        manager.abandonProject();
+        manager.closeProject().join();
 
         ProjectManager reopened = newManager();
         reopened.openProject(projectDir);
@@ -83,7 +83,7 @@ class ClipRehydratorRoundTripTest {
         assertThat(clip.getSourceRateMetadata()).isNull();
         assertThat(peak(render(loaded, frames))).as("the clip renders again").isPositive();
         assertThat(loaded.isDirty()).as("loading is not an edit").isFalse();
-        reopened.abandonProject();
+        reopened.closeProject().join();
     }
 
     @Test
@@ -99,7 +99,7 @@ class ClipRehydratorRoundTripTest {
         track.addClip(first.splitAt(first.getStartBeat() + first.getDurationBeats() / 2));
         project.getReferenceTrackManager().addReferenceTrack(new ReferenceTrack("Ref", referenceFile.toString()));
         saved(manager, project);
-        manager.abandonProject();
+        manager.closeProject().join();
         Files.delete(source);
 
         ProjectManager reopened = newManager();
@@ -133,7 +133,7 @@ class ClipRehydratorRoundTripTest {
         for (AudioClip clip : loaded.getTracks().getFirst().getClips()) {
             assertThat(clip.getAudioData()).isNull();
         }
-        reopened.abandonProject();
+        reopened.closeProject().join();
     }
 
     @Test
@@ -147,7 +147,7 @@ class ClipRehydratorRoundTripTest {
         take.setSourceSegmentPaths(segments.stream().map(Path::toString).toList());
         track.addClip(take);
         saved(manager, project);
-        manager.abandonProject();
+        manager.closeProject().join();
         float[][] onDisk = SegmentFile.readFrames(segments);
 
         ProjectManager reopened = newManager();
@@ -168,7 +168,7 @@ class ClipRehydratorRoundTripTest {
         assertThat(clip.getSourceRateMetadata())
                 .isEqualTo(new SourceRateMetadata(44_100, 2, onDisk[0].length));
         assertThat(loaded.isDirty()).isFalse();
-        reopened.abandonProject();
+        reopened.closeProject().join();
     }
 
     @Test
@@ -182,7 +182,7 @@ class ClipRehydratorRoundTripTest {
         take.setSourceSegmentPaths(segments.stream().map(Path::toString).toList());
         track.addClip(take);
         saved(manager, project);
-        manager.abandonProject();
+        manager.closeProject().join();
         Files.delete(segments.get(1));
 
         ProjectManager reopened = newManager();
@@ -205,7 +205,7 @@ class ClipRehydratorRoundTripTest {
 
         assertThat(decoder.decodes()).isEmpty();
         assertThat(loaded.getTracks().getFirst().getClips().getFirst().getAudioData()).isNull();
-        reopened.abandonProject();
+        reopened.closeProject().join();
     }
 
     @Test
@@ -216,7 +216,7 @@ class ClipRehydratorRoundTripTest {
         Track track = project.createAudioTrack("Bass");
         track.addClip(new AudioClip("ghost", 0.0, 1.0, tempDir.resolve("ghost.wav").toString()));
         saved(manager, project);
-        manager.abandonProject();
+        manager.closeProject().join();
         Path legacyDir = Files.createDirectories(tempDir.resolve("Legacy"));
         Files.writeString(legacyDir.resolve("project.daw"), """
                 # DAW Project File
@@ -228,7 +228,7 @@ class ClipRehydratorRoundTripTest {
         ProjectManager reopened = newManager();
         reopened.openProject(projectDir);
         assertThat(reopened.getLastMissingAssets().assetCount()).isEqualTo(1);
-        reopened.abandonProject();
+        reopened.closeProject().join();
         assertThat(reopened.getLastMissingAssets()).isEqualTo(MissingAssetsReport.EMPTY);
 
         reopened.openProject(projectDir);
@@ -239,7 +239,7 @@ class ClipRehydratorRoundTripTest {
         assertThat(reopened.getLastMissingAssets())
                 .as("the deserializer did not run: the previous open's list must not leak")
                 .isEqualTo(MissingAssetsReport.EMPTY);
-        reopened.abandonProject();
+        reopened.closeProject().join();
     }
 
     // ── fixtures ────────────────────────────────────────────────────────────

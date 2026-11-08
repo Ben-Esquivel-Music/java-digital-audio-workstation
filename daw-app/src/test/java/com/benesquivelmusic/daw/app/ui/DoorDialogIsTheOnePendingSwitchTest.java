@@ -181,6 +181,8 @@ class DoorDialogIsTheOnePendingSwitchTest {
             });
             fixture.lifecycle().onNewProject();
         });
+        // Story 333 — New creates its project's folder off the FX thread, then saves it.
+        fixture.awaitOnFx(() -> !fixture.lifecycle().isProjectInstallationPending(), "New's installation");
         fixture.settle();
 
         assertThat(hubOpenRan).as("the refused open never ran").isFalse();

@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.plugin.PluginInvocationSupervisor;
 
 import java.util.Objects;
 import java.util.concurrent.Flow;
+import java.util.function.BooleanSupplier;
 
 /**
  * Connects a {@link PluginInvocationSupervisor} to the notification bar and
@@ -40,7 +41,7 @@ public final class PluginFaultUiController {
 
     /**
      * Creates a controller with an explicit FX-thread marshalling seam
-     * (story 289).
+     * (story 289), whose fault log's Re-enable is never refused.
      *
      * @param supervisor      the plugin invocation supervisor whose faults to surface
      * @param notificationBar the bar that shows fault toasts
@@ -50,12 +51,31 @@ public final class PluginFaultUiController {
     public PluginFaultUiController(PluginInvocationSupervisor supervisor,
                                    NotificationBar notificationBar,
                                    FxDispatcher fxDispatcher) {
+        this(supervisor, notificationBar, fxDispatcher, () -> true);
+    }
+
+    /**
+     * Creates a controller whose fault log reads the window's edit gate: a
+     * row's Re-enable is refused while it says no (PR #989 review
+     * 5711460812).
+     *
+     * @param supervisor            the plugin invocation supervisor whose faults to surface
+     * @param notificationBar       the bar that shows fault toasts
+     * @param fxDispatcher          the FX-thread marshalling seam, or {@code null} to use
+     *                              the {@link FxDispatcher#getDefault() app-scoped default}
+     * @param projectActionsAllowed the window's edit gate, {@code MainController.projectActionsAllowed()};
+     *                              must not be {@code null}
+     */
+    public PluginFaultUiController(PluginInvocationSupervisor supervisor,
+                                   NotificationBar notificationBar,
+                                   FxDispatcher fxDispatcher,
+                                   BooleanSupplier projectActionsAllowed) {
         Objects.requireNonNull(supervisor, "supervisor must not be null");
         this.notificationBar = Objects.requireNonNull(notificationBar, "notificationBar must not be null");
         // May be null in a pure-unit context; postFx() falls back to the
         // static seam, preserving today's behaviour byte-for-byte.
         this.fxDispatcher = fxDispatcher;
-        this.dialog = new PluginFaultLogDialog(supervisor);
+        this.dialog = new PluginFaultLogDialog(supervisor, projectActionsAllowed);
         supervisor.publisher().subscribe(toastSubscriber);
     }
 

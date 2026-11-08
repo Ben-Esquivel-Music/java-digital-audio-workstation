@@ -64,7 +64,8 @@ class RelinkAndRenderGuardWiringTest {
                 .as("relink asks through the real choosers and the one confirmation dialog")
                 .contains("this.assetRelink=newAssetRelinkFlow(openProjectAudio,audioDispatcher,notificationBar,"
                         + "deps.repaintArrangement(),this::chooseRelinkFile,this::chooseRelinkFolder,"
-                        + "message->confirm(ProjectAudioText.text(\"\"),message,ProjectAudioText.text(\"\")));")
+                        + "message->confirm(ProjectAudioText.text(\"\"),message,ProjectAudioText.text(\"\")),"
+                        + "()->projectActionsAllowed.getAsBoolean());")
                 .as("the render guard asks through the same dialog")
                 .contains("this.renderGuard=newRenderReadinessGuard(openProjectAudio,notificationBar,this::confirm);");
         assertThat(methodBody(lifecycle, "privateOptional<Path>chooseRelinkFile("))

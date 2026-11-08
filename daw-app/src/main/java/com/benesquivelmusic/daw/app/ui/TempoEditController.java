@@ -12,6 +12,7 @@ import javafx.scene.layout.HBox;
 
 import java.util.Objects;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -27,6 +28,11 @@ import java.util.function.Supplier;
  * on every access — this controller is init-only and is not reconstructed on
  * project load), a {@code syncMenuState} action, a {@code statusBar} sink, and
  * the {@link NotificationBar}.</p>
+ *
+ * <p>A commit — Enter or the focus leaving the editor — is refused while the
+ * window's edit gate says no, whatever raised it: the tempo is not written,
+ * nothing is reported, and the label, still showing the stored tempo, takes
+ * the editor's place again (PR #989 review 5711460812).</p>
  */
 final class TempoEditController {
 
@@ -36,13 +42,15 @@ final class TempoEditController {
     private final Runnable syncMenuState;
     private final BiConsumer<String, DawIcon> statusBar;
     private final NotificationBar notificationBar;
+    private final BooleanSupplier projectActionsAllowed;
 
     TempoEditController(Label tempoLabel,
                         Supplier<DawProject> project,
                         Supplier<UndoManager> undoManager,
                         Runnable syncMenuState,
                         BiConsumer<String, DawIcon> statusBar,
-                        NotificationBar notificationBar) {
+                        NotificationBar notificationBar,
+                        BooleanSupplier projectActionsAllowed) {
         this.tempoLabel = Objects.requireNonNull(tempoLabel, "tempoLabel must not be null");
         this.project = Objects.requireNonNull(project, "project must not be null");
         this.undoManager = Objects.requireNonNull(undoManager, "undoManager must not be null");
@@ -50,6 +58,8 @@ final class TempoEditController {
         this.statusBar = Objects.requireNonNull(statusBar, "statusBar must not be null");
         this.notificationBar = Objects.requireNonNull(
                 notificationBar, "notificationBar must not be null");
+        this.projectActionsAllowed = Objects.requireNonNull(
+                projectActionsAllowed, "projectActionsAllowed must not be null");
     }
 
     void install() {
@@ -81,6 +91,10 @@ final class TempoEditController {
     }
 
     private void commit(TextField editor, HBox hbox, int index) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            hbox.getChildren().set(index, tempoLabel);
+            return;
+        }
         try {
             double newTempo = Double.parseDouble(editor.getText().strip());
             double oldTempo = project.get().getTransport().getTempo();

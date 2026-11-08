@@ -14,6 +14,7 @@ import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.track.Track;
 
 import javafx.beans.InvalidationListener;
+import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.DoubleProperty;
 import javafx.beans.property.ReadOnlyBooleanProperty;
 import javafx.beans.value.ChangeListener;
@@ -263,7 +264,7 @@ public final class TrackControlBinder {
                 now -> new ToggleMuteCommand(track, now));
         raiseOnFlagChange(strip.soloedProperty(), trackVm::isSoloed,
                 now -> new ToggleSoloCommand(track, now));
-        raiseOnArmChange(strip.armedProperty(), trackVm::isArmed,
+        raiseOnFlagChange(strip.armedProperty(), trackVm::isArmed,
                 now -> new ToggleArmCommand(track, now));
 
         bindFaderDb(strip);
@@ -313,7 +314,7 @@ public final class TrackControlBinder {
                 now -> new ToggleMuteCommand(track, now));
         raiseOnFlagChange(tile.soloedProperty(), trackVm::isSoloed,
                 now -> new ToggleSoloCommand(track, now));
-        raiseOnArmChange(tile.armedProperty(), trackVm::isArmed,
+        raiseOnFlagChange(tile.armedProperty(), trackVm::isArmed,
                 now -> new ToggleArmCommand(track, now));
     }
 
@@ -377,33 +378,27 @@ public final class TrackControlBinder {
     }
 
     /**
-     * Raises {@code factory.apply(now)} when a two-way strip flag changes to a
-     * value the VM does not already hold — the stateless echo guard of
-     * {@link #bindStrip}.
+     * Raises {@code command.apply(now)} when a two-way strip or tile flag
+     * changes to a value the VM does not already hold — the stateless echo
+     * guard of {@link #bindStrip} — and then sets the flag to the VM's value: a
+     * flip the sink refused or the handler normalised snaps back to the VM's
+     * value — an arm still being validated, or a command the close's gate
+     * refused, which returns silently (PR #989 review 5711460812). An accepted
+     * flip is already in the VM (it republishes inline on the FX thread), so
+     * the re-set is then a same-value no-op.
      */
-    private void raiseOnArmChange(javafx.beans.property.BooleanProperty property,
-                                  java.util.function.BooleanSupplier current,
-                                  java.util.function.Function<Boolean, TrackCommand> command) {
-        ChangeListener<Boolean> listener = (_, _, now) -> {
-            if (now == current.getAsBoolean()) return;
-            commandSink.accept(command.apply(now));
-            property.set(current.getAsBoolean());
-        };
-        property.addListener(listener);
-        disposers.add(() -> property.removeListener(listener));
-    }
-
-    private void raiseOnFlagChange(ReadOnlyBooleanProperty stripFlag, BooleanSupplier vmValue,
-                                   Function<Boolean, TrackCommand> factory) {
+    private void raiseOnFlagChange(BooleanProperty flag, BooleanSupplier vmValue,
+                                   Function<Boolean, TrackCommand> command) {
         ChangeListener<Boolean> listener = (_, _, now) -> {
             boolean requested = Boolean.TRUE.equals(now);
             if (requested == vmValue.getAsBoolean()) {
-                return; // VM-driven mirror, not a gesture
+                return; // VM-driven mirror or snap-back, not a gesture
             }
-            commandSink.accept(factory.apply(requested));
+            commandSink.accept(command.apply(requested));
+            flag.set(vmValue.getAsBoolean());
         };
-        stripFlag.addListener(listener);
-        disposers.add(() -> stripFlag.removeListener(listener));
+        flag.addListener(listener);
+        disposers.add(() -> flag.removeListener(listener));
     }
 
     /**
@@ -537,10 +532,14 @@ public final class TrackControlBinder {
      * </ul>
      *
      * <p>If the handler refuses the value — its VALIDATE/MUTATE throws
-     * {@link IllegalArgumentException} for an out-of-range fader/pan — no MUTATE
-     * fired, so the VM still holds the accepted value: the control snaps back to
-     * it rather than leaving an invalid value or letting the exception escape onto
-     * the FX thread (mirrors {@code TransportControlBinder.bindTempoField}).</p>
+     * {@link IllegalArgumentException} for an out-of-range fader/pan — or the
+     * close's gate refuses the command, which returns silently (PR #989 review
+     * 5711460812), no MUTATE fired, so the VM still holds the accepted value:
+     * the control snaps back to it rather than leaving an invalid value or
+     * letting the exception escape onto the FX thread (mirrors
+     * {@code TransportControlBinder.bindTempoField}). An accepted value is
+     * already in the VM, which republishes inline on the FX thread, so the
+     * snap-back after a normal return is then a no-op.</p>
      */
     private void onCommit(DoubleProperty control,
                           java.util.function.DoubleSupplier vmValue,
@@ -552,6 +551,10 @@ public final class TrackControlBinder {
             try {
                 commandSink.accept(factory.get());
             } catch (IllegalArgumentException rejected) {
+                control.set(vmValue.getAsDouble());
+                return;
+            }
+            if (control.get() != vmValue.getAsDouble()) {
                 control.set(vmValue.getAsDouble());
             }
         };

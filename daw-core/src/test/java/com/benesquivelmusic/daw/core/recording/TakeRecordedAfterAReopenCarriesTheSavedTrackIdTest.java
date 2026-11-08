@@ -51,7 +51,7 @@ class TakeRecordedAfterAReopenCarriesTheSavedTrackIdTest {
         vox.setArmed(true);
         vox.setInputRouting(new InputRouting(0, 1));
         saved(manager, saved);
-        manager.abandonProject();
+        manager.closeProject().join();
         Path projectFile = projectDir.resolve("project.daw");
         byte[] savedBytes = Files.readAllBytes(projectFile);
         String savedId = savedTrackId(projectFile);
@@ -68,7 +68,7 @@ class TakeRecordedAfterAReopenCarriesTheSavedTrackIdTest {
             feedRamp(engine, transport, pipeline, 0, 4, 4);
             stopRecording(pipeline);
         } finally {
-            manager.abandonProject();
+            manager.closeProject().join();
         }
 
         assertThat(Files.readAllBytes(projectFile)).as("fixture: nothing was saved after the reopen")

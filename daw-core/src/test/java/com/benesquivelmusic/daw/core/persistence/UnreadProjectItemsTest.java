@@ -114,37 +114,37 @@ class UnreadProjectItemsTest {
         Path projectFile = metadata.projectPath().resolve("project.daw");
         String legacyMetadataFile = Files.readString(projectFile);
         Files.writeString(projectFile, ONE_BAD_NOTE);
-        manager.abandonProject();
+        manager.closeProject().join();
 
         manager.openProject(metadata.projectPath());
         assertThat(manager.getLastUnreadItems()).as("after the damaged open").hasSize(1);
         assertThat(manager.getLastUnreadItems().getFirst().kind())
                 .isEqualTo(UnreadProjectItem.Kind.MIDI_NOTE_SKIPPED);
-        manager.closeProject();
+        manager.closeProject().join();
         assertThat(manager.getLastUnreadItems()).as("after close").isEmpty();
+        assertThat(Files.readString(projectFile)).as("closing saves nothing (story 333)").isEqualTo(ONE_BAD_NOTE);
 
-        // closeProject saved the project without the unreadable note.
         Files.writeString(projectFile, ONE_BAD_NOTE);
         manager.openProject(metadata.projectPath());
         assertThat(manager.getLastUnreadItems()).hasSize(1);
-        manager.abandonProject();
-        assertThat(manager.getLastUnreadItems()).as("after abandon").isEmpty();
+        manager.closeProject().join();
+        assertThat(manager.getLastUnreadItems()).as("after a second close").isEmpty();
 
         manager.openProject(metadata.projectPath());
         assertThat(manager.getLastUnreadItems()).hasSize(1);
-        manager.abandonProject();
+        manager.closeProject().join();
         Files.writeString(projectFile, legacyMetadataFile);
         manager.openProject(metadata.projectPath());
         assertThat(manager.getCurrentDawProject()).as("a legacy metadata-only open").isNull();
         assertThat(manager.getLastUnreadItems()).as("after a legacy metadata-only open").isEmpty();
-        manager.abandonProject();
+        manager.closeProject().join();
 
         Files.writeString(projectFile, ONE_BAD_NOTE);
         manager.openProject(metadata.projectPath());
         assertThat(manager.getLastUnreadItems()).hasSize(1);
         manager.createProject("Fresh", tempDir);
         assertThat(manager.getLastUnreadItems()).as("after creating another project").isEmpty();
-        manager.abandonProject();
+        manager.closeProject().join();
     }
 
     @Test

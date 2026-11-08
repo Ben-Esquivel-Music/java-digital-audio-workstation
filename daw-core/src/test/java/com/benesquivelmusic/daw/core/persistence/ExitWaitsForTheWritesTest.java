@@ -108,7 +108,7 @@ class ExitWaitsForTheWritesTest {
     void releaseTheManager() {
         managerLog.removeHandler(recorder);
         gates.forEach(Gate::release);
-        manager.abandonProject();
+        manager.closeProject().join();
     }
 
     @Test
@@ -183,18 +183,22 @@ class ExitWaitsForTheWritesTest {
     @Test
     void aCheckpointHeldPastTheSaveWritersWaitAndPastTheEndOfItsGenerationIsWaitedForAfterTheSaves()
             throws Exception {
-        manager.abandonProject();
+        manager.closeProject().join();
         openAProjectWith(SaveTestSupport.SHORT_CHECKPOINT_WAIT, SHORT_STOP_WAIT);
         Gate checkpointHeld = hold(checkpointMover.holdNext(CHECKPOINT));
         assertThat(await(manager.save(project("Checkpointed after the wait"))))
                 .as("the save completed once ruling J3's wait ran out, without its checkpoint")
                 .isInstanceOfSatisfying(SaveOutcome.Saved.class, saved -> assertThat(saved.checkpoint()).isEmpty());
-        assertThat(checkpointHeld.isReached()).as("its checkpoint is still being written").isTrue();
+        // The checkpoint cannot land while it is held: waiting for it to reach its hold keeps the assertion's meaning.
+        assertThat(checkpointHeld.awaitReached(TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                .as("its checkpoint is still being written").isTrue();
         Gate headHeld = hold(headMover.holdNext(HEAD));
         CompletableFuture<SaveOutcome> second = manager.save(project("Saved as its generation ended"));
         headHeld.awaitReached();
-        // Ends the checkpoint generation: stop()'s short bound runs out with the checkpoint still held.
-        manager.abandonProject();
+        // Ends the checkpoint generation: stop() returns at once and its bound, a timer, runs out with the
+        // checkpoint still held. The close never waits: the lock release waits for the held head write and the
+        // held checkpoint instead.
+        manager.closeProject();
 
         CompletableFuture<Boolean> exit = exitWait(Duration.ofSeconds(TIMEOUT_SECONDS));
         assertThat(waitAnnounced.await(TIMEOUT_SECONDS, TimeUnit.SECONDS))

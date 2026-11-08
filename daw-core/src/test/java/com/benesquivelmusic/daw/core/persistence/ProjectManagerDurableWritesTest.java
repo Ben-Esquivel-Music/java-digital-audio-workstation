@@ -38,7 +38,7 @@ class ProjectManagerDurableWritesTest {
     @AfterEach
     void releaseTheManager() {
         if (manager != null) {
-            manager.abandonProject();
+            manager.closeProject().join();
         }
     }
 
@@ -95,7 +95,7 @@ class ProjectManagerDurableWritesTest {
         Files.writeString(projectFile, new ProjectSerializer()
                 .serialize(new DawProject("Legacy", AudioFormat.CD_QUALITY)));
         byte[] original = Files.readAllBytes(projectFile);
-        manager.abandonProject();
+        manager.closeProject().join();
         manager.openProject(directory);
         assertThat(manager.getLastMigrationReport().wasMigrated()).as("fixture: the open migrated").isTrue();
         publishes.clear();

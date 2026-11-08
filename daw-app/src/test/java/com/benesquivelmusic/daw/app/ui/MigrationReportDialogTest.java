@@ -15,6 +15,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -119,16 +120,16 @@ class MigrationReportDialogTest {
     }
 
     @Test
-    void showIfNeededReturnsFalseForNoOpReport(@TempDir Path projectDir) {
+    void showUnlessSuppressedReturnsFalseForNoOpReport(@TempDir Path projectDir) {
         // Pure helper logic — does not need the FX thread because it
         // short-circuits before constructing a dialog.
-        assertThat(MigrationReportDialog.showIfNeeded(MigrationReport.noOp(1), projectDir))
+        assertThat(MigrationReportDialog.showUnlessSuppressed(MigrationReport.noOp(1), projectDir, false, null, Optional::empty))
                 .isFalse();
-        assertThat(MigrationReportDialog.showIfNeeded(null, projectDir)).isFalse();
+        assertThat(MigrationReportDialog.showUnlessSuppressed(null, projectDir, false, null, Optional::empty)).isFalse();
     }
 
     @Test
-    void showIfNeededReturnsFalseForAReportWhoseStepsAreAllFormatOnly(@TempDir Path projectDir) {
+    void showUnlessSuppressedReturnsFalseForAReportWhoseStepsAreAllFormatOnly(@TempDir Path projectDir) {
         // Story 330 — a migration that only re-expresses the file format has
         // nothing to review or roll back: no dialog, even though the report
         // was migrated (its backup, history and badge follow wasMigrated()).
@@ -139,16 +140,17 @@ class MigrationReportDialogTest {
         ), Instant.now());
         assertThat(formatOnly.wasMigrated()).as("fixture: it was migrated").isTrue();
 
-        assertThat(MigrationReportDialog.showIfNeeded(formatOnly, projectDir)).isFalse();
-        assertThat(MigrationReportDialog.showIfNeeded(formatOnly, projectDir, () -> { })).isFalse();
+        assertThat(MigrationReportDialog.showUnlessSuppressed(formatOnly, projectDir, false, null, Optional::empty)).isFalse();
+        assertThat(MigrationReportDialog.showUnlessSuppressed(formatOnly, projectDir, false, () -> { }, Optional::empty)).isFalse();
     }
 
     @Test
-    void showIfNeededReturnsFalseWhenSuppressed(@TempDir Path projectDir) {
+    void showUnlessSuppressedReturnsFalseWhenSuppressed(@TempDir Path projectDir) {
         com.benesquivelmusic.daw.core.persistence.migration.MigrationSuppression
                 .suppress(projectDir, 3);
 
-        assertThat(MigrationReportDialog.showIfNeeded(sampleReport(), projectDir)).isFalse();
+        assertThat(MigrationReportDialog.showUnlessSuppressed(sampleReport(), projectDir,
+                com.benesquivelmusic.daw.core.persistence.migration.MigrationSuppression.isSuppressed(projectDir, 3), null, Optional::empty)).isFalse();
     }
 
     @Test
@@ -183,7 +185,7 @@ class MigrationReportDialogTest {
             dialog.getResultConverter().call(MigrationReportDialog.ROLLBACK_BUTTON_TYPE);
             dialog.getResultConverter().call(MigrationReportDialog.OK_BUTTON_TYPE);
             int byTheConverter = invoked.get();
-            // What showIfNeeded does once showAndWait() returned.
+            // What showUnlessSuppressed does once showAndWait() returned.
             dialog.runConfirmedRollback();
             dialog.runConfirmedRollback();
             return List.of(byTheConverter, invoked.get());

@@ -74,7 +74,8 @@ class TrackTemplateControllerTest {
                 () -> undoManager,
                 () -> null,
                 (level, message) -> { },
-                () -> { });
+                () -> { },
+                () -> true);
         return new TrackTemplateController(deps, () -> new TrackTemplateStore(tempDir));
     }
 

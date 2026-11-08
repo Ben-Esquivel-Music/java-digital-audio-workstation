@@ -41,15 +41,22 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       registered, which happens for a read-only project, a capture that
  *       threw, a save writer that could not start, or a save the writer
  *       finished first;</li>
- *   <li>{@code ProjectLifecycleController.saveOpenProject}, its branch for a
- *       project never saved included. That branch creates the project's
- *       folder on the FX thread, a Known limit of the story (story 333), but
- *       the disk work is inside {@code createProject}, and the branch's own
- *       code makes no direct call;</li>
+ *   <li>{@code ProjectLifecycleController.saveOpenProject}, the request it
+ *       coalesces into a first save whose folder is being created
+ *       ({@code coalescedIntoTheFirstSave}), and the two halves
+ *       of its branch for a project never saved (story 333):
+ *       {@code saveIntoANewFolder}, the location prompt and the hand-off of
+ *       the folder's creation to a worker, and {@code saveIntoTheCreatedFolder},
+ *       the create's outcome back on the FX thread and the save into the
+ *       folder. The folder is created off the FX thread
+ *       ({@code createProjectOffTheFxThread}, not scanned: its body is the
+ *       worker's);</li>
  *   <li>the outcome's FX-thread half, which that callback posts through the
  *       {@code FxDispatcher}: {@code ProjectLifecycleController.saveEnded},
  *       and the {@code reportSaveFailed}, {@code showSaveFailure} and
- *       {@code saveFailureMessage} it runs.</li>
+ *       {@code saveFailureMessage} it runs, and the takeover dialog a lost
+ *       lock asks in a later FX turn, {@code offerSaveAsAfterTakeover}
+ *       (story 333).</li>
  * </ul>
  *
  * <p>None of those bodies may make one of these direct file-system calls:
@@ -92,7 +99,7 @@ class FxHalfOfASaveMakesNoFileSystemCallTest {
     private static final Path DAW_APP = SourceScanSupport.locateDawAppModule();
     private static final Path PROJECT_MANAGER = DAW_APP.resolveSibling("daw-core")
             .resolve("src/main/java/com/benesquivelmusic/daw/core/persistence/ProjectManager.java");
-    private static final Path LIFECYCLE = DAW_APP
+    static final Path LIFECYCLE = DAW_APP
             .resolve("src/main/java/com/benesquivelmusic/daw/app/ui/ProjectLifecycleController.java");
 
     /** A direct file-system call, by the label a site is reported with. */
@@ -134,11 +141,11 @@ class FxHalfOfASaveMakesNoFileSystemCallTest {
             + "AtomicFileWriter)\\b");
 
     /** A scanned method: its file, its name, and its body as the scan reads it. */
-    private record ScannedBody(String file, String method, String code) {
+    record ScannedBody(String file, String method, String code) {
     }
 
     /** A direct file-system call the scan found: its label and its line, trimmed and quoted. */
-    private record Site(String label, String line) {
+    record Site(String label, String line) {
     }
 
     @Test
@@ -166,8 +173,9 @@ class FxHalfOfASaveMakesNoFileSystemCallTest {
         }
 
         assertThat(scanned.get("ProjectManager.java#save"))
-                .as("the capture, and the hand-off to the save writer")
-                .contains("serializer.capture(project)")
+                .as("the capture (with the save target's former roots, story 333), and the hand-off to the save"
+                        + " writer")
+                .contains("serializer.capture(project, target.formerRoots())")
                 .contains("submit(job);");
         assertThat(scanned.get("ProjectLifecycleController.java#submitSave"))
                 .as("the call of the canonical save, and its outcome's callback, which posts the outcome to the FX"
@@ -176,21 +184,45 @@ class FxHalfOfASaveMakesNoFileSystemCallTest {
                 .contains("outcome.whenComplete(")
                 .contains("postFx(() -> saveEnded(generation, readOnly, folder, result, then));");
         assertThat(scanned.get("ProjectLifecycleController.java#saveOpenProject"))
-                .as("the never-saved branch, and the save request")
-                .contains("projectManager.createProject(project.getName(), parentDirectory);")
-                .contains("return submitSave(project, deps.captureLayoutJson().get(), then);");
+                .as("a request during a first save's create is that save's, the never-saved branch, and the save"
+                        + " request (story 333)")
+                .contains("if (creatingFolder != null) return Optional.of(coalescedIntoTheFirstSave(then));")
+                .contains("return saveIntoANewFolder(then, beforeCapture);")
+                .contains("beforeCapture.run();")
+                .contains("return submitSave(deps.project().get(), deps.captureLayoutJson().get(), then);");
+        assertThat(scanned.get("ProjectLifecycleController.java#saveIntoANewFolder"))
+                .as("the location prompt as the one switch pending, and the folder created off the FX thread")
+                .contains("whileItsDialogIsOpen(SAVE_PROJECT_DOOR,")
+                .contains("setCreatingFolder(new FolderBeingCreated(SAVE_PROJECT_DOOR, composed, new ArrayList<>()));")
+                .contains("createProjectOffTheFxThread(deps.project().get().getName(), parentDirectory)");
+        assertThat(scanned.get("ProjectLifecycleController.java#saveIntoTheCreatedFolder"))
+                .as("the create's outcome, and the save into the created folder, captured now")
+                .contains("setCreatingFolder(null);")
+                .contains("submitSave(deps.project().get(), deps.captureLayoutJson().get(), completing(composed, then));");
         assertThat(scanned.get("ProjectLifecycleController.java#saveEnded"))
                 .as("the outcome on the FX thread: a success, and a failure of the open project")
                 .contains("progress.recordSaveSucceeded(generation, headSavedAt,")
-                .contains("case SaveOutcome.Failed failed -> reportSaveFailed(generation, failed, readOnly);");
+                .contains("case SaveOutcome.Failed failed -> reportSaveFailed(generation, failed, readOnly, then);");
         assertThat(scanned.get("ProjectLifecycleController.java#reportSaveFailed"))
-                .as("the head's failure state, and its ERROR")
+                .as("the head's failure state, a lost lock caught as itself (its follow-up may own it, or a close"
+                        + " waiting for the save — ruling 2 OQ-4 — else the takeover dialog asks in a later FX turn,"
+                        + " story 333), and its ERROR")
                 .contains("progress.recordSaveFailed(generation, Instant.now(), cause);")
+                .contains("if (cause instanceof LockStolenException stolen) {")
+                .contains("if (!then.ownsLockLoss() && !takenOverByTheClose(stolen)) {")
+                .contains("postFx(() -> offerSaveAsAfterTakeover(generation, stolen));")
                 .contains("showSaveFailure(saveFailureMessage(failed, readOnly, null, progress.getToday()), retry,");
         assertThat(scanned.get("ProjectLifecycleController.java#showSaveFailure"))
-                .as("the ERROR, with or without a Retry")
+                .as("the ERROR with its one action: a Retry, or Save As (story 333, ruling Q1/Q5)")
                 .contains("notificationBar.show(NotificationLevel.ERROR, message, \"\", () -> {")
-                .contains("notificationBar.show(NotificationLevel.ERROR, message);");
+                .contains("notificationBar.show(NotificationLevel.ERROR, message, ProjectCloseText.text(\"\"), () -> {")
+                .contains("onSaveProjectAs();")
+                .doesNotContain("notificationBar.show(NotificationLevel.ERROR, message);");
+        assertThat(scanned.get("ProjectLifecycleController.java#offerSaveAsAfterTakeover"))
+                .as("the takeover dialog of the open project's save, whose Save As keeps the work (ruling R7)")
+                .contains("if (generation != progress.projectGeneration()) {")
+                .contains("prompts.takenOverOnSave(deps.project().get().getName(), stolen.currentHolder())")
+                .contains("saveAsFlow.start(SaveAsFlow.Prefill.TAKEOVER);");
         assertThat(scanned.get("ProjectLifecycleController.java#saveFailureMessage"))
                 .as("the message, naming where the work is")
                 .contains("Optional<Path> safety = failed.safetyCheckpoint();")
@@ -314,13 +346,17 @@ class FxHalfOfASaveMakesNoFileSystemCallTest {
                 body("ProjectManager.java", manager, "save"),
                 body("ProjectLifecycleController.java", lifecycle, "submitSave"),
                 body("ProjectLifecycleController.java", lifecycle, "saveOpenProject"),
+                body("ProjectLifecycleController.java", lifecycle, "coalescedIntoTheFirstSave"),
+                body("ProjectLifecycleController.java", lifecycle, "saveIntoANewFolder"),
+                body("ProjectLifecycleController.java", lifecycle, "saveIntoTheCreatedFolder"),
                 body("ProjectLifecycleController.java", lifecycle, "saveEnded"),
                 body("ProjectLifecycleController.java", lifecycle, "reportSaveFailed"),
+                body("ProjectLifecycleController.java", lifecycle, "offerSaveAsAfterTakeover"),
                 body("ProjectLifecycleController.java", lifecycle, "showSaveFailure"),
                 body("ProjectLifecycleController.java", lifecycle, "saveFailureMessage"));
     }
 
-    private static String read(Path file) throws IOException {
+    static String read(Path file) throws IOException {
         assertThat(file).as("the source the scan reads").isRegularFile();
         String source = Files.readString(file, StandardCharsets.UTF_8);
         assertThat(source.length()).as("non-vacuity: %s was read", file.getFileName()).isGreaterThan(10_000);
@@ -328,7 +364,7 @@ class FxHalfOfASaveMakesNoFileSystemCallTest {
     }
 
     /** {@code source}'s code: comments stripped, then literals blanked, so only code is matched. */
-    private static String code(String source) {
+    static String code(String source) {
         return SourceScanSupport.stripStringLiterals(SourceScanSupport.stripComments(source));
     }
 
@@ -338,7 +374,7 @@ class FxHalfOfASaveMakesNoFileSystemCallTest {
      * no such method (a rename) or more than one, whose other bodies the scan
      * would not read.
      */
-    private static ScannedBody body(String file, String code, String method) {
+    static ScannedBody body(String file, String code, String method) {
         Matcher declaration = Pattern.compile("^[ \\t]*[\\w.<>?,\\[\\] ]*[\\w>\\]]\\s+" + Pattern.quote(method)
                 + "\\s*\\([^;{}]*\\)\\s*(?:throws\\s[^;{}]*)?\\{", Pattern.MULTILINE).matcher(code);
         List<Integer> openingBraces = new ArrayList<>();
@@ -367,7 +403,7 @@ class FxHalfOfASaveMakesNoFileSystemCallTest {
     }
 
     /** The direct file-system calls {@code code} makes, in the order of {@link #FILE_SYSTEM_CALLS}. */
-    private static List<Site> fileSystemCalls(String code) {
+    static List<Site> fileSystemCalls(String code) {
         List<Site> sites = new ArrayList<>();
         for (FileSystemCall call : FILE_SYSTEM_CALLS) {
             Matcher match = call.shape().matcher(code);

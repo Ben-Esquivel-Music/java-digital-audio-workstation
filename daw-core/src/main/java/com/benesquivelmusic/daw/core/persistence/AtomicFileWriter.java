@@ -32,6 +32,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.regex.Pattern;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -151,7 +152,11 @@ import java.util.logging.Logger;
  * archived to again stays. Temps of {@code project.daw} (one per save cut
  * off, any number) and of the project folder's other files stay until story
  * 332's recovery gate removes them; a temp of an app settings file stays
- * (story 331, rulings G6, M2).</p>
+ * (story 331, rulings G6, M2). A {@linkplain #publishDirectory directory
+ * publish} cut off before its rename leaves its staging directory,
+ * {@code .<folder name>.<purpose>.tmp} ({@link #stagingSiblingOf}), beside the
+ * folder it was to become, until the next publish of the same purpose into
+ * that folder deletes it before staging again (story 333).</p>
  *
  * <h2>Links</h2>
  * <p>A replace renames over its target's name. A target that is a symbolic
@@ -206,7 +211,8 @@ public final class AtomicFileWriter {
     }
 
     /**
-     * Moves a forced and closed temp sibling over its target — the publish.
+     * Moves a forced and closed temp sibling over its target — the publish —
+     * or a staging directory onto its target ({@link #publishDirectory}).
      * Production uses {@link #FILE_SYSTEM_MOVER}; a test passes a mover that
      * fails, or that delegates and records the target and the calling
      * thread. Called on the writing thread, once per attempt.
@@ -335,6 +341,20 @@ public final class AtomicFileWriter {
     /** Retries of a transiently refused move before the refusal is thrown. */
     static final int TRANSIENT_DENIAL_RETRIES = TRANSIENT_DENIAL_BACKOFF_MILLIS.length;
 
+    /**
+     * The pause before each retry of a transiently refused directory publish
+     * ({@link #publishDirectory}); about 7.9 s in all (story 333, studio
+     * engineer's ruling S4 on stage 3: an engineering figure, not a
+     * measurement). Windows refuses to rename a folder while a program holds
+     * a file inside it open — an antivirus scanner, the search indexer or a
+     * sync client opening the files a copy just wrote — and a publish that
+     * gives up costs the whole staged copy, not one small file.
+     */
+    private static final long[] DIRECTORY_PUBLISH_BACKOFF_MILLIS = {10, 30, 90, 250, 500, 1000, 2000, 4000};
+
+    /** Retries of a transiently refused directory publish before the refusal is thrown. */
+    static final int DIRECTORY_PUBLISH_RETRIES = DIRECTORY_PUBLISH_BACKOFF_MILLIS.length;
+
     /** The reason of a {@link ReplaceOption#FOLLOW_LINK_TO_DAW_FILE} write's refusal of a link (ruling M3). */
     private static final String NOT_A_DAW_FILE_LINK =
             "a symbolic link that does not lead to a .daw file; it was not replaced";
@@ -358,6 +378,9 @@ public final class AtomicFileWriter {
     private static final int NONCE_DIGITS = 2 * Long.BYTES;
 
     private static final int STREAM_BUFFER_BYTES = 64 * 1024;
+
+    /** What a {@link #stagingSiblingOf} purpose may be: lowercase words joined by hyphens. */
+    private static final Pattern STAGING_PURPOSE = Pattern.compile("[a-z]+(-[a-z]+)*");
 
     private final ChannelOpener opener;
     private final Mover mover;
@@ -425,6 +448,34 @@ public final class AtomicFileWriter {
         publish(destination, Overwrite.REPLACE, permissionsOf(destination, LinkOption.NOFOLLOW_LINKS),
                 channel -> writeFully(channel, bytes), AtomicFileWriter::keep);
         return target;
+    }
+
+    /**
+     * Publishes {@code content}, in UTF-8, as the new file {@code target}:
+     * the {@link Overwrite#NEVER} form of {@link #writeString(Path, String)}
+     * — forced, then moved with no option, so a file another writer put at
+     * {@code target} meanwhile is never replaced (story 333: Save As writes
+     * the copy's {@code project.daw} this way into a folder it does not own
+     * alone). On POSIX the move is a check, then the rename, as for every
+     * {@code NEVER} publish.
+     *
+     * @param target  the file to create; its directory must exist
+     * @param content the complete content
+     * @return {@code target}
+     * @throws FileAlreadyExistsException if {@code target} exists; the temp is deleted
+     * @throws IOException                if the content cannot be encoded or written, or the move fails
+     */
+    public Path writeNewString(Path target, String content) throws IOException {
+        Objects.requireNonNull(target, "target must not be null");
+        Objects.requireNonNull(content, "content must not be null");
+        ByteBuffer bytes = StandardCharsets.UTF_8.newEncoder().encode(CharBuffer.wrap(content));
+        publish(target, Overwrite.NEVER, AtomicFileWriter::keepDefaults, channel -> writeFully(channel, bytes),
+                AtomicFileWriter::keep);
+        return target;
+    }
+
+    private static void keepDefaults(Path temp) {
+        // A new file keeps the directory's default permissions.
     }
 
     /**
@@ -517,6 +568,109 @@ public final class AtomicFileWriter {
                     temp -> Files.setLastModifiedTime(temp, lastModified));
             return target;
         }
+    }
+
+    /**
+     * Publishes a fully written staging directory as {@code target} (story
+     * 333; Persistence Integrity book §4.1): the directory form of the
+     * temp-sibling publish, so a folder the user names is never seen holding
+     * half of what it will hold. It refuses when {@code target} exists (read
+     * without following a link), then renames {@code staging} to
+     * {@code target} in one move through this writer's mover, with no copy
+     * option — a refusal of the kind Windows gives transiently is retried,
+     * longer than a file's publish (below) — then fsyncs the parent directory, best
+     * effort. Every file inside {@code staging} must already be durable: this
+     * forces none of them. Archive restore and Save As publish their folders
+     * through it, from a staging sibling named by {@link #stagingSiblingOf}.
+     *
+     * <p>The move is the file system's own rename: {@code staging} is a
+     * sibling, on the same volume, and a non-empty directory is never copied
+     * across volumes ({@link Files#move} refuses that), so the folder appears
+     * whole or not at all. It takes no {@code ATOMIC_MOVE}: on Windows that
+     * flag is {@code MOVEFILE_REPLACE_EXISTING}, which replaces a file created
+     * at {@code target} between the check and the rename (story 333, measured
+     * on Windows 10); without it the rename refuses whatever exists there. On
+     * POSIX the move checks once more and then calls {@code rename(2)}, which
+     * replaces an empty directory created at {@code target} in the instant
+     * between that check and the call, and fails over a non-empty one or a
+     * file. A failed move leaves {@code staging} where it was, for the caller
+     * to delete.</p>
+     *
+     * <p>A refusal of the kind Windows gives transiently is retried longer
+     * than a file's publish — about 7.9 s in all: Windows refuses to rename a
+     * folder while a program holds a file inside it open, and an antivirus
+     * scanner, the indexer or a sync client opens the files a copy just
+     * wrote. Once the wait passes a file's 130 ms, a {@code WARNING} says the
+     * folder waits for another program. A {@link FileAlreadyExistsException}
+     * is never retried.</p>
+     *
+     * @param staging the fully written directory to publish; a sibling of {@code target}
+     * @param target  the directory to create; it must not exist
+     * @return {@code target}
+     * @throws FileAlreadyExistsException if {@code target} exists; nothing is moved
+     * @throws IOException                if the move fails
+     */
+    public Path publishDirectory(Path staging, Path target) throws IOException {
+        Objects.requireNonNull(staging, "staging must not be null");
+        Objects.requireNonNull(target, "target must not be null");
+        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+            throw new FileAlreadyExistsException(target.toString(), null,
+                    "it already exists; the staging directory was not published");
+        }
+        moveRetryingTransientDenials(staging, target, DIRECTORY_PUBLISH_BACKOFF_MILLIS);
+        forceDirectoryOf(target);
+        return target;
+    }
+
+    /**
+     * Forces {@code directory}'s entries to storage, best effort (story 333:
+     * a Save As copy forces each folder it created before it writes its
+     * {@code project.daw} — before a staged copy is published, too — so on
+     * POSIX a new folder's entry in its parent survives a crash without
+     * relying on the file system's journal order). Windows cannot open a
+     * directory as a channel: there, and wherever the force is refused, it
+     * does nothing.
+     *
+     * @param directory the directory whose entries to force
+     */
+    public static void forceDirectory(Path directory) {
+        Objects.requireNonNull(directory, "directory must not be null");
+        try (FileChannel channel = FileChannel.open(directory, StandardOpenOption.READ)) {
+            channel.force(true);
+        } catch (IOException notPermitted) {
+            // Best effort, as after each publish.
+        }
+    }
+
+    /**
+     * The staging sibling — hidden on POSIX by its leading dot — a {@linkplain #publishDirectory directory
+     * publish} of {@code target} uses, {@code <parent>/.<name>.<purpose>.tmp}:
+     * {@code .Song B.saving-as.tmp} for Save As, {@code .Song B.restoring.tmp}
+     * for an archive restore. The name is fixed per target and purpose, so the
+     * next caller that stages the same target finds, and deletes, a staging
+     * directory a crash left behind. Its purpose is never a nonce, so it never
+     * reads as one of this writer's temps ({@link #publishedNameOf}). No I/O.
+     *
+     * @param target  the directory the staging sibling is published as
+     * @param purpose what publishes it: lowercase words joined by hyphens
+     * @return the staging sibling, resolved against {@code target}'s absolute form
+     * @throws IllegalArgumentException if {@code target} names no file, or {@code purpose} is not lowercase
+     *                                  words joined by hyphens, or is sixteen hex digits
+     */
+    public static Path stagingSiblingOf(Path target, String purpose) {
+        Objects.requireNonNull(target, "target must not be null");
+        Objects.requireNonNull(purpose, "purpose must not be null");
+        if (!STAGING_PURPOSE.matcher(purpose).matches()
+                || (purpose.length() == NONCE_DIGITS && isNonce(purpose))) {
+            throw new IllegalArgumentException("a staging purpose is lowercase words joined by hyphens, never a"
+                    + " writer temp's nonce: " + purpose);
+        }
+        Path absolute = target.toAbsolutePath();
+        Path name = absolute.getFileName();
+        if (name == null) {
+            throw new IllegalArgumentException("target names no file: " + target);
+        }
+        return absolute.resolveSibling(TEMP_PREFIX + name + NONCE_SEPARATOR + purpose + TEMP_SUFFIX);
     }
 
     /**
@@ -888,22 +1042,58 @@ public final class AtomicFileWriter {
      * It never tries a fallback.
      */
     private void moveRetryingTransientDenials(Path temp, Path target, CopyOption... options) throws IOException {
+        moveRetryingTransientDenials(temp, target, TRANSIENT_DENIAL_BACKOFF_MILLIS, options);
+    }
+
+    /**
+     * {@link #moveRetryingTransientDenials(Path, Path, CopyOption...)} with
+     * {@code backoff} as its pauses. Once the pauses so far pass the per-file
+     * schedule's 130 ms, a {@code WARNING} says once that the target waits
+     * for another program; a move that then succeeds says, at {@code INFO},
+     * how long it waited in all — the field evidence the budget's future
+     * validation needs (story 333, the studio engineer's ruling 3 Q3).
+     */
+    private void moveRetryingTransientDenials(Path temp, Path target, long[] backoff, CopyOption... options)
+            throws IOException {
         FileSystemException previous = null;
+        long waited = 0L;
+        boolean warned = false;
         for (int attempt = 0; ; attempt++) {
             try {
                 mover.move(temp, target, options);
+                if (warned) {
+                    long waitedInAll = waited;
+                    LOG.info(() -> target + " was published after " + waitedInAll
+                            + " ms of waiting for another program");
+                }
                 return;
             } catch (FileSystemException refused) {
                 if (previous != null && previous != refused) {
                     refused.addSuppressed(previous);
                 }
-                if (!isTransientDenial(refused) || attempt == TRANSIENT_DENIAL_RETRIES) {
+                if (!isTransientDenial(refused) || attempt == backoff.length) {
                     throw refused;
                 }
                 previous = refused;
-                pauseBeforeRetry(TRANSIENT_DENIAL_BACKOFF_MILLIS[attempt], refused);
+                if (!warned && waited >= PER_FILE_RETRY_MILLIS) {
+                    warned = true;
+                    LOG.warning(() -> target + " is held by another program; waiting to publish it");
+                }
+                pauseBeforeRetry(backoff[attempt], refused);
+                waited += backoff[attempt];
             }
         }
+    }
+
+    /** The per-file schedule's pauses in all: 130 ms. */
+    private static final long PER_FILE_RETRY_MILLIS = sum(TRANSIENT_DENIAL_BACKOFF_MILLIS);
+
+    private static long sum(long[] pauses) {
+        long total = 0L;
+        for (long pause : pauses) {
+            total += pause;
+        }
+        return total;
     }
 
     /**
@@ -913,7 +1103,7 @@ public final class AtomicFileWriter {
      * {@link FileAlreadyExistsException}, a {@link NoSuchFileException}, an
      * {@link AtomicMoveNotSupportedException}. It asks no platform: on POSIX
      * the same refusals are lasting, and their retries only delay the throw
-     * by 130 ms.
+     * by 130 ms (about 7.9 s for a directory publish).
      */
     private static boolean isTransientDenial(FileSystemException refused) {
         return refused instanceof AccessDeniedException || refused.getClass() == FileSystemException.class;
@@ -938,16 +1128,11 @@ public final class AtomicFileWriter {
         }
     }
 
+    /** Best effort: Windows cannot open a directory as a channel. The file itself was forced before the move. */
     private static void forceDirectoryOf(Path target) {
         Path directory = target.toAbsolutePath().getParent();
-        if (directory == null) {
-            return;
-        }
-        try (FileChannel channel = FileChannel.open(directory, StandardOpenOption.READ)) {
-            channel.force(true);
-        } catch (IOException notPermitted) {
-            // Best effort: Windows cannot open a directory as a channel. The
-            // file itself was forced before the move.
+        if (directory != null) {
+            forceDirectory(directory);
         }
     }
 

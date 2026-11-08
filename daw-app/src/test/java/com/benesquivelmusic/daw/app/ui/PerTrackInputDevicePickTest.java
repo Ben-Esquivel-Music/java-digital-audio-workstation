@@ -170,7 +170,7 @@ class PerTrackInputDevicePickTest {
                                 () -> fixture.project, () -> fixture.undoManager, () -> fixture.controller,
                                 () -> fixture.mixerView, () -> fixture.trackListPanel,
                                 () -> { }, () -> { }, (_, _) -> { }, (_, _) -> { },
-                                fixture.sessionInputSelection),
+                                fixture.sessionInputSelection, () -> true),
                         new AudioDeviceManager(fixture.audioEngine),
                         (devices, preselectedIndex) -> {
                             preselected.set(preselectedIndex);
@@ -399,7 +399,7 @@ class PerTrackInputDevicePickTest {
             fixture.audioEngine.setStreamingProvision(new StreamingProvision(backend.name(),
                     List.of(new BackendStreamRung(backend, rungDevice))));
             wiring = TrackControlWiring.standalone(project, fixture.dispatcher, null, fixture.audioEngine,
-                    message -> errors.add(Objects.requireNonNull(message)));
+                    message -> errors.add(Objects.requireNonNull(message)), () -> true);
             fixture.controller.setInputPortChooserForTest((devices, preselectedIndex) -> {
                 offered.add(List.copyOf(devices));
                 preselected.add(preselectedIndex);

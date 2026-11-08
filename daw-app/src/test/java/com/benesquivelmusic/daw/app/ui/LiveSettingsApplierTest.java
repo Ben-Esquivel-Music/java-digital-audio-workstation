@@ -50,7 +50,7 @@ class LiveSettingsApplierTest {
 
     private void apply() {
         LiveSettingsApplier.apply(model, model.getPluginScanPaths(), null,
-                projectManager, project, pluginRegistry);
+                projectManager, project, pluginRegistry, true);
     }
 
     @Test

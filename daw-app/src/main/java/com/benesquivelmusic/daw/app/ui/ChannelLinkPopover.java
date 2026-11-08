@@ -20,6 +20,7 @@ import javafx.stage.Popup;
 import javafx.stage.Window;
 
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
 
 /**
  * A small floating popover exposing the per-attribute toggles and
@@ -37,11 +38,17 @@ import java.util.Objects;
  *
  * <p>Threading: all popover interactions happen on the JavaFX application
  * thread; no separate synchronisation is required.</p>
+ *
+ * <p>While the window's edit gate says no (a close waits on disk work, or a
+ * project is being installed), a mode or attribute change and an unlink are
+ * refused, whatever raised them, and the controls show the link again
+ * (PR #989 review 5711460812).</p>
  */
 public final class ChannelLinkPopover {
 
     private final ChannelLinkManager manager;
     private final UndoManager undoManager;
+    private final BooleanSupplier projectActionsAllowed;
     private final Popup popup;
     /**
      * The link the popover is currently editing. Replaced via
@@ -65,13 +72,19 @@ public final class ChannelLinkPopover {
      *                    may be {@code null} for unit-test fixtures with no
      *                    undo history
      * @param link        the link to edit
+     * @param projectActionsAllowed the window's edit gate: while it says no,
+     *                    an edit is refused and the controls show the link
+     *                    again (PR #989 review 5711460812)
      */
     public ChannelLinkPopover(ChannelLinkManager manager,
                               UndoManager undoManager,
-                              ChannelLink link) {
+                              ChannelLink link,
+                              BooleanSupplier projectActionsAllowed) {
         this.manager = Objects.requireNonNull(manager, "manager must not be null");
         this.undoManager = undoManager;
         this.currentLink = Objects.requireNonNull(link, "link must not be null");
+        this.projectActionsAllowed = Objects.requireNonNull(
+                projectActionsAllowed, "projectActionsAllowed must not be null");
 
         Label header = new Label("Channel Link");
         header.setStyle("-fx-font-weight: bold;");
@@ -136,12 +149,33 @@ public final class ChannelLinkPopover {
     }
 
     private void applyChange(ChannelLink updated) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            showLink(currentLink);
+            return;
+        }
         manager.replace(updated);
         // Track the latest version so subsequent edits chain correctly.
         currentLink = updated;
     }
 
+    /**
+     * Shows {@code link} on the mode combo and the four check boxes: the
+     * re-sync of a refused change. A combo re-select re-enters
+     * {@link #applyChange}, which is refused again on an unchanged value and
+     * stops (PR #989 review 5711460812).
+     */
+    private void showLink(ChannelLink link) {
+        modeCombo.getSelectionModel().select(link.mode());
+        fadersBox.setSelected(link.linkFaders());
+        pansBox.setSelected(link.linkPans());
+        muteSoloBox.setSelected(link.linkMuteSolo());
+        sendsBox.setSelected(link.linkSends());
+    }
+
     private void doUnlink() {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         UnlinkChannelsAction action =
                 new UnlinkChannelsAction(manager, currentLink.leftChannelId());
         if (undoManager != null) {

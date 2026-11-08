@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -23,7 +24,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.LockSupport;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -36,18 +36,22 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * {@link CheckpointManager#stop()} ends a generation (story 331, rulings F9,
- * G5): a capture not yet taken is dropped, a job not yet claimed never
- * writes and its future completes at once, off the caller's thread, a write
- * already inside the atomic writer lands in its own directory and tells no
- * listener — it prunes when it lands while {@code stop()} waits, and deletes
- * nothing when it lands after {@code stop()} gave up on it (ruling G5 (3)) —
- * a tick that meets the stop is no failure, and {@code stop()} waits a
- * bounded time for the writer, never for the owner.
+ * G5; story 333): a capture not yet taken is dropped, a job not yet claimed
+ * never writes and its future completes at once, off the caller's thread, a
+ * write already claimed lands in its own directory and tells no listener — it
+ * prunes when it lands within the bound, and deletes nothing more once the
+ * bound passed with it still held (ruling G5 (3)) — a tick that meets the
+ * stop is no failure, and {@code stop()} never waits: it returns at once, for
+ * the writer as for the owner, and its stage completes once the claimed work
+ * has ended.
  */
 class CheckpointStopFenceTest {
 
-    /** {@code stop()}'s bound in the tests whose write is held past it. */
+    /** The bound after {@code stop()} in the tests whose write is held past it. */
     private static final Duration SHORT_BOUND = Duration.ofMillis(300);
+
+    /** The WARNING the bound logs when a claim is still held as it passes. */
+    private static final String BOUND_PASSED = "The checkpoint writer did not finish with ";
 
     private static final String OLD_CHECKPOINT = "checkpoint-001-20250101T000000.daw";
 
@@ -104,28 +108,40 @@ class CheckpointStopFenceTest {
     }
 
     @Test
-    void stopWaitsForAWriteAlreadyRunningSoTheFolderIsReleasedAfterIt() throws Exception {
+    void stopReturnsAtOnceAndItsStageCompletesOnlyOnceTheWriteAlreadyClaimedLanded() throws Exception {
         CheckpointManager manager = manager(heldWriter, CheckpointManager.STOP_WAIT);
         Recorder recorder = Recorder.on(manager);
         manager.start(projectDir).get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
         CompletableFuture<Path> running = manager.writeCheckpoint(document(1), 1, CheckpointOrigin.AFTER_SAVE);
         awaitMoveEntered();
 
-        CompletableFuture<Void> stopped = CompletableFuture.runAsync(manager::stop, stopper);
-        awaitGenerationEnded(manager);
-        assertThat(stopped).as("stop() waits while the write is held").isNotDone();
+        // The held publish waits for the test up to the whole timeout: a stop() that waited for it would not
+        // return within half of it.
+        CompletableFuture<Void> stopped = CompletableFuture.supplyAsync(manager::stop, stopper)
+                .get(TIMEOUT_SECONDS / 2, TimeUnit.SECONDS);
+        assertThat(manager.isRunning()).as("the generation ended at the call").isFalse();
+        assertThat(stopped).as("its stage waits for the claimed write").isNotDone();
+        AtomicReference<List<String>> onDiskWhenTheStageCompleted = new AtomicReference<>();
+        CompletableFuture<Void> observed = stopped.thenRun(() -> {
+            try {
+                onDiskWhenTheStageCompleted.set(checkpointNames(projectDir));
+            } catch (IOException unreadable) {
+                throw new UncheckedIOException(unreadable);
+            }
+        });
         moveReleased.countDown();
-        stopped.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        observed.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
 
-        Path written = running.getNow(null);
-        assertThat(written).as("the write finished before stop() returned").isNotNull().exists();
+        Path written = running.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        assertThat(onDiskWhenTheStageCompleted.get()).as("the write had landed when the stage completed")
+                .containsExactly(written.getFileName().toString());
         assertThat(written.getParent()).isEqualTo(projectDir.resolve("checkpoints"));
         assertThat(recorder.sdk("after")).as("a write that ends after stop() tells no listener").isEmpty();
         assertThat(recorder.events(CheckpointEvent.Written.class)).isEmpty();
     }
 
     @Test
-    void aWriteThatLandsWhileStopWaitsWithinItsBoundPrunesBackToTheCap() throws Exception {
+    void aWriteThatLandsWithinTheBoundPrunesBackToTheCapBeforeTheStageCompletes() throws Exception {
         Files.createDirectories(projectDir.resolve("checkpoints"));
         Files.writeString(projectDir.resolve("checkpoints").resolve(OLD_CHECKPOINT), "an older session");
         CheckpointManager manager = CheckpointTestSupport.manager(
@@ -136,15 +152,14 @@ class CheckpointStopFenceTest {
         CompletableFuture<Path> held = manager.writeCheckpoint(document(1), 1, CheckpointOrigin.AFTER_SAVE);
         awaitMoveEntered();
 
-        CompletableFuture<Void> stopped = CompletableFuture.runAsync(manager::stop, stopper);
-        awaitGenerationEnded(manager);
-        assertThat(stopped).as("stop() waits while the write is held").isNotDone();
+        CompletableFuture<Void> stopped = manager.stop();
+        assertThat(stopped).as("the stage waits while the write is held").isNotDone();
         moveReleased.countDown();
         stopped.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
 
-        Path written = held.getNow(null);
-        assertThat(written).as("the write landed before stop() returned").isNotNull().exists();
-        assertThat(checkpointNames(projectDir)).as("a cap of one: the seeded checkpoint was pruned")
+        List<String> onDisk = checkpointNames(projectDir);
+        Path written = held.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        assertThat(onDisk).as("a cap of one: the seeded checkpoint was pruned before the stage completed")
                 .containsExactly(written.getFileName().toString());
         assertThat(recorder.events(CheckpointEvent.Written.class)).as("its generation ended: no listener hears")
                 .isEmpty();
@@ -162,11 +177,23 @@ class CheckpointStopFenceTest {
         manager.start(projectDir).get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
         CompletableFuture<Path> held = manager.writeCheckpoint(document(1), 1, CheckpointOrigin.AFTER_SAVE);
         awaitMoveEntered();
-
-        CompletableFuture.runAsync(manager::stop, stopper).get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
-        assertThat(held).as("stop() returned at its bound with the write still held").isNotDone();
+        CountDownLatch boundPassed = new CountDownLatch(1);
+        Handler bound = warningsStartingWith(BOUND_PASSED, boundPassed);
+        Logger managerLog = Logger.getLogger(CheckpointManager.class.getName());
+        managerLog.addHandler(bound);
+        CompletableFuture<Void> stopped;
+        try {
+            stopped = manager.stop();
+            // The bound decides before the release: the test releases the write only once it has passed.
+            assertThat(boundPassed.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)).as("the bound passed").isTrue();
+        } finally {
+            managerLog.removeHandler(bound);
+        }
+        assertThat(held).as("the write is still held past the bound").isNotDone();
+        assertThat(stopped).as("so is the stage: the lock waits for the claim").isNotDone();
         moveReleased.countDown();
         Path written = held.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        stopped.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
 
         assertThat(written).exists();
         assertThat(written.getParent()).isEqualTo(projectDir.resolve("checkpoints"));
@@ -332,14 +359,24 @@ class CheckpointStopFenceTest {
         assertThat(moveEntered.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)).as("the write reached its publish").isTrue();
     }
 
-    /** Waits until {@code stop()} has ended the generation: {@link CheckpointManager#isRunning()} turns false then. */
-    private static void awaitGenerationEnded(CheckpointManager manager) {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TIMEOUT_SECONDS);
-        while (manager.isRunning()) {
-            if (System.nanoTime() - deadline > 0) {
-                throw new AssertionError("stop() did not end the generation within the bound");
+    /** A handler that counts {@code seen} down at the first WARNING whose message starts with {@code prefix}. */
+    static Handler warningsStartingWith(String prefix, CountDownLatch seen) {
+        return new Handler() {
+            @Override
+            public void publish(LogRecord logRecord) {
+                if (logRecord.getLevel().equals(Level.WARNING)
+                        && String.valueOf(logRecord.getMessage()).startsWith(prefix)) {
+                    seen.countDown();
+                }
             }
-            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
-        }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
     }
 }

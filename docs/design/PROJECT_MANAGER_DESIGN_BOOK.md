@@ -96,7 +96,10 @@ surface is the single biggest reason it feels flaky.
 `ProjectLockManager` writes a heartbeat lock file and detects stale locks. The
 `ProjectLockedException` and `LockConflictHandler` interfaces exist, and
 `MainController` wires `LockConflictDialog` via
-`projectManager.setLockConflictHandler(new LockConflictDialog())`. The dialog
+`projectManager.setLockConflictHandler(new LockConflictDialog(java.time.Instant::now, closingDoor))`,
+the closing door read from `ProjectLifecycleController.closingDoor()`: while a
+close runs, the dialog shows nothing and takes its Cancel (story 333, ruling
+R-1.6). The dialog
 surfaces holder identity and staleness and offers Open Read‑Only / Take Over /
 Cancel. However, the UX around this conflict resolution still has gaps — the user
 does not see:
@@ -322,6 +325,18 @@ A user’s root folder for projects. Default: `~/DAW Projects`. A workspace has 
 own settings (default sample rate, default density, default autosave cadence) and
 its own recent‑projects index. A user can have several (Personal, Studio,
 Client X). The Workspace switcher lives in the top‑left of the title bar.
+
+*As landed (story 333): no workspace switcher exists yet, and the strip's
+Workspace cell (§4.4) shows a fixed name, “Workspace: Personal”, and does
+nothing when clicked. The clean close the switcher will need does exist: the
+close-then-continue primitive (`ExitCoordinator.closeOpenProjectThenContinue`)
+closes the open project as File ▸ Close Project does — the same prompts and
+tail — then installs the Untitled project without the Welcome window and hands
+its caller one outcome. Story 333 records it as known limit 11: “The
+close-then-continue primitive has no production caller until the workspace
+switch exists (Project Manager book §3.1 and the strip's Workspace cell): only
+its tests run it, and it is never wired to the dock layout presets (ruling R12
+#13).” Owner: future story 405, project workspaces and the workspace switcher.*
 
 ### 3.2 Project
 
@@ -604,7 +619,9 @@ Concretely:
 - **Schema cell** — current version. If a migration just happened, shows
   "v5 · backup v4 available" with a link to the Migration Report.
 - **Workspace cell** — name. Click to switch workspaces (closes current project
-  cleanly first; never silently).
+  cleanly first; never silently). *As landed (story 333): the cell shows the
+  name only; the clean close exists as the close-then-continue primitive, with
+  no caller yet (§3.1's note).*
 
 This single strip *is* the §2.2 visibility principle.
 
@@ -996,6 +1013,13 @@ Patterns we already tried — or other DAWs tried — and learned hurt.
 - **A modal "Save changes?" alert on every close.** Replace with autosave +
   Undo Close toast (§2.5). Existing `confirmDiscardUnsavedChanges` becomes
   legacy code on the road to deletion.
+  *As landed (story 333): the close protocol's unsaved-changes prompt (Save and
+  close │ Discard and close │ Cancel) ships as the interim that the maturity
+  rule of `PERSISTENCE_INTEGRITY_DESIGN_BOOK.md` §5.4 records, until its
+  demolition condition holds; no Undo Close toast exists yet. The prompt is
+  `ProjectLifecycleController.askAboutUnsavedChanges(UnsavedChangesPrompt)`,
+  which the doors share; story 331 had already replaced
+  `confirmDiscardUnsavedChanges`.*
 - **Silent first‑save into `/tmp`.** Brand‑new projects without a chosen
   location prompt for a location once, then auto‑save into it forever.
 - **A single boolean dirty flag driving the title‑bar dot.** Replace with

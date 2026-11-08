@@ -140,7 +140,7 @@ public final class SaveTestSupport {
      */
     static Path projectOnDisk(ProjectManager manager, String name, Path parent) throws IOException {
         Path directory = manager.createProject(name, parent).projectPath();
-        manager.abandonProject();
+        manager.closeProject().join();
         DawProject project = new DawProject(name, AudioFormat.CD_QUALITY);
         project.createAudioTrack("Vox");
         Files.writeString(directory.resolve("project.daw"), new ProjectSerializer().serialize(project));
@@ -201,6 +201,11 @@ public final class SaveTestSupport {
             if (!reached.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                 throw new AssertionError("no thread reached the gate within the bound");
             }
+        }
+
+        /** Waits at most {@code timeout} until a thread is held here; returns whether one is. */
+        boolean awaitReached(long timeout, TimeUnit unit) throws InterruptedException {
+            return reached.await(timeout, unit);
         }
 
         boolean isReached() {

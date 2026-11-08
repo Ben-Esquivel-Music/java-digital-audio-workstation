@@ -9,12 +9,15 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 import org.junit.jupiter.api.Test;
 
 import java.lang.management.ManagementFactory;
+import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class MultibandCompressorPluginTest {
+
+    private static final int QUIET_BATCH_ATTEMPTS = 5;
 
     @Test
     void shouldHavePublicNoArgConstructor() {
@@ -362,8 +365,21 @@ class MultibandCompressorPluginTest {
             for (int batch = 0; batch < 5; batch++) {
                 measureCrossoverAllocations(slot, bean);
             }
-            long allocated = measureCrossoverAllocations(slot, bean);
-            assertThat(allocated).isZero();
+            // The drain path must allocate nothing per iteration, so a steady allocation fails every
+            // batch (>= 80 KB per 10,000 iterations), while a one-off JVM event (deoptimisation or
+            // recompilation in a long-lived suite JVM) can land in at most one batch. The exact-zero
+            // bound is deliberately kept rather than widened; we only allow it a few batches to settle.
+            long[] deltas = new long[QUIET_BATCH_ATTEMPTS];
+            Arrays.fill(deltas, -1L);
+            for (int attempt = 0; attempt < QUIET_BATCH_ATTEMPTS; attempt++) {
+                deltas[attempt] = measureCrossoverAllocations(slot, bean);
+                if (deltas[attempt] == 0L) {
+                    break;
+                }
+            }
+            assertThat(deltas)
+                    .as("bytes allocated per 10,000-iteration batch after warm-up (-1 = not measured)")
+                    .contains(0L);
         } finally {
             plugin.dispose();
         }

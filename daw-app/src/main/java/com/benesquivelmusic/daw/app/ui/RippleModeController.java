@@ -16,6 +16,7 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -24,6 +25,11 @@ import java.util.function.Supplier;
  * {@link RippleMode#ALL_TRACKS}.
  *
  * <p>Story 138 — {@code docs/user-stories/138-ripple-edit-mode.md}.</p>
+ *
+ * <p>The ripple mode is saved with the project, so a mode change reads the
+ * window's edit gate: while it says no, the change is refused before the
+ * ALL_TRACKS prompt opens and again after it returns, and the button shows
+ * the project's mode (PR #989 review 5711460812).</p>
  */
 final class RippleModeController {
 
@@ -41,6 +47,8 @@ final class RippleModeController {
     private final ToolbarStateStore toolbarStateStore;
     private final Button cyclingButton;
     private final Label bannerLabel;
+    /** The window's edit gate (PR #989 review 5711460812). FX thread. */
+    private final BooleanSupplier projectActionsAllowed;
 
     /**
      * Tracks whether the ALL_TRACKS confirmation has already been shown — or
@@ -55,7 +63,10 @@ final class RippleModeController {
                          NotificationBar notificationBar,
                          ToolbarStateStore toolbarStateStore,
                          Button cyclingButton,
-                         Label bannerLabel) {
+                         Label bannerLabel,
+                         BooleanSupplier projectActionsAllowed) {
+        this.projectActionsAllowed = Objects.requireNonNull(
+                projectActionsAllowed, "projectActionsAllowed must not be null");
         this.project = Objects.requireNonNull(project, "project must not be null");
         this.markDirty = Objects.requireNonNull(markDirty, "markDirty must not be null");
         this.notificationBar = Objects.requireNonNull(
@@ -84,10 +95,20 @@ final class RippleModeController {
         setMode(mode().next());
     }
 
-    /** Applies a specific mode, honouring the ALL_TRACKS confirmation gate. */
+    /**
+     * Applies a specific mode, honouring the ALL_TRACKS confirmation gate.
+     * Refused, changing nothing, while the window's edit gate says no — before
+     * the confirmation and again after it (PR #989 review 5711460812).
+     */
     void setMode(RippleMode target) {
         Objects.requireNonNull(target, "target must not be null");
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         if (target == RippleMode.ALL_TRACKS && !confirmAllTracks()) {
+            return;
+        }
+        if (!projectActionsAllowed.getAsBoolean()) {
             return;
         }
         project.get().setRippleMode(target);

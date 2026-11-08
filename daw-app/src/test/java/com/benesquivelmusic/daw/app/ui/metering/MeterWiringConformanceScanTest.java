@@ -85,10 +85,11 @@ final class MeterWiringConformanceScanTest {
         int unbind = code.indexOf("engineBinder.unbind();");
         int shutdown = code.indexOf("audioEngine.shutdown();");
 
-        assertThat(disposeFeed).as("setOnHidden must dispose the MeterFeed").isNotNegative();
-        assertThat(unbind).as("setOnHidden must unbind the EngineBinder").isNotNegative();
+        assertThat(disposeFeed).as("the window's disposal must dispose the MeterFeed").isNotNegative();
+        assertThat(unbind).as("the window's disposal must unbind the EngineBinder").isNotNegative();
         assertThat(shutdown)
-                .as("setOnHidden must shut the engine down — unbind() leaves the tap bus open "
+                .as("the window's disposal must shut the engine down (its hand-off, off the FX thread, story 333)"
+                        + " — unbind() leaves the tap bus open "
                         + "and its 'daw-metering-analysis' thread unjoined (story 318)")
                 .isNotNegative();
         assertThat(disposeFeed)

@@ -12,6 +12,7 @@ import javafx.scene.control.Slider;
 import javafx.scene.layout.GridPane;
 
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
 
 /**
  * Modal dialog that lets the user configure the per-track CPU budget
@@ -35,6 +36,11 @@ import java.util.Objects;
  * re-register the channel with the live
  * {@link com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer
  * TrackCpuBudgetEnforcer}.</p>
+ *
+ * <p>An Apply while the window's edit gate says no (a close waits on disk
+ * work, or a project is being installed) is refused: the channel's budget is
+ * not written and {@code onApplied} does not run (PR #989 review
+ * 5711460812).</p>
  */
 public final class ChannelCpuBudgetDialog extends DawgDialog<Void> {
 
@@ -43,6 +49,7 @@ public final class ChannelCpuBudgetDialog extends DawgDialog<Void> {
 
     private final MixerChannel channel;
     private final Runnable onApplied;
+    private final BooleanSupplier projectActionsAllowed;
     private final Slider fractionSlider;
     private final ComboBox<String> policyCombo;
 
@@ -55,10 +62,16 @@ public final class ChannelCpuBudgetDialog extends DawgDialog<Void> {
      * @param onApplied  callback invoked after a successful Apply,
      *                   typically used to re-register the channel
      *                   with the active enforcer; may be {@code null}
+     * @param projectActionsAllowed the window's edit gate: an Apply while it
+     *                   says no writes nothing (PR #989 review 5711460812);
+     *                   must not be {@code null}
      */
-    public ChannelCpuBudgetDialog(MixerChannel channel, Runnable onApplied) {
+    public ChannelCpuBudgetDialog(MixerChannel channel, Runnable onApplied,
+                                  BooleanSupplier projectActionsAllowed) {
         this.channel = Objects.requireNonNull(channel, "channel must not be null");
         this.onApplied = onApplied;
+        this.projectActionsAllowed = Objects.requireNonNull(
+                projectActionsAllowed, "projectActionsAllowed must not be null");
 
         setTitle("Per-Track CPU Budget");
         setHeaderText("CPU Budget — " + channel.getName());
@@ -113,6 +126,9 @@ public final class ChannelCpuBudgetDialog extends DawgDialog<Void> {
     }
 
     private void applyResult() {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         double fraction = fractionSlider.getValue();
         if (Double.isNaN(fraction) || fraction <= 0.0) {
             fraction = 0.01;

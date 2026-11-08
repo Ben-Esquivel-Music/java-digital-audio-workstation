@@ -188,13 +188,16 @@ class AppProjectWritesGoThroughTheAtomicWriterTest {
         Map<String, String> selected = persistencePath(sources);
 
         assertThat(sources).as("every daw-app main source is read").hasSizeGreaterThan(300);
-        // Ten files are selected today: the floor is that count, so a selection that
-        // shrinks fails here until the floor is lowered on purpose.
+        // Fourteen files are selected today: the floor is that count, so a selection that
+        // shrinks fails here until the floor is lowered on purpose. Story 333's exit
+        // protocol, its closer and Save As are named, so a rule that dropped them fails
+        // too (the story-333 conformance review N4).
         assertThat(selected.keySet())
                 .as("the persistence path of the application")
                 .contains("ui/ProjectLifecycleController.java", "ui/MainController.java",
-                        "ui/SnapshotsController.java", "ui/status/CheckpointStatusListener.java")
-                .hasSizeGreaterThanOrEqualTo(10);
+                        "ui/SnapshotsController.java", "ui/status/CheckpointStatusListener.java",
+                        "ui/ExitCoordinator.java", "ui/ProjectFolderCloser.java", "ui/SaveAsFlow.java")
+                .hasSizeGreaterThanOrEqualTo(14);
         assertThat(selected).as("a file whose code names nothing of the path is not selected")
                 .doesNotContainKey("ui/status/StatusStripCell.java");
     }

@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -68,19 +69,26 @@ public final class TrackTemplateController {
      * live, so a project load is reflected without rebuilding this controller);
      * notification and mixer-refresh are {@link BiConsumer}/{@link Runnable}
      * sinks. The window supplier may yield {@code null} (no modal parent yet).
+     * {@code projectActionsAllowed} is the window's edit gate: while it says
+     * no, adding a track from a template and applying a channel-strip preset
+     * are refused before their browser opens and again after each dialog
+     * returns (PR #989 review 5711460812). Saving a template or a preset
+     * writes only the user's library, so it is not refused.
      */
     public record Deps(
             Supplier<DawProject> project,
             Supplier<UndoManager> undoManager,
             Supplier<Window> window,
             BiConsumer<NotificationLevel, String> showNotification,
-            Runnable refreshMixer) {
+            Runnable refreshMixer,
+            BooleanSupplier projectActionsAllowed) {
         public Deps {
             Objects.requireNonNull(project, "project must not be null");
             Objects.requireNonNull(undoManager, "undoManager must not be null");
             Objects.requireNonNull(window, "window must not be null");
             Objects.requireNonNull(showNotification, "showNotification must not be null");
             Objects.requireNonNull(refreshMixer, "refreshMixer must not be null");
+            Objects.requireNonNull(projectActionsAllowed, "projectActionsAllowed must not be null");
         }
     }
 
@@ -191,9 +199,15 @@ public final class TrackTemplateController {
      * {@link AddTrackFromTemplateAction} is run through the undo manager.
      */
     public void addTrackFromTemplate() {
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            return;
+        }
         TrackTemplateBrowser browser = openBrowser(TrackTemplateBrowser.InitialTab.TEMPLATES, true);
         TrackTemplate template = browser.getSelectedTemplate();
         if (template == null) {
+            return;
+        }
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
             return;
         }
         try {
@@ -219,9 +233,15 @@ public final class TrackTemplateController {
      */
     public void applyChannelStripPreset(MixerChannel channel) {
         Objects.requireNonNull(channel, "channel must not be null");
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            return;
+        }
         TrackTemplateBrowser browser = openBrowser(TrackTemplateBrowser.InitialTab.PRESETS, true);
         ChannelStripPreset preset = browser.getSelectedPreset();
         if (preset == null) {
+            return;
+        }
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
             return;
         }
         if (channel.getInsertCount() > 0 || !channel.getSends().isEmpty()) {
@@ -238,6 +258,9 @@ public final class TrackTemplateController {
             if (response.isEmpty() || response.get() != ButtonType.OK) {
                 return;
             }
+        }
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            return;
         }
         try {
             Mixer mixer = deps.project().get().getMixer();

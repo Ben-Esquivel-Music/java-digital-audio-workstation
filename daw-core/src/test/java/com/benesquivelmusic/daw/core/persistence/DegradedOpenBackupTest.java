@@ -109,7 +109,7 @@ class DegradedOpenBackupTest {
     @AfterEach
     void releaseTheManager() {
         managerLog.removeHandler(infoHandler);
-        manager.abandonProject();
+        manager.closeProject().join();
         assertThat(infoLines).as("a backup's INFO line counts nothing")
                 .noneMatch(line -> line.contains("unread item"));
     }
@@ -139,7 +139,7 @@ class DegradedOpenBackupTest {
 
         saved(manager, manager.getCurrentDawProject());
         assertThat(backupsIn(directory)).as("a second save writes no new backup").hasSize(1);
-        manager.abandonProject();
+        manager.closeProject().join();
 
         manager.openProject(directory);
         assertThat(manager.getLastUnreadItems()).as("the saved file reopens clean").isEmpty();
@@ -445,7 +445,7 @@ class DegradedOpenBackupTest {
     /** A project folder whose {@code project.daw} holds {@code xml}, not open in the manager. */
     private Path projectHolding(String xml) throws IOException {
         Path directory = manager.createProject("Song", tempDir).projectPath();
-        manager.abandonProject();
+        manager.closeProject().join();
         Files.writeString(directory.resolve("project.daw"), xml);
         return directory;
     }

@@ -34,7 +34,11 @@ import java.util.function.DoubleFunction;
  *       that silently overwrote a recalled scene is gone.</li>
  *   <li><strong>Snap-back on rejection.</strong> If the handler throws
  *       {@link IllegalArgumentException} (out-of-range), the slider is set back to
- *       the VM's accepted value, which the echo guard then drops.</li>
+ *       the VM's accepted value, which the echo guard then drops; and after a
+ *       command the model did not adopt — a silent refusal by the close's gate
+ *       (PR #989 review 5711460812) — the slider is set back to the VM's value at
+ *       once unless it is being dragged. An adopted value is already in the VM,
+ *       which republishes inline on the FX thread, so that re-set is a no-op.</li>
  * </ul>
  */
 final class SliderBinding {
@@ -84,6 +88,10 @@ final class SliderBinding {
             try {
                 commandSink.accept(command.apply(value));
             } catch (IllegalArgumentException rejected) {
+                slider.setValue(vmValue.get());
+                return;
+            }
+            if (!slider.isValueChanging() && slider.getValue() != vmValue.get()) {
                 slider.setValue(vmValue.get());
             }
         };

@@ -108,11 +108,11 @@ class ProjectRoundTripInventoryTest {
         ProjectMetadata metadata = manager.createProject("Inventory Session", tempDir);
         DawProject saved = RoundTripInventoryProjects.full(metadata.projectPath());
         saved(manager, saved);
-        manager.abandonProject();
+        manager.closeProject().join();
         manager.openProject(metadata.projectPath());
         Reopened viaManager = new Reopened("ProjectManager save → open",
                 saved, manager.getCurrentDawProject(), manager.getLastUnreadItems());
-        manager.abandonProject();
+        manager.closeProject().join();
 
         reopenings = List.of(viaSerializer, viaManager);
     }

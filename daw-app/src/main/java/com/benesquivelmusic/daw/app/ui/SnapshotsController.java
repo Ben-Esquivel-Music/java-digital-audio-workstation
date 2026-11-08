@@ -9,7 +9,6 @@ import com.benesquivelmusic.daw.core.persistence.MissingAssetsReport;
 import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
-import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
 import com.benesquivelmusic.daw.core.persistence.UnreadProjectItem;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.snapshot.SnapshotBrowserService;
@@ -134,7 +133,6 @@ final class SnapshotsController {
     private final CheckpointManager checkpointManager;
     private final ProjectManager projectManager;
     private final Deps deps;
-    private final ProjectSerializer serializer = new ProjectSerializer();
     private final ProjectDeserializer deserializer = new ProjectDeserializer();
     private java.util.function.BooleanSupplier projectActionsAllowed = () -> true;
 
@@ -359,7 +357,8 @@ final class SnapshotsController {
         String content;
         try {
             capture = checkpointManager.captureStarted(project.getEditRevision());
-            content = serializer.capture(project).toXml();
+            // Story 333 (E3-S5) — the open project's own capture: a Save As copy's former roots included.
+            content = projectManager.captureOpenProject(project).toXml();
         } catch (Throwable notCaptured) {
             // Anything the capture throws, an Error included, is a checkpoint that wrote nothing: never silent.
             LOG.log(Level.WARNING, "Failed to capture the project for a checkpoint; nothing was written", notCaptured);
@@ -460,6 +459,12 @@ final class SnapshotsController {
     private void restoreNow(SnapshotEntry entry) {
         try {
             DawProject project = loadFromEntry(entry);
+            // Story 333 (E3-N7) — a snapshot is a state of the open project, which keeps its name: a snapshot a
+            // Save As copied still carries the original's name, and the copy's name is its folder's (ruling R6).
+            DawProject open = deps.currentProject().get();
+            if (open != null && !open.getName().equals(project.getName())) {
+                project.setName(open.getName());
+            }
             // Story 329 — what this deserialization found missing, read right
             // after it (the deserializer is reused: the next load clears it);
             // story 330 — and what it could not honour as written.

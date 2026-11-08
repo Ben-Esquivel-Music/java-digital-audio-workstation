@@ -128,7 +128,7 @@ class MigrationRollBackAndRecoveryGuardTest {
                 recording.close();
             }
         } finally {
-            projectManager.abandonProject();
+            projectManager.closeProject().join();
         }
     }
 
@@ -285,7 +285,7 @@ class MigrationRollBackAndRecoveryGuardTest {
     private Path anotherProjectOnDisk(String name) throws IOException {
         ProjectManager other = new ProjectManager(new CheckpointManager(AutoSaveConfig.DEFAULT));
         Path directory = other.createProject(name, workspace).projectPath();
-        other.closeProject();
+        other.closeProject().join();
         return directory;
     }
 

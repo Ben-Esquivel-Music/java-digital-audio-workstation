@@ -57,7 +57,7 @@ class SaveGenerationFenceTest {
     @AfterEach
     void releaseTheManager() {
         gates.forEach(Gate::release);
-        manager.abandonProject();
+        manager.closeProject().join();
     }
 
     @Test
@@ -71,7 +71,7 @@ class SaveGenerationFenceTest {
         mover.clear();
 
         CompletableFuture<SaveOutcome> pending = manager.save(project);
-        manager.abandonProject();
+        manager.closeProject();
         release.countDown();
 
         assertThat(await(holding)).as("the held task was released").isTrue();

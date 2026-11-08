@@ -41,6 +41,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -74,20 +75,30 @@ import java.util.logging.Logger;
  *       thread) — reads the project's revision and clean flag and captures
  *       the project ({@link CheckpointSource}); it does no disk I/O. A revision
  *       already checkpointed is not captured at all (ruling F4).</li>
- *   <li><strong>The writer</strong> — one virtual thread, started on demand
- *       while jobs are queued, so it can never reject one — runs every job in
+ *   <li><strong>The writer</strong> of the project's folder — one serial
+ *       writer per folder, a virtual thread started on demand while jobs are
+ *       queued, so it can never reject one — runs every job of that folder in
  *       order: seeding at {@link #start}, every tick's write and every
  *       {@link #writeCheckpoint} (ruling F2: one ordered writer of the
  *       directory). It renders the capture, allocates the index, writes the
  *       file through the {@link AtomicFileWriter}, keeps the index of the
- *       directory and prunes it.</li>
+ *       directory and prunes it. Two generations share a writer only when
+ *       their folders are one ({@link FolderFingerprint}, story 333): a write
+ *       held on one folder's stalled volume never holds another folder's
+ *       seeding or writes, and two names of one folder never write it at
+ *       once — unless one name's identity could not be read while the two
+ *       real paths differ (a share name and a drive letter; see
+ *       {@link FolderFingerprint}). A generation's seeding first reads its folder's fingerprint, on
+ *       its own folder's path only, and then joins the writer already running
+ *       jobs in that folder, behind them, or becomes that folder's writer.</li>
  * </ul>
  * <p>No step reads the live model off the owner, and the owner never touches
  * the disk (book §6.1). This package takes no JavaFX dependency.</p>
  *
  * <h2>One write</h2>
- * <p>{@code onBeforeCheckpoint}; the {@linkplain #setWriteGuard write guard}
- * (the project lock is still ours); the render; the next index (only now, so
+ * <p>{@code onBeforeCheckpoint}; the generation's {@linkplain WriteGuard write
+ * guard} (the project lock is still ours); the render; the claim of the write
+ * (see "Generations"); the next index (only now, so
  * a render failure uses none: rulings F8, G13 #11); the atomic write of a new
  * file; the revision it holds is recorded as checkpointed; the file joins the
  * index; {@code onAfterCheckpoint} and {@link CheckpointEvent.Written}; then
@@ -141,13 +152,22 @@ import java.util.logging.Logger;
  *
  * <h2>Generations</h2>
  * <p>Each {@link #start} begins a generation and {@link #stop} ends it, under
- * the lock a job takes to claim its write: no job of an ended generation
- * starts a write after {@code stop()}; a capture not yet taken is dropped,
- * and the futures of jobs still queued complete at once, off the caller's
- * thread. A write already inside the atomic write finishes into its own
- * project's directory and is reported to no listener (ruling F9, G5); it
- * prunes while {@code stop()} still waits for it, and decides no delete once
- * {@code stop()} has returned (one decided just before may still be issued). A
+ * the lock a job takes to claim its work in the folder (story 333). A claim is
+ * the only way a job writes or deletes there: a write claims after its render
+ * and holds the claim through its index, its atomic write and its prune; a
+ * seeding with an ordering fact to compact or stray temps to delete claims
+ * around that compaction and those deletes. No job of an ended generation
+ * claims after {@code stop()};
+ * a capture not yet taken is dropped, and the futures of jobs still queued
+ * complete at once, off the caller's thread. {@code stop()} itself never
+ * waits: it returns a stage that completes once the generation's claimed work
+ * has ended, and {@link ProjectManager} releases the project's lock only
+ * then, so nothing of this session writes or deletes in a folder after its
+ * lock is released. A write already inside the atomic write when its
+ * generation ends finishes into its own project's directory and is reported
+ * to no listener (ruling F9, G5); it prunes as usual, until five seconds
+ * after {@code stop()} ({@link #STOP_WAIT}), from when a claim still held
+ * decides no further delete. A
  * checkpoint {@link ProjectManager} requests for a save is bound, by
  * identity, to the generation that project's open started
  * ({@link Generation}): once that generation has ended it writes nothing
@@ -158,12 +178,15 @@ import java.util.logging.Logger;
 public final class CheckpointManager {
 
     /**
-     * Checked on the writer just before each checkpoint is written, and
-     * before seeding deletes a stray temp: that this session may still write
-     * the project folder. {@link ProjectManager} installs its lock check
-     * ({@link ProjectLockManager#verifyHeld()}, which also refuses when this
-     * session holds no lock). A guard that throws fails the checkpoint
-     * visibly.
+     * Checked on the writer just before each checkpoint is written, before
+     * the ordering fact is compacted and before seeding deletes a stray temp:
+     * that this session may still write the project folder. Each generation
+     * has its own ({@link #startGeneration(Path, WriteGuard)}, story 333):
+     * {@link ProjectManager} gives each the lock check of the lease its own
+     * open or create took ({@link ProjectLockManager#verifyHeld()}, which also
+     * refuses when that lease holds no lock), so a job of a project still
+     * running after a switch checks that project's lease, never the next
+     * project's. A guard that throws fails the checkpoint visibly.
      */
     @FunctionalInterface
     public interface WriteGuard {
@@ -180,7 +203,8 @@ public final class CheckpointManager {
      * while it runs is queued as one of its jobs, which writes into its
      * project's {@code checkpoints/} unless the generation's end drops it
      * first; its render or its write fails; for any but a
-     * {@link CheckpointOrigin#USER} checkpoint, the revision it holds is
+     * {@link CheckpointOrigin#USER} or a {@link CheckpointOrigin#CLOSING}
+     * checkpoint, the revision it holds is
      * already checkpointed — it then names that checkpoint and writes nothing
      * (ruling G9 (2)); or, for an {@link CheckpointOrigin#AFTER_SAVE},
      * autosave is disabled (ruling H3). One requested once it has ended is
@@ -219,15 +243,22 @@ public final class CheckpointManager {
 
     private static final String CHECKPOINT_DIR_NAME = "checkpoints";
 
-    /** How long {@link #stop()} waits for the writer to finish an ended generation's jobs (ruling G5). */
+    /**
+     * How long after {@link #stop()} a claim of the ended generation may
+     * still decide a delete (ruling G5 (3)): past it, a claim still held
+     * deletes nothing more. {@code stop()} never waits for it.
+     */
     static final Duration STOP_WAIT = Duration.ofSeconds(5);
+
+    /** A guard that always passes: {@link #start(Path)}'s, for callers that hold no lock. */
+    private static final WriteGuard PASSES = () -> { };
+
+    /** Runs {@link #stop()}'s bound once it passed, and completes stopped jobs' futures: never the caller. */
+    private static final Executor STOP_THREADS = task -> Thread.ofVirtual().name("daw-checkpoint-stop").start(task);
 
     /** The stamp of a checkpoint id, in ASCII digits under every default locale. */
     private static final DateTimeFormatter ID_STAMP =
             DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss", Locale.ROOT).withZone(ZoneId.systemDefault());
-
-    /** Bound while a manager's writer runs a job: a {@link #stop()} from a listener there must not wait on itself. */
-    private static final ScopedValue<CheckpointManager> WRITING = ScopedValue.newInstance();
 
     private volatile AutoSaveConfig config;
     private final AtomicFileWriter fileWriter;
@@ -241,6 +272,12 @@ public final class CheckpointManager {
     @FunctionalInterface interface DirectoryReader { DirectoryStream<Path> open(Path directory) throws IOException; }
     private DirectoryReader directoryReader = Files::newDirectoryStream;
     void setDirectoryReader(DirectoryReader reader) { directoryReader = Objects.requireNonNull(reader); }
+    private volatile Function<Path, FolderFingerprint> folderFingerprints = FolderFingerprint::of;
+
+    /** Test seam: how a generation's seeding reads its folder's fingerprint (story 333). */
+    void setFolderFingerprints(Function<Path, FolderFingerprint> fingerprints) {
+        folderFingerprints = Objects.requireNonNull(fingerprints, "fingerprints must not be null");
+    }
     private final AtomicReference<java.util.function.LongSupplier> journalSequenceSource = new AtomicReference<>();
 
     /** The revision and optional journal boundary of one immutable model capture. */
@@ -261,34 +298,49 @@ public final class CheckpointManager {
     }
     private volatile BackupRetentionPolicy retentionPolicy;
     private volatile CaptureSource captureSource;
-    private volatile WriteGuard writeGuard = () -> { };
-
-    /** Serializes {@link #start}, {@link #stop} and {@link #reconfigure}; never taken by the writer. */
-    private final Object lifecycle = new Object();
 
     /**
-     * Guards each generation's end ({@link Session#ended}) and its count of
-     * jobs the writer holds: a job claims its write under it, and
-     * {@link #stop()} ends the generation under it.
+     * Serializes {@link #start}, {@link #stop} and {@link #reconfigure}; never
+     * taken by a writer, and never held across disk I/O or a wait.
+     */
+    private final ReentrantLock lifecycle = new ReentrantLock();
+
+    /**
+     * Guards each generation's end ({@link Session#ended}), its count of jobs
+     * the writers hold and its claims, and the folder writers: a job claims
+     * its work under it, and {@link #stop()} ends the generation under it.
+     * Never held across disk I/O.
      */
     private final ReentrantLock stateLock = new ReentrantLock();
     private final Condition writerReleased = stateLock.newCondition();
 
     /**
-     * Guarded by {@link #stateLock}: the jobs of every generation the writer
-     * holds, queued or running — the sum of each generation's
+     * Guarded by {@link #stateLock}: the jobs of every generation the writers
+     * hold, queued or running — the sum of each generation's
      * {@link Session#heldJobs}, which the wait at exit asks (ruling M1).
      */
     private int heldJobsOfEveryGeneration;
+
+    /**
+     * Guarded by {@link #stateLock}: the {@link #whenNoJobIsHeld()} stages
+     * still waiting, completed — outside the lock — when
+     * {@link #heldJobsOfEveryGeneration} drops to zero (story 333).
+     */
+    private final List<CompletableFuture<Void>> noJobWaiters = new ArrayList<>();
+
+    /**
+     * Guarded by {@link #stateLock}: the folder writers a generation's seeding
+     * may join — each with its folder's fingerprint — in the order they
+     * registered. A writer leaves once no generation attached to it holds a
+     * job and none of them runs any more (story 333).
+     */
+    private final List<FolderWriter> writers = new ArrayList<>();
 
     private final AtomicLong generations = new AtomicLong();
     private final AtomicLong checkpointIds = new AtomicLong();
 
     /** The current generation, or the last one once stopped; {@code null} before the first start. */
     private volatile Session session;
-
-    private final ConcurrentLinkedQueue<WriterJob> queue = new ConcurrentLinkedQueue<>();
-    private final AtomicBoolean draining = new AtomicBoolean();
 
     /**
      * Creates a new checkpoint manager with the given auto-save configuration.
@@ -313,7 +365,8 @@ public final class CheckpointManager {
 
     /**
      * The test seam: the clock of names and due times, the deleter of pruned
-     * checkpoints and stray temps, and {@link #stop()}'s bound.
+     * checkpoints and stray temps, and the bound after {@link #stop()} past
+     * which a claim still held deletes nothing more.
      */
     CheckpointManager(AutoSaveConfig config, AtomicFileWriter fileWriter, InstantSource clock, FileDeleter deleter,
                       Duration stopWait) {
@@ -338,10 +391,14 @@ public final class CheckpointManager {
      * {@code checkpoints/} (see the class note, "Retention"). The first tick
      * is armed a full interval after seeding finishes. This call does no disk
      * I/O. A generation still running — another project, or this one — is
-     * {@linkplain #stop() stopped} first, which may wait for its writer.
-     * With autosave disabled the generation still begins and seeds, so user
-     * checkpoints and safety copies can be written, but no tick is armed
-     * (ruling H3).
+     * {@linkplain #stop() stopped} first, which never waits. With autosave
+     * disabled the generation still begins and seeds, so user checkpoints and
+     * safety copies can be written, but no tick is armed (ruling H3).
+     *
+     * <p>Its write guard always passes: this form is for tests and for
+     * callers that hold no project lock. {@link ProjectManager} starts each
+     * generation with its own lease's lock check
+     * ({@link #startGeneration(Path, WriteGuard)}).</p>
      *
      * @param projectDirectory the directory where checkpoints will be stored
      * @return completes when seeding finished (exceptionally when the
@@ -349,77 +406,124 @@ public final class CheckpointManager {
      *         first)
      */
     public CompletableFuture<Void> start(Path projectDirectory) {
-        return startGeneration(projectDirectory).session.seeded;
+        return start(projectDirectory, PASSES);
+    }
+
+    /** {@link #start(Path)} with {@code guard} as the generation's write guard (test seam). */
+    CompletableFuture<Void> start(Path projectDirectory, WriteGuard guard) {
+        return startGeneration(projectDirectory, guard).session.seeded;
     }
 
     /**
      * {@link #start}, returning the generation it began, so that checkpoints
      * can be requested against that generation alone
-     * ({@link #writeCheckpoint(Generation, String, long, CheckpointOrigin)}).
+     * ({@link #writeCheckpoint(Generation, String, long, CheckpointOrigin)}),
+     * and checking {@code guard} before each checkpoint write, each
+     * compaction of the ordering fact and each stray-temp delete of that
+     * generation — a prune's deletes run inside a write that passed it and do
+     * not check it again (story 333: {@link ProjectManager} passes the lock
+     * check of the lease the open or the create took). This call does no disk I/O: the
+     * generation's seeding, its first job, reads the folder's
+     * {@linkplain FolderFingerprint fingerprint} on a writer of its own and
+     * then joins the writer of that folder (see the class note).
      *
      * @param projectDirectory the directory where checkpoints will be stored
+     * @param guard            what each checkpoint write, compaction and stray-temp delete of the generation
+     *                         checks first (a prune's deletes run inside a write that passed it)
      * @return the generation this call began
      */
-    Generation startGeneration(Path projectDirectory) {
+    Generation startGeneration(Path projectDirectory, WriteGuard guard) {
         Objects.requireNonNull(projectDirectory, "projectDirectory must not be null");
-        synchronized (lifecycle) {
+        Objects.requireNonNull(guard, "guard must not be null");
+        lifecycle.lock();
+        try {
             Session previous = session;
             if (previous != null && !previous.ended) {
                 stop();
             }
-            Session started = new Session(generations.incrementAndGet(), projectDirectory, newScheduler());
+            Session started = new Session(generations.incrementAndGet(), projectDirectory, newScheduler(), guard);
+            FolderWriter provisional = new FolderWriter();
             stateLock.lock();
             try {
                 // A caller that observes this generation cannot queue a write ahead of its seeding;
                 // a fast writer cannot report its facts before listeners can observe it running.
+                started.writer = provisional;
+                started.attached = true;
+                provisional.attachedGenerations++;
                 session = started;
                 enqueueLocked(new SeedJob(started));
             } finally {
                 stateLock.unlock();
             }
-            ensureDrain();
+            ensureDrain(provisional);
             return new Generation(started);
+        } finally {
+            lifecycle.unlock();
         }
     }
 
     /**
-     * Stops the checkpoints of the current project, ending its generation
-     * (rulings F9, G5): the next tick is cancelled, a capture not yet taken
-     * is dropped, and no job of this generation starts a write after this
-     * call — jobs still queued write nothing, and their futures complete
-     * exceptionally with an {@link IOException} at once, on a thread of their
-     * own, even while a write ahead of them is held on a stalled volume. It
-     * then waits, at most five seconds in all, until the writer holds no job
-     * of this generation, so the project lock is released after this
-     * folder's writer finished. It never interrupts a write and never waits
-     * on the owner executor. A job that finishes its write while this call
-     * waits prunes as usual and notifies no listener; one still inside its
-     * atomic write when the bound runs out finishes into its own directory
-     * and notifies no listener (ruling G5 (3)): no delete of this generation
-     * is decided after this call returns; one decided just before it, like a
-     * write already under way, may still be issued.
+     * Ends the current generation (rulings F9, G5; story 333): the next tick
+     * is cancelled, a capture not yet taken is dropped, no job of the
+     * generation claims a write or a delete after this call, and the futures
+     * of its queued jobs complete exceptionally with an {@link IOException}
+     * at once, on a thread of their own — never the caller's — even while a
+     * write ahead of them is held on a stalled volume. It returns at once: it
+     * never waits — for a writer, a claim or the owner executor — so the
+     * JavaFX application thread never waits in it, and it never interrupts a
+     * write.
+     *
+     * <p>The returned stage completes when the generation's claimed work —
+     * a write's tail (its index, its atomic write and its prune) or its
+     * seeding's writes and deletes — has ended: at once when none is under
+     * way, otherwise on the writer that ends the last claim. It never
+     * completes exceptionally. {@link ProjectManager} releases the project's
+     * lock only once it has completed, so nothing of this session writes or
+     * deletes in the folder after its lock is released. A claimed write that
+     * finishes after this call prunes as usual and notifies no listener; from
+     * five seconds after this call ({@link #STOP_WAIT}) a claim still held
+     * decides no further delete, which a WARNING then says (ruling G5 (3)).
+     * Attach dependants with an async method: a dependant added before the
+     * stage completes may run on a checkpoint writer.</p>
+     *
+     * <p>Idempotent: with no generation running it returns the last ended
+     * generation's stage, or a completed one before any start.</p>
+     *
+     * @return completes once the ended generation's claimed work has ended
      */
-    public void stop() {
-        synchronized (lifecycle) {
+    public CompletableFuture<Void> stop() {
+        lifecycle.lock();
+        try {
             Session ending = session;
-            if (ending == null || ending.ended) {
-                return;
+            if (ending == null) {
+                return CompletableFuture.completedFuture(null);
             }
-            int held;
+            if (ending.ended) {
+                return ending.claimsEnded.copy();
+            }
+            boolean claimed;
             List<WriterJob> unclaimed;
             stateLock.lock();
             try {
                 ending.ended = true;
-                held = ending.heldJobs;
+                claimed = ending.claims > 0;
                 unclaimed = queuedJobsOf(ending);
+                detachIfDoneLocked(ending);
             } finally {
                 stateLock.unlock();
             }
             ending.scheduler.shutdown();
             completeUnclaimed(ending, unclaimed);
-            if (held > 0) {
-                awaitWriterRelease(ending);
+            if (claimed) {
+                LOG.info(() -> "The checkpoints of " + ending.projectDirectory + " end once the work the checkpoint"
+                        + " writer claimed there has ended");
+                boundTheClaims(ending);
+            } else {
+                ending.claimsEnded.complete(null);
             }
+            return ending.claimsEnded.copy();
+        } finally {
+            lifecycle.unlock();
         }
     }
 
@@ -437,7 +541,8 @@ public final class CheckpointManager {
      */
     public void reconfigure(AutoSaveConfig newConfig) {
         Objects.requireNonNull(newConfig, "newConfig must not be null");
-        synchronized (lifecycle) {
+        lifecycle.lock();
+        try {
             this.config = newConfig;
             Session running = session;
             if (running == null || running.ended) {
@@ -448,6 +553,8 @@ public final class CheckpointManager {
             } else {
                 disarm(running);
             }
+        } finally {
+            lifecycle.unlock();
         }
     }
 
@@ -497,24 +604,16 @@ public final class CheckpointManager {
     }
 
     /**
-     * Installs the check made on the writer just before each checkpoint is
-     * written (see {@link WriteGuard}). The default passes.
-     *
-     * @param guard the write guard
-     */
-    public void setWriteGuard(WriteGuard guard) {
-        this.writeGuard = Objects.requireNonNull(guard, "guard must not be null");
-    }
-
-    /**
      * Writes a checkpoint holding {@code xml} — the document a manual save
-     * just wrote to {@code project.daw}, the user's Create Checkpoint, or a
-     * failed save's safety copy — through the same ordered writer as the
-     * ticks (rulings F2, F3), as a job of the generation running at the
-     * call. Unless {@code origin} is
-     * {@link CheckpointOrigin#USER}, nothing is written when {@code revision}
+     * just wrote to {@code project.daw}, the user's Create Checkpoint, a
+     * failed save's safety copy, or the exit's closing checkpoint — through
+     * the same ordered writer as the ticks (rulings F2, F3), as a job of the
+     * generation running at the call. Unless {@code origin} is
+     * {@link CheckpointOrigin#USER} or {@link CheckpointOrigin#CLOSING},
+     * nothing is written when {@code revision}
      * is already checkpointed: the future then names the file that holds it.
-     * A user checkpoint is always written (ruling G8). Any call invalidates
+     * A user checkpoint (ruling G8) and a closing checkpoint (story 333,
+     * ruling R3) are always written. Any call invalidates
      * the first tick's match with the seeded checkpoint (ruling G3), and the
      * finished job re-arms the cadence a full interval later while autosave
      * is enabled.
@@ -556,7 +655,7 @@ public final class CheckpointManager {
                     "Checkpoints are not running: no project directory is open for checkpoints"));
             return notRunning;
         }
-        return request(current, xml, capture, origin);
+        return request(current, () -> xml, capture, origin);
     }
 
     /**
@@ -566,7 +665,7 @@ public final class CheckpointManager {
      * checkpoint and a failed save's safety copy through it, against the
      * generation its project's open started. While that generation runs, the
      * request is written into its folder, as above. Once it has ended — the
-     * project closed, abandoned or replaced, or its folder opened again — the
+     * project closed or replaced, or its folder opened again — the
      * request writes nothing, no listener hears of it, and its future
      * completes exceptionally with an {@link IOException} at once, on the
      * caller: a job's generation is checked where it is queued, under the
@@ -588,10 +687,31 @@ public final class CheckpointManager {
 
     CompletableFuture<Path> writeCheckpoint(Generation generation, String xml, Capture capture,
                                             CheckpointOrigin origin) {
-        Objects.requireNonNull(generation, "generation must not be null");
         Objects.requireNonNull(xml, "xml must not be null");
+        return writeCheckpoint(generation, () -> xml, capture, origin);
+    }
+
+    /**
+     * {@link #writeCheckpoint(Generation, String, Capture, CheckpointOrigin)}
+     * for a capture not yet rendered (story 333): {@code content} renders the
+     * document on the writer of the generation's folder, never on the caller,
+     * so the model's owner only captures — the exit's closing checkpoint
+     * ({@link CheckpointOrigin#CLOSING}) is requested through it.
+     *
+     * @param generation the generation the checkpoint belongs to
+     * @param content    renders the complete checkpoint document, once, on the writer
+     * @param capture    the revision and journal boundary of the capture {@code content} renders
+     * @param origin     why it is written; never {@link CheckpointOrigin#SCHEDULED}
+     * @return the checkpoint's future, completed as above
+     * @throws IllegalArgumentException if {@code origin} is {@link CheckpointOrigin#SCHEDULED}
+     */
+    CompletableFuture<Path> writeCheckpoint(Generation generation, CheckpointSource.Renderer content,
+                                            Capture capture, CheckpointOrigin origin) {
+        Objects.requireNonNull(generation, "generation must not be null");
+        Objects.requireNonNull(content, "content must not be null");
+        Objects.requireNonNull(capture, "capture must not be null");
         requireARequestOrigin(origin);
-        return request(generation.session, xml, capture, origin);
+        return request(generation.session, content, capture, origin);
     }
 
     private static void requireARequestOrigin(CheckpointOrigin origin) {
@@ -607,7 +727,8 @@ public final class CheckpointManager {
      * dropped, its future completed exceptionally, when {@code bound} has
      * ended ({@link #submit}).
      */
-    private CompletableFuture<Path> request(Session bound, String xml, Capture capture, CheckpointOrigin origin) {
+    private CompletableFuture<Path> request(Session bound, CheckpointSource.Renderer content, Capture capture,
+                                            CheckpointOrigin origin) {
         CompletableFuture<Path> result = new CompletableFuture<>();
         bound.firstTick.set(SeedMatch.NONE);
         if (isAutomatic(origin) && !config.enabled()) {
@@ -615,14 +736,15 @@ public final class CheckpointManager {
             result.completeExceptionally(autosaveDisabled(bound, origin));
             return result;
         }
-        submit(new WriteJob(bound, origin, capture, () -> xml, result));
+        submit(new WriteJob(bound, origin, capture, content, result));
         return result;
     }
 
     /**
      * Adds a listener of the SDK checkpoint events: told just before each
      * checkpoint is written, and once of its success or failure. Listeners
-     * are called on the checkpoint writer thread and must not block.
+     * are called on the checkpoint writer of the checkpoint's folder and must
+     * not block; two folders' writers may call them at once (story 333).
      *
      * @param listener the listener to add
      */
@@ -645,8 +767,10 @@ public final class CheckpointManager {
      * seeding found, every checkpoint written or failed, with its
      * {@link CheckpointOrigin}, and every re-arm of the cadence with its next
      * due time (story 331, rulings G13 #2, #9, K1). It is called once per
-     * fact, on the checkpoint writer thread (seeding and outcomes) or the
-     * scheduler thread (re-arms), and must not block; a UI listener marshals
+     * fact, on the checkpoint writer of the fact's folder (seeding and
+     * outcomes) or the scheduler thread (re-arms) — the facts of an ended
+     * generation's folder and of the running one's may arrive at once, on two
+     * writers (story 333) — and must not block; a UI listener marshals
      * onto its own thread. A re-arm is not reported once the scheduler sees
      * the checkpoints stopped or autosave disabled, but its delivery can
      * still trail a {@link #reconfigure} or {@link #stop()} made on another
@@ -914,59 +1038,64 @@ public final class CheckpointManager {
 
     // ── The writer ──────────────────────────────────────────────────────────
 
-    /** Queues {@code job} for the writer, or drops it when its generation has ended. */
+    /** Queues {@code job} on its generation's folder writer, or drops it when its generation has ended. */
     private void submit(WriterJob job) {
         Session owner = job.session();
         boolean accepted;
+        FolderWriter writer = null;
         stateLock.lock();
         try {
             accepted = !owner.ended;
             if (accepted) {
                 enqueueLocked(job);
+                writer = owner.writer;
             }
         } finally {
             stateLock.unlock();
         }
         if (accepted) {
-            ensureDrain();
+            ensureDrain(writer);
         } else {
             drop(job, stoppedBefore(owner));
         }
     }
 
-    /** Registers a held job in submission order. Caller holds {@link #stateLock}. */
+    /**
+     * Registers a held job in submission order, on the writer its generation
+     * is attached to now. Caller holds {@link #stateLock}.
+     */
     private void enqueueLocked(WriterJob job) {
         job.session().heldJobs++;
         heldJobsOfEveryGeneration++;
-        queue.add(job);
+        job.session().writer.queue.add(job);
     }
 
-    /** Starts the writer's virtual thread unless one is draining the queue. */
-    private void ensureDrain() {
-        if (!draining.compareAndSet(false, true)) {
+    /** Starts {@code writer}'s virtual thread unless one is draining its queue. */
+    private void ensureDrain(FolderWriter writer) {
+        if (!writer.draining.compareAndSet(false, true)) {
             return;
         }
         try {
-            writerExecutor.execute(() -> ScopedValue.where(WRITING, this).run(this::drain));
+            writerExecutor.execute(() -> drain(writer));
         } catch (Throwable notStarted) {
-            draining.set(false);
+            writer.draining.set(false);
             LOG.log(Level.SEVERE, notStarted, () -> "The checkpoint writer could not start; its queued jobs fail");
             WriterJob job;
-            while ((job = queue.poll()) != null) {
+            while ((job = writer.queue.poll()) != null) {
                 drop(job, notStarted);
                 released(job.session());
             }
         }
     }
 
-    private void drain() {
+    private void drain(FolderWriter writer) {
         while (true) {
             WriterJob job;
-            while ((job = queue.poll()) != null) {
+            while ((job = writer.queue.poll()) != null) {
                 runJob(job);
             }
-            draining.set(false);
-            if (queue.isEmpty() || !draining.compareAndSet(false, true)) {
+            writer.draining.set(false);
+            if (writer.queue.isEmpty() || !writer.draining.compareAndSet(false, true)) {
                 return;
             }
         }
@@ -979,7 +1108,7 @@ public final class CheckpointManager {
                 return;
             }
             switch (job) {
-                case SeedJob seed -> seed(seed.session());
+                case SeedJob seed -> seed(seed);
                 case WriteJob write -> write(write);
                 case SeedSkipJob skip -> skipIfTheSeedStillMatches(skip);
                 case CaptureFailure failure -> reportCaptureFailure(failure);
@@ -1016,24 +1145,59 @@ public final class CheckpointManager {
     }
 
     private void released(Session owner) {
+        List<CompletableFuture<Void>> idle = List.of();
         stateLock.lock();
         try {
             owner.heldJobs--;
             heldJobsOfEveryGeneration--;
+            detachIfDoneLocked(owner);
             writerReleased.signalAll();
+            if (owner.heldJobs == 0 && !owner.idleWaiters.isEmpty()) {
+                idle = new ArrayList<>(owner.idleWaiters);
+                owner.idleWaiters.clear();
+            }
+            if (heldJobsOfEveryGeneration == 0 && !noJobWaiters.isEmpty()) {
+                List<CompletableFuture<Void>> everyWriterIdle = new ArrayList<>(idle);
+                everyWriterIdle.addAll(noJobWaiters);
+                noJobWaiters.clear();
+                idle = everyWriterIdle;
+            }
         } finally {
             stateLock.unlock();
+        }
+        for (CompletableFuture<Void> waiter : idle) {
+            waiter.complete(null);
+        }
+    }
+
+    /**
+     * Detaches {@code owner} from its folder writer once it has ended and its
+     * writer holds none of its jobs, and unregisters that writer once no
+     * generation is attached to it any more — it then holds no job at all,
+     * for every job it holds belongs to a generation attached to it, so no
+     * job is stranded and a later generation of that folder starts a writer
+     * of its own. Caller holds {@link #stateLock}.
+     */
+    private void detachIfDoneLocked(Session owner) {
+        if (!owner.ended || owner.heldJobs > 0 || !owner.attached) {
+            return;
+        }
+        owner.attached = false;
+        FolderWriter writer = owner.writer;
+        writer.attachedGenerations--;
+        if (writer.attachedGenerations == 0) {
+            writers.remove(writer);
         }
     }
 
     /**
      * The jobs of {@code ended} still queued; under {@link #stateLock}, just
-     * after it ended. None of them can start a write: a job the writer takes
-     * now is dropped, and a claim checks the end under the same lock.
+     * after it ended. None of them can claim: a job a writer takes now is
+     * dropped, and a claim checks the end under the same lock.
      */
-    private List<WriterJob> queuedJobsOf(Session ended) {
+    private static List<WriterJob> queuedJobsOf(Session ended) {
         List<WriterJob> queued = new ArrayList<>();
-        for (WriterJob job : queue) {
+        for (WriterJob job : ended.writer.queue) {
             if (job.session() == ended) {
                 queued.add(job);
             }
@@ -1055,7 +1219,7 @@ public final class CheckpointManager {
             return;
         }
         try {
-            Thread.ofVirtual().name("daw-checkpoint-stop").start(() -> {
+            STOP_THREADS.execute(() -> {
                 for (WriterJob job : unclaimed) {
                     switch (job) {
                         case SeedJob seed -> {
@@ -1082,62 +1246,92 @@ public final class CheckpointManager {
         return notWritten;
     }
 
-    private void awaitWriterRelease(Session ending) {
-        if (WRITING.isBound() && WRITING.get() == this) {
-            LOG.warning(() -> "Checkpoints of " + ending.projectDirectory + " were stopped from the checkpoint"
-                    + " writer's own thread; its remaining jobs are dropped without waiting");
-            forbidPruning(ending);
-            return;
-        }
-        LOG.info(() -> "Waiting up to " + stopWait.toMillis() + " ms for the checkpoint writer to finish with "
-                + ending.projectDirectory);
-        long deadline = System.nanoTime() + stopWait.toNanos();
-        boolean interrupted = false;
-        stateLock.lock();
+    /**
+     * Arms {@link #stop()}'s bound for {@code ending}, whose claimed work was
+     * still under way when it ended: {@link #stopWait} later, on a thread of
+     * its own, a claim still held decides no further delete.
+     */
+    private void boundTheClaims(Session ending) {
         try {
-            while (ending.heldJobs > 0) {
-                long remaining = deadline - System.nanoTime();
-                if (remaining <= 0L) {
-                    // Decided here, under the lock each prune asks before each delete (ruling G5 (3)).
-                    ending.mayPrune = false;
-                    Path writing = ending.publishing;
-                    LOG.warning(() -> "The checkpoint writer did not finish with " + ending.projectDirectory
-                            + " within " + stopWait.toMillis() + " ms"
-                            + (writing == null ? "" : "; " + writing + " may still be published there")
-                            + "; it notifies no listener and prunes nothing more");
-                    return;
-                }
-                try {
-                    writerReleased.awaitNanos(remaining);
-                } catch (InterruptedException interruptedWhileWaiting) {
-                    interrupted = true;
-                }
-            }
-        } finally {
-            stateLock.unlock();
-            if (interrupted) {
-                Thread.currentThread().interrupt();
-            }
-        }
-    }
-
-    /** {@link #stop()} returns while {@code ending}'s jobs are still held: from here on they delete nothing. */
-    private void forbidPruning(Session ending) {
-        stateLock.lock();
-        try {
-            ending.mayPrune = false;
-        } finally {
-            stateLock.unlock();
+            CompletableFuture.delayedExecutor(nanosOf(stopWait), TimeUnit.NANOSECONDS, STOP_THREADS)
+                    .execute(() -> claimsOutlivedTheBound(ending));
+        } catch (Throwable notArmed) {
+            LOG.log(Level.WARNING, notArmed, () -> "The bound of the claimed checkpoint work in "
+                    + ending.projectDirectory + " could not be armed; it prunes nothing more");
+            claimsOutlivedTheBound(ending);
         }
     }
 
     /**
-     * Whether a job of {@code pruning} may delete a checkpoint now: until
-     * {@link #stop()} returns with the generation's jobs still held (ruling
-     * G5 (3)). Asked under {@link #stateLock} before each delete, where
-     * {@code stop()} decides it, so no delete is decided after {@code stop()}
-     * returns; one decided just before it, like a write already under way,
-     * may still be issued.
+     * {@link #stop()}'s bound passed: if {@code ending} still holds a claim,
+     * no further delete of it is decided — under the lock each delete asks
+     * first (ruling G5 (3)) — and a WARNING says so. The claim itself is never
+     * cut short: the lock stays held until it ends.
+     */
+    private void claimsOutlivedTheBound(Session ending) {
+        boolean stillClaimed;
+        Path writing;
+        stateLock.lock();
+        try {
+            stillClaimed = ending.claims > 0;
+            if (stillClaimed) {
+                ending.mayPrune = false;
+            }
+            writing = ending.publishing;
+        } finally {
+            stateLock.unlock();
+        }
+        if (stillClaimed) {
+            LOG.warning(() -> "The checkpoint writer did not finish with " + ending.projectDirectory
+                    + " within " + stopWait.toMillis() + " ms"
+                    + (writing == null ? "" : "; " + writing + " may still be published there")
+                    + "; it notifies no listener and prunes nothing more");
+        }
+    }
+
+    /**
+     * Claims work of {@code owner} in its folder — a write's tail or its
+     * seeding's writes and deletes (story 333) — unless it has ended: the
+     * only way a job may write or delete there. Under {@link #stateLock},
+     * where {@link #stop()} ends it.
+     *
+     * @return whether the claim was taken; {@code false} once the generation ended
+     */
+    private boolean claim(Session owner) {
+        stateLock.lock();
+        try {
+            if (owner.ended) {
+                return false;
+            }
+            owner.claims++;
+            return true;
+        } finally {
+            stateLock.unlock();
+        }
+    }
+
+    /** Ends a claim of {@code owner}; the last claim of an ended generation completes {@link #stop()}'s stage. */
+    private void releaseClaim(Session owner) {
+        boolean lastOfAnEndedGeneration;
+        stateLock.lock();
+        try {
+            owner.claims--;
+            lastOfAnEndedGeneration = owner.ended && owner.claims == 0;
+        } finally {
+            stateLock.unlock();
+        }
+        if (lastOfAnEndedGeneration) {
+            owner.claimsEnded.complete(null);
+        }
+    }
+
+    /**
+     * Whether a job of {@code pruning} may delete a checkpoint now: always
+     * within its claim, until {@link #stop()}'s bound passed with the claim
+     * still held (ruling G5 (3)). Asked under {@link #stateLock} before each
+     * delete, where the bound decides it, so no delete is decided after the
+     * bound; one decided just before it is still issued within the claim, and
+     * the project's lock is released only after the claim has ended.
      */
     private boolean mayStillPrune(Session pruning) {
         stateLock.lock();
@@ -1177,11 +1371,12 @@ public final class CheckpointManager {
     }
 
     /**
-     * Whether the writer holds a job of any generation, queued or running
-     * (story 331, ruling M1): what {@link ProjectManager#awaitWritesBeforeExit()}
-     * asks as the application exits.
+     * Whether the writers hold a job of any generation, of any folder, queued
+     * or running (story 331, ruling M1): what
+     * {@link ProjectManager#awaitWritesBeforeExit()} asks as the application
+     * exits.
      *
-     * @return {@code true} while it holds one
+     * @return {@code true} while they hold one
      */
     boolean holdsAJob() {
         stateLock.lock();
@@ -1193,15 +1388,16 @@ public final class CheckpointManager {
     }
 
     /**
-     * Waits until the writer holds no job of any generation — every job of
-     * any origin handed to it, queued or running, has returned — or until
+     * Waits until the writers hold no job of any generation, of any folder —
+     * every job of any origin handed to them, queued or running, has
+     * returned — or until
      * {@code deadline}, a {@link System#nanoTime()} value (story 331, ruling
      * M1: the second half of the wait at exit). It queues, cancels,
      * completes and interrupts nothing; a job handed over while it waits is
      * waited for too, within the same deadline.
      *
      * @param deadline when to stop waiting, as {@link System#nanoTime()} reads it
-     * @return whether the writer held no job before the deadline
+     * @return whether the writers held no job before the deadline
      * @throws InterruptedException if the waiting thread is interrupted
      */
     boolean awaitNoJobUntil(long deadline) throws InterruptedException {
@@ -1220,6 +1416,72 @@ public final class CheckpointManager {
         }
     }
 
+    /**
+     * Completes once the writers hold no job of any generation, of any
+     * folder, queued or running — {@link #awaitNoJobUntil(long)}'s condition,
+     * without a thread waiting for it (story 333: ruling M1's second half for
+     * the exit protocol). It is completed at once when they hold none, and
+     * otherwise on the writer that returns the last job; attach dependants
+     * with an async method. A job handed over before it completes is waited
+     * for too. It never completes exceptionally, and it cancels nothing.
+     *
+     * @return completes when no checkpoint job of any generation is held
+     */
+    public CompletableFuture<Void> whenNoJobIsHeld() {
+        stateLock.lock();
+        try {
+            if (heldJobsOfEveryGeneration == 0) {
+                return CompletableFuture.completedFuture(null);
+            }
+            CompletableFuture<Void> idle = new CompletableFuture<>();
+            noJobWaiters.add(idle);
+            return idle;
+        } finally {
+            stateLock.unlock();
+        }
+    }
+
+    /**
+     * Completes once {@code generation} holds no job, queued or running —
+     * its seeding, its writes and its skips (story 333: the exit's closing
+     * checkpoint is captured only once the open generation is idle). It is
+     * completed at once when the generation holds none, and otherwise on the
+     * writer that returns its last job; attach dependants with an async
+     * method. It never completes exceptionally, and it cancels nothing.
+     *
+     * @param generation the generation to wait for
+     * @return completes when {@code generation} holds no job
+     */
+    CompletableFuture<Void> whenGenerationIdle(Generation generation) {
+        Session waited = Objects.requireNonNull(generation, "generation must not be null").session;
+        stateLock.lock();
+        try {
+            if (waited.heldJobs == 0) {
+                return CompletableFuture.completedFuture(null);
+            }
+            CompletableFuture<Void> idle = new CompletableFuture<>();
+            waited.idleWaiters.add(idle);
+            return idle;
+        } finally {
+            stateLock.unlock();
+        }
+    }
+
+    /**
+     * Whether {@code revision} is the revision {@code generation} last
+     * checkpointed — written, or matched by its first tick against the
+     * seeded checkpoint (ruling G3) — as its writer recorded it (story 333:
+     * the exit's closing-checkpoint trigger (ii)). No disk access.
+     *
+     * @param generation the generation asked
+     * @param revision   an edit revision
+     * @return whether that revision is the generation's last checkpointed one
+     */
+    boolean isCheckpointed(Generation generation, long revision) {
+        Checkpointed done = Objects.requireNonNull(generation, "generation must not be null").session.checkpointed;
+        return done != null && done.revision() == revision;
+    }
+
     // ── Writer jobs ─────────────────────────────────────────────────────────
 
     /**
@@ -1228,8 +1490,25 @@ public final class CheckpointManager {
      * ({@link CheckpointEvent.Seeded}, ruling K1: the newest seeded checkpoint,
      * or none when the folder held none or could not be read) before the
      * seeded future completes and before any write of the generation.
+     *
+     * <p>Its first step, on the writer the generation started with, reads
+     * the folder's {@linkplain FolderFingerprint fingerprint} — on that
+     * folder's own path only — and joins the writer of that folder when one
+     * still runs jobs there (story 333): the seeding is then queued there,
+     * behind those jobs and ahead of every other job of its generation, and
+     * runs there. Its compaction of the ordering fact and its deletes of
+     * stray temps are one claim, taken only while the generation runs and
+     * ended before it reports.</p>
      */
-    private void seed(Session seeding) {
+    private void seed(SeedJob job) {
+        Session seeding = job.session();
+        if (!seeding.fingerprinted) {
+            seeding.fingerprinted = true;
+            if (joinedTheWriterOfItsFolder(job, fingerprintOf(seeding.projectDirectory))) {
+                return;
+            }
+        }
+        boolean claimed = false;
         try {
             List<Path> strayTemps = new ArrayList<>();
             try {
@@ -1259,24 +1538,117 @@ public final class CheckpointManager {
             seeding.index.keySet().forEach(name -> present.add(name.fileName()));
             seeding.certified.stream().filter(name -> !present.contains(name))
                     .forEach(seeding.deletedCertifications::add);
-            compactCertifications(seeding);
+            // The seeding's writes and deletes are one claim, taken only while the generation runs and only when
+            // there is one to make: an ordering fact naming a checkpoint no longer there, or a stray temp.
+            claimed = (!seeding.deletedCertifications.isEmpty() || !strayTemps.isEmpty()) && claim(seeding);
+            if (claimed) {
+                compactCertifications(seeding);
+            }
             seeding.publishView();
             seeding.firstTick.compareAndSet(SeedMatch.UNSEEDED, seedMatchOf(seeding));
-            deleteStrayTemps(seeding, strayTemps);
+            if (claimed) {
+                deleteStrayTemps(seeding, strayTemps);
+                claimed = false;
+                releaseClaim(seeding);
+            }
             Optional<Path> newest = seeding.index.isEmpty()
                     ? Optional.empty()
                     : Optional.of(seeding.index.lastEntry().getValue());
             fire(seeding, new CheckpointEvent.Seeded(seeding.generation, newest));
             seeding.seeded.complete(null);
         } catch (Throwable unreadable) {
+            if (claimed) {
+                claimed = false;
+                releaseClaim(seeding);
+            }
             LOG.log(Level.WARNING, unreadable, () -> "Could not read the checkpoints of " + seeding.projectDirectory
                     + "; checkpoints are written from index " + (seeding.highestIndex + 1));
             seeding.firstTick.compareAndSet(SeedMatch.UNSEEDED, SeedMatch.NONE);
             fire(seeding, new CheckpointEvent.Seeded(seeding.generation, Optional.empty()));
             seeding.seeded.completeExceptionally(unreadable);
         } finally {
+            if (claimed) {
+                releaseClaim(seeding);
+            }
             seeding.seededNames = Set.copyOf(seeding.index.keySet());
             rearm(seeding, CheckpointEvent.RearmReason.STARTED);
+        }
+    }
+
+    /**
+     * The seeding's first step (story 333): with {@code fingerprint} read on
+     * its folder's own path, either joins the registered writer of the same
+     * folder — under {@link #stateLock}, the seeding queued there first, then
+     * every other job of its generation in order, so its jobs stay behind its
+     * seeding and the folder's earlier jobs, and the hold this run has on the
+     * seeding is released by its caller as usual — and returns {@code true};
+     * or registers the generation's own writer as that folder's and returns
+     * {@code false}, and the seeding goes on here. A generation that has
+     * already ended joins nothing: its jobs claim nothing.
+     */
+    private boolean joinedTheWriterOfItsFolder(SeedJob job, FolderFingerprint fingerprint) {
+        Session seeding = job.session();
+        FolderWriter existing = null;
+        stateLock.lock();
+        try {
+            FolderWriter own = seeding.writer;
+            if (seeding.ended) {
+                return false;
+            }
+            for (FolderWriter writer : writers) {
+                if (writer != own && writer.fingerprint.sameFolder(fingerprint)) {
+                    existing = writer;
+                    break;
+                }
+            }
+            if (existing == null) {
+                own.fingerprint = fingerprint;
+                writers.add(own);
+                return false;
+            }
+            own.attachedGenerations--;
+            existing.attachedGenerations++;
+            seeding.writer = existing;
+            enqueueLocked(job);
+            WriterJob moved;
+            while ((moved = own.queue.poll()) != null) {
+                existing.queue.add(moved);
+            }
+        } finally {
+            stateLock.unlock();
+        }
+        LOG.fine(() -> "The checkpoints of " + seeding.projectDirectory + " are written behind the jobs still held in"
+                + " that folder");
+        ensureDrain(existing);
+        return true;
+    }
+
+    /**
+     * The fingerprint of {@code projectDirectory}, read on its own path; one
+     * that cannot be read at all — the read threw — is its absolute,
+     * normalised path with no identity, logged at {@code FINE}, so the
+     * seeding still joins or registers a writer and arms its ticks.
+     */
+    private FolderFingerprint fingerprintOf(Path projectDirectory) {
+        try {
+            return folderFingerprints.apply(projectDirectory);
+        } catch (Throwable unreadable) {
+            LOG.log(Level.FINE, unreadable, () -> "The fingerprint of " + projectDirectory + " could not be read;"
+                    + " its checkpoints are told apart by its path alone");
+            return new FolderFingerprint(Optional.empty(), pathAlone(projectDirectory));
+        }
+    }
+
+    /**
+     * {@code projectDirectory}'s absolute, normalised path — or, when even that
+     * cannot be read (an {@link Error} from {@link Path#toAbsolutePath()}, the
+     * very read that failed), its normalised path as given.
+     */
+    private static String pathAlone(Path projectDirectory) {
+        try {
+            return projectDirectory.toAbsolutePath().normalize().toString();
+        } catch (Throwable unreadable) {
+            return projectDirectory.normalize().toString();
         }
     }
 
@@ -1310,7 +1682,7 @@ public final class CheckpointManager {
             return;
         }
         try {
-            writeGuard.check();
+            seeded.guard.check();
         } catch (Throwable notOurs) {
             LOG.log(Level.INFO, notOurs, () -> "Left " + strayTemps.size() + " stray checkpoint temp file(s) in "
                     + seeded.checkpointDirectory + ": this session may not write the project folder");
@@ -1334,16 +1706,24 @@ public final class CheckpointManager {
         LOG.info(() -> "Deleted " + count + " stray checkpoint temp file(s) in " + seeded.checkpointDirectory);
     }
 
-    /** One checkpoint write, in the class note's order ("One write"). */
+    /**
+     * One checkpoint write, in the class note's order ("One write"). The
+     * write claims its folder after its render (story 333) and holds the
+     * claim through its index, its atomic write and its prune; the claim ends
+     * before its future completes, so whoever observes the outcome also
+     * observes the claim ended. A disabled automatic origin and an already
+     * checkpointed revision return before claiming.
+     */
     private void write(WriteJob job) {
         Session target = job.session();
+        boolean claimed = false;
         try {
             if (isAutomatic(job.origin()) && !config.enabled()) {
                 job.result().completeExceptionally(autosaveDisabled(target, job.origin()));
                 return;
             }
             Checkpointed done = target.checkpointed;
-            if (job.origin() != CheckpointOrigin.USER && done != null && done.revision() == job.revision()) {
+            if (!alwaysWritten(job.origin()) && done != null && done.revision() == job.revision()) {
                 job.result().complete(done.file());
                 rearm(target, CheckpointEvent.RearmReason.SKIPPED);
                 return;
@@ -1352,9 +1732,13 @@ public final class CheckpointManager {
             notifyBefore(target, id);
             Published published;
             try {
-                writeGuard.check();
+                target.guard.check();
                 String content = Objects.requireNonNull(job.content().render(),
                         "the checkpoint's renderer returned no content");
+                claimed = claim(target);
+                if (!claimed) {
+                    throw new GenerationEnded(target);
+                }
                 published = publish(target, content);
             } catch (GenerationEnded stopped) {
                 LOG.log(Level.INFO, () -> "Checkpoint " + id + " was not written: " + stopped.getMessage());
@@ -1364,12 +1748,23 @@ public final class CheckpointManager {
                 LOG.log(Level.SEVERE, failure, () -> "Checkpoint " + id + " (" + job.origin() + ") of "
                         + target.projectDirectory + " failed; nothing was written");
                 notifyFailed(target, id, job.origin(), failure);
+                if (claimed) {
+                    claimed = false;
+                    releaseClaim(target);
+                }
                 job.result().completeExceptionally(failure);
                 rearm(target, CheckpointEvent.RearmReason.FAILED);
                 return;
             }
             recordWritten(target, id, job, published);
+            claimed = false;
+            releaseClaim(target);
+            job.result().complete(published.file());
+            rearm(target, CheckpointEvent.RearmReason.WRITTEN);
         } finally {
+            if (claimed) {
+                releaseClaim(target);
+            }
             if (job.origin() == CheckpointOrigin.SCHEDULED) {
                 target.tickInFlight.set(false);
             }
@@ -1377,8 +1772,8 @@ public final class CheckpointManager {
     }
 
     /**
-     * Everything after a checkpoint is on disk: the revision it holds, the
-     * index, the listeners, the prune, the future, the re-arm. Nothing here
+     * Everything after a checkpoint is on disk, within its claim: the
+     * revision it holds, the index, the listeners, the prune. Nothing here
      * turns the written checkpoint into a failure or a drop: an index that
      * cannot take it is logged, and the write still reports its one outcome.
      */
@@ -1400,15 +1795,25 @@ public final class CheckpointManager {
         }
         notifyWritten(target, id, job.origin(), file, job.capture());
         prune(target, file);
-        job.result().complete(file);
-        rearm(target, CheckpointEvent.RearmReason.WRITTEN);
     }
 
     /** The automatic checkpoints, which autosave being disabled turns off (ruling H3). */
     private static boolean isAutomatic(CheckpointOrigin origin) {
         return switch (origin) {
             case SCHEDULED, AFTER_SAVE -> true;
-            case USER, SAFETY_COPY -> false;
+            case USER, SAFETY_COPY, CLOSING -> false;
+        };
+    }
+
+    /**
+     * The checkpoints written even when their revision is already
+     * checkpointed: the user's (ruling G8) and the exit's closing checkpoint
+     * (story 333, ruling R3).
+     */
+    private static boolean alwaysWritten(CheckpointOrigin origin) {
+        return switch (origin) {
+            case USER, CLOSING -> true;
+            case SCHEDULED, AFTER_SAVE, SAFETY_COPY -> false;
         };
     }
 
@@ -1420,19 +1825,17 @@ public final class CheckpointManager {
     }
 
     /**
-     * Claims the write under {@link #stateLock} — the fence {@link #stop()}
-     * ends a generation under — allocates the next index and writes the new
-     * checkpoint through the atomic writer. The name it returns is the one
-     * it allocated, never the published file's name read back.
+     * Within the write's claim — taken under {@link #stateLock}, the fence
+     * {@link #stop()} ends a generation under — allocates the next index and
+     * writes the new checkpoint through the atomic writer. The name it
+     * returns is the one it allocated, never the published file's name read
+     * back.
      */
     private Published publish(Session target, String content) throws IOException {
         long index;
         Published published;
         stateLock.lock();
         try {
-            if (target.ended) {
-                throw new GenerationEnded(target);
-            }
             index = Math.addExact(target.highestIndex, 1L);
             CheckpointFileName name = CheckpointFileName.of(index, clock.instant(), ZoneId.systemDefault());
             published = new Published(name, target.checkpointDirectory.resolve(name.fileName()));
@@ -1481,7 +1884,7 @@ public final class CheckpointManager {
             return;
         }
         try {
-            writeGuard.check();
+            target.guard.check();
             recordCertifications(target, covered);
         } catch (IOException failure) {
             LOG.log(Level.WARNING, "Could not compact checkpoint ordering metadata; the next write retries", failure);
@@ -1506,12 +1909,12 @@ public final class CheckpointManager {
      * ({@link NoSuchFileException}) counts as deleted. A failure outside the
      * delete of one file ends the pass with a warning, retried after the next
      * write; either way the checkpoint just written stays a success (ruling
-     * G13 #1). A job of a generation {@link #stop()} ended prunes while
-     * {@code stop()} still waits for it; once {@code stop()} has returned
-     * with it still held — its bound ran out, or it was called on the writer
-     * — no delete of the job is decided any more (ruling G5 (3)); one
-     * decided just before that moment, like a write already under way, may
-     * still be issued.
+     * G13 #1). The prune runs within the write's claim (story 333): a write
+     * whose generation {@link #stop()} ended while it was claimed prunes as
+     * usual, and the project's lock is released only after the claim ended;
+     * once {@code stop()}'s bound has passed with the claim still held, no
+     * delete of the job is decided any more (ruling G5 (3)), and one decided
+     * just before is still issued within the claim.
      */
     private void prune(Session pruning, Path written) {
         try {
@@ -1829,15 +2232,48 @@ public final class CheckpointManager {
         /** Written under {@link #stateLock}; once {@code true}, never {@code false} again. */
         volatile boolean ended;
 
-        /** Guarded by {@link #stateLock}: the jobs of this generation the writer holds (queued or running). */
+        /** Guarded by {@link #stateLock}: the jobs of this generation the writers hold (queued or running). */
         int heldJobs;
 
         /**
          * Guarded by {@link #stateLock}: whether this generation's jobs may
          * still delete checkpoints. Cleared, never set again, when
-         * {@link #stop()} returns while they are still held (ruling G5 (3)).
+         * {@link #stop()}'s bound passes with a claim still held (ruling G5 (3)).
          */
         boolean mayPrune = true;
+
+        /**
+         * What each checkpoint write, each compaction of the ordering fact and each stray-temp delete of this
+         * generation checks first: its own lease's lock check (story 333). A prune's deletes run inside a write
+         * that passed it and do not check it again.
+         */
+        final WriteGuard guard;
+
+        /**
+         * Guarded by {@link #stateLock}: the writer of this generation's
+         * folder — the one it started with, until its seeding joins the
+         * writer already running jobs in that folder (story 333).
+         */
+        FolderWriter writer;
+
+        /** Guarded by {@link #stateLock}: whether this generation still counts among its writer's. */
+        boolean attached;
+
+        /** Writer-confined: whether the seeding has read the folder's fingerprint and found its writer. */
+        boolean fingerprinted;
+
+        /** Guarded by {@link #stateLock}: the claims of this generation's jobs not yet ended (story 333). */
+        int claims;
+
+        /** Completed once the generation ended and its last claim ended: {@link #stop()}'s stage. */
+        final CompletableFuture<Void> claimsEnded = new CompletableFuture<>();
+
+        /**
+         * Guarded by {@link #stateLock}: the {@link #whenGenerationIdle}
+         * stages still waiting, completed — outside the lock — when
+         * {@link #heldJobs} drops to zero (story 333).
+         */
+        final List<CompletableFuture<Void>> idleWaiters = new ArrayList<>();
 
         /** The checkpoint being published, for {@link #stop()}'s warning. */
         volatile Path publishing;
@@ -1845,11 +2281,12 @@ public final class CheckpointManager {
         /** Scheduler-confined: the armed next tick. */
         ScheduledFuture<?> nextTick;
 
-        Session(long generation, Path projectDirectory, ScheduledThreadPoolExecutor scheduler) {
+        Session(long generation, Path projectDirectory, ScheduledThreadPoolExecutor scheduler, WriteGuard guard) {
             this.generation = generation;
             this.projectDirectory = projectDirectory;
             this.checkpointDirectory = projectDirectory.resolve(CHECKPOINT_DIR_NAME);
             this.scheduler = scheduler;
+            this.guard = guard;
         }
 
         /** Publishes the index for the getters; writer thread only. */
@@ -1863,7 +2300,24 @@ public final class CheckpointManager {
         }
     }
 
-    /** A job of the writer, run in submission order on its thread. */
+    /**
+     * The one serial writer of a project folder (story 333): its jobs, run in
+     * submission order on one virtual thread at a time, started on demand.
+     * Generations whose folders are one share it.
+     */
+    private static final class FolderWriter {
+
+        final ConcurrentLinkedQueue<WriterJob> queue = new ConcurrentLinkedQueue<>();
+        final AtomicBoolean draining = new AtomicBoolean();
+
+        /** Guarded by {@link #stateLock}: the folder's fingerprint once registered; {@code null} before. */
+        FolderFingerprint fingerprint;
+
+        /** Guarded by {@link #stateLock}: the generations attached to this writer. */
+        int attachedGenerations;
+    }
+
+    /** A job of a folder writer, run in submission order on its thread. */
     private sealed interface WriterJob permits SeedJob, WriteJob, SeedSkipJob, CaptureFailure {
 
         /** The generation the job belongs to. */

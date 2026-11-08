@@ -93,7 +93,8 @@ class AudioImportControllerTest {
                 () -> { },
                 () -> { },
                 (message, icon) -> { },
-                (level, message) -> { }));
+                (level, message) -> { },
+                () -> true));
     }
 
     private Path createTestWav(String fileName) throws IOException {

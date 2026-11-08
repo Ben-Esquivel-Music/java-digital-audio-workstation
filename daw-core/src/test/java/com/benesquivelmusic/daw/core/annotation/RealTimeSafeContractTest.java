@@ -625,6 +625,38 @@ class RealTimeSafeContractTest {
         }
     }
 
+    /**
+     * PR #989 review 5711460812 (the studio engineer's ruling 9 R9-10 (i)):
+     * the store's UI-write gates are FX-confined, so no audio-side path reads
+     * them — not the store's drain or its audio-side write, nor the slot's
+     * drain that calls it. Neither a gate's {@code BooleanSupplier}, a method
+     * of the gate record nor the store's gate methods or its UI write is
+     * invoked by those roots or by the methods of their own class they call
+     * (a lambda body and another class's method are not walked;
+     * dawg-annotations-reflection §4, "Adding a new {@code @RealTimeSafe}
+     * method").
+     */
+    @Test
+    void pluginParameterStoreAudioSideNeverReadsTheUiWriteGates() throws Exception {
+        Class<?> store = com.benesquivelmusic.daw.sdk.editor.PluginParameterStore.class;
+        String storeInternalName = store.getName().replace('.', '/');
+        String gateInternalName = storeInternalName + "$UiWriteGate";
+        Set<String> gateMembers = Set.of("uiWritesAdmitted", "addUiWriteGate", "writeFromUi", "writeFromUiById");
+        List<RtCallbackBridge> roots = List.of(
+                RtCallbackBridge.annotated(store.getName(), "drainToAudio",
+                        List.of(com.benesquivelmusic.daw.sdk.editor.PluginParameterStore.IndexConsumer.class)),
+                RtCallbackBridge.annotated(store.getName(), "writeFromAudio", List.of(int.class, double.class)),
+                RtCallbackBridge.annotated("com.benesquivelmusic.daw.core.mixer.InsertSlot",
+                        "drainParametersToAudio", List.of()));
+        for (RtCallbackBridge root : roots) {
+            assertNoBridgeMethodInvokes(root,
+                    (owner, name) -> owner.equals("java/util/function/BooleanSupplier")
+                            || owner.equals(gateInternalName)
+                            || (owner.equals(storeInternalName) && gateMembers.contains(name)),
+                    "must not read the store's FX-confined UI-write gates on the audio thread");
+        }
+    }
+
     @Test
     void matchEqHandoffAndSignalNoiseMustNotUseAtomicReadModifyWrite() throws Exception {
         String pluginPackage = "com.benesquivelmusic.daw.core.plugin.";

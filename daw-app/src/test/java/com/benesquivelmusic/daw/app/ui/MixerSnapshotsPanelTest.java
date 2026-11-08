@@ -91,7 +91,7 @@ class MixerSnapshotsPanelTest {
 
         // Capture state with vol=0.4
         runFx(() -> ch.setVolume(0.4));
-        MixerSnapshot snap = runFx(() -> view.getSnapshotsPanel().saveSnapshot("Quiet"));
+        MixerSnapshot snap = runFx(() -> view.getSnapshotsPanel().saveSnapshot("Quiet").orElseThrow());
         // Mutate
         runFx(() -> ch.setVolume(0.9));
         // Recall

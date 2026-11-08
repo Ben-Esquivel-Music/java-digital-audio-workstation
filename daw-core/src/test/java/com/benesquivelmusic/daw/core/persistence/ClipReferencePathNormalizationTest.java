@@ -43,7 +43,7 @@ class ClipReferencePathNormalizationTest {
         DawProject project = new DawProject("Legacy Paths", FORMAT);
         float[][] beforeSave = new AudioFileImporter(project).importFile(inside, 0.0).clip().getAudioData();
         saved(manager, project);
-        manager.abandonProject();
+        manager.closeProject().join();
         // An old build wrote the absolute path verbatim: reproduce that file.
         Path projectFile = projectDir.resolve("project.daw");
         String relative = "source-file=\"audio/imports/tone.wav\"";
@@ -68,7 +68,7 @@ class ClipReferencePathNormalizationTest {
                 .contains(relative)
                 .doesNotContain(inside.toString())
                 .doesNotContain(projectDir.toString());
-        reopened.abandonProject();
+        reopened.closeProject().join();
     }
 
     @Test
@@ -80,7 +80,7 @@ class ClipReferencePathNormalizationTest {
         DawProject project = new DawProject("Library Paths", FORMAT);
         float[][] beforeSave = new AudioFileImporter(project).importFile(outside, 0.0).clip().getAudioData();
         saved(manager, project);
-        manager.abandonProject();
+        manager.closeProject().join();
         Path projectFile = projectDir.resolve("project.daw");
         String absolute = "source-file=\"" + outside + "\"";
         assertThat(Files.readString(projectFile)).contains(absolute);
@@ -95,7 +95,7 @@ class ClipReferencePathNormalizationTest {
 
         saved(reopened, reopened.getCurrentDawProject());
         assertThat(Files.readString(projectFile)).contains(absolute);
-        reopened.abandonProject();
+        reopened.closeProject().join();
     }
 
     private static void rehydrate(DawProject loaded, ProjectManager manager) throws InterruptedException {

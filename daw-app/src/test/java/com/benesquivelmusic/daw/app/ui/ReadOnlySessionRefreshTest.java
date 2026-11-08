@@ -31,13 +31,15 @@ class ReadOnlySessionRefreshTest {
         ProjectManager manager = new ProjectManager(new CheckpointManager(AutoSaveConfig.DEFAULT.withEnabled(false)));
         Path folder = createHead("Stalled");
         manager.openProject(folder);
+        // The lease the publication captured: the close retires it (story 333), and it stays held until its release.
+        ProjectLockManager captured = manager.getLockManager();
         SessionManager sessions = spy(new SessionManager());
         java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1);
         java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
         doAnswer(invocation -> {
             entered.countDown();
             assertThat(release.await(15, TimeUnit.SECONDS)).isTrue();
-            manager.getLockManager().verifyHeld();
+            captured.verifyHeld();
             return invocation.callRealMethod();
         }).when(sessions).openSession(any(Path.class), any(Instant.class));
         LinkedBlockingQueue<Runnable> queued = new LinkedBlockingQueue<>();
@@ -48,7 +50,7 @@ class ReadOnlySessionRefreshTest {
             refresh(main);
             assertThat(entered.await(15, TimeUnit.SECONDS)).isTrue();
             Thread.ofVirtual().start(() -> {
-                try { manager.abandonProject(); retired.complete(null); }
+                try { manager.closeProject().join(); retired.complete(null); }
                 catch (Throwable failure) { retired.completeExceptionally(failure); }
             });
             assertThatThrownBy(() -> retired.get(150, TimeUnit.MILLISECONDS))
@@ -71,7 +73,7 @@ class ReadOnlySessionRefreshTest {
             assertThat(field(main, "activeSession")).isNull();
         } finally {
             release.countDown();
-            manager.abandonProject();
+            manager.closeProject().join();
             foreign.close();
         }
     }
@@ -97,7 +99,7 @@ class ReadOnlySessionRefreshTest {
             assertThat(sessions.history(folder)).hasSize(1).allMatch(session -> session.isActive());
             assertThat(field(main, "activeSession")).isNull();
             assertThat(field(main, "activeSessionProjectDir")).isNull();
-        } finally { manager.abandonProject(); foreign.release(); }
+        } finally { manager.closeProject().join(); foreign.release(); }
     }
 
     @Test void anEarlierWritableRefreshCannotReattachItsSessionAfterAReadOnlyOpen() throws Exception {
@@ -108,7 +110,7 @@ class ReadOnlySessionRefreshTest {
         refresh(main);
         Runnable stale = queued.poll(15, TimeUnit.SECONDS);
         assertThat(stale).isNotNull();
-        manager.abandonProject();
+        manager.closeProject().join();
         Path readOnly = createHead("Read only");
         SessionManager sessions = new SessionManager();
         sessions.openSession(readOnly, Instant.now().minusSeconds(6 * 3600));
@@ -130,7 +132,7 @@ class ReadOnlySessionRefreshTest {
             SessionManagerDock dock = (SessionManagerDock) field(main, "sessionManagerDock");
             assertThat(onFx(() -> dock.getSessions().stream().map(session -> session.id()).toList()))
                     .containsExactly(sessions.history(readOnly).getFirst().id());
-        } finally { manager.abandonProject(); foreign.release(); }
+        } finally { manager.closeProject().join(); foreign.release(); }
     }
 
     private MainController main(ProjectManager manager, LinkedBlockingQueue<Runnable> queued) throws Exception {

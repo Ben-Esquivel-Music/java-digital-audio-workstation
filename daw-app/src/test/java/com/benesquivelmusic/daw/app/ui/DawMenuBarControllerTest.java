@@ -69,14 +69,15 @@ class DawMenuBarControllerTest {
                 () -> host.clipboard,
                 () -> host.selection,
                 () -> !host.project.getTracks().isEmpty(),
-                () -> host.unresolvedAssets);
+                () -> host.unresolvedAssets,
+                () -> host.closeProjectAvailable);
     }
 
     /**
      * Minimal stub host that records invocations and provides configurable
      * state for menu sync tests.
      */
-    private static final class StubHost implements DawMenuBarController.MenuActions {
+    static final class StubHost implements DawMenuBarController.MenuActions {
         private final DawProject project =
                 new DawProject("Test", AudioFormat.STUDIO_QUALITY);
         boolean dirty;
@@ -85,10 +86,12 @@ class DawMenuBarControllerTest {
         boolean clipboard;
         boolean selection;
         boolean unresolvedAssets;
+        boolean closeProjectAvailable;
 
         int newProjectCalls;
         int openProjectCalls;
         int saveProjectCalls;
+        int saveProjectAsCalls;
         int recentProjectsCalls;
         int importSessionCalls;
         int exportSessionCalls;
@@ -115,6 +118,15 @@ class DawMenuBarControllerTest {
         @Override public void onNewProject() { newProjectCalls++; }
         @Override public void onOpenProject() { openProjectCalls++; }
         @Override public void onSaveProject() { saveProjectCalls++; }
+        @Override public void onSaveProjectAs() { saveProjectAsCalls++; }
+        int closeProjectCalls;
+        int exitCalls;
+        /** What Close Project does besides counting: a test delegates it as MainController does (story 333). */
+        Runnable closeProjectAction = () -> { };
+        /** What Exit does besides counting: a test delegates it as MainController does (story 333). */
+        Runnable exitAction = () -> { };
+        @Override public void onCloseProject() { closeProjectCalls++; closeProjectAction.run(); }
+        @Override public void onExit() { exitCalls++; exitAction.run(); }
         @Override public void onRecentProjects() { recentProjectsCalls++; }
         @Override public void onImportSession() { importSessionCalls++; }
         @Override public void onExportSession() { exportSessionCalls++; }
@@ -173,7 +185,7 @@ class DawMenuBarControllerTest {
     void shouldRejectNullHost() {
         BooleanSupplier off = () -> false;
         assertThatThrownBy(() -> new DawMenuBarController(
-                null, freshKeyBindingManager(), off, off, off, off, off, off, off))
+                null, freshKeyBindingManager(), off, off, off, off, off, off, off, off))
                 .isInstanceOf(NullPointerException.class);
     }
 
@@ -181,7 +193,7 @@ class DawMenuBarControllerTest {
     void shouldRejectNullKeyBindingManager() {
         BooleanSupplier off = () -> false;
         assertThatThrownBy(() -> new DawMenuBarController(
-                new StubHost(), null, off, off, off, off, off, off, off))
+                new StubHost(), null, off, off, off, off, off, off, off, off))
                 .isInstanceOf(NullPointerException.class);
     }
 
@@ -244,6 +256,27 @@ class DawMenuBarControllerTest {
             assertThat(itemTexts).contains(
                     "New Project", "Save Project",
                     "Import Audio File\u2026");
+        });
+    }
+
+    @Test
+    void saveAsSitsRightAfterSaveProjectWithNoShortcutAndDelegatesToItsHostMethod() throws Exception {
+        // Story 333 \u2014 ruling R5's menu item, its label from the bundle; R12 #5: no default shortcut.
+        runOnFxThread(() -> {
+            StubHost host = new StubHost();
+            DawMenuBarController controller = newController(host);
+            controller.build();
+
+            List<MenuItem> items = controller.getMenuBar().getMenus().getFirst().getItems();
+            MenuItem save = items.stream().filter(item -> "Save Project".equals(item.getText())).findFirst()
+                    .orElseThrow();
+            MenuItem saveAs = items.get(items.indexOf(save) + 1);
+            assertThat(saveAs.getText()).isEqualTo("Save As\u2026");
+            assertThat(saveAs.getAccelerator()).isNull();
+            saveAs.fire();
+
+            assertThat(host.saveProjectAsCalls).isEqualTo(1);
+            assertThat(host.saveProjectCalls).isZero();
         });
     }
 

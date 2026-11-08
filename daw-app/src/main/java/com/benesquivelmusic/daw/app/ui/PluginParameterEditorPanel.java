@@ -13,6 +13,8 @@ import javafx.scene.layout.VBox;
 
 import java.util.*;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 
 /**
  * A generic plugin parameter editor panel that generates controls from
@@ -38,6 +40,12 @@ import java.util.function.BiConsumer;
  * that contract. This class remains only the insert-effect path
  * ({@code InsertEffectRack} / {@code WorkshopSelectionHostController} /
  * {@code InsertsSection}); its retirement is deferred to a future story.</p>
+ *
+ * <p>With an edit gate set ({@link #setEditGate}), a parameter change, a
+ * preset load and an A/B toggle are refused while the gate says no, whatever
+ * raised them, and the panel shows the model again (PR #989 review
+ * 5711460812). The double-click resets are pointer gestures the window's
+ * input fence consumes.</p>
  */
 public final class PluginParameterEditorPanel extends VBox {
 
@@ -55,6 +63,12 @@ public final class PluginParameterEditorPanel extends VBox {
     private final List<ParameterPreset> presets = new ArrayList<>();
     private BiConsumer<Integer, Double> onParameterChanged;
     private boolean echoing;
+    /** The window's edit gate; every edit is admitted until {@link #setEditGate}. */
+    private BooleanSupplier projectActionsAllowed = () -> true;
+    /** The processor's parameter values, which a refusal shows; none until {@link #setEditGate}. */
+    private Supplier<Map<Integer, Double>> modelValues = Map::of;
+    /** The preset the last admitted load applied, which a refused pick shows again. */
+    private Optional<String> appliedPreset = Optional.empty();
 
     /** Creates only the parameter body; the contract frame supplies A/B and preset chrome. */
     public static PluginParameterEditorPanel body(List<PluginParameter> parameters) {
@@ -119,6 +133,25 @@ public final class PluginParameterEditorPanel extends VBox {
      */
     public void setOnParameterChanged(BiConsumer<Integer, Double> callback) {
         this.onParameterChanged = callback;
+    }
+
+    /**
+     * Sets the edit gate the panel's controls read: while
+     * {@code projectActionsAllowed} says no, a parameter change, a preset load
+     * and an A/B toggle are refused, whatever raised them, and the panel
+     * shows the model again — the values {@code modelValues} reads from the
+     * processor, the A/B side that plays and the preset applied last (PR #989
+     * review 5711460812). The double-click resets are pointer gestures the
+     * window's input fence consumes. FX thread.
+     *
+     * @param projectActionsAllowed the window's edit gate
+     * @param modelValues           the processor's current parameter values
+     * @throws NullPointerException if either argument is {@code null}
+     */
+    public void setEditGate(BooleanSupplier projectActionsAllowed, Supplier<Map<Integer, Double>> modelValues) {
+        this.projectActionsAllowed = Objects.requireNonNull(
+                projectActionsAllowed, "projectActionsAllowed must not be null");
+        this.modelValues = Objects.requireNonNull(modelValues, "modelValues must not be null");
     }
 
     /**
@@ -227,6 +260,10 @@ public final class PluginParameterEditorPanel extends VBox {
             toggle.setSelected(param.defaultValue() >= 0.5);
             toggle.setTooltip(new Tooltip("Double-click to reset to default"));
             toggle.setOnAction(e -> {
+                if (!projectActionsAllowed.getAsBoolean()) {
+                    showTheModel();
+                    return;
+                }
                 double newValue = toggle.isSelected() ? 1.0 : 0.0;
                 state.setValue(param.id(), newValue);
                 toggle.setText(toggle.isSelected() ? "ON" : "OFF");
@@ -254,6 +291,10 @@ public final class PluginParameterEditorPanel extends VBox {
 
             slider.valueProperty().addListener((obs, oldVal, newVal) -> {
                 if (echoing) return;
+                if (!projectActionsAllowed.getAsBoolean()) {
+                    showTheModel();
+                    return;
+                }
                 double newValue = newVal.doubleValue();
                 state.setValue(param.id(), newValue);
                 valueLabel.setText(formatValue(newValue, param));
@@ -276,21 +317,47 @@ public final class PluginParameterEditorPanel extends VBox {
     }
 
     private void loadSelectedPreset(String name) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            showTheModel();
+            return;
+        }
         for (ParameterPreset preset : presets) {
             if (!preset.name().equals(name)) continue;
             state.loadValues(preset.values());
             refreshControls();
             publishState();
+            appliedPreset = Optional.of(name);
             return;
         }
     }
 
     private void handleAbToggle() {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            showTheModel();
+            return;
+        }
         abComparison.toggle();
         ABComparison.Slot active = abComparison.getActiveSlot();
         abToggleButton.setText(active == ABComparison.Slot.A ? "A" : "B");
         refreshControls();
         publishState();
+    }
+
+    /**
+     * The re-sync of a refused edit (PR #989 review 5711460812): the state
+     * takes the processor's values, every control shows them, the A/B toggle
+     * shows the side that plays, and the preset selector shows the preset
+     * applied last, or its prompt. Nothing is published. The combo write
+     * re-enters {@link #loadSelectedPreset}, which is refused again on an
+     * unchanged value and stops; the control writes run under the echo guard.
+     */
+    private void showTheModel() {
+        Map<Integer, Double> values = modelValues.get();
+        if (!values.isEmpty()) state.loadValues(values);
+        refreshControls();
+        abToggleButton.setSelected(abComparison.getActiveSlot() == ABComparison.Slot.B);
+        abToggleButton.setText(abComparison.getActiveSlot() == ABComparison.Slot.A ? "A" : "B");
+        presetComboBox.setValue(appliedPreset.orElse(null));
     }
 
     private void publishState() {

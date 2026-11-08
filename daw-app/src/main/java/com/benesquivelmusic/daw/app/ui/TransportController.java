@@ -30,6 +30,7 @@ import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 
 import javafx.animation.FadeTransition;
 import javafx.animation.PauseTransition;
+import javafx.beans.property.ReadOnlyBooleanProperty;
 import javafx.geometry.Pos;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
@@ -242,6 +243,17 @@ final class TransportController implements TransportIntentHandler {
     private Spinner<Integer> postRollSpinner;
     /** Cached container returned by {@link #createPreRollPostRollControls()}. */
     private HBox preRollControlsBox;
+    /**
+     * Whether the project may be edited now — the window's edit gate,
+     * {@code MainController.projectActionsAllowed()}, once the host sets it
+     * ({@link #setProjectActionsAllowed}); always yes until then. Read on the
+     * FX thread by the pre/post-roll controls' one write
+     * ({@link #commitPreRollPostRoll}) and by the rescued take's Review
+     * ({@code RecordCoordinator.rescuedTakeReview}, through
+     * {@link #projectActionsAllowed()}), whatever raised them (PR #989 review
+     * 5711460812).
+     */
+    private BooleanSupplier projectActionsAllowed = () -> true;
 
     /**
      * Bar count a pre/post-roll toggle turns a side on with when that side
@@ -263,6 +275,29 @@ final class TransportController implements TransportIntentHandler {
             postRollTimer.stop();
             postRollTimer = null;
         }
+    }
+
+    /**
+     * Sets the window's edit gate the pre/post-roll controls read: while it
+     * says no, a toggle click or a spinner edit — whatever raised it — writes
+     * nothing, and the controls show the stored value again; the rescued
+     * take's Review reads it too ({@link #projectActionsAllowed()}) (PR #989
+     * review 5711460812). FX thread.
+     *
+     * @param projectActionsAllowed whether the project may be edited now; must not be {@code null}
+     */
+    void setProjectActionsAllowed(BooleanSupplier projectActionsAllowed) {
+        this.projectActionsAllowed = Objects.requireNonNull(
+                projectActionsAllowed, "projectActionsAllowed must not be null");
+    }
+
+    /**
+     * Whether the window's edit gate admits a project action now
+     * ({@link #setProjectActionsAllowed}), for the record coordinator's
+     * rescued-take Review (PR #989 review 5711460812). FX thread.
+     */
+    boolean projectActionsAllowed() {
+        return projectActionsAllowed.getAsBoolean();
     }
 
     TransportController(DawProject project,
@@ -756,6 +791,57 @@ final class TransportController implements TransportIntentHandler {
         recordButton.setOpacity(1.0);
         recordButton.setStyle("");
         // Hide the REC indicator
+    }
+
+    /**
+     * Stops the transport for a close (story 333; the studio engineer's
+     * rulings R1, R2 and B2): a take that is recording or counting in gets
+     * its ordinary Stop ({@link #stop()}) — its seal requested, the MIDI
+     * recorders stopped, a count-in ended — also when Record started it
+     * inside a running post-roll's tail (PR #989 review 5704604621), so no
+     * take still records when this returns: an audio take that was
+     * recording is then being written ({@link #isTakeBeingWritten()}), and
+     * the close waits for its publication. A take still being
+     * prepared gets the Stop too, which cancels it — except in post-roll
+     * ({@link Transport#isInPostRoll()}: a running tail, or one paused
+     * inside it), whose end ({@link #finishPostRoll()}) cancels it as it
+     * always does and leaves the cancel's text in the status bar. With
+     * nothing recording, the Stop runs only over a transport that is not
+     * stopped and not in post-roll; in post-roll it is never run: over a
+     * running tail it would enter a new tail, and over a paused one the
+     * tail's end stops the transport just as that Stop would.
+     *
+     * <p>It leaves no post-roll running: one its Stop enters — the Stop of a
+     * MIDI-only take, or of a playing transport, with a post-roll configured —
+     * or one already in progress, running or paused, ends on this turn
+     * ({@link #finishPostRoll()}, its timer stopped first), so exactly one
+     * {@code TransportEvent.Stopped} is published on this turn when the
+     * transport was rolling, the close's capture is taken of a stopped
+     * transport and nothing is journaled after it. Does nothing when the transport is already stopped and nothing
+     * records — never the double-stop rewind. FX thread; wait-free: an audio
+     * take's seal is only requested here, and its capture thread seals it.</p>
+     *
+     * @return whether the transport is now STOPPED, not in post-roll, and
+     *         nothing still records or counts in — the fact the close's
+     *         consent reads ({@link #isRecordingInFlight()},
+     *         {@link #isCountingIn()})
+     */
+    boolean stopForClose() {
+        Transport transport = project.getTransport();
+        boolean takeInFlight = isRecordingInFlight() || isCountingIn();
+        boolean preparedInsideTheTail = transport.isInPostRoll() && recordCoordinator.isPreparingTake();
+        boolean rollingOutsideATail = !transport.isInPostRoll() && transport.getState() != TransportState.STOPPED;
+        if (takeInFlight ? !preparedInsideTheTail : rollingOutsideATail) {
+            stop();
+        }
+        if (transport.isInPostRoll()) {
+            if (postRollTimer != null) {
+                postRollTimer.stop();
+            }
+            finishPostRoll();
+        }
+        return transport.getState() == TransportState.STOPPED && !transport.isInPostRoll()
+                && !isRecordingInFlight() && !isCountingIn();
     }
 
     /**
@@ -1432,24 +1518,28 @@ final class TransportController implements TransportIntentHandler {
      *       the other side.</li>
      * </ul>
      * A changed value marks the project dirty, with no undo entry
-     * ({@link #commitPreRollPostRoll}).
+     * ({@link #commitPreRollPostRoll}). A click the window's edit gate
+     * refuses writes no status text (PR #989 review 5711460812).
      */
     void onTogglePreRoll() {
         PreRollPostRoll next = toggled(project.getTransport().getPreRollPostRoll(), true);
-        commitPreRollPostRoll(next);
-        statusBarLabel.setText("Pre-roll: " + (rolls(next, true) ? "ON" : "OFF"));
+        if (commitPreRollPostRoll(next)) {
+            statusBarLabel.setText("Pre-roll: " + (rolls(next, true) ? "ON" : "OFF"));
+        }
     }
 
     /**
      * Toggles post-roll without changing whether pre-roll rolls: the mirror
      * of {@link #onTogglePreRoll()}, by the same rules with the sides
      * swapped. A changed value marks the project dirty, with no undo entry
-     * ({@link #commitPreRollPostRoll}).
+     * ({@link #commitPreRollPostRoll}). A click the window's edit gate
+     * refuses writes no status text (PR #989 review 5711460812).
      */
     void onTogglePostRoll() {
         PreRollPostRoll next = toggled(project.getTransport().getPreRollPostRoll(), false);
-        commitPreRollPostRoll(next);
-        statusBarLabel.setText("Post-roll: " + (rolls(next, false) ? "ON" : "OFF"));
+        if (commitPreRollPostRoll(next)) {
+            statusBarLabel.setText("Post-roll: " + (rolls(next, false) ? "ON" : "OFF"));
+        }
     }
 
     /** Whether the pre-roll ({@code pre}) or the post-roll side of {@code prpr} rolls: what its toggle shows. */
@@ -1496,15 +1586,25 @@ final class TransportController implements TransportIntentHandler {
      * synced. No undo entry: pre/post-roll is a dirty-only transport
      * setting, like the loop and the punch region (Control Synchronization
      * Design Book §5.2). No bus event either: no {@code TransportEvent}
-     * exists for pre/post-roll.
+     * exists for pre/post-roll. Refused while the project's actions are not
+     * allowed (the close's gate, whatever raised the edit — a click, a key,
+     * a focus change or an assistive technology's action): the controls are
+     * synced back and nothing is written (PR #989 review 5711460812).
+     *
+     * @return whether the edit was admitted
      */
-    private void commitPreRollPostRoll(PreRollPostRoll next) {
+    private boolean commitPreRollPostRoll(PreRollPostRoll next) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            syncPreRollControls();
+            return false;
+        }
         Transport transport = project.getTransport();
         if (!next.equals(transport.getPreRollPostRoll())) {
             transport.setPreRollPostRoll(next);
             project.markDirty();
         }
         syncPreRollControls();
+        return true;
     }
 
     /**
@@ -1720,6 +1820,8 @@ final class TransportController implements TransportIntentHandler {
     boolean isPreparingTake() { return recordCoordinator.isPreparingTake(); }
     boolean isCountingIn() { return recordCoordinator.isCountingIn(); }
     boolean isTakeBeingWritten() { return recordCoordinator.isTakeBeingWritten(); }
+    ReadOnlyBooleanProperty takeBeingWrittenProperty() { return recordCoordinator.takeBeingWrittenProperty(); }
+    long takePublicationsWithClips() { return recordCoordinator.takePublicationsWithClips(); }
     Optional<CapturePeakSnapshot> liveCapturePeaks(String id) { return recordCoordinator.liveCapturePeaks(id); }
     Optional<Thread> pendingSessionInputCheck() { return recordCoordinator.pendingSessionInputCheck(); }
     Optional<Path> activeTakeDirectory() { return recordCoordinator.activeTakeDirectory(); }

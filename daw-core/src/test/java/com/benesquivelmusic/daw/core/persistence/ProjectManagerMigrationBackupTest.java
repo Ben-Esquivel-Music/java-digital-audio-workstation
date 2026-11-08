@@ -45,7 +45,7 @@ class ProjectManagerMigrationBackupTest {
         Path projectFile = metadata.projectPath().resolve("project.daw");
         Files.writeString(projectFile, new ProjectSerializer()
                 .serialize(new DawProject("Native", AudioFormat.CD_QUALITY)));
-        manager.abandonProject();
+        manager.closeProject().join();
 
         manager.openProject(metadata.projectPath());
 
@@ -102,7 +102,7 @@ class ProjectManagerMigrationBackupTest {
         DawProject dawProject = new DawProject("Legacy", AudioFormat.CD_QUALITY);
         Files.writeString(projectFile, new ProjectSerializer().serialize(dawProject));
         String originalXml = Files.readString(projectFile);
-        manager.abandonProject();
+        manager.closeProject().join();
 
         // Re-open through the migrating manager — this should trigger the
         // synthetic migration above.
@@ -144,7 +144,7 @@ class ProjectManagerMigrationBackupTest {
     }
 
     @Test
-    void abandonProjectLeavesOriginalFileUntouched() throws Exception {
+    void closingWithoutASaveLeavesOriginalFileUntouched() throws Exception {
         MigrationRegistry registry = buildForcedMigrationRegistry("test-migrate");
         ProjectManager manager = createManager(registry);
 
@@ -153,13 +153,13 @@ class ProjectManagerMigrationBackupTest {
         DawProject dawProject = new DawProject("Discard", AudioFormat.CD_QUALITY);
         Files.writeString(projectFile, new ProjectSerializer().serialize(dawProject));
         String originalXml = Files.readString(projectFile);
-        manager.abandonProject();
+        manager.closeProject().join();
 
         manager.openProject(metadata.projectPath());
         assertThat(manager.getLastMigrationReport().wasMigrated()).isTrue();
 
         // User chose to discard — no save, so no state change on disk.
-        manager.abandonProject();
+        manager.closeProject().join();
 
         assertThat(Files.readString(projectFile)).isEqualTo(originalXml);
         try (Stream<Path> entries = Files.list(metadata.projectPath())) {

@@ -234,7 +234,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         } finally {
             engine.stopAudioOutput();
             engine.stop();
-            projectManager.abandonProject();
+            projectManager.closeProject().join();
         }
     }
 
@@ -1250,7 +1250,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
     private DawProject anotherSavedProjectWithAnArmedAudioTrack(String name) throws IOException {
         ProjectManager other = new ProjectManager(new CheckpointManager(AutoSaveConfig.DEFAULT));
         Path directory = other.createProject(name, workspace).projectPath();
-        other.closeProject();
+        other.closeProject().join();
         DawProject saved = new DawProject(name, new AudioFormat(48000, 2, 16, 256));
         saved.setMetadata(saved.getMetadata().withPath(directory));
         saved.createAudioTrack("Vox").setArmed(true);

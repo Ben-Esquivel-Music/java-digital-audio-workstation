@@ -149,8 +149,34 @@ public final class ProjectSerializer {
      * @throws IOException if no XML document can be created
      */
     public ProjectDocument capture(DawProject project) throws IOException {
+        return capture(project, FormerRoots.NONE);
+    }
+
+    /**
+     * {@link #capture(DawProject)}, writing the project's <em>former
+     * roots</em> project-relative too (story 333, Save As; Persistence
+     * Integrity book §3.3): a clip reference that the project-relative rule
+     * leaves absolute and that lies strictly under a former root is written
+     * as its path under that root when that root's own held set holds the
+     * path — the copy holds that root's file there
+     * ({@link ProjectPaths#relativize(Path, FormerRoots, String)}). A former
+     * root is a folder this session saved the open project from as a copy, so
+     * such a reference — a clip held only by the undo history and brought
+     * back after the Save As re-pointed the live ones — names the copy's own
+     * file; one whose file the copy does not hold stays absolute and still
+     * names the original's. Pure path arithmetic, with no disk access, like
+     * the rest of the capture.
+     *
+     * @param project     the project to capture
+     * @param formerRoots the folders the open project was saved from as a copy this session, each with what the
+     *                    copy holds of it; {@link FormerRoots#NONE} for none
+     * @return the captured document, confined to one thread at a time
+     * @throws IOException if no XML document can be created
+     */
+    public ProjectDocument capture(DawProject project, FormerRoots formerRoots) throws IOException {
+        Objects.requireNonNull(formerRoots, "formerRoots must not be null");
         Path projectRoot = projectRootOf(project);
-        ReferenceRecorder references = new ReferenceRecorder(projectRoot);
+        ReferenceRecorder references = new ReferenceRecorder(projectRoot, formerRoots);
         try {
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
             factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
@@ -159,7 +185,7 @@ public final class ProjectSerializer {
             Document document = builder.newDocument();
 
             buildDocument(document, project, references);
-            return new ProjectDocument(document, projectRoot, references.sites());
+            return new ProjectDocument(document, projectRoot, formerRoots, references.sites());
         } catch (ParserConfigurationException e) {
             throw new IOException("Failed to serialize project", e);
         }
@@ -201,12 +227,14 @@ public final class ProjectSerializer {
 
     /**
      * How an audio-clip reference is written: the remap first, then the
-     * project-relative rule ({@link ProjectPaths#relativize}).
+     * project-relative rule with the project's former roots
+     * ({@link ProjectPaths#relativize(Path, FormerRoots, String)}).
      */
-    static String clipReference(Path projectRoot, AssetReferenceRemap remap, String reference) {
+    static String clipReference(Path projectRoot, FormerRoots formerRoots, AssetReferenceRemap remap,
+                                String reference) {
         String written = reference == null
                 ? null : remap.clipReferences().getOrDefault(reference, reference);
-        return ProjectPaths.relativize(projectRoot, written);
+        return ProjectPaths.relativize(projectRoot, formerRoots, written);
     }
 
     /** How a SoundFont path, in its {@link Path#toString()} form, is written: the remap, then forward slashes. */
@@ -223,14 +251,16 @@ public final class ProjectSerializer {
     private static final class ReferenceRecorder {
 
         private final Path projectRoot;
+        private final FormerRoots formerRoots;
         private final List<ProjectDocument.ReferenceSite> sites = new ArrayList<>();
 
-        ReferenceRecorder(Path projectRoot) {
+        ReferenceRecorder(Path projectRoot, FormerRoots formerRoots) {
             this.projectRoot = projectRoot;
+            this.formerRoots = formerRoots;
         }
 
         String clipReference(String reference) {
-            return ProjectSerializer.clipReference(projectRoot, AssetReferenceRemap.NONE, reference);
+            return ProjectSerializer.clipReference(projectRoot, formerRoots, AssetReferenceRemap.NONE, reference);
         }
 
         String soundFontPath(Path path) {

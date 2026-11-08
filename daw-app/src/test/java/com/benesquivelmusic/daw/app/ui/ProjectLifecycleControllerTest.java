@@ -168,7 +168,7 @@ class ProjectLifecycleControllerTest {
     @Test
     void loadProjectFromPathSurfacesSuppressedDialogWithoutBlocking() throws Exception {
         // Build a manager whose registry forces every load to migrate, then
-        // pre-suppress the dialog for the project so showIfNeeded()
+        // pre-suppress the dialog for the project so showUnlessSuppressed()
         // short-circuits before any showAndWait() can block this headless test.
         com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry registry =
                 buildForcedMigrationRegistry();
@@ -184,10 +184,10 @@ class ProjectLifecycleControllerTest {
         java.nio.file.Files.writeString(projectFile,
                 new com.benesquivelmusic.daw.core.persistence.ProjectSerializer()
                         .serialize(new DawProject("Legacy", AudioFormat.CD_QUALITY)));
-        pm.abandonProject();
+        pm.closeProject().join();
 
         // Suppress the dialog for this project at the synthetic target
-        // version so showIfNeeded never tries to call showAndWait().
+        // version so showUnlessSuppressed never tries to call showAndWait().
         com.benesquivelmusic.daw.core.persistence.migration.MigrationSuppression
                 .suppress(metadata.projectPath(),
                         com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry
@@ -216,7 +216,7 @@ class ProjectLifecycleControllerTest {
         java.nio.file.Files.writeString(metadata.projectPath().resolve("project.daw"),
                 new com.benesquivelmusic.daw.core.persistence.ProjectSerializer()
                         .serialize(new DawProject("Song", AudioFormat.CD_QUALITY)));
-        pm.abandonProject();
+        pm.closeProject().join();
 
         AtomicReference<DawProject> project =
                 new AtomicReference<>(new DawProject("Outgoing", AudioFormat.CD_QUALITY));
@@ -315,7 +315,7 @@ class ProjectLifecycleControllerTest {
                 new com.benesquivelmusic.daw.core.persistence.ProjectSerializer()
                         .serialize(new DawProject("WithBackup", AudioFormat.CD_QUALITY)));
         String originalContent = java.nio.file.Files.readString(projectFile);
-        pm.abandonProject();
+        pm.closeProject().join();
 
         pm.openProject(metadata.projectPath());
         var report = pm.getLastMigrationReport();
@@ -360,7 +360,7 @@ class ProjectLifecycleControllerTest {
                 new com.benesquivelmusic.daw.core.persistence.ProjectSerializer()
                         .serialize(new DawProject("NoBackupYet", AudioFormat.CD_QUALITY)));
         String originalContent = java.nio.file.Files.readString(projectFile);
-        pm.abandonProject();
+        pm.closeProject().join();
 
         pm.openProject(metadata.projectPath());
         var report = pm.getLastMigrationReport();

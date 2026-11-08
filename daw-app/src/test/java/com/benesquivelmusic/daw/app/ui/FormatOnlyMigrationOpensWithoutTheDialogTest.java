@@ -100,7 +100,7 @@ class FormatOnlyMigrationOpensWithoutTheDialogTest {
     void aSchemaOneFileOpensMigratedWithoutTheDialogAndAnnouncesOncePlainly() throws Exception {
         ProjectManager other = new ProjectManager(new CheckpointManager(AutoSaveConfig.DEFAULT));
         Path directory = other.createProject("Old Song", workspace).projectPath();
-        other.abandonProject();
+        other.closeProject().join();
         Files.writeString(directory.resolve("project.daw"), SCHEMA_1_FILE);
 
         // Bounded at the fixture's guard: a dialog that showed is closed by the listener.

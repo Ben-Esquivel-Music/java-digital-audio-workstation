@@ -240,6 +240,21 @@ final class TrackStripController {
      * never refuses. FX thread.
      */
     private Predicate<List<Track>> renderGuard = _ -> true;
+    /**
+     * Whether the project may be edited now — the window's edit gate,
+     * {@code MainController.projectActionsAllowed()}. Read on the FX thread by
+     * every lane handler that edits what the project file stores or starts a
+     * project action of its own (phase, remove, fold, rename, the input pick,
+     * the context menu's edits and exports), whatever raised it — a click, a
+     * key, a focus change or an assistive technology's action. A refused
+     * handler changes nothing and the lane shows the model (PR #989 review
+     * 5711460812). The pointer-only handlers, such as the drag-and-drop
+     * reorder, do not read it: the window's fence consumes their input events
+     * while a close waits, and the disabled root blocks them while a project
+     * is installed. The mute, solo, arm, volume and pan controls meet the same
+     * gate in the wiring's command sink.
+     */
+    private final BooleanSupplier projectActionsAllowed;
 
     TrackStripController(DawProject project,
                          UndoManager undoManager,
@@ -262,7 +277,8 @@ final class TrackStripController {
                          Supplier<ZoomLevel> currentZoomLevel,
                          Supplier<EditorView> editorView,
                          Supplier<TrackControlWiring> trackControlWiring,
-                         SessionInputSelection sessionInputSelection) {
+                         SessionInputSelection sessionInputSelection,
+                         BooleanSupplier projectActionsAllowed) {
         this.project = Objects.requireNonNull(project, "project must not be null");
         this.undoManager = Objects.requireNonNull(undoManager, "undoManager must not be null");
         this.audioEngine = Objects.requireNonNull(audioEngine, "audioEngine must not be null");
@@ -286,6 +302,8 @@ final class TrackStripController {
         this.trackControlWiring = Objects.requireNonNull(trackControlWiring, "trackControlWiring must not be null");
         this.sessionInputSelection = Objects.requireNonNull(
                 sessionInputSelection, "sessionInputSelection must not be null");
+        this.projectActionsAllowed = Objects.requireNonNull(
+                projectActionsAllowed, "projectActionsAllowed must not be null");
     }
 
     /**
@@ -458,6 +476,9 @@ final class TrackStripController {
                 if (event.getClickCount() == 2) {
                     MidiInputPortSelectionDialog dialog = new MidiInputPortSelectionDialog(null);
                     dialog.showAndWait().ifPresent(midiInfo -> {
+                        if (!projectActionsAllowed.getAsBoolean()) {
+                            return;
+                        }
                         ioLabel.setTooltip(new Tooltip("MIDI Input: " + midiInfo.getName()));
                         statusBarLabel.setText("MIDI input changed: " + track.getName()
                                 + " ← " + midiInfo.getName());
@@ -556,6 +577,9 @@ final class TrackStripController {
         phaseBtn.setTooltip(new Tooltip("Phase Invert (Ø)"));
         phaseBtn.pseudoClassStateChanged(ACTIVE, track.isPhaseInverted());
         phaseBtn.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             track.setPhaseInverted(!track.isPhaseInverted());
             phaseBtn.pseudoClassStateChanged(ACTIVE, track.isPhaseInverted());
             statusBarLabel.setText(track.isPhaseInverted()
@@ -570,6 +594,9 @@ final class TrackStripController {
         removeBtn.getStyleClass().add("track-remove-button");
         removeBtn.setTooltip(new Tooltip("Remove Track"));
         removeBtn.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             int removeUiIndex = trackListPanel.getChildren().indexOf(trackItem);
             int projectIndex = project.getTracks().indexOf(track);
             undoManager.execute(new UndoableAction() {
@@ -644,6 +671,9 @@ final class TrackStripController {
                 foldBtn.setText(track.getFoldState().automationFolded() ? "\u25B6" : "\u25BC");
         refreshFoldGlyph.run();
         foldBtn.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return; // the fold state is saved (automation-folded)
+            }
             if (arrangementCanvas != null) {
                 arrangementCanvas.toggleAutomationFold(track);
                 // No need to update the glyph here — the canvas's fold
@@ -1005,7 +1035,11 @@ final class TrackStripController {
         inputPortChooser.choose(enumeration.devices(),
                         preselectedInputIndex(track, sessionInputSelection, enumeration))
                 .ifPresent(device -> {
-                    assignTrackInputDevice(track, enumeration, device);
+                    // A pick the edit gate refused leaves the tooltip on
+                    // the track's own input (PR #989 review 5711460812).
+                    if (!assignTrackInputDevice(track, enumeration, device)) {
+                        return;
+                    }
                     // qualifiedName(), not name() (story 316 review): the
                     // row the user just picked is labelled with the
                     // host-API-qualified name, so echoing the bare one
@@ -1040,14 +1074,22 @@ final class TrackStripController {
      * source's hardware clock; otherwise the arm is refused naming the track
      * and the device. The synchronous {@link Track.ChangeKind#INPUT_ROUTING}
      * notification lets the arm guard re-validate an armed track against the
-     * provision installed now.
+     * provision installed now. Read after the input-port dialog returns, the
+     * window's edit gate refuses a pick while it says no: nothing changes and
+     * nothing is reported (PR #989 review 5711460812).
+     *
+     * @return whether the pick was applied
      */
-    private void assignTrackInputDevice(Track track, AudioDeviceManager.Enumeration enumeration,
-                                        AudioDeviceInfo device) {
+    private boolean assignTrackInputDevice(Track track, AudioDeviceManager.Enumeration enumeration,
+                                           AudioDeviceInfo device) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return false;
+        }
         track.setInputDevice(Optional.of(enumeration.identityOf(device)));
         statusBarLabel.setText("Input changed: " + track.getName() + " ← " + device.qualifiedName());
         statusBarLabel.setGraphic(IconNode.of(DawIcon.INPUT, 12));
         markDirty.run();
+        return true;
     }
 
     /**
@@ -1062,6 +1104,9 @@ final class TrackStripController {
         MenuItem copyItem = new MenuItem("Copy Track");
         copyItem.setGraphic(IconNode.of(DawIcon.COPY, 14));
         copyItem.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             undoManager.execute(new UndoableAction() {
                 private Track copy;
                 private HBox copyTrackItem;
@@ -1103,6 +1148,9 @@ final class TrackStripController {
             Tooltip.install(pasteItem.getGraphic(), new Tooltip("Nothing copied to clipboard"));
         }
         pasteItem.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             List<ClipboardEntry> entriesSnapshot = new ArrayList<>(clipboardManager.getEntries());
             if (entriesSnapshot.isEmpty()) {
                 statusBarLabel.setText("Nothing to paste");
@@ -1139,6 +1187,9 @@ final class TrackStripController {
             Tooltip.install(splitItem.getGraphic(), new Tooltip("No audio clip on track"));
         }
         splitItem.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             double playhead = project.getTransport().getPositionInBeats();
             Optional<UndoableAction> split = splitAtPlayheadAction(track, playhead);
             if (split.isEmpty()) {
@@ -1165,6 +1216,9 @@ final class TrackStripController {
             Tooltip.install(trimItem.getGraphic(), new Tooltip("No active time selection"));
         }
         trimItem.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             double selStart = selectionModel.getStartBeat();
             double selEnd = selectionModel.getEndBeat();
             // Pre-check: are there any clips that overlap the selection?
@@ -1207,6 +1261,9 @@ final class TrackStripController {
             Tooltip.install(cropItem.getGraphic(), new Tooltip("No active time selection"));
         }
         cropItem.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             double selStart = selectionModel.getStartBeat();
             double selEnd = selectionModel.getEndBeat();
             if (track.getClips().isEmpty()) {
@@ -1249,6 +1306,9 @@ final class TrackStripController {
                     isMidiTrack ? "Reverse is not available for MIDI tracks" : "No audio clip on track"));
         }
         reverseItem.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             List<AudioClip> clips = track.getClips();
             if (clips.isEmpty()) {
                 statusBarLabel.setText("No clips to reverse on: " + track.getName());
@@ -1293,6 +1353,9 @@ final class TrackStripController {
                     isMidiTrack ? "Fade In is not available for MIDI tracks" : "No audio clip on track"));
         }
         fadeInItem.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             List<AudioClip> clips = track.getClips();
             if (clips.isEmpty()) {
                 statusBarLabel.setText("No clips for fade in on: " + track.getName());
@@ -1337,6 +1400,9 @@ final class TrackStripController {
                     isMidiTrack ? "Fade Out is not available for MIDI tracks" : "No audio clip on track"));
         }
         fadeOutItem.setOnAction(_ -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             List<AudioClip> clips = track.getClips();
             if (clips.isEmpty()) {
                 statusBarLabel.setText("No clips for fade out on: " + track.getName());
@@ -1526,9 +1592,18 @@ final class TrackStripController {
             Tooltip.install(exportWav.getGraphic(), new Tooltip("No audio data to export"));
         }
         exportWav.setOnAction(_ -> {
+            // An export is a project action: refused before any dialog while
+            // the project cannot be edited (PR #989 review 5711460812).
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             // Story 329 (D19) — no file is asked for, and nothing rendered,
             // while clip audio loads or without consent to silent clips.
             if (!renderGuard.test(List.of(track))) {
+                return;
+            }
+            // Read again: the render check may have asked while a close began.
+            if (!projectActionsAllowed.getAsBoolean()) {
                 return;
             }
             FileChooser fileChooser = new FileChooser();
@@ -1539,34 +1614,7 @@ final class TrackStripController {
             Stage stage = (Stage) rootPane.getScene().getWindow();
             java.io.File file = fileChooser.showSaveDialog(stage);
             if (file != null) {
-                int sampleRate = (int) project.getFormat().sampleRate();
-                int bitDepth = project.getFormat().bitDepth();
-                int channels = project.getFormat().channels();
-                double tempo = project.getTransport().getTempo();
-                float[][] audioData = TrackBouncer.bounce(track, sampleRate, tempo, channels);
-                if (audioData == null) {
-                    notificationBar.show(NotificationLevel.WARNING,
-                            "No audio data to export for track: " + track.getName());
-                    return;
-                }
-                statusBarLabel.setText("Exporting WAV: " + track.getName() + "…");
-                statusBarLabel.setGraphic(IconNode.of(DawIcon.WAV, 12));
-                try {
-                    WavExporter.write(audioData, sampleRate, bitDepth,
-                            com.benesquivelmusic.daw.sdk.export.DitherType.TPDF,
-                            com.benesquivelmusic.daw.sdk.export.AudioMetadata.EMPTY,
-                            file.toPath());
-                    statusBarLabel.setText("Exported WAV: " + track.getName() + " → " + file.getName());
-                    notificationBar.show(NotificationLevel.SUCCESS,
-                            "Exported WAV: " + track.getName() + " → " + file.getAbsolutePath());
-                    LOG.info(() -> "Exported track " + track.getName() + " as WAV to " + file.getAbsolutePath());
-                } catch (IOException ex) {
-                    statusBarLabel.setText("WAV export failed: " + ex.getMessage());
-                    statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
-                    notificationBar.show(NotificationLevel.ERROR,
-                            "WAV export failed: " + ex.getMessage());
-                    LOG.log(Level.WARNING, "WAV export failed for track " + track.getName(), ex);
-                }
+                exportTrackAsWav(track, file);
             }
         });
 
@@ -1592,6 +1640,11 @@ final class TrackStripController {
             Tooltip.install(exportMidi.getGraphic(), new Tooltip("Track is not a MIDI track"));
         }
         exportMidi.setOnAction(_ -> {
+            // Refused before the notes check, so a refusal shows no warning
+            // (PR #989 review 5711460812).
+            if (!projectActionsAllowed.getAsBoolean()) {
+                return;
+            }
             EditorView ev = editorView.get();
             List<MidiNote> notes = ev != null ? ev.getNotes() : List.of();
             if (notes.isEmpty()) {
@@ -1607,29 +1660,7 @@ final class TrackStripController {
             Stage stage = (Stage) rootPane.getScene().getWindow();
             java.io.File file = fileChooser.showSaveDialog(stage);
             if (file != null) {
-                double tempo = project.getTransport().getTempo();
-                List<MidiFileExporter.NoteDescriptor> descriptors = new java.util.ArrayList<>();
-                for (MidiNote note : notes) {
-                    int midiNoteNumber = MidiNote.MAX_NOTE - note.note();
-                    descriptors.add(new MidiFileExporter.NoteDescriptor(
-                            midiNoteNumber, note.startColumn(),
-                            note.durationColumns(), note.velocity(), 0));
-                }
-                statusBarLabel.setText("Exporting MIDI: " + track.getName() + "…");
-                statusBarLabel.setGraphic(IconNode.of(DawIcon.MIDI_FILE, 12));
-                try {
-                    MidiFileExporter.write(descriptors, tempo, file.toPath());
-                    statusBarLabel.setText("Exported MIDI: " + track.getName() + " → " + file.getName());
-                    notificationBar.show(NotificationLevel.SUCCESS,
-                            "Exported MIDI: " + track.getName() + " → " + file.getAbsolutePath());
-                    LOG.info(() -> "Exported track " + track.getName() + " as MIDI to " + file.getAbsolutePath());
-                } catch (IOException ex) {
-                    statusBarLabel.setText("MIDI export failed: " + ex.getMessage());
-                    statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
-                    notificationBar.show(NotificationLevel.ERROR,
-                            "MIDI export failed: " + ex.getMessage());
-                    LOG.log(Level.WARNING, "MIDI export failed for track " + track.getName(), ex);
-                }
+                exportTrackAsMidi(track, notes, file);
             }
         });
 
@@ -1777,6 +1808,99 @@ final class TrackStripController {
         });
 
         return menu;
+    }
+
+    /**
+     * The track menu's "Export as WAV" once the user named {@code file}:
+     * bounces {@code track} and writes it there, on the FX thread. Read
+     * again after the save chooser returns, the window's edit gate refuses
+     * the export while it says no: nothing is bounced or written, nothing is
+     * shown, and that is logged at INFO, because nothing in the window can
+     * show that the export the user asked for was not written (PR #989
+     * review 5711460812).
+     *
+     * @param track the track to export
+     * @param file  the file the user named
+     * @return whether the export was admitted
+     */
+    boolean exportTrackAsWav(Track track, java.io.File file) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            LOG.info(() -> "The WAV export of “" + track.getName() + "” to “" + file.getAbsolutePath()
+                    + "” was not written: the project could not be edited.");
+            return false;
+        }
+        int sampleRate = (int) project.getFormat().sampleRate();
+        int bitDepth = project.getFormat().bitDepth();
+        int channels = project.getFormat().channels();
+        double tempo = project.getTransport().getTempo();
+        float[][] audioData = TrackBouncer.bounce(track, sampleRate, tempo, channels);
+        if (audioData == null) {
+            notificationBar.show(NotificationLevel.WARNING,
+                    "No audio data to export for track: " + track.getName());
+            return true;
+        }
+        statusBarLabel.setText("Exporting WAV: " + track.getName() + "…");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.WAV, 12));
+        try {
+            WavExporter.write(audioData, sampleRate, bitDepth,
+                    com.benesquivelmusic.daw.sdk.export.DitherType.TPDF,
+                    com.benesquivelmusic.daw.sdk.export.AudioMetadata.EMPTY,
+                    file.toPath());
+            statusBarLabel.setText("Exported WAV: " + track.getName() + " → " + file.getName());
+            notificationBar.show(NotificationLevel.SUCCESS,
+                    "Exported WAV: " + track.getName() + " → " + file.getAbsolutePath());
+            LOG.info(() -> "Exported track " + track.getName() + " as WAV to " + file.getAbsolutePath());
+        } catch (IOException ex) {
+            statusBarLabel.setText("WAV export failed: " + ex.getMessage());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+            notificationBar.show(NotificationLevel.ERROR,
+                    "WAV export failed: " + ex.getMessage());
+            LOG.log(Level.WARNING, "WAV export failed for track " + track.getName(), ex);
+        }
+        return true;
+    }
+
+    /**
+     * The track menu's "Export as MIDI" once the user named {@code file}:
+     * writes {@code notes} there as a MIDI file, on the FX thread. Refused
+     * as {@link #exportTrackAsWav} is while the window's edit gate says no,
+     * with the INFO line naming the MIDI export (PR #989 review 5711460812).
+     *
+     * @param track the track to export
+     * @param notes the track's notes
+     * @param file  the file the user named
+     * @return whether the export was admitted
+     */
+    boolean exportTrackAsMidi(Track track, List<MidiNote> notes, java.io.File file) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            LOG.info(() -> "The MIDI export of “" + track.getName() + "” to “" + file.getAbsolutePath()
+                    + "” was not written: the project could not be edited.");
+            return false;
+        }
+        double tempo = project.getTransport().getTempo();
+        List<MidiFileExporter.NoteDescriptor> descriptors = new java.util.ArrayList<>();
+        for (MidiNote note : notes) {
+            int midiNoteNumber = MidiNote.MAX_NOTE - note.note();
+            descriptors.add(new MidiFileExporter.NoteDescriptor(
+                    midiNoteNumber, note.startColumn(),
+                    note.durationColumns(), note.velocity(), 0));
+        }
+        statusBarLabel.setText("Exporting MIDI: " + track.getName() + "…");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.MIDI_FILE, 12));
+        try {
+            MidiFileExporter.write(descriptors, tempo, file.toPath());
+            statusBarLabel.setText("Exported MIDI: " + track.getName() + " → " + file.getName());
+            notificationBar.show(NotificationLevel.SUCCESS,
+                    "Exported MIDI: " + track.getName() + " → " + file.getAbsolutePath());
+            LOG.info(() -> "Exported track " + track.getName() + " as MIDI to " + file.getAbsolutePath());
+        } catch (IOException ex) {
+            statusBarLabel.setText("MIDI export failed: " + ex.getMessage());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+            notificationBar.show(NotificationLevel.ERROR,
+                    "MIDI export failed: " + ex.getMessage());
+            LOG.log(Level.WARNING, "MIDI export failed for track " + track.getName(), ex);
+        }
+        return true;
     }
 
     /**
@@ -1975,6 +2099,9 @@ final class TrackStripController {
 
     /**
      * Replaces the track name label with a text field for inline renaming.
+     * Its commit — Enter or the focus leaving the field — is refused while
+     * the window's edit gate says no: the label, still showing the track's
+     * name, takes the field's place again (PR #989 review 5711460812).
      */
     void startTrackRename(Track track, Label nameLabel, HBox trackItem) {
         int labelIndex = trackItem.getChildren().indexOf(nameLabel);
@@ -1987,6 +2114,10 @@ final class TrackStripController {
         editor.setPrefWidth(120);
 
         Runnable commit = () -> {
+            if (!projectActionsAllowed.getAsBoolean()) {
+                trackItem.getChildren().set(labelIndex, nameLabel);
+                return;
+            }
             String newName = editor.getText().strip();
             if (!newName.isEmpty() && !newName.equals(track.getName())) {
                 String oldName = track.getName();

@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.app.ui.status.SessionStatusStrip;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointEvent;
 import com.benesquivelmusic.daw.core.persistence.CheckpointEvent.RearmReason;
+import com.benesquivelmusic.daw.core.persistence.CheckpointOrder;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
 import com.benesquivelmusic.daw.core.snapshot.SnapshotEntry;
 
@@ -24,7 +25,9 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static com.benesquivelmusic.daw.app.ui.SaveFlowFixture.onFx;
 import static com.benesquivelmusic.daw.app.ui.SaveFlowFixture.runOnFx;
@@ -45,11 +48,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Song A's checkpoints have reported their start to the strip before any
  * test begins, so no real re-arm of Song A trails the ones a test hands to
  * the strip's checkpoint-status listener, as the checkpoint manager reports
- * them, for the running generation. The open and the new project hold their
- * seeding behind a Create Checkpoint of Song A held at its publish: the
- * switch's stop of Song A's checkpoints waits its five-second bound for it
- * (ruling G5), and the new generation's seeding is queued behind it on the
- * one writer.</p>
+ * them, for the running generation. Each project folder has a checkpoint
+ * writer of its own (story 333), so nothing of Song A holds another
+ * project's seeding: the open holds Song B's own seeding, inside its
+ * compaction of an ordering fact that names a checkpoint no longer in Song
+ * B's folder, held at its publish; a new project's folder holds nothing to
+ * hold, so its test records every value the countdown shows from the switch
+ * on.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class CheckpointCountdownAcrossReplacementsTest {
@@ -125,9 +130,10 @@ class CheckpointCountdownAcrossReplacementsTest {
         Path songB = fixture.anotherProjectOnDisk("Song B");
         rearmSongAsCheckpoints(DUE);
         fixture.pulse();
-        SaveFlowFixture.Publishes.Hold seedingHeldBehind = holdACreateCheckpointOfSongA();
+        SaveFlowFixture.Publishes.Hold seedingHeldBehind = holdTheSeedingOf(songB);
 
         assertThat(onFx(() -> fixture.lifecycle().loadProjectFromPath(songB))).isTrue();
+        seedingHeldBehind.awaitHeld();
         fixture.pulse();
 
         assertThat(onFx(fixture.progress::getNextCheckpointInstant))
@@ -147,24 +153,33 @@ class CheckpointCountdownAcrossReplacementsTest {
         Path parent = Files.createDirectories(workspace.resolve("new"));
         rearmSongAsCheckpoints(DUE);
         fixture.pulse();
-        SaveFlowFixture.Publishes.Hold seedingHeldBehind = holdACreateCheckpointOfSongA();
+        assertThat(onFx(fixture.progress::getNextCheckpointInstant)).as("fixture: the countdown runs").isEqualTo(DUE);
+        List<Instant> shown = new ArrayList<>();
+        ChangeListener<Instant> showing = (_, _, now) -> shown.add(now);
+        runOnFx(() -> fixture.progress.nextCheckpointInstantProperty().addListener(showing));
 
-        runOnFx(() -> {
-            fixture.lifecycle().setNewProjectLocationPrompt(() -> parent);
-            fixture.lifecycle().onNewProject();
-        });
-        fixture.pulse();
+        try {
+            runOnFx(() -> {
+                fixture.lifecycle().setNewProjectLocationPrompt(() -> parent);
+                fixture.lifecycle().onNewProject();
+            });
+            // Story 333 — New creates its project's folder, and starts its checkpoints, off the FX thread.
+            fixture.awaitOnFx(() -> fixture.checkpoints.runningGeneration().isPresent(),
+                    "the new project's checkpoints started");
+            long newGeneration = fixture.checkpoints.runningGeneration().orElseThrow();
+            theDueTimeOfTheLastRearmOf(newGeneration, RearmReason.STARTED);
+            fixture.awaitOnFx(() -> {
+                Instant now = fixture.progress.getNextCheckpointInstant();
+                return now != null && now.equals(lastRearmOf(newGeneration).nextDue());
+            }, "the countdown of the new project's last re-arm");
 
-        assertThat(onFx(fixture.progress::getNextCheckpointInstant))
-                .as("\"No checkpoint scheduled\" while the new project's checkpoints are being seeded").isNull();
-        long newGeneration = fixture.checkpoints.runningGeneration().orElseThrow();
-
-        seedingHeldBehind.release();
-        theDueTimeOfTheLastRearmOf(newGeneration, RearmReason.STARTED);
-        fixture.awaitOnFx(() -> {
-            Instant shown = fixture.progress.getNextCheckpointInstant();
-            return shown != null && shown.equals(lastRearmOf(newGeneration).nextDue());
-        }, "the countdown of the new project's last re-arm");
+            List<Instant> values = onFx(() -> new ArrayList<>(shown));
+            assertThat(values).as("\"No checkpoint scheduled\" first, while the new project's checkpoints were seeded")
+                    .isNotEmpty().first().isNull();
+            assertThat(values).as("never Song A's due time again").doesNotContain(DUE, LATER_DUE);
+        } finally {
+            runOnFx(() -> fixture.progress.nextCheckpointInstantProperty().removeListener(showing));
+        }
     }
 
     /**
@@ -247,12 +262,19 @@ class CheckpointCountdownAcrossReplacementsTest {
         return fixture.snapshots().service().createUserCheckpoint("Before the restore", document);
     }
 
-    /** A Create Checkpoint of Song A, held at its publish on the checkpoint writer. */
-    private SaveFlowFixture.Publishes.Hold holdACreateCheckpointOfSongA() throws Exception {
-        SaveFlowFixture.Publishes.Hold held = fixture.publishes.holdNext(SaveFlowFixture::isCheckpoint);
-        runOnFx(() -> fixture.snapshots().createCheckpointWithLabel("Held at its publish"));
-        held.awaitHeld();
-        return held;
+    /**
+     * Holds the next seeding of {@code folder}'s checkpoints inside its
+     * claim: the folder's ordering fact gains the name of a checkpoint that is
+     * not there, which the seeding compacts away through the checkpoint
+     * writer — held at that publish, before it reports.
+     */
+    private SaveFlowFixture.Publishes.Hold holdTheSeedingOf(Path folder) throws Exception {
+        Path checkpoints = Files.createDirectories(folder.resolve("checkpoints"));
+        Set<String> covered = new HashSet<>(CheckpointOrder.read(checkpoints));
+        covered.add("checkpoint-999-20260101T000000.daw");
+        CheckpointOrder.record(checkpoints, covered);
+        Path fact = checkpoints.resolve(CheckpointOrder.FILE_NAME);
+        return fixture.publishes.holdNext(fact::equals);
     }
 
     /** The strip over the fixture's model, realized headlessly in a {@code Scene} under {@code root}. FX thread. */

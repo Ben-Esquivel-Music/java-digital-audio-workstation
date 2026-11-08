@@ -863,10 +863,12 @@ final class RecordCoordinator {
      * entry lives, so it can be clicked during a later take's count-in,
      * when the transport is held STOPPED at the record position: it is a
      * user seek and asks {@code TransportController.refuseSeekWhileCountingIn()}
-     * first, like every other seek entry (story 328 review round 2) — a
+     * before it seeks, like every other seek entry (story 328 review round 2) — a
      * refused review moves nothing and says so in the status line.
      * Package-visible so the gate can be pinned without a device loss. FX
-     * thread.
+     * thread. It reads the window's edit gate first: while it says no the
+     * review moves nothing and writes no status, and the notification history
+     * keeps the action for later (PR #989 review 5711460812).
      *
      * @param anchor          the take's start anchor, in beats
      * @param takeDirectory   the take's folder, for the review status
@@ -874,6 +876,7 @@ final class RecordCoordinator {
      */
     Runnable rescuedTakeReview(double anchor, Path takeDirectory, double recordedSeconds) {
         return () -> {
+            if (!transport.projectActionsAllowed()) return;
             if (transport.refuseSeekWhileCountingIn()) return;
             Transport transportModel = project.getTransport();
             TransportState transportState = transportModel.getState();
@@ -950,7 +953,8 @@ final class RecordCoordinator {
      * allocated has not run yet. Cleared on the FX turn that follows that
      * removal. While set, {@link #onRecord()} refuses and
      * {@link #isTakeBeingWritten()} is {@code true} — FINALIZING, as for
-     * {@link #writingPipeline}. FX thread.
+     * {@link #writingPipeline}. Assigned only by {@link #setAbandonedStart}
+     * (story 333). FX thread.
      */
     private PendingStart abandonedStart;
     /**
@@ -960,9 +964,26 @@ final class RecordCoordinator {
      * thread has terminated and its audio has been read back from its
      * segments — or that ends it without a publication. While set,
      * {@link #onRecord()} refuses and {@link #isTakeBeingWritten()} is
-     * {@code true}. FX thread.
+     * {@code true}. Assigned only by {@link #setWritingPipeline} (story 333).
+     * FX thread.
      */
     private RecordingPipeline writingPipeline;
+    /**
+     * Story 333 (javafx-application-design skill §4, "Use JavaFX Properties
+     * for everything observable") — {@link #isTakeBeingWritten()} as a
+     * property, the fact the close protocol waits on instead of polling: its
+     * one writer is {@link #takeBeingWrittenChanged()}, which the two setters
+     * of the take's state call. FX thread.
+     */
+    private final ReadOnlyBooleanWrapper takeBeingWritten = new ReadOnlyBooleanWrapper(this, "takeBeingWritten");
+    /**
+     * Story 333 (ruling R2's take line) — how many takes this coordinator
+     * published with at least one clip or note in them: an audio take whose
+     * publication put a clip on a track, a MIDI take that recorded a note.
+     * The close protocol compares it before and after a take it stopped or
+     * waited out. FX thread.
+     */
+    private long takePublicationsWithClips;
     /**
      * Story 327 — the device whose loss put this coordinator in DEVICE_LOST,
      * named by the rescue's status and messages; set by {@link #onDeviceLost}
@@ -1098,7 +1119,8 @@ final class RecordCoordinator {
      * {@code MainController} also feeds the current controller's answer to
      * {@code ProjectLifecycleController}, which refuses the in-app doors that
      * replace the open project while it is {@code true} (story 323 review);
-     * quitting the application does not ask (story 333). FX thread.
+     * the exit protocol reads it too, and asks first whether to stop the take
+     * (story 333, ruling R1). FX thread.
      *
      * <p>A take still being written to disk ({@link #writingPipeline}) does not
      * count (story 323 review). Its Stop has already run — callback removed,
@@ -1155,6 +1177,7 @@ final class RecordCoordinator {
         // puts the lanes and the take's selection back (story 328 review).
         undoManager.execute(new RecordedTakeAction(pipeline));
         project.markDirty();
+        takePublicationsWithClips++;
     }
 
     /**
@@ -1181,7 +1204,7 @@ final class RecordCoordinator {
      * itself always runs on a later FX turn. FX thread.
      */
     private void publishWhenWritten(RecordingPipeline pipeline, CompletionStage<Void> written) {
-        writingPipeline = pipeline;
+        setWritingPipeline(pipeline);
         written.whenComplete((_, _) -> postFx(() -> finishWrittenTake(pipeline)));
     }
 
@@ -1473,7 +1496,7 @@ final class RecordCoordinator {
      */
     private void endWrittenTake(RecordingPipeline pipeline) {
         if (writingPipeline == pipeline) {
-            writingPipeline = null;
+            setWritingPipeline(null);
             if (unannouncedTake == pipeline) {
                 unannouncedTake = null;
                 unannouncedStart = null;
@@ -2099,11 +2122,52 @@ final class RecordCoordinator {
      * book §5.2, which returns to IDLE only once the seal has completed.
      * {@code MainController} feeds the current controller's answer to
      * {@code ProjectLifecycleController}, which refuses the in-app doors that
-     * replace the open project while it is {@code true}; quitting the
-     * application does not ask (story 333). FX thread.
+     * replace the open project while it is {@code true}; the exit protocol
+     * reads it too, and waits for the take before it saves, seals or releases
+     * anything (story 333, ruling R1). FX thread.
      */
     boolean isTakeBeingWritten() {
         return writingPipeline != null || abandonedStart != null;
+    }
+
+    /**
+     * Story 333 — {@link #isTakeBeingWritten()} as a read-only property: the
+     * close protocol waits on it, without polling, until the take it stopped
+     * or found being written has been published (ruling R1). Its one writer
+     * is the take's state ({@link #setWritingPipeline}, {@link #setAbandonedStart}).
+     * FX thread.
+     *
+     * @return the property
+     */
+    ReadOnlyBooleanProperty takeBeingWrittenProperty() {
+        return takeBeingWritten.getReadOnlyProperty();
+    }
+
+    /**
+     * Story 333 (ruling R2's take line) — how many takes this coordinator
+     * published with at least one clip or note in them so far. FX thread.
+     *
+     * @return the count
+     */
+    long takePublicationsWithClips() {
+        return takePublicationsWithClips;
+    }
+
+    /** The take still being written, or {@code null}: its one assignment (story 333). FX thread. */
+    private void setWritingPipeline(RecordingPipeline pipeline) {
+        writingPipeline = pipeline;
+        takeBeingWrittenChanged();
+    }
+
+    /** The abandoned start whose files are still being removed, or {@code null}: its one assignment. FX thread. */
+    private void setAbandonedStart(PendingStart start) {
+        abandonedStart = start;
+        takeBeingWrittenChanged();
+    }
+
+    /** The one writer of {@link #takeBeingWritten}: the body of {@link #isTakeBeingWritten()}, re-read. FX thread. */
+    private void takeBeingWrittenChanged() {
+        takeBeingWritten.set(writingPipeline != null || abandonedStart != null);
     }
 
     /**
@@ -2393,7 +2457,7 @@ final class RecordCoordinator {
 
     private void failPreparedInputStart(PendingStart start, Throwable failure) {
         pendingStart = null;
-        abandonedStart = start;
+        setAbandonedStart(start);
         start.failure = failure;
         start.filesCleanupComplete = true;
         abortRecordingTake(failure);
@@ -2676,7 +2740,7 @@ final class RecordCoordinator {
     /** Preserves a take that ended during readiness without ever announcing a live recording. */
     private void finishUnannouncedTake(PendingStart start) {
         RecordingPipeline pipeline = start.pipeline;
-        writingPipeline = pipeline;
+        setWritingPipeline(pipeline);
         unannouncedTake = pipeline;
         unannouncedStart = start;
         recordingPipeline = null;
@@ -2751,7 +2815,7 @@ final class RecordCoordinator {
         PendingStart start = pendingStart;
         pendingStart = null;
         start.cancelled = true;
-        abandonedStart = start;
+        setAbandonedStart(start);
         closeCapturePeaks();
         if (start.pipeline != null) {
             removeFilesOfAbandonedStart(start, discardTake(start.pipeline));
@@ -2811,7 +2875,7 @@ final class RecordCoordinator {
      * and the last one only posts. FX thread.
      */
     private void removeFilesOfAbandonedStart(PendingStart start, CompletionStage<Void> termination) {
-        abandonedStart = start;
+        setAbandonedStart(start);
         Path takeDirectory = start.takeDirectory;
         termination.thenRunAsync(() -> deleteEmptyTakeDirectory(takeDirectory), storageExecutor)
                 .whenComplete((_, _) -> postFx(() -> abandonedStartCleanedUp(start)));
@@ -2836,7 +2900,7 @@ final class RecordCoordinator {
     private void finishAbandonedStartCleanup(PendingStart start) {
         if (!start.filesCleanupComplete || start.inputCleanupRunning || start.inputCleanupFailed) return;
         if (abandonedStart == start) {
-            abandonedStart = null;
+            setAbandonedStart(null);
             settle();
         }
     }
@@ -3455,7 +3519,10 @@ final class RecordCoordinator {
             }
         }
         if (startFailure != null) {
-            if (totalNotes > 0) abortStep(startFailure, project::markDirty);
+            if (totalNotes > 0) {
+                takePublicationsWithClips++;
+                abortStep(startFailure, project::markDirty);
+            }
             return;
         }
         postFx(this::settle);
@@ -3464,6 +3531,7 @@ final class RecordCoordinator {
             // At least one "Record MIDI" action was registered over notes the
             // recorders put into the project's clips.
             project.markDirty();
+            takePublicationsWithClips++;
             String msg = "Recording stopped — " + totalNotes + " MIDI note"
                     + (totalNotes > 1 ? "s" : "") + " captured";
             if (statusBarLabel.getText() == null

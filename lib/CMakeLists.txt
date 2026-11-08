@@ -44,6 +44,26 @@ option(BUILD_ASIO_SHIM     "Build asioshim FFM bridge (requires ASIO_SDK_DIR)"
 set(BUILD_ASIOSHIM "${BUILD_ASIO_SHIM}" CACHE BOOL
     "Deprecated alias for BUILD_ASIO_SHIM" FORCE)
 
+# ── CMake 4 policy floor for pre-3.5 vendored projects ──────────────
+# CMake 4.0 removed compatibility with cmake_minimum_required(VERSION)
+# below 3.5. portaudio/CMakeLists.txt declares 2.8 and
+# vorbis-1.3.7/CMakeLists.txt declares 2.8.12, so those two (and only
+# those two) are added through this macro: it sets
+# CMAKE_POLICY_VERSION_MINIMUM to 3.5 around their add_subdirectory()
+# call and clears it afterwards. The floor is applied from here so the
+# vendored trees stay pristine. A value the user already defined (e.g.
+# -DCMAKE_POLICY_VERSION_MINIMUM=3.10) is used unchanged. CMake versions
+# before 4.0 do not read this variable.
+macro(daw_add_subdirectory_with_policy_floor _daw_subdir)
+    if(NOT DEFINED CMAKE_POLICY_VERSION_MINIMUM)
+        set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+        add_subdirectory(${_daw_subdir} EXCLUDE_FROM_ALL)
+        unset(CMAKE_POLICY_VERSION_MINIMUM)
+    else()
+        add_subdirectory(${_daw_subdir} EXCLUDE_FROM_ALL)
+    endif()
+endmacro()
+
 # ── 1. PortAudio ───────────────────────────────────────────────────
 if(BUILD_PORTAUDIO)
     message(STATUS "── Configuring PortAudio ──")
@@ -52,7 +72,7 @@ if(BUILD_PORTAUDIO)
     set(PA_BUILD_EXAMPLES  OFF CACHE BOOL "" FORCE)
     set(PA_BUILD_TESTS     OFF CACHE BOOL "" FORCE)
     set(PA_DISABLE_INSTALL ON  CACHE BOOL "Disable install/uninstall targets" FORCE)
-    add_subdirectory(portaudio EXCLUDE_FROM_ALL)
+    daw_add_subdirectory_with_policy_floor(portaudio)
     # Force output into the common native directory (all configurations)
     set_target_properties(portaudio PROPERTIES
         LIBRARY_OUTPUT_DIRECTORY "${NATIVE_LIBS_OUTPUT_DIR}"
@@ -193,7 +213,7 @@ if(BUILD_LIBVORBIS)
         "libogg library (in-tree target name; satisfies FindOgg.cmake's check)" FORCE)
     # Skip optional sub-projects that would slow or fail the build
     set(INSTALL_CMAKE_PACKAGE_MODULE OFF CACHE BOOL "" FORCE)
-    add_subdirectory(vorbis-1.3.7 EXCLUDE_FROM_ALL)
+    daw_add_subdirectory_with_policy_floor(vorbis-1.3.7)
     # The upstream vorbis CMakeLists.txt sets SOVERSION to the full
     # version string (e.g. "0.4.9") instead of just the soversion number,
     # which prevents CMake from creating the expected SOVERSION symlinks

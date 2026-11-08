@@ -207,6 +207,8 @@ class ProjectReplacementJournalSafetyTest {
                 release.countDown();
                 fixture.awaitOnFx(() -> !fixture.lifecycle().isProjectInstallationPending(), "replacement finished after seal");
                 assertThat(fixture.project.get()).isNotSameAs(original);
+                // The close retires the lease: its release runs off the caller, once nothing is owed (story 333).
+                fixture.projectManager.whenRetiredLeasesReleased().get(15, TimeUnit.SECONDS);
                 assertThat(fixture.songA.resolve(ProjectLockManager.LOCK_FILE_NAME)).doesNotExist();
             } finally {
                 release.countDown();

@@ -16,6 +16,7 @@ The strings, by owner:
 - `SnapshotsController`: `KEPT_IN_MEMORY_UNSAVED_MESSAGE`, `KEPT_IN_MEMORY_READ_ONLY_MESSAGE`.
 - `CheckpointStatusListener`: `Checkpoint failed: <cause>` and the streak warning (`streakWarning`).
 - `SessionStatusStripSkin`: the Saved cell's text, tooltip and accessible text (`savedText`, `savedDetail`, `spokenSavedState`).
+- The door names shown inside bundle texts as {0} or {1} — story 331's NEW_PROJECT_DOOR, OPEN_PROJECT_DOOR, IMPORT_SESSION_DOOR, RESTORE_FROM_ARCHIVE_DOOR, RESTORE_SNAPSHOT_DOOR, RECOVER_SESSION_DOOR and ROLL_BACK_MIGRATION_DOOR in ProjectLifecycleController, and story 333's SAVE_PROJECT_DOOR ("Save Project"), SAVE_AS_DOOR ("Save As"), CLOSE_PROJECT_DOOR ("Close Project") and ExitCoordinator.EXIT_DOOR ("Exit"). They double as the doors' identifiers in log lines, so each gets a display-name key and keeps its identifier; APPLICATION_STOP_DOOR is log-only and stays a literal.
 
 ## Goals
 

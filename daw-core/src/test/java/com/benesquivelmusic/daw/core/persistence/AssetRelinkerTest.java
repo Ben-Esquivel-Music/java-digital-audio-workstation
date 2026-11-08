@@ -83,7 +83,7 @@ class AssetRelinkerTest {
         assertThat(Files.readString(reopened.projectDir().resolve("project.daw")))
                 .contains("source-file=\"audio/found/tone.wav\"")
                 .doesNotContain(copy.toString());
-        reopened.manager().abandonProject();
+        reopened.manager().closeProject().join();
     }
 
     @Test
@@ -101,7 +101,7 @@ class AssetRelinkerTest {
         assertThat(onlyClip(reopened.project()).getAudioData()).isNotNull();
         assertThat(Files.readString(reopened.projectDir().resolve("project.daw")))
                 .contains("source-file=\"" + copy + "\"");
-        reopened.manager().abandonProject();
+        reopened.manager().closeProject().join();
     }
 
     @Test
@@ -118,7 +118,7 @@ class AssetRelinkerTest {
         take.setSourceSegmentPaths(recorded);
         track.addClip(take);
         saved(manager, project);
-        manager.abandonProject();
+        manager.closeProject().join();
         Path moved = ProjectManager.audioDirectory(projectDir).resolve("moved-take");
         Files.move(takeFolder, moved);
         List<Path> movedSegments = List.of(moved.resolve("segment-000.wav"), moved.resolve("segment-001.wav"));
@@ -151,7 +151,7 @@ class AssetRelinkerTest {
                 .contains("<source-segment path=\"audio/moved-take/segment-000.wav\"/>")
                 .contains("<source-segment path=\"audio/moved-take/segment-001.wav\"/>")
                 .doesNotContain(projectDir.toString());
-        reopened.abandonProject();
+        reopened.closeProject().join();
     }
 
     @Test
@@ -614,7 +614,7 @@ class AssetRelinkerTest {
         DawProject project = new DawProject(name, FORMAT);
         float[][] imported = new AudioFileImporter(project).importFile(library, 0.0).clip().getAudioData();
         saved(manager, project);
-        manager.abandonProject();
+        manager.closeProject().join();
         Path parked = Files.createDirectories(tempDir.resolve("parked-" + name)).resolve("tone.wav");
         Files.move(library, parked);
 

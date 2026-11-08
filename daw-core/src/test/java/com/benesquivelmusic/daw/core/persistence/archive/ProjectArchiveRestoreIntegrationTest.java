@@ -89,7 +89,7 @@ class ProjectArchiveRestoreIntegrationTest {
                 .startsWith(restoreDir.toAbsolutePath());
 
         // Tidy up the lock so @TempDir cleanup is well-behaved.
-        pm.abandonProject();
+        pm.closeProject().join();
     }
 
     @Test

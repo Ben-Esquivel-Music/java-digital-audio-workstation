@@ -72,7 +72,7 @@ class SaveCheckpointGenerationTest {
     @AfterEach
     void releaseTheManager() {
         gates.forEach(Gate::release);
-        manager.abandonProject();
+        manager.closeProject().join();
     }
 
     @Test
@@ -129,7 +129,7 @@ class SaveCheckpointGenerationTest {
         CompletableFuture<SaveOutcome> pending = manager.save(project);
         head.awaitReached();
 
-        manager.abandonProject();
+        manager.closeProject();
         manager.openProject(first);
         Map<String, String> before = checkpointsIn(first);
         assertThat(before).as("fixture: the first save's checkpoint and ordering fact, seeded by the new generation")
@@ -200,7 +200,7 @@ class SaveCheckpointGenerationTest {
      * the old generation has ended, the save's checkpoint is refused by its
      * generation binding even while the save target remains installed. The re-check
      * still matters where the fence comes before the stop:
-     * {@code abandonProject} and {@code closeProject}.
+     * {@code closeProject}.
      */
     @Test
     void aSaveWhoseProjectAnOpenIsReplacingRequestsNoCheckpointOnceTheOpenBegan() throws Exception {
@@ -232,7 +232,9 @@ class SaveCheckpointGenerationTest {
         assertThat(await(opening).projectPath()).isEqualTo(second);
         assertThat(manager.getCurrentProject().projectPath()).isEqualTo(second);
         manager.getLockManager().verifyHeld();
-        assertThat(ProjectLockManager.peekLock(first)).isEmpty();
+        await(manager.whenRetiredLeasesReleased());
+        assertThat(ProjectLockManager.peekLock(first)).as("released once the head write it waited for ended")
+                .isEmpty();
     }
 
     private static void assertWrittenWithoutACheckpoint(SaveOutcome outcome, String name) {

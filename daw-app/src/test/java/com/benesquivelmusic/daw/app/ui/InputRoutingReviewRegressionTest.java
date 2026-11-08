@@ -53,7 +53,8 @@ class InputRoutingReviewRegressionTest {
                 rig.audioEngine.setInputLevelMonitorRegistry(monitors);
                 rig.audioEngine.setStreamingProvision(new StreamingProvision(backend.name(), List.of(
                         new BackendStreamRung(backend, DeviceId.defaultFor(backend.name())))));
-                wiring.set(TrackControlWiring.standalone(project, rig.dispatcher, null, rig.audioEngine, errors::add));
+                wiring.set(TrackControlWiring.standalone(project, rig.dispatcher, null, rig.audioEngine, errors::add,
+                        () -> true));
                 track.addChangeListener(kind -> { if (track.isArmed()) accepted.countDown(); });
                 wiring.get().commandSink().accept(new ToggleArmCommand(track, true));
             });
@@ -133,7 +134,7 @@ class InputRoutingReviewRegressionTest {
             ArrangementStripFixture.onFx(() -> {
                 wiring.set(TrackControlWiring.standalone(project, dispatcher, null, engine, message -> {
                     error.set(message); refused.countDown();
-                }));
+                }, () -> true));
                 wide.addChangeListener(kind -> { if (wide.isArmed()) firstAccepted.countDown(); });
                 explicit.addChangeListener(kind -> { if (explicit.isArmed()) acceptedExplicit.incrementAndGet(); });
                 wiring.get().commandSink().accept(new ToggleArmCommand(wide, true));

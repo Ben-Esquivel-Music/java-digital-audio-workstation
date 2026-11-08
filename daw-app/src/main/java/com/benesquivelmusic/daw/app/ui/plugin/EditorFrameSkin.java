@@ -408,6 +408,13 @@ public final class EditorFrameSkin extends SkinBase<EditorFrame> {
             } finally {
                 syncingBypass = false;
             }
+            // A host that refused the flip set the control back from inside
+            // its own notification, where the guard swallowed the echo: push
+            // the control's live value so the button shows it (PR #989 review
+            // 5711460812). An admitted flip leaves them equal.
+            if (bypassButton.isSelected() != getSkinnable().isBypassed()) {
+                bypassButton.setSelected(getSkinnable().isBypassed());
+            }
         };
 
         abButton.setSelected(control.isAbBarVisible());

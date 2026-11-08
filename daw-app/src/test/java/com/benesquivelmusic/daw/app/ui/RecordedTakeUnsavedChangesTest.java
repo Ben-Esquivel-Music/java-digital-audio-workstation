@@ -178,7 +178,7 @@ class RecordedTakeUnsavedChangesTest {
             });
             engine.stopAudioOutput();
             engine.stop();
-            projectManager.abandonProject();
+            projectManager.closeProject().join();
         }
     }
 

@@ -144,7 +144,7 @@ class ProjectManagerLockingTest {
         ProjectMetadata md = session1.createProject("Song", tempDir);
         assertThat(md.projectPath().resolve(ProjectLockManager.LOCK_FILE_NAME)).exists();
 
-        session1.closeProject();
+        session1.closeProject().join();
 
         assertThat(md.projectPath().resolve(ProjectLockManager.LOCK_FILE_NAME)).doesNotExist();
     }

@@ -205,6 +205,22 @@ class StripStateSeparationTest {
                 .isEqualTo("Checkpoints are failing: no space left. No earlier checkpoint of this project was found.");
     }
 
+    /** Story 333, ruling R3: the exit's closing checkpoint is not an autosave, so its failure does not count. */
+    @Test
+    void aClosingCheckpointFailureDoesNotCountTowardTheStreakNorStartItOver() throws Exception {
+        IOException cause = new IOException("the volume went away");
+        status.accept(failed(CheckpointOrigin.SCHEDULED, cause));
+        status.accept(failed(CheckpointOrigin.CLOSING, cause));
+        runOnFx(() -> { });
+        assertThat(warnings()).as("a closing checkpoint's failure is not autosave's").isEmpty();
+
+        status.accept(failed(CheckpointOrigin.SCHEDULED, cause));
+        runOnFx(() -> { });
+        assertThat(warnings()).as("nor did it start the streak over: the second automatic failure in a row warns")
+                .singleElement().satisfies(warning -> assertThat(warning).startsWith("Checkpoints are failing: the"
+                        + " volume went away."));
+    }
+
     private void pulse() throws Exception {
         runOnFx(dispatcher::pulse);
     }

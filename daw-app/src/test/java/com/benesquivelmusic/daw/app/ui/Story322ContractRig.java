@@ -71,7 +71,8 @@ final class Story322ContractRig implements AutoCloseable {
                 ZoomLevel::new,
                 () -> null,
                 () -> wiring,
-                new NoSessionInput());
+                new NoSessionInput(),
+                () -> true);
         assertThat(mixerView.getTrackControlWiring())
                 .as("the mixer view binds through the HOSTED wiring, not its standalone fallback")
                 .isSameAs(wiring);

@@ -103,9 +103,11 @@ class DurableWritesGoThroughTheAtomicWriterTest {
     private static final List<AllowedWrite> ALLOWED = List.of(
             new AllowedWrite("persistence/AtomicFileWriter.java", "FileChannel.open", 2,
                     "the writer itself: the temp sibling's CREATE_NEW, WRITE, NOFOLLOW_LINKS channel and the"
-                            + " best-effort READ channel of the directory fsync after the publish"),
+                            + " best-effort READ channel of a directory fsync: after each publish, and of each folder"
+                            + " a Save As copy created, forced before its project.daw is written (forceDirectory)"),
             new AllowedWrite("persistence/AtomicFileWriter.java", "Files.move", 1,
-                    "the writer itself: its production mover, Files::move, the publish of every write"),
+                    "the writer itself: its production mover, Files::move, the publish of every write and of"
+                            + " every staging directory (publishDirectory: archive restore, Save As)"),
             new AllowedWrite("persistence/ProjectLog.java", "Files.writeString", 1,
                     "the append-only audit log (CREATE, WRITE, APPEND): an event is a line added, never a"
                             + " replace of the file"),
@@ -118,9 +120,6 @@ class DurableWritesGoThroughTheAtomicWriterTest {
             new AllowedWrite("persistence/archive/ProjectArchiver.java", "Files.newOutputStream", 1,
                     "archive restore: each entry is extracted into a staging directory (or a target"
                             + " directory the caller made) that is published whole, not a file replace"),
-            new AllowedWrite("persistence/archive/ProjectArchiver.java", "Files.move", 2,
-                    "archive restore: the staging directory's publish (ATOMIC_MOVE) and its plain-move"
-                            + " fallback, a directory publish rather than a file replace"),
             new AllowedWrite("session/dawproject/DawProjectSessionExporter.java", "Files.newOutputStream", 1,
                     "the DAWproject interchange export writes a file the user chose outside the project, no"
                             + " durability artifact of it; story 331 does not move it onto the writer"),

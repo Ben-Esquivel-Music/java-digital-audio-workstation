@@ -146,7 +146,7 @@ class RestoredArchiveAsksAgainTest {
             throws Exception {
         // Reachable: a project that was never saved asks for its folder at the
         // prompt's Save, as its Ctrl+S would.
-        fixture.projectManager.abandonProject();
+        fixture.projectManager.closeProject().join();
         AtomicInteger locationPrompts = new AtomicInteger();
         fixture.promptAnswer = "Save";
         DawProject untitled = fixture.project.get();

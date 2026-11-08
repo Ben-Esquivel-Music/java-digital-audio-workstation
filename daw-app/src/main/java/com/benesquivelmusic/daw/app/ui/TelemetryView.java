@@ -18,6 +18,9 @@ import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 import javafx.util.Duration;
 
+import java.util.Objects;
+import java.util.function.BooleanSupplier;
+
 /**
  * Full-screen Sound Wave Telemetry view with two states.
  *
@@ -70,6 +73,12 @@ public final class TelemetryView extends VBox {
     private RoomConfiguration lastConfig;
     private DawProject project;
     private Runnable onDirtyChanged;
+    /**
+     * The window's edit gate: Generate Telemetry saves the room configuration
+     * with the project, so it is refused while the gate says no (PR #989
+     * review 5711460812). FX thread.
+     */
+    private BooleanSupplier projectActionsAllowed = () -> true;
     private final PauseTransition dragDebounce;
 
     /**
@@ -178,9 +187,14 @@ public final class TelemetryView extends VBox {
 
     /**
      * Validates setup panel inputs, builds a {@link RoomConfiguration},
-     * computes telemetry data, and transitions to display state.
+     * computes telemetry data, and transitions to display state. Refused,
+     * changing nothing, while the window's edit gate says no (PR #989 review
+     * 5711460812).
      */
     private void generateTelemetry() {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         RoomDimensions dimensions = setupPanel.getRoomDimensions();
         WallMaterial material = setupPanel.getSelectedWallMaterial();
 
@@ -440,6 +454,18 @@ public final class TelemetryView extends VBox {
     }
 
     /**
+     * Sets the window's edit gate the view's saves read: while it says no,
+     * Generate Telemetry is refused and the project's room configuration is
+     * not written (PR #989 review 5711460812).
+     *
+     * @param projectActionsAllowed whether the project may be edited now
+     */
+    public void setProjectActionsAllowed(BooleanSupplier projectActionsAllowed) {
+        this.projectActionsAllowed = Objects.requireNonNull(
+                projectActionsAllowed, "projectActionsAllowed must not be null");
+    }
+
+    /**
      * Starts the animation timer for continuous rendering.
      * Call this when the telemetry view becomes the active view.
      * The timer only runs when the view is in display state.
@@ -518,6 +544,9 @@ public final class TelemetryView extends VBox {
      * notifies the host controller via the dirty callback.
      */
     private void saveConfigToProject(RoomConfiguration config) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return;
+        }
         if (project != null && config != null) {
             project.setRoomConfiguration(config);
             project.markDirty();

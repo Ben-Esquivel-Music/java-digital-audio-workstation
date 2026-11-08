@@ -2,10 +2,11 @@ package com.benesquivelmusic.daw.core.persistence.archive;
 
 import com.benesquivelmusic.daw.core.concurrent.DawScope;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
-import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.persistence.AtomicFileWriter;
+import com.benesquivelmusic.daw.core.persistence.ProjectAssetReferences;
 import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
 import com.benesquivelmusic.daw.core.persistence.ProjectDocument;
+import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectPaths;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
 import com.benesquivelmusic.daw.core.persistence.UnreadProjectItem;
@@ -17,13 +18,11 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
-import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -107,7 +106,7 @@ public final class ProjectArchiver {
     public static final String ARCHIVE_EXTENSION = ".dawz";
 
     /** Asset folder used by {@link #consolidateInPlace}. */
-    public static final String CONSOLIDATED_ASSETS_DIR = "assets";
+    public static final String CONSOLIDATED_ASSETS_DIR = ProjectManager.ASSETS_DIR_NAME;
 
     private static final String DEFAULT_DAW_VERSION = "0.1.0-SNAPSHOT";
     private static final int COPY_BUFFER_SIZE = 64 * 1024;
@@ -352,6 +351,13 @@ public final class ProjectArchiver {
      * and loads the embedded project, rewriting asset paths to absolute
      * locations within {@code targetDir}.
      *
+     * <p>A {@code targetDir} that does not exist is extracted into its staging
+     * sibling ({@code .<name>.restoring.tmp}, hidden on POSIX) and, once the archive
+     * checked out, published whole by the writer's one directory publish
+     * ({@link AtomicFileWriter#publishDirectory}), so it never holds half a
+     * project; a failure, before the publish or after it, deletes the folder
+     * this call extracted.</p>
+     *
      * @param archiveFile    the {@code .dawz} archive to read
      * @param targetDir      destination directory for extraction (typically a
      *                       temp dir; will be created if it does not exist)
@@ -459,8 +465,8 @@ public final class ProjectArchiver {
         Map<String, Path> hashToConsolidated = new LinkedHashMap<>();
         long totalBytes = 0L;
 
-        for (AssetRef ref : collectRefs(project, options)) {
-            Path src = ref.absolutePath();
+        for (ProjectAssetReferences.Ref ref : collectRefs(project, options)) {
+            Path src = fileOf(ref);
             if (src == null || !Files.isRegularFile(src)) {
                 continue;
             }
@@ -498,70 +504,36 @@ public final class ProjectArchiver {
     // ──────────────────────────────────────────────────────────────────────
 
     /**
-     * Walks every clip and SoundFont assignment, building a list of mutable refs.
-     *
-     * <p>The clips walked are the ones whose references the saved project
-     * carries ({@link com.benesquivelmusic.daw.core.comping.TakeComping#referenceHoldersAsSaved}):
-     * a track's clips, or — while a take lane is auditioned — its non-comp
+     * The archive's live references ({@link ProjectAssetReferences}): those
+     * of the clips the saved project carries
+     * ({@link com.benesquivelmusic.daw.core.comping.TakeComping#referenceHoldersAsSaved})
+     * — a track's clips, or, while a take lane is auditioned, its non-comp
      * clips and the take-lane clips the comp selection slices, because the
      * serializer then writes the selection compile, whose clips copy their
      * take clip's references: the same references the captured document
      * holds ({@link #capture}), so a selection drawn from a lane other than
-     * the soloed one is counted (PR #984 review). {@link #previewAssetSizes}
-     * only reads the refs; {@link #consolidateInPlace} and the freshly read
-     * project of {@link #openArchive} update them.</p>
+     * the soloed one is counted (PR #984 review), and the soloed lane, not
+     * saved, is not — then each track's SoundFont path when {@code options}
+     * include SoundFonts. {@link #previewAssetSizes} only reads the refs;
+     * {@link #consolidateInPlace} and the freshly read project of
+     * {@link #openArchive} update them.
      *
      * <p>A clip that carries a segment list (a recorded take, story 323 — even
-     * a short take carries a one-element list) contributes one
-     * {@link AudioClipSegmentRef} per segment and <em>no</em>
-     * {@link AudioClipRef}. The list is read once per clip, and each segment
-     * ref captures its element from that one read, so all of a clip's
-     * segment refs come from one snapshot and none re-reads the live list to
-     * learn its reference. The list is the authority and
-     * {@link AudioClip#getSourceFilePath()} is only its first element, so a
-     * head-only ref would both miss segments 1…n and be refused by
-     * {@link AudioClip#setSourceFilePath(String)}. A single-file clip keeps
-     * its {@link AudioClipRef}.</p>
-     *
-     * <p>Only a {@code null} or empty clip reference is skipped, the same
-     * test {@code AudioClip.setSourceSegmentPaths} and the project reader
-     * apply. A whitespace-only one gets a ref like any other; it names no
-     * file, and no {@link ArchiveAssetDecision} can name it (its constructor
-     * refuses a blank path), so it gets no payload and is written into the
-     * archive as it is.</p>
+     * a short take carries a one-element list) contributes one reference per
+     * segment and no source-file reference, each captured from one read of
+     * the list (see {@link ProjectAssetReferences.Ref}). Only a {@code null}
+     * or empty clip reference is skipped, the same test
+     * {@code AudioClip.setSourceSegmentPaths} and the project reader apply. A
+     * whitespace-only one gets a ref like any other; it names no file, and no
+     * {@link ArchiveAssetDecision} can name it (its constructor refuses a
+     * blank path), so it gets no payload and is written into the archive as
+     * it is.</p>
      */
-    private List<AssetRef> collectRefs(DawProject project, ArchiveOptions options) {
-        List<AssetRef> refs = new ArrayList<>();
-        for (Track track : project.getTracks()) {
-            // The clips whose references the SAVED clips carry: mid-audition
-            // the saved comp is the selection, sliced from take-lane clips
-            // that may sit on a lane other than the soloed one (PR #984 review).
-            for (AudioClip clip : track.getTakeComping().referenceHoldersAsSaved(track)) {
-                List<String> segments = clip.getSourceSegmentPaths();
-                if (!segments.isEmpty()) {
-                    for (int index = 0; index < segments.size(); index++) {
-                        String segment = segments.get(index);
-                        if (!segment.isEmpty()) {
-                            refs.add(new AudioClipSegmentRef(clip, index, segment));
-                        }
-                    }
-                    continue;
-                }
-                String p = clip.getSourceFilePath();
-                if (p != null && !p.isEmpty()) {
-                    refs.add(new AudioClipRef(clip));
-                }
-            }
-            if (options.includeSoundFonts()) {
-                SoundFontAssignment sf = track.getSoundFontAssignment();
-                if (sf != null && sf.soundFontPath() != null) {
-                    refs.add(new SoundFontRef(track, sf));
-                }
-            }
-            // Future: ConvolutionReverbPlugin.irPath when plugin is added —
-            // honored by options.includeImpulseResponses().
-        }
-        return refs;
+    private static List<ProjectAssetReferences.Ref> collectRefs(DawProject project, ArchiveOptions options) {
+        // Future: ConvolutionReverbPlugin.irPath when plugin is added —
+        // honored by options.includeImpulseResponses().
+        return ProjectAssetReferences.collect(project,
+                track -> track.getTakeComping().referenceHoldersAsSaved(track), options.includeSoundFonts());
     }
 
     /**
@@ -667,7 +639,7 @@ public final class ProjectArchiver {
         }
 
         Path extractedAbs = extractedDir.toAbsolutePath().normalize();
-        for (AssetRef ref : collectRefs(project, ArchiveOptions.defaults())) {
+        for (ProjectAssetReferences.Ref ref : collectRefs(project, ArchiveOptions.defaults())) {
             String stored = ref.currentPath();
             if (stored == null || stored.isBlank()) {
                 continue;
@@ -888,27 +860,27 @@ public final class ProjectArchiver {
         return byPath;
     }
 
+    /**
+     * The staging sibling a restore into a new folder extracts into,
+     * {@code .<name>.restoring.tmp} ({@link AtomicFileWriter#stagingSiblingOf}),
+     * with its parent created and a staging directory an earlier restore left
+     * deleted first.
+     */
     private static Path restoreStagingDir(Path targetDir) throws IOException {
-        Path parent = targetDir.toAbsolutePath().getParent();
+        Path staging = AtomicFileWriter.stagingSiblingOf(targetDir, "restoring");
+        Path parent = staging.getParent();
         if (parent != null) {
             Files.createDirectories(parent);
         }
-        Path name = targetDir.getFileName();
-        String base = name == null ? "restore" : name.toString();
-        Path staging = (parent == null ? Path.of(".") : parent)
-                .resolve("." + base + ".restoring.tmp");
         if (Files.exists(staging)) {
             deleteRecursively(staging);
         }
         return staging;
     }
 
-    private static void moveRestoreIntoPlace(Path stagingDir, Path targetDir) throws IOException {
-        try {
-            Files.move(stagingDir, targetDir, StandardCopyOption.ATOMIC_MOVE);
-        } catch (AtomicMoveNotSupportedException e) {
-            Files.move(stagingDir, targetDir);
-        }
+    /** Publishes the fully extracted staging directory as {@code targetDir}: the writer's one directory publish. */
+    private void moveRestoreIntoPlace(Path stagingDir, Path targetDir) throws IOException {
+        fileWriter.publishDirectory(stagingDir, targetDir);
     }
 
     private static IOException asIOException(String message, Throwable cause) {
@@ -960,28 +932,22 @@ public final class ProjectArchiver {
 
     // ── Internal ref/plan types ──────────────────────────────────────────
 
-    /** Mutable handle on an asset path inside the project graph. */
-    private interface AssetRef {
-        String currentPath();
-        void update(String newPath);
-        /** Best-effort resolution of the current path to an absolute file. */
-        default Path absolutePath() {
-            return fileFor(currentPath());
-        }
-        /**
-         * Best-effort resolution of {@code s}, a reference this ref held when
-         * it was read, to an absolute file; it does not read the live ref.
-         */
-        default Path fileFor(String s) {
-            return workingDirectoryFile(s);
-        }
+    /**
+     * Best-effort resolution of {@code ref}'s current reference to an
+     * absolute file: a clip reference only when it is absolute
+     * ({@link #clipReferenceFile}), a SoundFont path against the working
+     * directory when it is relative ({@link #workingDirectoryFile}).
+     */
+    private static Path fileOf(ProjectAssetReferences.Ref ref) {
+        return ref.kind() == ProjectDocument.ReferenceKind.SOUND_FONT
+                ? workingDirectoryFile(ref.currentPath())
+                : clipReferenceFile(ref.currentPath());
     }
 
     /**
-     * The file a SoundFont path names, and what {@link AssetRef#fileFor}
-     * returns by default: the path resolved against the working directory
-     * when it is relative, or {@code null} when it is {@code null}, blank or
-     * no path on this platform.
+     * The file a SoundFont path names: the path resolved against the working
+     * directory when it is relative, or {@code null} when it is {@code null},
+     * blank or no path on this platform.
      */
     private static Path workingDirectoryFile(String s) {
         if (s == null || s.isBlank()) {
@@ -995,76 +961,16 @@ public final class ProjectArchiver {
     }
 
     /**
-     * The file a clip reference names (story 323), and what
-     * {@link AudioClipRef} and {@link AudioClipSegmentRef} return from
-     * {@code fileFor} (and so {@code absolutePath()}): the reference as a path when it is absolute on
-     * this platform, and {@code null} for every other one — relative, drive-
-     * or root-relative, unparseable, {@code null} or empty — which names no
-     * file ({@link ProjectPaths#isAbsoluteReference}) and is never resolved
-     * against the JVM's working directory. {@link SoundFontRef} keeps the
-     * {@code AssetRef} default, which resolves a relative path against the
-     * working directory.
+     * The file a clip reference names (story 323): the reference as a path
+     * when it is absolute on this platform, and {@code null} for every other
+     * one — relative, drive- or root-relative, unparseable, {@code null} or
+     * empty — which names no file ({@link ProjectPaths#isAbsoluteReference})
+     * and is never resolved against the JVM's working directory. A SoundFont
+     * path is resolved against the working directory instead
+     * ({@link #workingDirectoryFile}).
      */
     private static Path clipReferenceFile(String reference) {
         return ProjectPaths.isAbsoluteReference(reference) ? Path.of(reference) : null;
-    }
-
-    /** The single source file of a clip that carries no segment list. */
-    private static final class AudioClipRef implements AssetRef {
-        private final AudioClip clip;
-        AudioClipRef(AudioClip clip) { this.clip = clip; }
-        @Override public String currentPath() { return clip.getSourceFilePath(); }
-        @Override public void update(String newPath) { clip.setSourceFilePath(newPath); }
-        @Override public Path fileFor(String reference) { return clipReferenceFile(reference); }
-    }
-
-    /**
-     * One element of a recorded clip's ordered segment list (story 323).
-     * {@link #currentPath()} is the element captured from the one list read
-     * {@link #collectRefs} makes per clip, or what this ref's own
-     * {@link #update} last wrote; it never re-reads the live list, so a
-     * reverse or normalize that replaces the list mid-archive cannot make a
-     * later segment's read fail or return another reference.
-     * {@link #update} rebuilds the live list with only this element replaced,
-     * so the order and the other segments are untouched; replacing element 0
-     * moves {@link AudioClip#getSourceFilePath()} with it, because
-     * {@link AudioClip#setSourceSegmentPaths(List)} derives the head.
-     */
-    private static final class AudioClipSegmentRef implements AssetRef {
-        private final AudioClip clip;
-        private final int index;
-        private String segment;
-        AudioClipSegmentRef(AudioClip clip, int index, String segment) {
-            this.clip = clip;
-            this.index = index;
-            this.segment = segment;
-        }
-        @Override public String currentPath() { return segment; }
-        @Override public void update(String newPath) {
-            List<String> segments = new ArrayList<>(clip.getSourceSegmentPaths());
-            segments.set(index, newPath);
-            clip.setSourceSegmentPaths(segments);
-            this.segment = newPath;
-        }
-        @Override public Path fileFor(String reference) { return clipReferenceFile(reference); }
-    }
-
-    private static final class SoundFontRef implements AssetRef {
-        private final Track track;
-        private SoundFontAssignment current;
-        SoundFontRef(Track track, SoundFontAssignment current) {
-            this.track = track;
-            this.current = current;
-        }
-        @Override public String currentPath() {
-            return current.soundFontPath() == null ? null : current.soundFontPath().toString();
-        }
-        @Override public void update(String newPath) {
-            SoundFontAssignment updated = new SoundFontAssignment(
-                    Paths.get(newPath), current.bank(), current.program(), current.presetName());
-            track.setSoundFontAssignment(updated);
-            this.current = updated;
-        }
     }
 
     private interface ArchivePayload {
@@ -1166,8 +1072,8 @@ public final class ProjectArchiver {
             throws IOException {
         Map<String, Long> sizes = new LinkedHashMap<>();
         Map<String, Boolean> seen = new HashMap<>();
-        for (AssetRef ref : collectRefs(project, options)) {
-            Path p = ref.absolutePath();
+        for (ProjectAssetReferences.Ref ref : collectRefs(project, options)) {
+            Path p = fileOf(ref);
             if (p == null || !Files.isRegularFile(p)) {
                 continue;
             }

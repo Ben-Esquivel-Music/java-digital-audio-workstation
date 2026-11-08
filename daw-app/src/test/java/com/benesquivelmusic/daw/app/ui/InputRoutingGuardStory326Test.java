@@ -54,7 +54,7 @@ class InputRoutingGuardStory326Test {
             wiring=TrackControlWiring.standalone(project,dispatcher,null,engine,message->{
                 if(!Platform.isFxApplicationThread())errorsOffFx.incrementAndGet();
                 errors.add(Objects.requireNonNull(message));
-            });
+            },()->true);
             var channel=project.getMixerChannelForTrack(track);
             binder=new TrackControlBinder(track,wiring.registry().trackVm(UUID.fromString(track.getId())),channel,wiring.registry().channelVm(channel.getId()),wiring.commandSink());
             binder.bindStrip(mixer);binder.bindTile(stage);binder.bindArm(arrangement);

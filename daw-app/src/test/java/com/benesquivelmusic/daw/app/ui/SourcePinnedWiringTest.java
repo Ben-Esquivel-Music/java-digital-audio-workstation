@@ -106,18 +106,31 @@ class SourcePinnedWiringTest {
     void theArchivesLoadAndTheLoadAfterAJournalWasDiscardedUseTheNeverRateLimitedWarning() throws IOException {
         String code = code(UI.resolve("ProjectLifecycleController.java"));
 
+        // Story 333 (the studio engineer's stage-4 S3): the archive's late load carries what a stopped wait of it
+        // reports, and the warning names a first save for what it is (stage-4 N1), and — stage 6 — the close
+        // protocol's own run for what it is; re-pinned deliberately. Ruling 4 Q5 (i): those two are the bundle's,
+        // read through ProjectCloseText; ruling L3 (b)'s own text stays 331's literal.
         assertThat(methodBody(code, "void openRestoredArchive(Path destination,"))
                 .contains("whenNoAppWriteIsPending(RESTORE_FROM_ARCHIVE_DOOR, restored.alreadyDone(), load.refused(),"
-                        + " () -> switchIfTheAnswerCovers(load));");
+                        + " () -> switchIfTheAnswerCovers(load), load.stoppedAfterItsWork());");
         assertThat(methodBody(code, "private void discardJournalThenLoad(Path projectDir)"))
                 .contains("whenNoAppWriteIsPending(RECOVER_SESSION_DOOR, alreadyDone,"
                         + " () -> refuseLateLoadWhileATakeIsRecordingOrBeingWritten(alreadyDone),"
                         + " () -> loadProjectFromPath(projectDir))");
-        assertThat(methodBody(code, "private void whenNoAppWriteIsPending(String name, String alreadyDone,"))
+        assertThat(methodBody(code, "private void whenNoAppWriteIsPending(String name, String alreadyDone,"
+                + " BooleanSupplier refused, Runnable switchNow, Optional<Runnable> stoppedAfterItsWork)"))
                 .as("that overload warns every time")
-                .contains("String warning = lateSwitchRefusedMessage(alreadyDone, pendingSwitchName());"
+                .contains("String warning = closing != null"
+                        + " ? ProjectCloseText.text(\"door.lateRefused.closing\", alreadyDone)"
+                        + " : aFirstSaveIsPending() ? ProjectCloseText.text(\"door.lateRefused.firstSave\", alreadyDone)"
+                        + " : lateSwitchRefusedMessage(alreadyDone, pendingSwitchName());"
                         + " LOG.warning(warning); notificationBar.show(NotificationLevel.WARNING, warning);")
                 .doesNotContain("refuseWhileASwitchIsPending");
+        assertThat(methodBody(code, "private void whenNoAppWriteIsPending(String name, String alreadyDone,"
+                + " BooleanSupplier refused, Runnable switchNow) {"))
+                .as("and the other overload is that one, with the late switch's own report when it is stopped")
+                .contains("whenNoAppWriteIsPending(name, alreadyDone, refused, switchNow,"
+                        + " Optional.of(() -> reportStoppedAfterItsWork(alreadyDone)));");
     }
 
     /** {@code file}'s code: comments stripped, string literals kept, whitespace collapsed. */

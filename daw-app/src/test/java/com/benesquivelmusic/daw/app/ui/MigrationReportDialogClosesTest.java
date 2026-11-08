@@ -27,6 +27,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -110,11 +111,11 @@ class MigrationReportDialogClosesTest {
         pressRollBackWhenShown.set(true);
         AtomicReference<Boolean> showingWhenRolledBack = new AtomicReference<>();
 
-        // Bounded at the fixture's guard: a dialog that did not close never lets showIfNeeded return.
-        boolean shown = onFx(() -> MigrationReportDialog.showIfNeeded(sampleReport(), projectDirectory, () -> {
+        // Bounded at the fixture's guard: a dialog that did not close never lets showUnlessSuppressed return.
+        boolean shown = onFx(() -> MigrationReportDialog.showUnlessSuppressed(sampleReport(), projectDirectory, false, () -> {
             rollbacks.incrementAndGet();
             showingWhenRolledBack.set(migrationDialogShowing());
-        }));
+        }, Optional::empty));
 
         assertThat(shown).as("fixture: shown").isTrue();
         assertThat(onFx(MigrationReportDialogClosesTest::migrationDialogShowing))

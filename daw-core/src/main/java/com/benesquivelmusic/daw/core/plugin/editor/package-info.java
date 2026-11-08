@@ -28,8 +28,19 @@
  *       express (enum modes, chain membership, MIDI note events) goes through
  *       the plugin's own accessors — the plugin editing its own state is
  *       within the contract; only the {@code AudioProcessor} is off-limits to
- *       direct writes. Editors never call {@code store.drainToUi(...)} — the
- *       host session owns that single-consumer ring.</li>
+ *       direct writes. While the host refuses UI writes
+ *       ({@code PluginParameterStore#uiWritesAdmitted()} says no), a handler
+ *       that writes through the plugin's own accessors writes nothing, a
+ *       Stop-like act that only ends work the plugin is already running
+ *       excepted: after its echo guard, if it has one, it reads that
+ *       admission, and on a no it sets its control from the plugin (or, where
+ *       the plugin offers nothing to read back, to what the control showed
+ *       before) and returns; a handler that opens a modal picker or chooser
+ *       reads it before opening and again after it returns, and a non-modal
+ *       dialog's controls read it at each write and close with the editor
+ *       (PR #989 review 5711460812). Editors never call
+ *       {@code store.drainToUi(...)} — the host session owns that
+ *       single-consumer ring.</li>
  *   <li><strong>Timers:</strong> a panel that polls (meters, step indicators)
  *       owns one {@link javafx.animation.AnimationTimer} gated by
  *       {@code ShowingWindowGate} — running only while the editor sits in a

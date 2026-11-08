@@ -104,8 +104,14 @@ public sealed interface PluginEditorFactory
         Region createPanel(EditorContext context);
 
         /**
-         * Echoes host recall and audio-side parameter changes on the FX thread.
-         * Update controls without writing the echoed value back to the store.
+         * Echoes host recall, audio-side parameter changes and a UI write the
+         * host refused, on the FX thread. A refused write is echoed at once,
+         * inside the write, with the value the store kept, so the control
+         * shows it again before the FX turn ends; one made inside
+         * {@link #createPanel(EditorContext)} is echoed once it returns, and a
+         * write refused while a refused write is being echoed is not echoed
+         * again. Update controls without writing the echoed value back to the
+         * store.
          */
         default void parameterChanged(int parameterId, double value) {
         }

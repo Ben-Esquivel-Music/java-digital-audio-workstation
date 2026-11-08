@@ -20,6 +20,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.logging.Logger;
 
@@ -42,6 +43,10 @@ final class TrackCreationController {
      * {@link BiConsumer} sinks. The old {@code updateArrangementPlaceholder}
      * hook is gone — the arrangement placeholder binds {@code ProjectVM.tracks}
      * now (story 293), so the add/undo paths no longer poke it.
+     * {@code projectActionsAllowed} is the window's edit gate: while it says
+     * no, adding a track is refused, silently — before its input dialog opens
+     * and again after it returns — and no track is added (PR #989 review
+     * 5711460812).
      */
     record Deps(
             Supplier<DawProject> project,
@@ -53,7 +58,11 @@ final class TrackCreationController {
             Runnable markProjectDirty,
             BiConsumer<String, DawIcon> updateStatusBar,
             BiConsumer<NotificationLevel, String> showNotification,
-            SessionInputSelection sessionInputSelection) {
+            SessionInputSelection sessionInputSelection,
+            BooleanSupplier projectActionsAllowed) {
+        Deps {
+            Objects.requireNonNull(projectActionsAllowed, "projectActionsAllowed must not be null");
+        }
     }
 
     private final Deps deps;
@@ -81,7 +90,17 @@ final class TrackCreationController {
     void setMidiTrackCounter(int count) { this.midiTrackCounter = count; }
     void resetCounters() { audioTrackCounter = 0; midiTrackCounter = 0; }
 
+    /**
+     * Adds an audio track whose input the user picks in the input-port
+     * dialog. Refused, silently, while the window's edit gate says no: at
+     * entry, before the device walk and the dialog, and again when the modal
+     * dialog returns, before the track counter moves (PR #989 review
+     * 5711460812).
+     */
     void onAddAudioTrack() {
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            return;
+        }
         AudioDeviceManager.Enumeration enumeration = audioDeviceManager.enumerate();
         List<AudioDeviceInfo> devices = enumeration.devices();
 
@@ -89,6 +108,10 @@ final class TrackCreationController {
         Optional<AudioDeviceInfo> selected = inputPortChooser.choose(
                 devices, deps.sessionInputSelection().selectedIndexIn(devices));
         if (selected.isEmpty()) {
+            return;
+        }
+        // Read again: the gate may have closed while the dialog asked.
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
             return;
         }
 
@@ -137,10 +160,22 @@ final class TrackCreationController {
         LOG.fine(() -> "Added audio track: " + name + " with input: " + selectedDevice.name());
     }
 
+    /**
+     * Adds a MIDI track whose input the user picks in the MIDI input dialog.
+     * Refused, silently, while the window's edit gate says no, before the
+     * dialog opens and again when it returns (PR #989 review 5711460812).
+     */
     void onAddMidiTrack() {
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
+            return;
+        }
         MidiInputPortSelectionDialog dialog = new MidiInputPortSelectionDialog(null);
         Optional<javax.sound.midi.MidiDevice.Info> selected = dialog.showAndWait();
         if (selected.isEmpty()) {
+            return;
+        }
+        // Read again: the gate may have closed while the dialog asked.
+        if (!deps.projectActionsAllowed().getAsBoolean()) {
             return;
         }
 

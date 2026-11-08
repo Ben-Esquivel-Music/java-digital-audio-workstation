@@ -44,7 +44,7 @@ class SaveSafetyCopyTest {
 
     @AfterEach
     void releaseTheManager() {
-        manager.abandonProject();
+        manager.closeProject().join();
     }
 
     @Test
