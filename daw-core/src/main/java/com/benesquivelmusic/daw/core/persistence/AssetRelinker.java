@@ -19,8 +19,9 @@ import java.util.function.Consumer;
  * Integrity book §4.3; decision D17). Three steps, on two threads:
  * <ol>
  *   <li>{@link #request} — owner thread, no I/O: snapshots what the checks
- *       need from the live project (the clips that hold the asset, their
- *       names, how much audio each uses).</li>
+ *       need from the live project (the clips that hold the asset — on the
+ *       main lanes and the take lanes — their names, how much audio each
+ *       uses).</li>
  *   <li>{@link #prepare(Request, Path)} (Locate file) or
  *       {@link #prepare(Request, AssetReference)} (a
  *       {@link MissingAssetSearch} result) — a worker thread: decodes the
@@ -95,7 +96,7 @@ public final class AssetRelinker {
         double bpm = SourceShortfall.playbackTempo(project);
         List<Use> uses = new ArrayList<>();
         for (Track track : project.getTracks()) {
-            for (AudioClip clip : track.getClips()) {
+            for (AudioClip clip : ProjectAssetReferences.everyClipOf(track)) {
                 if (asset.isHeldBy(clip)) {
                     uses.add(new Use(clip.getName(), SourceShortfall.usedSeconds(clip, bpm)));
                 }
@@ -205,7 +206,9 @@ public final class AssetRelinker {
 
     /**
      * Relinks every clip of the candidate's project that still holds the
-     * asset: re-points it ({@link AudioClip#setSourceFilePath}, or for a take
+     * asset — on a main lane or, since story 334, a take lane, so a swipe
+     * after the relink compiles from the relinked take: re-points it
+     * ({@link AudioClip#setSourceFilePath}, or for a take
      * {@link AudioClip#setSourceSegmentPaths}, which keeps the head
      * invariant), attaches the decoded audio — the same array to every clip
      * of one source (of one bed or object of an ADM file), replacing audio it
@@ -234,7 +237,7 @@ public final class AssetRelinker {
         List<MissingAsset.Holder> holders = new ArrayList<>();
         List<MissingAsset.Holder> unselected = new ArrayList<>();
         for (Track track : request.project().getTracks()) {
-            for (AudioClip clip : track.getClips()) {
+            for (AudioClip clip : ProjectAssetReferences.everyClipOf(track)) {
                 if (!request.asset().isHeldBy(clip)) {
                     continue;
                 }

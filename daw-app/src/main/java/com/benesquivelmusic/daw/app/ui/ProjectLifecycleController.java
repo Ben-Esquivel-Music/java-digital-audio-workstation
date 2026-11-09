@@ -27,6 +27,7 @@ import com.benesquivelmusic.daw.core.persistence.LockStatus;
 import com.benesquivelmusic.daw.core.persistence.LockStolenException;
 import com.benesquivelmusic.daw.core.persistence.MissingAsset;
 import com.benesquivelmusic.daw.core.persistence.MissingAssetsReport;
+import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
 import com.benesquivelmusic.daw.core.persistence.ProjectLock;
 import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
@@ -783,6 +784,7 @@ final class ProjectLifecycleController {
         raiseInstallationFence(installingDoorOf(door));
         startRecoveryWorker(RECOVERY_SCAN_WORKER, () -> {
             ProjectManager.PreparedOpen prepared = null;
+            DawProject read = null;
             boolean installed = false;
             boolean retiredOutgoing = false;
             boolean outgoingJournalDetached = false;
@@ -830,6 +832,7 @@ final class ProjectLifecycleController {
                     retiredOutgoing = true;
                 }
                 projectManager.openProject(folder, prepared); // PARSE only; target lock and recovery already resolved
+                read = projectManager.getCurrentDawProject();
                 OpenDoor actualDoor = recoveryResult.door(selectedDoor);
                 // Story 333 — the migration dialog's "Don't show again" marker is read here, off the FX thread.
                 boolean migrationDialogSuppressed = migrationDialogSuppressed(folder);
@@ -867,6 +870,7 @@ final class ProjectLifecycleController {
                 });
             } finally {
                 if (!installed) {
+                    releaseUnlessLive(read);
                     if (retiredOutgoing && prepared != null && projectManager.getLockManager() == prepared.lock()) {
                         projectManager.closeProject();
                     }
@@ -876,6 +880,30 @@ final class ProjectLifecycleController {
                     }
                     postFx(() -> finishOpenAttempt(attempt));
                 }
+            }
+        });
+    }
+
+    /**
+     * Story 334 (critique J11; Java review C2) — releases the plugins of
+     * {@code read}, the project a gated open read and then did not finish
+     * installing: the open was refused after its read, or failed. Nobody else
+     * holds that project unless the open had already made it the live one
+     * before it failed (its journal could not open, say), and the live
+     * project is the application's, kept. So the check runs on the FX thread,
+     * where the live project is set; a failed release is logged
+     * ({@link ProjectDeserializer#disposeUnopened}). Nothing when the open
+     * read nothing.
+     *
+     * @param read the project the open read, or {@code null}
+     */
+    private void releaseUnlessLive(DawProject read) {
+        if (read == null) {
+            return;
+        }
+        postFx(() -> {
+            if (deps.project().get() != read) {
+                ProjectDeserializer.disposeUnopened(read);
             }
         });
     }
@@ -3063,7 +3091,15 @@ final class ProjectLifecycleController {
             // instead of the archive-internal relative ones. Story 331:
             // an atomic replace of the extracted file, so a failed write
             // leaves it whole and the restore reports the failure.
-            String xml = new ProjectSerializer().serialize(archived.project());
+            String xml;
+            try {
+                xml = new ProjectSerializer().serialize(archived.project());
+            } finally {
+                // Story 334 (critique J11) — the archive's project is read only to be
+                // written back: the reopen reads project.daw again, so nothing installs
+                // this one, and the plugins its read built are released.
+                ProjectDeserializer.disposeUnopened(archived.project());
+            }
             fileWriter.writeString(destination.resolve("project.daw"), xml);
 
             List<String> archiveMissing = archived.missingAssets();
@@ -3293,7 +3329,8 @@ final class ProjectLifecycleController {
         List<String> missing = new ArrayList<>();
         for (Track track : project.getTracks()) {
             // The same holders the archiver walks: mid-audition, the take-lane
-            // clips the comp selection slices, not the soloed lane (PR #984 review).
+            // clips the comp selection slices (PR #984 review), then every take
+            // lane's clips, which the project saves too (story 334).
             for (AudioClip clip : track.getTakeComping().referenceHoldersAsSaved(track)) {
                 List<String> segments = clip.getSourceSegmentPaths();
                 if (!segments.isEmpty()) {
@@ -5386,7 +5423,14 @@ final class ProjectLifecycleController {
         try {
             beforeRecoveryWork.accept(RECOVERY_REPLAY_WORKER);
             RecoveryResult result = new JournalReplayer().recover(ctx);
-            String xml = new ProjectSerializer().serialize(result.recoveredProject());
+            String xml;
+            try {
+                xml = new ProjectSerializer().serialize(result.recoveredProject());
+            } finally {
+                // Story 334 (critique J11) — written back, then reopened from project.daw:
+                // nothing installs the replayed project, so its plugins are released.
+                ProjectDeserializer.disposeUnopened(result.recoveredProject());
+            }
             // Ungated, so no lease check before the replace; story 384 retires this test-only path.
             writeRecoveredProjectFile(ctx.projectFile(), xml, () -> { });
             // The replayed records are now folded into project.daw, so the

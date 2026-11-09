@@ -33,6 +33,11 @@ import java.util.function.Supplier;
  * window's edit gate says no, whatever raised it: the tempo is not written,
  * nothing is reported, and the label, still showing the stored tempo, takes
  * the editor's place again (PR #989 review 5711460812).</p>
+ *
+ * <p>A commit whose text is not a tempo from 20 to 999 BPM — text that does
+ * not parse, an out-of-range number, NaN or an infinity — is invalid input:
+ * the tempo is not written, no history entry is added, and the status bar
+ * and an ERROR notification say so (story 334, studio ruling E10.5).</p>
  */
 final class TempoEditController {
 
@@ -97,6 +102,12 @@ final class TempoEditController {
         }
         try {
             double newTempo = Double.parseDouble(editor.getText().strip());
+            // NaN and the infinities parse; the transport refuses them as it
+            // refuses an out-of-range tempo (story 334, studio ruling E10.5),
+            // so they are invalid input here, before any history entry.
+            if (!(newTempo >= 20.0 && newTempo <= 999.0)) {
+                throw new IllegalArgumentException("tempo out of range");
+            }
             double oldTempo = project.get().getTransport().getTempo();
             if (Double.compare(newTempo, oldTempo) != 0) {
                 undoManager.get().execute(new UndoableAction() {

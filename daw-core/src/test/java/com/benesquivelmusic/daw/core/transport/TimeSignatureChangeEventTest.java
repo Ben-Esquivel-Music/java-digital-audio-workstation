@@ -31,6 +31,15 @@ class TimeSignatureChangeEventTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    /** Story 334, studio ruling E10.5: a position that is not finite is refused like a negative one. */
+    @Test
+    void shouldRejectANonFinitePosition() {
+        assertThatThrownBy(() -> new TimeSignatureChangeEvent(Double.NaN, 4, 4))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new TimeSignatureChangeEvent(Double.POSITIVE_INFINITY, 3, 4))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     @Test
     void shouldRejectZeroNumerator() {
         assertThatThrownBy(() -> new TimeSignatureChangeEvent(0.0, 0, 4))

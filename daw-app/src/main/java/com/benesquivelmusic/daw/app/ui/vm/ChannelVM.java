@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui.vm;
 
+import com.benesquivelmusic.daw.app.ui.OfflineInsertText;
 import com.benesquivelmusic.daw.app.ui.controls.InsertSlotModel;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
@@ -420,8 +421,12 @@ public final class ChannelVM {
      * channel's current insert snapshot (FX thread). Maps each
      * {@link InsertSlot} per the {@link InsertSlotModel} contract:
      * {@code name = slot.getName()}, {@code bypassed = slot.isBypassed()},
-     * {@code active = !bypassed} (every {@code InsertSlot} holds a processor —
-     * the record's "empty slot" case cannot arise from a core chain).
+     * {@code offline = slot.offline().isPresent()},
+     * {@code active = !bypassed && !offline} (every {@code InsertSlot} holds a
+     * processor — the record's "empty slot" case cannot arise from a core
+     * chain), and the row's accessible text: the name, or
+     * {@link OfflineInsertText#accessible} for an offline slot (story 334,
+     * ruling E22; the strip's skin composes no text, critique J21).
      * Lock-free: {@code getInsertSlots()} returns the published snapshot and
      * {@code hasSpatialNode} reads a per-class cache.
      */
@@ -430,7 +435,10 @@ public final class ChannelVM {
         List<InsertSlotModel> models = new ArrayList<>(slots.size());
         for (InsertSlot slot : slots) {
             boolean bypassed = slot.isBypassed();
-            models.add(new InsertSlotModel(slot.getName(), !bypassed, bypassed));
+            boolean offline = slot.offline().isPresent();
+            String name = slot.getName();
+            models.add(new InsertSlotModel(name, !bypassed && !offline, bypassed, offline,
+                    offline ? OfflineInsertText.accessible(name) : name));
         }
         inserts.setAll(models);
         spatialNodePresent.set(SpatialInserts.hasSpatialNode(channel));

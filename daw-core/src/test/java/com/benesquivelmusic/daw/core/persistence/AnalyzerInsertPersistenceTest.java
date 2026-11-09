@@ -5,6 +5,8 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectType;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.mixer.OfflineCause;
+import com.benesquivelmusic.daw.core.mixer.OfflineInsert;
 import com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry;
 import com.benesquivelmusic.daw.core.plugin.LiveAnalyzerPlugin;
 import com.benesquivelmusic.daw.core.plugin.SoundWaveTelemetryPlugin;
@@ -94,18 +96,52 @@ class AnalyzerInsertPersistenceTest {
         assertThat(((SoundWaveTelemetryPlugin) slots.get(3).getPlugin()).getWaveform()).isNotNull();
     }
 
+    /** Story 334: an analyzer this build does not know keeps its place, offline, with its neighbour in place. */
     @Test
-    void unknownIdentityIsSkippedWithoutLosingAdjacentEffects() throws Exception {
-        var project = project();
-        var channel = channel(project, "track");
-        var tuner = new TunerPlugin();
+    void anUnknownIdentityKeepsItsPlaceAsAnOfflineInsert() throws Exception {
+        DawProject project = project();
+        MixerChannel channel = channel(project, "track");
+        TunerPlugin tuner = new TunerPlugin();
         initialize(tuner);
         channel.addInsert(slot("Unknown", tuner));
         channel.addInsert(InsertEffectFactory.createSlot(InsertEffectType.COMPRESSOR, 2, FORMAT.sampleRate()));
         String xml = new ProjectSerializer().serialize(project).replace(TunerPlugin.PLUGIN_ID, "unknown.analyzer");
-        var restored = new ProjectDeserializer().deserialize(xml);
-        assertThat(channel(restored, "track").getInsertSlots()).extracting(InsertSlot::getEffectType)
-                .containsExactly(InsertEffectType.COMPRESSOR);
+        List<InsertSlot> restored = channel(new ProjectDeserializer().deserialize(xml), "track").getInsertSlots();
+        assertThat(restored).extracting(InsertSlot::getName).containsExactly("Unknown", "Compressor");
+        assertThat(restored.getFirst().offline()).map(OfflineInsert::cause)
+                .contains(new OfflineCause.UnknownAnalyzer("unknown.analyzer"));
+        assertThat(restored.getLast().getEffectType()).isEqualTo(InsertEffectType.COMPRESSOR);
+    }
+
+    /**
+     * Story 334, studio ruling E6 (b): an unknown analyzer is logged once on
+     * this logger, its name and id quoted so the file can neither split the
+     * line nor forge one; it is not counted.
+     */
+    @Test
+    void anUnknownAnalyzerIsLoggedWithItsNameAndIdQuoted() throws Exception {
+        Opened opened = openCollectingAnalyzerWarnings("""
+                <daw-project version="%d">
+                  <tracks>
+                    <track id="00000000-0000-0000-0000-00000000000a" name="Vox" type="AUDIO"/>
+                  </tracks>
+                  <mixer>
+                    <channels>
+                      <channel>
+                        <inserts>
+                          <insert name="Old&#10;&lt;meter" analyzer-plugin-id="com.example&lt;gone&#10;"/>
+                        </inserts>
+                      </channel>
+                    </channels>
+                  </mixer>
+                </daw-project>
+                """.formatted(MigrationRegistry.CURRENT_VERSION));
+
+        assertThat(opened.warnings()).containsExactly("Track 1 'Vox': insert 1 'Old&#xA;&lt;meter' analyzer"
+                + " 'com.example&lt;gone&#xA;' is not an analyzer this build knows; it is kept as saved and passes"
+                + " audio through");
+        assertThat(opened.deserializer().getUnreadItems()).isEmpty();
+        assertThat(opened.deserializer().losesSavedContent()).isFalse();
     }
 
     @ParameterizedTest
@@ -159,7 +195,8 @@ class AnalyzerInsertPersistenceTest {
     @Test
     void anUnusableSettingIsLoggedWithTheTrackOrMixerStripAndTheInsertNumberedFromOne() throws Exception {
         // Track 2's first insert names no effect this build knows: it is
-        // skipped, and still takes position 1.
+        // kept offline at position 1 (story 334), and its line goes to the
+        // deserializer's logger, not the analyzer's.
         Opened opened = openCollectingAnalyzerWarnings("""
                 <daw-project version="%d">
                   <tracks>
@@ -192,7 +229,8 @@ class AnalyzerInsertPersistenceTest {
                 "Track 2 'Vox': insert 2 analyzer " + SpectrumAnalyzerPlugin.PLUGIN_ID + " window-type 'FLAT_TOP'"
                         + " is not a window type" + NOT_APPLIED);
         assertThat(opened.project().getMixer().getChannels().get(1).getInsertSlots())
-                .extracting(InsertSlot::getName).as("the unknown effect was skipped").containsExactly("Vox spectrum");
+                .extracting(InsertSlot::getName).as("the unknown effect keeps its place")
+                .containsExactly("Unknown", "Vox spectrum");
     }
 
     @Test

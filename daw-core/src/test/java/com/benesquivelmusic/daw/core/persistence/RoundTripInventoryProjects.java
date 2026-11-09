@@ -10,6 +10,10 @@ import com.benesquivelmusic.daw.core.automation.AutomationParameter;
 import com.benesquivelmusic.daw.core.automation.AutomationPoint;
 import com.benesquivelmusic.daw.core.automation.InterpolationMode;
 import com.benesquivelmusic.daw.core.automation.ObjectParameterTarget;
+import com.benesquivelmusic.daw.core.comping.CompRegion;
+import com.benesquivelmusic.daw.core.comping.CompileCompAction;
+import com.benesquivelmusic.daw.core.comping.TakeComping;
+import com.benesquivelmusic.daw.core.comping.TakeLane;
 import com.benesquivelmusic.daw.core.marker.Marker;
 import com.benesquivelmusic.daw.core.marker.MarkerRange;
 import com.benesquivelmusic.daw.core.marker.MarkerType;
@@ -29,7 +33,12 @@ import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.LinkMode;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.mixer.OfflineCause;
+import com.benesquivelmusic.daw.core.mixer.OfflineInsert;
 import com.benesquivelmusic.daw.core.mixer.OutputRouting;
+import com.benesquivelmusic.daw.core.mixer.ProcessorRegistry;
+import com.benesquivelmusic.daw.core.mixer.SavedInsert;
+import com.benesquivelmusic.daw.core.mixer.SavedInsertChild;
 import com.benesquivelmusic.daw.core.mixer.Send;
 import com.benesquivelmusic.daw.core.mixer.SendTap;
 import com.benesquivelmusic.daw.core.mixer.VcaGroup;
@@ -39,10 +48,21 @@ import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshotManager;
 import com.benesquivelmusic.daw.core.mixer.spatial.BedBus;
 import com.benesquivelmusic.daw.core.mixer.spatial.BedBusManager;
 import com.benesquivelmusic.daw.core.mixer.spatial.BedChannelRouting;
+import com.benesquivelmusic.daw.core.plugin.AudioFormatPluginContext;
+import com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin;
+import com.benesquivelmusic.daw.core.plugin.BuiltInPluginGraph;
+import com.benesquivelmusic.daw.core.plugin.CompressorPlugin;
+import com.benesquivelmusic.daw.core.plugin.DeEsserPlugin;
 import com.benesquivelmusic.daw.core.plugin.LiveAnalyzerPlugin;
+import com.benesquivelmusic.daw.core.plugin.LoadedPlugin;
+import com.benesquivelmusic.daw.core.plugin.PluginIdentity;
+import com.benesquivelmusic.daw.core.plugin.PluginResolution;
+import com.benesquivelmusic.daw.core.plugin.PluginResolver;
+import com.benesquivelmusic.daw.core.plugin.PluginSourceKind;
 import com.benesquivelmusic.daw.core.plugin.SpectrumAnalyzerPlugin;
 import com.benesquivelmusic.daw.core.plugin.TunerPlugin;
 import com.benesquivelmusic.daw.core.plugin.builtin.midi.ArpeggiatorPlugin;
+import com.benesquivelmusic.daw.core.preset.ReflectivePresetSerializer;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.project.edit.NudgeSettings;
 import com.benesquivelmusic.daw.core.project.edit.NudgeUnit;
@@ -57,6 +77,8 @@ import com.benesquivelmusic.daw.core.track.AutomationMode;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackColor;
 import com.benesquivelmusic.daw.core.track.TrackFoldState;
+import com.benesquivelmusic.daw.core.transport.TempoChangeEvent;
+import com.benesquivelmusic.daw.core.transport.TimeSignatureChangeEvent;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.analysis.WindowType;
 import com.benesquivelmusic.daw.sdk.audio.ClipGainEnvelope;
@@ -65,6 +87,7 @@ import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy;
 import com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget;
 import com.benesquivelmusic.daw.sdk.edit.RippleMode;
+import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 import com.benesquivelmusic.daw.sdk.spatial.ImmersiveFormat;
@@ -100,19 +123,28 @@ import java.util.UUID;
  * inventory test share (Persistence Integrity book §4.4): built through the
  * public model API only, it puts every element and attribute the
  * {@link ProjectSerializer} can emit into some written document, under every
- * path the shared builders write it at — except the two items the
+ * path the shared builders write it at — except the one item the
  * application never produces, named below.
  *
  * <p>The {@code "full"} variant holds everything that can coexist in one
  * project: tracks with a stable input identity and with only a legacy input
  * hint; audio clips (locked, multi-segment with a gain envelope, faded,
- * stretched); automation and object lanes; MIDI notes and CC lanes (an
+ * stretched); a take stack (story 334: two lanes, one muted, each with a
+ * segmented lap, a comp region on each, and the compiled comp output on
+ * the main lane with a hand edit on each of its clips); automation and
+ * object lanes; MIDI notes and CC lanes (an
  * ARBITRARY_CC lane among them); a MIDI-effect chain of two arpeggiators
  * around an unrecognised-effect placeholder; a non-{@code DISABLED}
- * pre/post-roll; a master, four track channels and two return buses, every
- * channel kind carrying inserts (built-ins with a parameter moved off its
+ * pre/post-roll; a tempo map with a tempo change of every transition and two
+ * meter changes after beat 0; a master, four track channels and two return
+ * buses, every channel kind carrying inserts (built-ins with a parameter moved off its
  * default, spectrum and tuner analyzers, one of them inactive, and a
- * sidechained insert), sends and a CPU budget — every degradation policy,
+ * sidechained insert; story 334: a CLAP plugin with a state on the master,
+ * on the Drums channel a sidechained JAR plugin whose processor is annotated
+ * and a JAR plugin insert that opens offline, on the Bass channel a JAR
+ * plugin whose values live in its parameter store, and on the reverb return
+ * bus two first-party plugins — {@link #PLUGINS} resolves the installed
+ * ones), sends and a CPU budget — every degradation policy,
  * every send tap, a sidechain from a track channel and from a return bus;
  * cue buses, VCA groups, a channel link and bed routings, all naming tracks
  * of the project; markers, ranges, track groups; a disabled metronome with a
@@ -127,13 +159,8 @@ import java.util.UUID;
  * family's one non-stereo audio format and every snapshot path of that
  * master.</p>
  *
- * <p>Not produced: the id-keyed insert-parameter form ({@code parameter@id}
- * under a mixer insert), which no model state makes the serializer write —
- * it is written only for a built-in processor without
- * {@code @ProcessorParam} accessors, and the one such processor
- * ({@code ParametricEqProcessor}) has no id-keyed parameters; snapshot
- * inserts write that form and are covered — and the output routing of the
- * master and of a return bus, live or in a snapshot, written only off
+ * <p>Not produced: the output routing of the master and of a return bus,
+ * live or in a snapshot, written only off
  * {@code OutputRouting.MASTER}: the model accepts that routing on any
  * channel, but no UI path produces it, because MixerView offers the routing
  * selector on track strips only (the parity contract tolerates those
@@ -161,6 +188,38 @@ final class RoundTripInventoryProjects {
 
     /** The {@code plugin-id} of the MIDI effect no build recognises. */
     static final String UNRESOLVED_EFFECT_ID = "com.example.future.harmonizer";
+
+    /** The {@code plugin-id} of the JAR plugin {@link #PLUGINS} does not resolve: its insert is offline. */
+    static final String OFFLINE_PLUGIN_ID = "com.example.future.limiter";
+
+    /** The state the CLAP insert on the master holds. */
+    static final byte[] CLAP_STATE = {0, 1, 2, 3, 4, 5, 6, 7};
+
+    /**
+     * The installed plugins the family's opens resolve (story 334): the JAR
+     * plugins {@link AnnotatedJarTestPlugin} and
+     * {@link StoreParameterJarTestPlugin} and the CLAP plugin
+     * {@link FakeClapHost}, each a fresh instance initialized with the open's
+     * context; every other JAR or CLAP plugin is not installed.
+     */
+    static final PluginResolver PLUGINS = (identity, context) -> installed(identity)
+            .<PluginResolution>map(plugin -> {
+                plugin.initialize(context);
+                return new PluginResolution.Resolved(new LoadedPlugin(plugin, plugin::dispose));
+            })
+            .orElseGet(PluginResolution.NotInstalled::new);
+
+    private static Optional<DawPlugin> installed(PluginIdentity identity) {
+        return switch (identity.kind()) {
+            case JAR -> switch (identity.id()) {
+                case AnnotatedJarTestPlugin.ID -> Optional.of(new AnnotatedJarTestPlugin());
+                case StoreParameterJarTestPlugin.ID -> Optional.of(new StoreParameterJarTestPlugin());
+                default -> Optional.empty();
+            };
+            case CLAP -> identity.id().equals(FakeClapHost.ID) ? Optional.of(new FakeClapHost()) : Optional.empty();
+            case BUILT_IN -> Optional.empty();
+        };
+    }
 
     private RoundTripInventoryProjects() {
     }
@@ -259,6 +318,12 @@ final class RoundTripInventoryProjects {
     private static void transport(Transport transport) {
         transport.setTempo(97.5);
         transport.setTimeSignature(7, 8);
+        // The tempo map after beat 0 (story 334): every transition, two meter changes.
+        transport.getTempoMap().addTempoChange(TempoChangeEvent.linear(32.0, 140.0));
+        transport.getTempoMap().addTempoChange(TempoChangeEvent.curved(64.0, 100.0));
+        transport.getTempoMap().addTempoChange(TempoChangeEvent.instant(96.0, 120.0));
+        transport.getTempoMap().addTimeSignatureChange(new TimeSignatureChangeEvent(48.0, 3, 4));
+        transport.getTempoMap().addTimeSignatureChange(new TimeSignatureChangeEvent(80.0, 5, 8));
         transport.setLoopWindow(true, 8.0, 24.0);
         transport.setPositionInBeats(13.25);
         transport.setPunchRegion(new PunchRegion(96_000L, 288_000L, true));
@@ -303,6 +368,7 @@ final class RoundTripInventoryProjects {
                 new ClipGainEnvelope.BreakpointDb(24_000L, 0.0, CurveShape.EXPONENTIAL),
                 new ClipGainEnvelope.BreakpointDb(96_000L, -12.0, CurveShape.S_CURVE))));
         drums.addClip(take);
+        takeStack(drums, assetRoot);
 
         AutomationLane volume = drums.getAutomationData().getOrCreateLane(AutomationParameter.VOLUME);
         volume.setVisible(true);
@@ -316,6 +382,41 @@ final class RoundTripInventoryProjects {
         objectX.setVisible(true);
         objectX.addPoint(new AutomationPoint(1.0, -0.75, InterpolationMode.LINEAR));
         objectX.addPoint(new AutomationPoint(3.0, 0.5, InterpolationMode.CURVED));
+    }
+
+    /**
+     * The Drums take stack (story 334): two lanes in order — "Take 1", and
+     * "Take 2" muted with a gain envelope on its lap — each holding one
+     * segmented lap; a comp region on each lane; the selection compiled onto
+     * the main lane, then hand-edited (a fade-in on the first comp clip, a
+     * gain change on the second, studio ruling E14).
+     */
+    private static void takeStack(Track drums, Path assetRoot) {
+        TakeComping comping = drums.getTakeComping();
+        TakeLane first = new TakeLane("Take 1");
+        first.addClip(lap(8.0, 8.0, asset(assetRoot, "audio/takes/lap-1/segment-000.wav"),
+                asset(assetRoot, "audio/takes/lap-1/segment-001.wav")));
+        TakeLane second = new TakeLane("Take 2");
+        second.setMuted(true);
+        AudioClip secondLap = lap(8.0, 8.0, asset(assetRoot, "audio/takes/lap-2/segment-000.wav"));
+        secondLap.setGainEnvelope(new ClipGainEnvelope(List.of(
+                new ClipGainEnvelope.BreakpointDb(0L, -3.0, CurveShape.LINEAR),
+                new ClipGainEnvelope.BreakpointDb(48_000L, 0.0, CurveShape.S_CURVE))));
+        second.addClip(secondLap);
+        comping.addTakeLane(first);
+        comping.addTakeLane(second);
+        comping.addCompRegion(new CompRegion(0, 8.0, 4.0));
+        comping.addCompRegion(new CompRegion(1, 12.0, 2.0));
+        new CompileCompAction(drums).execute();
+        List<AudioClip> comp = comping.compOutputOn(drums);
+        comp.getFirst().setFadeInBeats(0.25);
+        comp.getLast().setGainDb(-1.5);
+    }
+
+    private static AudioClip lap(double startBeat, double beats, String... segments) {
+        AudioClip lap = new AudioClip("Take — Drums", startBeat, beats, null);
+        lap.setSourceSegmentPaths(List.of(segments));
+        return lap;
     }
 
     private static void bass(Track bass, Path assetRoot) {
@@ -406,6 +507,11 @@ final class RoundTripInventoryProjects {
         limiter.setExpensive(true);
         limiter.setSidechainSource(drumsChannel);
         master.addInsert(limiter);
+        // Story 334: a CLAP plugin, which saves its state blob.
+        FakeClapHost glue = new FakeClapHost();
+        glue.initialize(new AudioFormatPluginContext(FORMAT));
+        glue.setState(CLAP_STATE);
+        master.addInsert(InsertEffectFactory.createSlotFromPlugin(glue).orElseThrow());
         master.addSend(new Send(reverb, 0.1, SendTap.PRE_FADER));
         master.setCpuBudget(new TrackCpuBudget(0.75, new DegradationPolicy.ReduceOversampling(3)));
 
@@ -421,6 +527,16 @@ final class RoundTripInventoryProjects {
         drumsChannel.addInsert(gate);
         drumsChannel.addInsert(spectrum("Drums Spectrum", 1024, WindowType.HANN));
         drumsChannel.addInsert(tuner("Drums Tuner", 432.0));
+        // Story 334: an external JAR plugin whose processor is annotated, keyed
+        // by the Keys channel, and one saved by a session that had a plugin
+        // this build does not resolve — offline, kept as saved.
+        AnnotatedJarTestPlugin annotated = new AnnotatedJarTestPlugin();
+        annotated.initialize(new AudioFormatPluginContext(FORMAT));
+        annotated.processor().setGain(0.5);
+        InsertSlot annotatedSlot = InsertEffectFactory.createSlotFromPlugin(annotated).orElseThrow();
+        annotatedSlot.setSidechainSource(keysChannel);
+        drumsChannel.addInsert(annotatedSlot);
+        drumsChannel.addInsert(offlineLimiter());
         drumsChannel.addSend(new Send(reverb, 0.35, SendTap.POST_FADER));
         drumsChannel.addSend(new Send(delay, 0.2, SendTap.PRE_INSERTS));
         drumsChannel.setCpuBudget(new TrackCpuBudget(0.4, new DegradationPolicy.ReduceOversampling(2)));
@@ -431,6 +547,13 @@ final class RoundTripInventoryProjects {
         InsertSlot compressor = builtIn(InsertEffectType.COMPRESSOR);
         compressor.setSidechainSource(delay);
         bassChannel.addInsert(compressor);
+        // Story 334: an external JAR plugin whose values live in the slot's
+        // parameter store, one of them turned in its editor.
+        StoreParameterJarTestPlugin knobs = new StoreParameterJarTestPlugin();
+        knobs.initialize(new AudioFormatPluginContext(FORMAT));
+        InsertSlot knobsSlot = InsertEffectFactory.createSlotFromPlugin(knobs).orElseThrow();
+        knobsSlot.getParameterStore().writeFromUiById(StoreParameterJarTestPlugin.DRIVE, 6.5);
+        bassChannel.addInsert(knobsSlot);
         bassChannel.addSend(new Send(reverb, 0.5, SendTap.PRE_FADER));
         bassChannel.setCpuBudget(new TrackCpuBudget(0.3,
                 new DegradationPolicy.SubstituteSimpleKernel("simple-compressor")));
@@ -449,6 +572,10 @@ final class RoundTripInventoryProjects {
         reverb.addInsert(spectrum("Reverb Spectrum", 4096, WindowType.BLACKMAN_HARRIS));
         // Saved inactive: the reader must not re-activate it.
         reverb.addInsert(tuner("Reverb Tuner", 440.0, false));
+        // Story 334: first-party plugins, one whose processor is not a
+        // registered built-in type and one whose processor is.
+        reverb.addInsert(firstParty(project, new DeEsserPlugin(), "Frequency", 8000.0));
+        reverb.addInsert(firstParty(project, new CompressorPlugin(), "Threshold", -30.0));
         reverb.setCpuBudget(new TrackCpuBudget(0.6,
                 new DegradationPolicy.SubstituteSimpleKernel("simple-reverb")));
 
@@ -582,6 +709,39 @@ final class RoundTripInventoryProjects {
                     .accept(first.id(), (first.minValue() + first.maxValue()) / 2.0);
         }
         return slot;
+    }
+
+    /** A first-party plugin's insert, built as the Plugins menu builds it, with one parameter moved. */
+    private static InsertSlot firstParty(DawProject project, BuiltInDawPlugin plugin, String parameter,
+                                         double value) {
+        InsertSlot slot = new BuiltInPluginGraph(ProcessorRegistry.getInstance())
+                .createSlot(plugin, new AudioFormatPluginContext(FORMAT), project.getMetronome());
+        SequencedMap<String, Double> moved = new LinkedHashMap<>();
+        moved.put(parameter, value);
+        ReflectivePresetSerializer.restoreEach(slot.getProcessor(), moved);
+        return slot;
+    }
+
+    /**
+     * The insert of a JAR plugin {@link #PLUGINS} does not resolve, as an open
+     * keeps it: offline, holding its element as a file saved it — attributes in
+     * DOM (alphabetical) order and one name-keyed parameter.
+     */
+    private static InsertSlot offlineLimiter() {
+        SequencedMap<String, String> attributes = new LinkedHashMap<>();
+        attributes.put("bypassed", "false");
+        attributes.put("expensive", "false");
+        attributes.put("name", "Future Limiter");
+        attributes.put("plugin-id", OFFLINE_PLUGIN_ID);
+        attributes.put("plugin-source", "jar");
+        attributes.put("plugin-version", "3.0");
+        SequencedMap<String, String> ceiling = new LinkedHashMap<>();
+        ceiling.put("name", "ceilingDb");
+        ceiling.put("value", "-1.0");
+        return InsertSlot.ofOffline("Future Limiter", FORMAT.channels(), new OfflineInsert(
+                new OfflineCause.NotInstalled(PluginSourceKind.JAR, OFFLINE_PLUGIN_ID, "3.0"),
+                new SavedInsert(attributes, List.of(new SavedInsertChild(SavedInsertChild.Tag.PARAMETER, ceiling, ""))),
+                false));
     }
 
     private static InsertSlot spectrum(String name, int fftSize, WindowType window) {

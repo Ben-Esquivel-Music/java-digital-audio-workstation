@@ -1,8 +1,10 @@
 package com.benesquivelmusic.daw.core.plugin;
 
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
+import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Files;
@@ -14,8 +16,10 @@ import java.util.Objects;
  *
  * <p>This loader uses a {@link URLClassLoader} to load the plugin class from
  * the specified JAR file, eliminating the need for plugin developers to create
- * {@code META-INF/services} files. Users simply provide the JAR path and the
- * fully qualified class name of their plugin implementation.</p>
+ * {@code META-INF/services} files. The class name comes from the JAR's
+ * manifest ({@code META-INF/daw-plugin.json}), never typed by a user; the
+ * installed-plugin registry ({@link PluginRegistry}) keeps the entries and
+ * their loaders.</p>
  */
 public final class ExternalPluginLoader {
 
@@ -45,6 +49,50 @@ public final class ExternalPluginLoader {
     }
 
     /**
+     * Loads a fresh instance of the plugin {@code entry} names, with a class
+     * loader of its own, and initializes it with {@code context} — the
+     * instance an insert slot runs (story 334). The result's disposal disposes
+     * the plugin, then closes its class loader; the caller activates the
+     * plugin and owns the disposal. When {@code initialize} throws — anything,
+     * a checked exception it does not declare included, as a plugin written in
+     * Kotlin can throw (finding FX2-2) — the disposal runs at once (a failure
+     * of its own is suppressed into the thrown one, unless it is the very
+     * exception {@code initialize} threw, which cannot suppress itself) and
+     * the failure propagates as thrown.
+     *
+     * @param entry   the external plugin entry specifying JAR path and class name
+     * @param context what the plugin is initialized with
+     * @return the initialized plugin and its disposal
+     * @throws PluginLoadException if the plugin cannot be loaded or instantiated
+     */
+    public static LoadedPlugin instantiate(ExternalPluginEntry entry, PluginContext context)
+            throws PluginLoadException {
+        Objects.requireNonNull(context, "context must not be null");
+        LoadResult loaded = loadWithClassLoader(entry);
+        DawPlugin plugin = loaded.plugin();
+        Runnable disposal = () -> {
+            try {
+                plugin.dispose();
+            } finally {
+                closeQuietly(loaded.classLoader());
+            }
+        };
+        try {
+            plugin.initialize(context);
+        } catch (Throwable failure) {
+            try {
+                disposal.run();
+            } catch (Throwable disposalFailure) {
+                if (disposalFailure != failure) {
+                    failure.addSuppressed(disposalFailure);
+                }
+            }
+            throw failure;
+        }
+        return new LoadedPlugin(plugin, disposal);
+    }
+
+    /**
      * Loads a {@link DawPlugin} instance from the given external plugin entry.
      *
      * @param entry the external plugin entry specifying JAR path and class name
@@ -62,7 +110,8 @@ public final class ExternalPluginLoader {
      * <p>The {@link URLClassLoader} used to load the plugin is closed before
      * returning. Already-loaded classes remain usable, but lazy class loading
      * from the JAR will no longer work. For full classloader lifecycle control,
-     * use {@link PluginRegistry#register(ExternalPluginEntry)} instead.</p>
+     * use {@link #loadWithClassLoader(ExternalPluginEntry)} or
+     * {@link #instantiate(ExternalPluginEntry, PluginContext)} instead.</p>
      *
      * @param jarPath   the filesystem path to the plugin JAR file
      * @param className the fully qualified class name of the DawPlugin implementation
@@ -78,6 +127,14 @@ public final class ExternalPluginLoader {
     /**
      * Loads a {@link DawPlugin} instance from the given JAR path and class name,
      * returning both the plugin and the classloader that loaded it.
+     *
+     * <p>Whatever loading throws, the class loader is closed first. What the
+     * plugin's constructor throws arrives wrapped in an
+     * {@link InvocationTargetException} and is the plugin failing to load —
+     * a {@link StackOverflowError} included — except the virtual machine's
+     * own error, which propagates as thrown
+     * ({@link PluginResolution.FailedToLoad#rethrowIfFatal}; story 334,
+     * decision H7 and the final review's NIT-3).</p>
      *
      * @param jarPath   the filesystem path to the plugin JAR file
      * @param className the fully qualified class name of the DawPlugin implementation
@@ -128,6 +185,10 @@ public final class ExternalPluginLoader {
                     "Plugin class has no public no-arg constructor: " + className, e);
         } catch (ReflectiveOperationException | IOException e) {
             closeQuietly(classLoader);
+            if (e instanceof InvocationTargetException constructorFailed
+                    && constructorFailed.getTargetException() != null) {
+                PluginResolution.FailedToLoad.rethrowIfFatal(constructorFailed.getTargetException());
+            }
             throw new PluginLoadException(
                     "Failed to load plugin from " + jarPath + ": " + e.getMessage(), e);
         } catch (RuntimeException | Error failure) {

@@ -169,8 +169,29 @@ class UnreadProjectItemsTest {
                 .isEqualTo("Mixer cue bus 'Singer': mixer assignment 3 removed — cue-send@track-id 'x' is not a track id");
         assertThatIllegalArgumentException().isThrownBy(() -> new UnreadProjectItem(
                 UnreadProjectItem.Kind.MIDI_NOTE_SKIPPED, new UnreadProjectItem.InMixer("bed bus"), 0, "", 1));
-        assertThatIllegalArgumentException().isThrownBy(() -> new UnreadProjectItem(
-                UnreadProjectItem.Kind.MIXER_REFERENCE_REMOVED, new UnreadProjectItem.OnTrack(0, "A"), 0, "", 1));
+        assertThat(new UnreadProjectItem(UnreadProjectItem.Kind.MIXER_REFERENCE_REMOVED,
+                new UnreadProjectItem.OnTrack(1, "Vox"), 2, "insert 3 'Compressor' sidechain-source 'return:4'", 1)
+                .logLine())
+                .as("a removed assignment may be located at a track's own strip")
+                .startsWith("Track 2 'Vox': mixer assignment 3 removed — ");
+        assertThatIllegalArgumentException().as("a tempo-map entry is saved in the transport").isThrownBy(() ->
+                new UnreadProjectItem(UnreadProjectItem.Kind.TEMPO_MAP_ENTRY_SKIPPED,
+                        new UnreadProjectItem.OnTrack(0, "A"), 0, "", 1));
+        assertThatIllegalArgumentException().as("only a tempo-map entry is saved in the transport").isThrownBy(() ->
+                new UnreadProjectItem(UnreadProjectItem.Kind.MIDI_NOTE_SKIPPED,
+                        new UnreadProjectItem.InTransport(UnreadProjectItem.TransportEntry.TEMPO_CHANGES), 0, "", 1));
+        assertThatIllegalArgumentException().as("a comp region is saved on a track").isThrownBy(() ->
+                new UnreadProjectItem(UnreadProjectItem.Kind.COMP_REGION_SKIPPED,
+                        new UnreadProjectItem.InMixer("master"), 0, "", 1));
+        assertThatIllegalArgumentException().as("an insert item names its insert").isThrownBy(() ->
+                new UnreadProjectItem(UnreadProjectItem.Kind.INSERT_SKIPPED,
+                        new UnreadProjectItem.InMixer("master"), 0, "", 1));
+        assertThatIllegalArgumentException().as("an insert's name is never blank").isThrownBy(() ->
+                UnreadProjectItem.atInsert(UnreadProjectItem.Kind.INSERT_NOT_LOADED,
+                        new UnreadProjectItem.InMixer("master"), 0, " ", ""));
+        assertThatIllegalArgumentException().as("only an insert item names an insert").isThrownBy(() ->
+                UnreadProjectItem.atInsert(UnreadProjectItem.Kind.MIXER_REFERENCE_REMOVED,
+                        new UnreadProjectItem.InMixer("master"), 0, "Compressor", ""));
         assertThatIllegalArgumentException().isThrownBy(() -> new UnreadProjectItem(
                 UnreadProjectItem.Kind.MIDI_NOTE_SKIPPED, new UnreadProjectItem.OnTrack(0, "A"), 0, "", 2));
         assertThatIllegalArgumentException().as("only a skipped lane stands for no saved item").isThrownBy(() ->
@@ -197,6 +218,85 @@ class UnreadProjectItemsTest {
         assertThat(UnreadProjectItem.logText("🎹".repeat(70)))
                 .as("cut by characters, never inside a surrogate pair")
                 .isEqualTo("🎹".repeat(64) + "…");
+    }
+
+    // ── the tempo-map, comp-region and insert templates (studio rulings E6, E7) ──
+
+    /** A file value that would split a line or forge an element if the log did not quote it. */
+    private static final String SPLITTING_VALUE = "12\n<00";
+
+    @Test
+    void aTempoMapItemNamesTheTransportAndItsEntryNumberedFromOne() {
+        String bpm = "bpm '" + UnreadProjectItem.logText(SPLITTING_VALUE) + "' is not a number from 20 to 999";
+
+        assertThat(new UnreadProjectItem(UnreadProjectItem.Kind.TEMPO_MAP_ENTRY_SKIPPED,
+                new UnreadProjectItem.InTransport(UnreadProjectItem.TransportEntry.TEMPO_CHANGES), 1, bpm, 1)
+                .logLine())
+                .isEqualTo("Transport: tempo change 2 skipped — bpm '12&#xA;&lt;00' is not a number from 20 to 999");
+        assertThat(new UnreadProjectItem(UnreadProjectItem.Kind.TEMPO_MAP_ENTRY_SKIPPED,
+                new UnreadProjectItem.InTransport(UnreadProjectItem.TransportEntry.METER_CHANGES), 0,
+                "denominator '" + UnreadProjectItem.logText(SPLITTING_VALUE) + "' is not a positive whole number",
+                1).logLine())
+                .isEqualTo("Transport: meter change 1 skipped — denominator '12&#xA;&lt;00' is not a positive whole"
+                        + " number");
+        assertThat(new UnreadProjectItem(UnreadProjectItem.Kind.TEMPO_MAP_ENTRY_SKIPPED,
+                new UnreadProjectItem.InTransport(UnreadProjectItem.TransportEntry.BEAT_ZERO_TEMPO), 0,
+                "tempo '" + UnreadProjectItem.logText(SPLITTING_VALUE)
+                        + "' is not a number from 20 to 999; 120.0 is used", 1).logLine())
+                .isEqualTo("Transport: tempo at beat 0 skipped — tempo '12&#xA;&lt;00' is not a number from 20 to"
+                        + " 999; 120.0 is used");
+        assertThat(new UnreadProjectItem(UnreadProjectItem.Kind.TEMPO_MAP_ENTRY_SKIPPED,
+                new UnreadProjectItem.InTransport(UnreadProjectItem.TransportEntry.BEAT_ZERO_METER), 0,
+                "time-sig-denominator '" + UnreadProjectItem.logText(SPLITTING_VALUE)
+                        + "' is not a positive whole number; 4/4 is used", 1).logLine())
+                .isEqualTo("Transport: meter at beat 0 skipped — time-sig-denominator '12&#xA;&lt;00' is not a"
+                        + " positive whole number; 4/4 is used");
+    }
+
+    @Test
+    void aCompRegionItemNamesItsTrackAndTheRegionNumberedFromOne() {
+        assertThat(new UnreadProjectItem(UnreadProjectItem.Kind.COMP_REGION_SKIPPED,
+                new UnreadProjectItem.OnTrack(1, "Vox\n<Lead>"), 2,
+                "take '" + UnreadProjectItem.logText(SPLITTING_VALUE) + "' is not a take on this track", 1)
+                .logLine())
+                .isEqualTo("Track 2 'Vox&#xA;&lt;Lead>': comp region 3 skipped — take '12&#xA;&lt;00' is not a take"
+                        + " on this track");
+    }
+
+    @Test
+    void anInsertItemNamesItsStripItsNumberAndItsQuotedName() {
+        UnreadProjectItem.OnTrack vox = new UnreadProjectItem.OnTrack(1, "Vox");
+
+        assertThat(UnreadProjectItem.atInsert(UnreadProjectItem.Kind.INSERT_NOT_LOADED, vox, 1, "Old FX",
+                "effect-type 'NOT_A_TYPE' is not an effect this build knows").logLine())
+                .as("studio ruling E6 (a)")
+                .isEqualTo("Track 2 'Vox': insert 2 'Old FX' not loaded (bypassed, kept as saved) — effect-type"
+                        + " 'NOT_A_TYPE' is not an effect this build knows");
+        assertThat(UnreadProjectItem.atInsert(UnreadProjectItem.Kind.INSERT_NOT_LOADED,
+                new UnreadProjectItem.InMixer("master"), 0, "Glue",
+                "CLAP plugin 'com.example.glue' version '1.4.4' is not installed").logLine())
+                .as("studio ruling E6 (d)")
+                .isEqualTo("Mixer master: insert 1 'Glue' not loaded (bypassed, kept as saved) — CLAP plugin"
+                        + " 'com.example.glue' version '1.4.4' is not installed");
+        assertThat(UnreadProjectItem.atInsert(UnreadProjectItem.Kind.INSERT_NOT_LOADED, vox, 1, SPLITTING_VALUE,
+                "the file records no plugin identity for it").logLine())
+                .isEqualTo("Track 2 'Vox': insert 2 '12&#xA;&lt;00' not loaded (bypassed, kept as saved) — the file"
+                        + " records no plugin identity for it");
+        assertThat(UnreadProjectItem.atInsert(UnreadProjectItem.Kind.INSERT_SKIPPED, vox, 8, SPLITTING_VALUE,
+                "the strip already holds 8 inserts").logLine())
+                .isEqualTo("Track 2 'Vox': insert 9 '12&#xA;&lt;00' skipped — the strip already holds 8 inserts");
+        assertThat(UnreadProjectItem.atInsert(UnreadProjectItem.Kind.INSERT_PARAMETER_ADJUSTED, vox, 1,
+                SPLITTING_VALUE, "parameter id 3 value '-5.0' is rejected by the insert; 4.0 is used").logLine())
+                .isEqualTo("Track 2 'Vox': insert 2 '12&#xA;&lt;00' parameter adjusted — parameter id 3 value"
+                        + " '-5.0' is rejected by the insert; 4.0 is used");
+        assertThat(UnreadProjectItem.atInsert(UnreadProjectItem.Kind.INSERT_PARAMETER_ADJUSTED, vox, 1,
+                "Compressor", "parameter 'Threshold' value '-90.0' is outside -60.0–0.0; -60.0 is used"))
+                .as("one saved item, in no CC lane")
+                .satisfies(item -> {
+                    assertThat(item.count()).isEqualTo(1);
+                    assertThat(item.lane()).isNull();
+                    assertThat(item.insertName()).isEqualTo("Compressor");
+                });
     }
 
     // ── the WARNING line of each skipped item (studio-engineer ruling Q5) ────

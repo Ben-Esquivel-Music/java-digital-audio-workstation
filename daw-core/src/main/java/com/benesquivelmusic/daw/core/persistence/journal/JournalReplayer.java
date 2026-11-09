@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.function.BiConsumer;
 
@@ -193,12 +194,18 @@ public final class JournalReplayer {
 
     private RecoveryResult replay(ProjectContext ctx, Path baseFile, Optional<String> sha256, List<Path> segments,
                                   List<JournalRecord> mutations) {
+        // A project read for a recovery that rolls back is used by nobody:
+        // its inserts' plugins are released (story 334).
+        List<DawProject> loadedProjects = new CopyOnWriteArrayList<>();
         try (DawScope scope = DawScope.openShutdownOnFailure("project-recover")) {
             // Each lambda captures `ctx` explicitly — the no-ThreadLocal seam.
             DawScope.Subtask<Void> checksum = scope.fork("checksum",
                     () -> { verifyChecksums(ctx, segments); return null; });
-            DawScope.Subtask<LoadedCheckpoint> base = scope.fork("load-checkpoint",
-                    () -> loadCheckpoint(ctx, baseFile, sha256));
+            DawScope.Subtask<LoadedCheckpoint> base = scope.fork("load-checkpoint", () -> {
+                LoadedCheckpoint checkpoint = loadCheckpoint(ctx, baseFile, sha256);
+                loadedProjects.add(checkpoint.project());
+                return checkpoint;
+            });
 
             scope.joinAll();   // throws ExecutionException if ANY fork failed
 
@@ -211,11 +218,23 @@ public final class JournalReplayer {
             checksum.resultNow();
             return new RecoveryResult(recovered, applied, loaded.unreadItems());
         } catch (ExecutionException e) {
+            releaseAll(loadedProjects);
             Throwable cause = e.getCause() != null ? e.getCause() : e;
             throw new JournalRecoveryException("recovery rolled back", cause);
         } catch (InterruptedException e) {
+            releaseAll(loadedProjects);
             Thread.currentThread().interrupt();
             throw new JournalRecoveryException("recovery interrupted", e);
+        } catch (RuntimeException | Error e) {
+            releaseAll(loadedProjects);
+            throw e;
+        }
+    }
+
+    /** Releases the inserts of every project a failed recovery read; a failed disposal is logged. */
+    private static void releaseAll(List<DawProject> projects) {
+        for (DawProject project : projects) {
+            ProjectDeserializer.disposeUnopened(project);
         }
     }
 

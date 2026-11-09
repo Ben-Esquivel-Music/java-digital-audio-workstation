@@ -141,6 +141,13 @@
     -fx-fill: -mcs-accent;
 }
 
+/* Story 334 (studio-engineer ruling E22): an offline insert — kept at its
+ * place, passing audio through, because the open could not load it — is
+ * never active; the Skin adds .offline and its dot takes the warn role. */
+.mixer-channel-strip-status-dot.offline {
+    -fx-fill: -mcs-warn;
+}
+
 .mixer-channel-strip-overflow {
     -fx-text-fill: -mcs-text-mute;
     -fx-padding: 0 4 0 4;

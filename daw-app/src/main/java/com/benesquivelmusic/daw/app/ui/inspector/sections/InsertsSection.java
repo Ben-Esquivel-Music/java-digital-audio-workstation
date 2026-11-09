@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui.inspector.sections;
 
+import com.benesquivelmusic.daw.app.ui.OfflineInsertText;
 import com.benesquivelmusic.daw.app.ui.inspector.InspectorSection;
 
 import javafx.beans.property.IntegerProperty;
@@ -7,10 +8,13 @@ import javafx.beans.property.SimpleIntegerProperty;
 import javafx.geometry.Pos;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.control.Tooltip;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
+
+import java.util.Objects;
 
 /**
  * "INSERTS" inspector section (UI Design Book §5.6, story 272).
@@ -18,7 +22,9 @@ import javafx.scene.layout.VBox;
  * <p>Per-insert row: name · active dot · edit pencil → opens the
  * <strong>InsertParameters</strong> sub-pane <em>inside</em> the
  * drawer (not a separate dialog). "+ Add" at the bottom opens a plugin
- * picker.
+ * picker. An offline insert's row (story 334, ruling E22) shows its dot on
+ * the warn role and the word "Offline" in place of the pencil — no editor
+ * opens for it — and its tooltip says why it is offline.
  *
  * <p>{@code PluginParameterEditorPanel}'s contents migrate into the
  * sub-pane revealed by the edit pencil; that migration is staged
@@ -82,12 +88,25 @@ public final class InsertsSection extends InspectorSection {
 
     private HBox buildRow(int index, Row r) {
         Label dot = new Label("\u25CF"); // ●
-        dot.getStyleClass().add(r.active() ? "insert-dot-active" : "insert-dot-inactive");
-
-        Label name = new Label(r.name() == null ? "" : r.name());
+        Label name = new Label(r.name());
         name.getStyleClass().add("inspector-row-name");
         HBox.setHgrow(name, Priority.ALWAYS);
         name.setMaxWidth(Double.MAX_VALUE);
+
+        if (r.offline()) {
+            // Story 334, rulings E22 and E3: an offline insert opens no editor,
+            // so its row offers no pencil; the tooltip says why it is offline.
+            dot.getStyleClass().add("insert-dot-offline");
+            Label word = new Label(OfflineInsertText.word());
+            word.getStyleClass().add("inspector-row-offline");
+            HBox row = new HBox(4, dot, name, word);
+            row.setAlignment(Pos.CENTER_LEFT);
+            row.getStyleClass().add("inspector-insert-row");
+            Tooltip.install(row, new Tooltip(r.tooltip()));
+            row.setAccessibleText(OfflineInsertText.accessible(r.name()));
+            return row;
+        }
+        dot.getStyleClass().add(r.active() ? "insert-dot-active" : "insert-dot-inactive");
 
         Button edit = new Button("\u270E"); // ✎
         edit.getStyleClass().add("inspector-row-edit");
@@ -113,6 +132,21 @@ public final class InsertsSection extends InspectorSection {
         onEditRequested = handler;
     }
 
-    /** Minimal row contract; the inspector drawer fills these from the domain. */
-    public record Row(String name, boolean active) {}
+    /**
+     * Minimal row contract; the inspector drawer fills these from the domain.
+     *
+     * @param name    the insert's name
+     * @param active  whether the insert is engaged: neither bypassed nor offline
+     * @param offline whether the insert is offline — a project open kept it at
+     *                its place, passing audio through, because it could not load
+     *                what the file saved (story 334, ruling E22)
+     * @param tooltip why the insert is offline and what to do about it; empty
+     *                when it is not offline
+     */
+    public record Row(String name, boolean active, boolean offline, String tooltip) {
+        public Row {
+            Objects.requireNonNull(name, "name must not be null");
+            Objects.requireNonNull(tooltip, "tooltip must not be null");
+        }
+    }
 }

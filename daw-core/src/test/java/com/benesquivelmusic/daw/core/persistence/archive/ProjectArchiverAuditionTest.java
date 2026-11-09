@@ -38,7 +38,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * An archive taken while a take lane is auditioned packages the take files
  * the SAVED comp references — the selection, which may be drawn from a lane
  * other than the soloed one — and points the archived document at them
- * (PR #984 review), without ever rewriting a live clip: the archive is
+ * (PR #984 review), and, since every lane is saved with the project (story
+ * 334, studio ruling E16), every lane's take files too, the soloed lane's
+ * included; all without ever rewriting a live clip: the archive is
  * captured on the thread that owns the project and written off it while the
  * session stays editable (story 331), so a recompile (the main-lane click
  * that ends the audition, an Alt-click) can run while it is being written,
@@ -53,7 +55,7 @@ class ProjectArchiverAuditionTest {
     Path tmp;
 
     @Test
-    void anArchiveDuringAnAuditionPackagesTheSelectionsTakeFilesNotTheSoloedLanes() throws IOException {
+    void anArchiveDuringAnAuditionPackagesEveryLanesTakeFilesWithTheSelectionAsTheComp() throws IOException {
         Fixture f = new Fixture(tmp);
         f.audition();
         List<AudioClip> liveClips = List.copyOf(f.vox.getClips());
@@ -62,9 +64,10 @@ class ProjectArchiverAuditionTest {
         Path archive = tmp.resolve("audition.dawz");
         ProjectArchiveSummary summary = archive(archiver, f.project, archive);
 
-        // The selection's two segment files are packaged; the soloed lane's is not.
-        assertThat(summary.uniqueAssetCount()).isEqualTo(2);
-        assertSelectionPackagedOnly(archive);
+        // Every lane is saved (story 334, studio ruling E16): the selection's
+        // two segment files and the soloed lane's are all packaged.
+        assertThat(summary.uniqueAssetCount()).isEqualTo(3);
+        assertEveryLanePackaged(archive);
 
         // The live session's references and clips are untouched.
         assertThat(f.selectedTake.getSourceSegmentPaths())
@@ -120,14 +123,15 @@ class ProjectArchiverAuditionTest {
                 .containsExactly(f.selected0.toString(), f.selected1.toString());
         assertThat(f.project.isDirty()).as("neither the archive nor the audition's end is an edit").isFalse();
 
-        // The archive still holds the selection, with archive-relative references.
-        assertThat(summary.uniqueAssetCount()).isEqualTo(2);
-        assertSelectionPackagedOnly(archive);
+        // The archive still holds the selection and every lane, with archive-relative references.
+        assertThat(summary.uniqueAssetCount()).isEqualTo(3);
+        assertEveryLanePackaged(archive);
         String document = projectDocumentOf(archive);
         assertThat(document)
                 .contains("assets/")
                 .doesNotContain(f.selected0.toString())
-                .doesNotContain(f.selected1.toString());
+                .doesNotContain(f.selected1.toString())
+                .doesNotContain(f.soloed.toString());
         assertArchivedCompIsTheSelection(f, archiver, archive);
     }
 
@@ -171,7 +175,7 @@ class ProjectArchiverAuditionTest {
 
         assertNoLiveClipHoldsAnArchivePath(f);
         assertThat(f.project.isDirty()).isFalse();
-        assertSelectionPackagedOnly(archive);
+        assertEveryLanePackaged(archive);
     }
 
     private static void assertNoLiveClipHoldsAnArchivePath(Fixture f) {
@@ -191,21 +195,26 @@ class ProjectArchiverAuditionTest {
         }
     }
 
-    private static void assertSelectionPackagedOnly(Path archive) throws IOException {
+    private static void assertEveryLanePackaged(Path archive) throws IOException {
         List<String> assetEntries = assetEntryNames(archive);
-        assertThat(assetEntries).hasSize(2)
+        assertThat(assetEntries).hasSize(3)
                 .anyMatch(name -> name.endsWith("_take-1-segment-000.wav"))
                 .anyMatch(name -> name.endsWith("_take-1-segment-001.wav"))
-                .noneMatch(name -> name.endsWith("_take-2-segment-000.wav"));
+                .anyMatch(name -> name.endsWith("_take-2-segment-000.wav"));
     }
 
-    /** The archived document's comp clip is the selection and points at the packaged files. */
+    /**
+     * The archived document's comp clip is the selection and points at the
+     * packaged files, and its two lanes come back pointing at theirs, the
+     * soloed one unsoloed (an audition is never saved).
+     */
     private void assertArchivedCompIsTheSelection(Fixture f, ProjectArchiver archiver, Path archive)
             throws IOException {
         Path extractDir = tmp.resolve("restored-" + archive.getFileName());
         ArchivedProject opened = archiver.openArchive(archive, extractDir, null);
         assertThat(opened.missingAssets()).isEmpty();
-        List<AudioClip> restored = opened.project().getTracks().getFirst().getClips();
+        Track vox = opened.project().getTracks().getFirst();
+        List<AudioClip> restored = vox.getClips();
         assertThat(restored).hasSize(1);
         AudioClip slice = restored.getFirst();
         assertThat(slice.getStartBeat()).isEqualTo(2.0);
@@ -218,6 +227,17 @@ class ProjectArchiverAuditionTest {
         }
         assertThat(Files.readAllBytes(Path.of(segments.get(0)))).containsExactly(Fixture.SELECTED_BYTES_0);
         assertThat(Files.readAllBytes(Path.of(segments.get(1)))).containsExactly(Fixture.SELECTED_BYTES_1);
+
+        TakeComping comping = vox.getTakeComping();
+        assertThat(comping.getTakeLanes()).extracting(TakeLane::getName).containsExactly("Take 1", "Take 2");
+        assertThat(comping.getTakeLanes()).noneMatch(TakeLane::isSoloed);
+        assertThat(comping.getTakeLane(0).getClips().getFirst().getSourceSegmentPaths())
+                .as("the selected lane's take points at the packaged copies").isEqualTo(segments);
+        List<String> soloedLane = comping.getTakeLane(1).getClips().getFirst().getSourceSegmentPaths();
+        assertThat(soloedLane).hasSize(1);
+        assertThat(Path.of(soloedLane.getFirst()).normalize()).startsWith(extractAbs);
+        assertThat(Files.readAllBytes(Path.of(soloedLane.getFirst()))).containsExactly(Fixture.SOLOED_BYTES);
+        assertThat(comping.compOutputOn(vox)).as("the saved comp is adopted as comp output").containsExactly(slice);
     }
 
     private static List<String> assetEntryNames(Path archive) throws IOException {

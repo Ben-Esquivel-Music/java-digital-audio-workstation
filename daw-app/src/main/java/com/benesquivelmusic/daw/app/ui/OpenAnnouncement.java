@@ -25,12 +25,14 @@ import java.util.Set;
  * the distinct missing assets and the clips they silence, then the assets
  * shorter than their clips, with a {@code Review…} action when the report has
  * rows, then — story 330, counts only, in a fixed order — the saved items the
- * open could not honour ({@link UnreadProjectItem}): MIDI notes skipped, CC
- * events skipped (a skipped lane counts as its events, at least 1),
+ * open could not honour ({@link UnreadProjectItem}): tempo or meter changes
+ * skipped (story 334), MIDI notes skipped, CC events skipped (a skipped lane
+ * counts as its events, at least 1), comp regions skipped (story 334),
  * arpeggiator settings adjusted, MIDI effects not recognized and kept as
- * saved, and mixer assignments removed (to a track the file does not
- * contain, malformed, a self-link or a repeat). The doors that report a
- * failure keep their ERROR level.
+ * saved, inserts not loaded (bypassed, kept as saved), inserts skipped and
+ * insert parameters adjusted (story 334), and mixer assignments removed (to a
+ * track the file does not contain, malformed, a self-link or a repeat). The
+ * doors that report a failure keep their ERROR level.
  *
  * <p>The announcement is made when the references are classified, not when
  * the decodes finish: rows the rehydration adds later get their own single
@@ -72,8 +74,10 @@ record OpenAnnouncement(NotificationLevel level, String message, boolean offersR
      * {@code unreadItems}: they re-serialized {@code project.daw} before the
      * load, so its read finds nothing they dropped, and finds again the
      * placeholders they wrote back — counting both would count those twice.
-     * The items never offer {@code Review…}: the report it opens lists
-     * assets only.</p>
+     * Only for the inserts the door kept as saved does the open's read have
+     * the last word — whether each loaded, its parameters and its sidechain
+     * key (story 334; {@link #withTheOpensInsertFindings}). The items never
+     * offer {@code Review…}: the report it opens lists assets only.</p>
      *
      * @param door             how the project was opened
      * @param projectDirectory the opened project's directory (the archive's
@@ -170,15 +174,56 @@ record OpenAnnouncement(NotificationLevel level, String message, boolean offersR
         return clauses;
     }
 
-    /** The unread items an open through {@code door} announces: the door's own, or the open's read's. */
+    /**
+     * The unread items an open through {@code door} announces: the open's
+     * read's, or — for an archive restore and a journal replay — the door's
+     * own read's with the open's findings on the inserts the door kept as
+     * saved ({@link #withTheOpensInsertFindings}).
+     */
     private static List<UnreadProjectItem> unreadItemsOf(OpenDoor door, List<UnreadProjectItem> unreadItems) {
         return switch (door) {
-            case OpenDoor.ArchiveRestore archive -> archive.archiveUnread();
-            case OpenDoor.JournalReplay replay -> replay.replayUnread();
+            case OpenDoor.ArchiveRestore archive -> withTheOpensInsertFindings(archive.archiveUnread(), unreadItems);
+            case OpenDoor.JournalReplay replay -> withTheOpensInsertFindings(replay.replayUnread(), unreadItems);
             case OpenDoor.Plain _, OpenDoor.InterruptedSavePromotion _, OpenDoor.RecoveredWriteFailed _,
                  OpenDoor.FailedReplayFallback _, OpenDoor.MigrationRollback _, OpenDoor.SnapshotRestore _ ->
                     unreadItems;
         };
+    }
+
+    /**
+     * The items an archive restore or a journal replay announces (story 334,
+     * studio-engineer finding G1): {@code door}'s items whose kind is not
+     * {@code INSERT_NOT_LOADED}, followed by {@code open}'s items whose kind is
+     * {@code INSERT_NOT_LOADED}, {@code INSERT_PARAMETER_ADJUSTED} or
+     * {@code MIXER_REFERENCE_REMOVED}.
+     *
+     * <p>The door's own read has no plugin registry, so every JAR or CLAP
+     * insert is offline there, its parameters and its sidechain key unjudged,
+     * and the door writes it back as saved; the final open resolves it. So
+     * whether an insert loaded, and what its parameters and its sidechain key
+     * came to, is the final open's judgement. Nothing is counted twice: the
+     * door repairs everything it reports in its own write-back — it writes a
+     * parameter as applied and never writes a removed send or sidechain key —
+     * so the final open reports these three kinds only for inserts the door
+     * kept as saved, and it re-reads every insert the door wrote back offline.
+     * Every other item the door found is gone from the file it wrote, so the
+     * final open cannot find it again.</p>
+     */
+    private static List<UnreadProjectItem> withTheOpensInsertFindings(List<UnreadProjectItem> door,
+                                                                      List<UnreadProjectItem> open) {
+        List<UnreadProjectItem> items = new ArrayList<>(door.size() + open.size());
+        for (UnreadProjectItem item : door) {
+            if (item.kind() != UnreadProjectItem.Kind.INSERT_NOT_LOADED) {
+                items.add(item);
+            }
+        }
+        for (UnreadProjectItem item : open) {
+            switch (item.kind()) {
+                case INSERT_NOT_LOADED, INSERT_PARAMETER_ADJUSTED, MIXER_REFERENCE_REMOVED -> items.add(item);
+                default -> { }
+            }
+        }
+        return items;
     }
 
     /**
@@ -203,10 +248,17 @@ record OpenAnnouncement(NotificationLevel level, String message, boolean offersR
      * the order the announcement gives them, each with its count key.
      */
     private enum UnreadClause {
+        // Story 334, studio ruling E5: the timeline first, then the track
+        // content, then the processing, then the routing.
+        TEMPO_MAP("projectOpen.unread.tempoMap"),
         MIDI_NOTES("projectOpen.unread.midiNotes"),
         CC_EVENTS("projectOpen.unread.ccEvents"),
+        COMP_REGIONS("projectOpen.unread.compRegions"),
         ARPEGGIATOR_SETTINGS("projectOpen.unread.arpeggiatorSettings"),
         MIDI_EFFECTS("projectOpen.unread.midiEffects"),
+        INSERTS_NOT_LOADED("projectOpen.unread.insertsNotLoaded"),
+        INSERTS_SKIPPED("projectOpen.unread.insertsSkipped"),
+        INSERT_PARAMETERS("projectOpen.unread.insertParameters"),
         MIXER_ASSIGNMENTS("projectOpen.unread.mixerAssignments");
 
         private final String key;
@@ -223,6 +275,11 @@ record OpenAnnouncement(NotificationLevel level, String message, boolean offersR
                 case MIDI_EFFECT_SETTING_ADJUSTED -> ARPEGGIATOR_SETTINGS;
                 case MIDI_EFFECT_NOT_RECOGNIZED -> MIDI_EFFECTS;
                 case MIXER_REFERENCE_REMOVED -> MIXER_ASSIGNMENTS;
+                case TEMPO_MAP_ENTRY_SKIPPED -> TEMPO_MAP;
+                case COMP_REGION_SKIPPED -> COMP_REGIONS;
+                case INSERT_NOT_LOADED -> INSERTS_NOT_LOADED;
+                case INSERT_SKIPPED -> INSERTS_SKIPPED;
+                case INSERT_PARAMETER_ADJUSTED -> INSERT_PARAMETERS;
             };
         }
     }

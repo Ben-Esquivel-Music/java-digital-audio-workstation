@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui.inspector;
 
 import com.benesquivelmusic.daw.app.ui.NotificationHistoryService;
+import com.benesquivelmusic.daw.app.ui.OfflineInsertText;
 import com.benesquivelmusic.daw.app.ui.controls.MixerChannelStrip;
 import com.benesquivelmusic.daw.app.ui.controls.TrackStrip;
 import com.benesquivelmusic.daw.app.ui.inspector.sections.InsertsSection;
@@ -13,6 +14,7 @@ import com.benesquivelmusic.daw.app.ui.inspector.skin.InspectorDrawerSkin;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
+import com.benesquivelmusic.daw.core.mixer.OfflineInsert;
 
 import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.ReadOnlyBooleanProperty;
@@ -39,6 +41,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.ResourceBundle;
 
 /**
@@ -393,8 +396,7 @@ public final class InspectorDrawer extends Control {
         if (selectedInsertChannel == null) return;
         MixerChannel channel = selectedInsertChannel.get();
         List<InsertSlot> slots = channel == null ? List.of() : List.copyOf(channel.getInsertSlots());
-        List<InsertsSection.Row> rows = slots.stream()
-                .map(slot -> new InsertsSection.Row(slot.getName(), !slot.isBypassed())).toList();
+        List<InsertsSection.Row> rows = slots.stream().map(InspectorDrawer::insertRow).toList();
         if (channel != displayedInsertChannel || !slots.equals(displayedSlots)
                 || !rows.equals(displayedRows)) {
             displayedInsertChannel = channel;
@@ -405,6 +407,18 @@ public final class InspectorDrawer extends Control {
         }
         insertsSection.getAddButton().setDisable(channel != null
                 && slots.size() >= MixerChannel.MAX_INSERT_SLOTS);
+    }
+
+    /**
+     * The INSERTS row of {@code slot}: engaged when neither bypassed nor
+     * offline; an offline insert's row carries why it is offline and what to
+     * do about it (story 334, ruling E22).
+     */
+    private static InsertsSection.Row insertRow(InsertSlot slot) {
+        Optional<OfflineInsert> offline = slot.offline();
+        return new InsertsSection.Row(slot.getName(), !slot.isBypassed() && offline.isEmpty(),
+                offline.isPresent(),
+                offline.map(insert -> OfflineInsertText.tooltip(slot.getName(), insert.cause())).orElse(""));
     }
 
     public void disposeInsertBinding() {

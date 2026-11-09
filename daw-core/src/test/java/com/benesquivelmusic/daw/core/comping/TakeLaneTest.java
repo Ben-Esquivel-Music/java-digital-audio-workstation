@@ -4,6 +4,8 @@ import com.benesquivelmusic.daw.core.audio.AudioClip;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.UUID;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -110,5 +112,19 @@ class TakeLaneTest {
         TakeLane b = new TakeLane("Take 2");
 
         assertThat(a.getId()).isNotEqualTo(b.getId());
+    }
+
+    @Test
+    void aRestoredIdIsKept() {
+        UUID saved = UUID.fromString("3f2c9a4e-6a1b-4c57-9d0e-1b2c3d4e5f60");
+
+        TakeLane lane = new TakeLane(saved, "Take 1");
+
+        assertThat(lane.getId()).isEqualTo("3f2c9a4e-6a1b-4c57-9d0e-1b2c3d4e5f60");
+        assertThat(lane.getName()).isEqualTo("Take 1");
+        String fresh = new TakeLane("Take 2").getId();
+        assertThat(UUID.fromString(fresh)).as("a fresh lane's id is a canonical UUID as well").hasToString(fresh);
+        assertThatThrownBy(() -> new TakeLane(null, "Take 1")).isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> new TakeLane(saved, null)).isInstanceOf(NullPointerException.class);
     }
 }

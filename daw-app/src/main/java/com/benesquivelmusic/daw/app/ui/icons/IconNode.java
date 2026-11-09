@@ -94,6 +94,39 @@ public final class IconNode {
         }
     }
 
+    /**
+     * Tints an icon this class built to {@code paint}, keeping which of its
+     * shapes are stroked and which filled; a no-op unless both an icon and a
+     * {@link Color} exist. An SVG glyph's paints are baked into its shapes and
+     * no CSS reaches them, so a caller tints it from a CSS-resolved paint of a
+     * node that does have a hook — a {@code Label}'s or {@code Button}'s text
+     * fill, a {@code Shape}'s fill — never from a colour mirrored in code, so
+     * the glyph follows the token and a theme swap.
+     *
+     * @param icon  the icon, or {@code null}
+     * @param paint the resolved paint, or {@code null}
+     */
+    public static void tint(Node icon, Paint paint) {
+        if (icon != null && paint instanceof Color color) {
+            tintShapes(icon, color);
+        }
+    }
+
+    private static void tintShapes(Node node, Color color) {
+        if (node instanceof Group group) {
+            for (Node child : group.getChildren()) {
+                tintShapes(child, color);
+            }
+        } else if (node instanceof Shape shape) {
+            if (shape.getStroke() != null) {
+                shape.setStroke(color);
+            }
+            if (shape.getFill() != null && !Color.TRANSPARENT.equals(shape.getFill())) {
+                shape.setFill(color);
+            }
+        }
+    }
+
     // ----------------------------------------------------------------
     // SVG parsing
     // ----------------------------------------------------------------

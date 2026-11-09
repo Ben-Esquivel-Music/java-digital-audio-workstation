@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.plugin.ExternalPluginEntry;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
+import com.benesquivelmusic.daw.core.plugin.RemovedPlugin;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.*;
 import org.junit.jupiter.api.Test;
@@ -29,7 +30,8 @@ final class PluginGraphResourceLifecycleTest {
                 List.of(PluginTestJars.manifest(ProcessingInsertFixture.class)), List.of(ProcessingInsertFixture.class));
         var entry = new ExternalPluginEntry(jar, ProcessingInsertFixture.class.getName());
         var registry = new PluginRegistry();
-        var prototype = (ProcessingInsertFixture) registry.register(entry);
+        ProcessingInsertFixture prototype = (ProcessingInsertFixture) PluginTestJars.install(registry, jar,
+                ProcessingInsertFixture.class).plugin();
         var slot = PluginSlotLoader.load(entry, new AudioFormat(48_000, 2, 24, 512));
         var live = (ProcessingInsertFixture) slot.getPlugin();
         var channel = new MixerChannel("Channel");
@@ -38,7 +40,11 @@ final class PluginGraphResourceLifecycleTest {
         assertThat(live.initialized).isTrue();
         assertThat(prototype.initialized).isFalse();
         try {
-            registry.unregister(entry);
+            // Story 334 (critique J9) — the registry takes the entry out and hands it back; its caller
+            // disposes the catalogue instance, off the registry's monitor.
+            RemovedPlugin removed = registry.unregister(entry).orElseThrow();
+            assertThat(prototype.disposalCount).isZero();
+            removed.disposal().run();
             assertThat(prototype.disposalCount).isOne();
             runOnFxThread(() -> {
                 var rack = new InsertEffectRack(channel, 2, 48_000, 512, null, null);

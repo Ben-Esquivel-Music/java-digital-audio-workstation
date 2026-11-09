@@ -47,6 +47,15 @@ These tests are binding acceptance criteria. They run headless, and none of them
 - Found in story 330 (the studio engineer's round-3 Q2 ruling and the implementers' adjacent findings).
 - Cross-refs: story 330 (channel order equals track order, track identity), story 355 (MIDI editor edits through the undo history), story 151 (arpeggiator processing), story 365 (the engine sees a duplicate as one change).
 
+## Note from Story 334
+
+Story 334 (studio ruling E3) adds two kinds of insert a copy must carry:
+
+- **An offline insert** (`InsertSlot.offline()`: an insert the open could not load, kept at its position as a pass-through with its saved element) copies as an offline insert with an identical saved element (`OfflineInsert.saved()`), never resolved and never dropped.
+- **A plugin-backed insert** — first-party, external JAR or CLAP — copies as a fresh instance of the same plugin identity (`PluginSourceKind`, plugin id, version) with its parameters or state, as story 334's descriptor saves it; a JAR plugin's fresh instance comes from the installed-plugin registry (`PluginRegistry.resolve`), which constructs third-party code and so runs off the FX thread.
+
+Since story 334 a track's take lanes and comp regions are project content too (`TakeComping`; the project file's `<takes>`), and `Track.duplicate` copies none of them. A full copy carries them, under lane ids of its own, the copy's comp regions naming the copy's lanes.
+
 ## Status
 
 - Deferred

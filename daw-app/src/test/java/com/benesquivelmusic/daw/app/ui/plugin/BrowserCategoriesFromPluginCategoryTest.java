@@ -6,7 +6,6 @@ import com.benesquivelmusic.daw.app.ui.plugin.PluginBrowser.GroupRow;
 import com.benesquivelmusic.daw.app.ui.plugin.fixtures.InstallFixturePluginA;
 import com.benesquivelmusic.daw.app.ui.plugin.fixtures.InstallFixturePluginC;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
-import com.benesquivelmusic.daw.core.plugin.ExternalPluginEntry;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.sdk.editor.PluginManifest;
 
@@ -44,8 +43,8 @@ class BrowserCategoriesFromPluginCategoryTest {
 
         PluginRegistry registry = new PluginRegistry();
         try {
-            registry.register(new ExternalPluginEntry(jar, InstallFixturePluginA.class.getName()));
-            registry.register(new ExternalPluginEntry(jar, InstallFixturePluginC.class.getName()));
+            PluginTestJars.install(registry, jar, InstallFixturePluginA.class);
+            PluginTestJars.install(registry, jar, InstallFixturePluginC.class);
 
             List<BrowserRow> model = PluginBrowser.buildModel(
                     InsertEffectFactory.availableTypes(), true, registry.getLoadedPlugins());

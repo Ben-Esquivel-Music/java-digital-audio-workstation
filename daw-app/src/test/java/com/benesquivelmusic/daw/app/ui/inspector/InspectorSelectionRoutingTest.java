@@ -55,8 +55,8 @@ class InspectorSelectionRoutingTest {
             drawer.setAnimated(false);
             InsertsSection inserts = drawer.getInsertsSection();
             inserts.setInserts(List.of(
-                    new InsertsSection.Row("EQ", true),
-                    new InsertsSection.Row("Compressor", false)));
+                    new InsertsSection.Row("EQ", true, false, ""),
+                    new InsertsSection.Row("Compressor", false, false, "")));
             Pane root = new Pane(drawer);
             new Scene(root, 600, 400);
             root.applyCss();

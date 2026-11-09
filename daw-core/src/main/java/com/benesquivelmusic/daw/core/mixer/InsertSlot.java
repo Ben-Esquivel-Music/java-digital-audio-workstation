@@ -50,6 +50,10 @@ public final class InsertSlot {
     private volatile boolean bypassed;
     private volatile boolean expensive;
     private volatile MixerChannel sidechainSource;
+    /** Why the slot is offline and what its file saved; {@code null} for a working slot. */
+    private final OfflineInsert offline;
+    /** The plugin state the slot last loaded or saved (story 334, studio ruling E10.2); never {@code null}. */
+    private volatile byte[] lastPluginState = new byte[0];
 
     /**
      * Creates a new insert slot with the specified name and processor.
@@ -66,7 +70,7 @@ public final class InsertSlot {
      *
      * @param name       the display name of the effect (e.g., "Compressor")
      * @param processor  the audio processor for this slot
-     * @param effectType the built-in effect type, or {@code null} for CLAP/external plugins
+     * @param effectType the built-in effect type, or {@code null}
      */
     public InsertSlot(String name, AudioProcessor processor, InsertEffectType effectType) {
         this(name, processor, effectType, null);
@@ -88,6 +92,32 @@ public final class InsertSlot {
      */
     public InsertSlot(String name, AudioProcessor processor,
                       InsertEffectType effectType, DawPlugin plugin) {
+        this(name, processor, effectType, plugin, null);
+    }
+
+    /**
+     * Creates an offline insert slot (story 334; Persistence Integrity book
+     * §4.5): an insert a project open could not load, kept at its chain
+     * position. Its processor is a {@link PassThroughProcessor} whose output
+     * equals its input at zero latency, whatever its bypass flag (studio
+     * ruling E1); it holds no plugin, so it is never an instrument and offers
+     * no sidechain input; and it carries the element its file saved, which
+     * the next save writes back.
+     *
+     * @param name     the name the slot shows: the saved {@code name}, or the
+     *                 saved identity when there is none
+     * @param channels the project's channel count
+     * @param offline  why the slot is offline and what its file saved
+     * @return the slot, not bypassed and not flagged expensive
+     */
+    public static InsertSlot ofOffline(String name, int channels, OfflineInsert offline) {
+        return new InsertSlot(name, new PassThroughProcessor(channels), null, null,
+                Objects.requireNonNull(offline, "offline must not be null"));
+    }
+
+    private InsertSlot(String name, AudioProcessor processor,
+                       InsertEffectType effectType, DawPlugin plugin, OfflineInsert offline) {
+        this.offline = offline;
         this.name = Objects.requireNonNull(name, "name must not be null");
         this.processor = Objects.requireNonNull(processor, "processor must not be null");
         if (processor instanceof com.benesquivelmusic.daw.core.dsp.PreparedParameterProcessor prepared) {
@@ -186,6 +216,63 @@ public final class InsertSlot {
                         : InsertEffectFactory.getParameterValues(effectType, processor));
         values.putAll(pending);
         return values;
+    }
+
+    /**
+     * Applies {@code value} to the parameter {@code parameterId} now, on the
+     * calling thread, through the setter the audio thread drains to, and
+     * records it in the {@linkplain #getParameterStore() parameter store} as
+     * the value in force, with nothing pending for the audio thread. For a
+     * project reader building a slot no audio thread renders yet (story 334,
+     * studio ruling G3): a reopened plugin then holds its saved values before
+     * its first processed block, and a value its setter refuses is found at
+     * the open instead of faulting the slot during playback. Pass a value
+     * inside the parameter's range.
+     *
+     * @param parameterId the parameter's id in the store
+     * @param value       the value to apply
+     * @throws IllegalArgumentException when the store has no parameter with
+     *                                  that id, or when the setter refuses the
+     *                                  value — the store then keeps the value
+     *                                  it held
+     */
+    public void applyParameterNow(int parameterId, double value) {
+        PluginParameterStore store = getParameterStore();
+        int index = store.indexOf(parameterId);
+        parameterSetter.set(parameterId, value);
+        store.writeFromAudio(index, value);
+    }
+
+    /**
+     * Why this slot is offline and what its project file saved, for an insert
+     * a project open could not load ({@link #ofOffline}); empty for a working
+     * slot. The one way daw-core and the application tell an offline insert
+     * apart (story 334).
+     *
+     * @return the offline insert, or empty
+     */
+    public Optional<OfflineInsert> offline() {
+        return Optional.ofNullable(offline);
+    }
+
+    /**
+     * Records the plugin state this slot last loaded or saved — a CLAP
+     * plugin's state blob — so that a save whose plugin fails to return its
+     * state writes this one instead of none (story 334, studio ruling E10.2).
+     *
+     * @param state the state, copied
+     */
+    public void rememberPluginState(byte[] state) {
+        lastPluginState = Objects.requireNonNull(state, "state must not be null").clone();
+    }
+
+    /**
+     * The plugin state this slot last loaded or saved ({@link #rememberPluginState}).
+     *
+     * @return a copy of the state; empty when none was loaded or saved
+     */
+    public byte[] lastPluginState() {
+        return lastPluginState.clone();
     }
 
     @RealTimeSafe
@@ -357,7 +444,8 @@ public final class InsertSlot {
     /**
      * Returns the {@link DawPlugin} that produced this slot, or {@code null}
      * if the slot was created directly from a raw {@link AudioProcessor}
-     * (built-in DSP, CLAP/external plugin paths, legacy code).
+     * (built-in DSP, an {@linkplain #offline() offline} insert, legacy code).
+     * A first-party, external JAR or CLAP plugin's slot holds its plugin.
      *
      * <p>The host uses the plugin reference to route plugin-parameter
      * automation values from {@link com.benesquivelmusic.daw.core.automation.AutomationData

@@ -10,6 +10,7 @@ import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
 import com.benesquivelmusic.daw.core.persistence.UnreadProjectItem;
+import com.benesquivelmusic.daw.core.plugin.PluginResolver;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.snapshot.SnapshotBrowserService;
 import com.benesquivelmusic.daw.core.snapshot.SnapshotDiff;
@@ -138,6 +139,22 @@ final class SnapshotsController {
 
     void setProjectActionsAllowed(java.util.function.BooleanSupplier allowed) {
         projectActionsAllowed = Objects.requireNonNull(allowed);
+    }
+
+    /**
+     * Sets how a snapshot's read turns a saved plugin identity into a plugin
+     * (story 334, studio-engineer ruling R1): {@code MainController} installs
+     * the registry's {@link com.benesquivelmusic.daw.core.plugin.PluginRegistry#withoutLoading()
+     * lookup}, which never waits and never constructs third-party code — the
+     * read runs on the JavaFX application thread — so an installed JAR plugin
+     * restores offline, saying a snapshot restore does not load plugins, until
+     * the project is saved and reopened. Until then — a pure-unit context —
+     * the read resolves none ({@link PluginResolver#NONE}).
+     *
+     * @param resolver the resolver; must not be {@code null}
+     */
+    void setPluginResolver(PluginResolver resolver) {
+        deserializer.setPluginResolver(Objects.requireNonNull(resolver, "resolver must not be null"));
     }
 
     /**
@@ -457,8 +474,9 @@ final class SnapshotsController {
      * ruling M4).
      */
     private void restoreNow(SnapshotEntry entry) {
+        DawProject project = null;
         try {
-            DawProject project = loadFromEntry(entry);
+            project = loadFromEntry(entry);
             // Story 333 (E3-N7) — a snapshot is a state of the open project, which keeps its name: a snapshot a
             // Save As copied still carries the original's name, and the copy's name is its folder's (ruling R6).
             DawProject open = deps.currentProject().get();
@@ -480,6 +498,12 @@ final class SnapshotsController {
                 browserView.refresh();
             }
         } catch (IOException | RuntimeException e) {
+            // Story 334 (critique J11) — a restore that failed before its install
+            // leaves the project it read to nobody: its plugins are released. One
+            // the install already made live is the application's, and is kept.
+            if (project != null && project != deps.currentProject().get()) {
+                ProjectDeserializer.disposeUnopened(project);
+            }
             LOG.log(Level.WARNING, "Failed to restore snapshot " + entry.id(), e);
             showError("Restore failed", e);
         }
@@ -491,7 +515,15 @@ final class SnapshotsController {
         }
         try {
             DawProject snapshotProject = loadFromEntry(entry);
-            SnapshotDiff diff = SnapshotDiff.between(snapshotProject, deps.currentProject().get());
+            SnapshotDiff diff;
+            try {
+                diff = SnapshotDiff.between(snapshotProject, deps.currentProject().get());
+            } finally {
+                // Story 334 (critique J11) — the read built the snapshot's
+                // inserts (first-party plugins among them) only to be compared:
+                // nothing installs this project, so its inserts are released.
+                ProjectDeserializer.disposeUnopened(snapshotProject);
+            }
             showDiffDialog(entry, diff);
         } catch (IOException | RuntimeException e) {
             LOG.log(Level.WARNING, "Failed to compare snapshot " + entry.id(), e);

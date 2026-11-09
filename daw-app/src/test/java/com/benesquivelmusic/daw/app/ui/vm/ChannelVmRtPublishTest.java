@@ -195,13 +195,13 @@ class ChannelVmRtPublishTest {
             onFx(() -> {
                 channel.addInsert(new InsertSlot("Gain Trim", new Passthrough()));
                 assertThat(vm.insertsProperty())
-                        .containsExactly(new InsertSlotModel("Gain Trim", true, false));
+                        .containsExactly(new InsertSlotModel("Gain Trim", true, false, false, "Gain Trim"));
                 assertThat(vm.isSpatialNodePresent()).isFalse();
 
                 channel.setInsertBypassed(0, true);
                 assertThat(vm.insertsProperty())
                         .as("bypass flips active/bypassed on the same slot")
-                        .containsExactly(new InsertSlotModel("Gain Trim", false, true));
+                        .containsExactly(new InsertSlotModel("Gain Trim", false, true, false, "Gain Trim"));
 
                 channel.addInsert(new InsertSlot("Rotator", new AmbisonicRotator(AmbisonicOrder.FIRST)));
                 assertThat(vm.insertsProperty()).hasSize(2);
@@ -228,7 +228,7 @@ class ChannelVmRtPublishTest {
         ChannelVM vm = new ChannelVM(channel, new FxDispatcher());
         try {
             org.assertj.core.api.Assertions.assertThatThrownBy(
-                    () -> vm.insertsProperty().add(new InsertSlotModel("x", true, false)))
+                    () -> vm.insertsProperty().add(new InsertSlotModel("x", true, false, false, "x")))
                     .isInstanceOf(UnsupportedOperationException.class);
         } finally {
             vm.dispose();

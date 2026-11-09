@@ -26,19 +26,31 @@ import java.util.Objects;
  *       renders {@code -mcs-accent} when {@code active}, otherwise
  *       {@code -mcs-text-mute} (story §5.4 — "{@code -accent} if active,
  *       {@code -text-mute} if bypassed").</li>
+ *   <li>{@code offline} — {@code InsertSlot.offline().isPresent()}: a project
+ *       open kept the insert at its place, passing audio through, because it
+ *       could not load what the file saved (story 334). An offline slot is
+ *       never {@code active}; its status dot renders {@code -mcs-warn}
+ *       (studio-engineer ruling E22).</li>
+ *   <li>{@code accessibleText} — what an assistive technology reads for the
+ *       slot's row: the name, or {@code <name>, offline} for an offline slot.
+ *       The consumer words it, so the skin shows text it never composes.</li>
  * </ul>
  *
- * @param name     the slot display name (e.g. {@code "Compressor"}); must
- *                 not be {@code null}
- * @param active   whether the slot holds an engaged processor
- * @param bypassed whether the slot is bypassed
+ * @param name           the slot display name (e.g. {@code "Compressor"}); must
+ *                       not be {@code null}
+ * @param active         whether the slot holds an engaged processor
+ * @param bypassed       whether the slot is bypassed
+ * @param offline        whether the slot is offline
+ * @param accessibleText the row's accessible text; must not be {@code null}
  */
-public record InsertSlotModel(String name, boolean active, boolean bypassed) {
+public record InsertSlotModel(String name, boolean active, boolean bypassed, boolean offline,
+                              String accessibleText) {
 
     /**
-     * @throws NullPointerException if {@code name} is {@code null}
+     * @throws NullPointerException if {@code name} or {@code accessibleText} is {@code null}
      */
     public InsertSlotModel {
         Objects.requireNonNull(name, "name");
+        Objects.requireNonNull(accessibleText, "accessibleText");
     }
 }

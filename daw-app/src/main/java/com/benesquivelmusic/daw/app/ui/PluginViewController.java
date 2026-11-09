@@ -280,9 +280,23 @@ final class PluginViewController {
         };
     }
 
+    /**
+     * Opens {@code slot}'s editor in the Workshop pane, or focuses it when it
+     * is open — the one door the rack, the Inspector's pencil and the
+     * Workshop reach. An offline insert opens no editor (story 334, rulings E3
+     * and E22): it has no plugin to edit, and its surfaces say why it is
+     * offline.
+     *
+     * @param channel the slot's channel
+     * @param slot    the slot
+     * @throws IllegalArgumentException if {@code slot} is no longer in {@code channel}
+     */
     void openSlotEditor(MixerChannel channel, InsertSlot slot) {
         if (!channel.getInsertSlots().contains(slot)) {
             throw new IllegalArgumentException("The editor's slot is no longer in the channel");
+        }
+        if (slot.offline().isPresent()) {
+            return;
         }
         if (activeChannel == channel && activeSlot == slot && activeEditorSession != null) {
             focusActiveEditor();

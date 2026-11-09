@@ -6,8 +6,11 @@ import com.benesquivelmusic.daw.app.ui.plugin.PluginJarScanner.JarInspection;
 import com.benesquivelmusic.daw.core.plugin.ExternalPluginEntry;
 import com.benesquivelmusic.daw.core.plugin.ExternalPluginLoader;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.core.plugin.InstallRefusal;
+import com.benesquivelmusic.daw.core.plugin.InstalledPlugin;
 import com.benesquivelmusic.daw.core.plugin.PluginLoadException;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
+import com.benesquivelmusic.daw.core.plugin.RemovedPlugin;
 import com.benesquivelmusic.daw.sdk.editor.PluginManifest;
 import com.benesquivelmusic.daw.sdk.editor.PluginManifestReader;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
@@ -20,11 +23,13 @@ import javafx.scene.control.Label;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
@@ -48,6 +53,14 @@ import java.util.concurrent.CompletableFuture;
  *       {@link #rejectionMessage} copy (story 304, §8.5.2); the panel itself is
  *       never constructed for an invalid inspection.</li>
  * </ul>
+ *
+ * <p>Story 334 (studio-engineer ruling E20) — a plugin's identity is its
+ * manifest id. A bundle whose manifest declares one id for more than one
+ * class is refused before the panel opens ({@link #duplicateIdMessage}); each
+ * plugin is installed from the registry's own copy of the JAR
+ * ({@link PluginRegistry#stageJar}), and one whose loaded descriptor
+ * disagrees with its manifest is refused with the other failures. A row whose
+ * id is installed already says which entry the install replaces.</p>
  */
 public final class PluginInstallPanel extends VBox {
 
@@ -64,7 +77,8 @@ public final class PluginInstallPanel extends VBox {
 
     CompletableFuture<Void> installationForTest() { return installation; }
 
-    private record PreparedInstall(ExternalPluginEntry entry, ExternalPluginLoader.LoadResult loaded) { }
+    /** A plugin loaded from the registry's copy of its JAR, with the manifest it is installed from. */
+    private record PreparedInstall(InstalledPlugin plugin, ExternalPluginLoader.LoadResult loaded) { }
 
     @FunctionalInterface
     interface PluginLoader {
@@ -116,7 +130,9 @@ public final class PluginInstallPanel extends VBox {
      * "Install plugin"; the panel's own Cancel / install buttons drive the close.
      * An inspection without a valid manifest bundle never opens the panel: it is
      * rejected with a {@code DawgDialog.error(...)} carrying the case-specific
-     * {@link #rejectionMessage} copy (story 304, §8.5.2).
+     * {@link #rejectionMessage} copy (story 304, §8.5.2); nor does a bundle that
+     * declares one id for more than one class, refused with the
+     * {@link #duplicateIdMessage} copy (story 334, E20).
      *
      * @param inspection  the JAR inspection; must not be {@code null}
      * @param registry    the registry to install into; must not be {@code null}
@@ -132,7 +148,54 @@ public final class PluginInstallPanel extends VBox {
             DawgDialog.error("Install plugin", rejectionMessage(inspection)).showAndWait();
             return;
         }
+        Optional<String> duplicateId = duplicateIdMessage(inspection);
+        if (duplicateId.isPresent()) {
+            DawgDialog.error("Install plugin", duplicateId.get()).showAndWait();
+            return;
+        }
         createDialog(inspection, registry, onInstalled).showAndWait();
+    }
+
+    /**
+     * Why a valid bundle may not be installed at all (story 334, studio
+     * ruling E20 and its R11 (d)): one sentence per id its manifest declares
+     * for more than one class, in manifest order — a project records the id,
+     * so an id must name exactly one plugin. Package-private + {@code static}
+     * for tests.
+     *
+     * @param inspection the JAR inspection, with a valid manifest bundle
+     * @return the refusal's copy; empty when every id names one class
+     */
+    static Optional<String> duplicateIdMessage(JarInspection inspection) {
+        Objects.requireNonNull(inspection, "inspection must not be null");
+        List<InstallRefusal> refusals = PluginRegistry.refusalsFor(jarName(inspection.jar()),
+                inspection.manifests().manifests());
+        if (refusals.isEmpty()) {
+            return Optional.empty();
+        }
+        List<String> sentences = new ArrayList<>(refusals.size());
+        for (InstallRefusal refusal : refusals) {
+            sentences.add(refusalText(refusal));
+        }
+        return Optional.of(String.join("\n", sentences));
+    }
+
+    /**
+     * The words of an install refusal (studio ruling E20): the JAR's file
+     * name, then why the plugin was not installed.
+     *
+     * @param refusal the refusal
+     * @return its sentence
+     */
+    static String refusalText(InstallRefusal refusal) {
+        return switch (refusal) {
+            case InstallRefusal.DescriptorMismatch mismatch -> PluginText.text("pluginInstall.refused.mismatch",
+                    mismatch.jarFileName(), mismatch.className(), mismatch.reportedId(),
+                    mismatch.reportedVersion(), mismatch.manifestId(), mismatch.manifestVersion());
+            case InstallRefusal.DuplicateId duplicate -> PluginText.text("pluginInstall.refused.duplicateId",
+                    duplicate.jarFileName(), duplicate.id(), duplicate.classNames().size(),
+                    Integer.toString(duplicate.classNames().size()), String.join(", ", duplicate.classNames()));
+        };
     }
 
     static DawgDialog<Void> createDialog(
@@ -181,7 +244,7 @@ public final class PluginInstallPanel extends VBox {
 
         VBox rows = new VBox(ROW_SPACING);
         for (PluginManifest manifest : manifests) {
-            rows.getChildren().add(manifestRow(manifest));
+            rows.getChildren().add(manifestRow(manifest, registry));
         }
 
         Label footprint = new Label(footprintLine(inspection));
@@ -195,12 +258,20 @@ public final class PluginInstallPanel extends VBox {
         return install;
     }
 
-    private Node manifestRow(PluginManifest manifest) {
+    private Node manifestRow(PluginManifest manifest, PluginRegistry registry) {
         PluginDescriptor d = manifest.descriptor();
         Node icon = PluginIcons.of(d.category(), d.iconHint(), ICON_SIZE);
         Label label = new Label(d.name() + "  v" + d.version()
                 + "  " + d.type().name() + " · " + d.category().displayName());
         HBox row = new HBox(ROW_SPACING, icon, label);
+        // Story 334 (E20) — one installed entry per id: the install replaces
+        // the one installed now, and the row says so before the engineer confirms.
+        registry.installedJar(d.id()).ifPresent(installed -> {
+            Label replaces = new Label(PluginText.text("pluginInstall.replaces", installed.name(),
+                    installed.version()));
+            replaces.getStyleClass().add("plugin-install-replaces");
+            row.getChildren().add(replaces);
+        });
         row.setAlignment(Pos.CENTER_LEFT);
         row.getStyleClass().add("plugin-install-row");
         return row;
@@ -209,45 +280,83 @@ public final class PluginInstallPanel extends VBox {
     private void installAll(Path jar, List<PluginManifest> manifests,
                             PluginRegistry registry, Runnable onInstalled) {
         if (!installation.isDone()) return;
-        var attempt = new InstallationAttempt();
+        InstallationAttempt attempt = new InstallationAttempt();
         activeInstallation = attempt;
         installation = attempt.completion;
         primaryButton.setDisable(true);
+        String jarName = jarName(jar);
         // Virtual threads (JEP 444, final since Java 21) isolate arbitrary constructors from FX.
         Thread.ofVirtual().name("plugin-install-load").start(() -> {
             List<PreparedInstall> prepared = new ArrayList<>();
+            List<PreparedInstall> refused = new ArrayList<>();
             List<String> failures = new ArrayList<>();
             for (PluginManifest manifest : manifests) {
                 if (attempt.cancelled) break;
-                ExternalPluginEntry entry = new ExternalPluginEntry(jar, manifest.pluginClass());
-                try {
-                    prepared.add(new PreparedInstall(entry, pluginLoader.load(entry)));
-                } catch (PluginLoadException | RuntimeException | Error failure) {
-                    failures.add(manifest.pluginClass() + " — " + failure.getMessage());
-                }
+                prepare(jar, jarName, manifest, registry, prepared, refused, failures);
             }
             if (attempt.cancelled) {
-                disposePrepared(prepared, attempt.completion);
+                List<Runnable> releases = releasesOf(prepared);
+                releases.addAll(releasesOf(refused));
+                runReleases(releases, attempt.completion);
             } else {
-                FxDispatcher.runOnFx(() -> completeInstallation(attempt, prepared, failures, registry, onInstalled));
+                FxDispatcher.runOnFx(() -> completeInstallation(attempt, prepared, refused, failures, registry,
+                        onInstalled));
             }
         });
     }
 
-    private void completeInstallation(InstallationAttempt attempt,
-                                      List<PreparedInstall> prepared, List<String> failures,
-                                      PluginRegistry registry, Runnable onInstalled) {
-        if (attempt.cancelled) {
-            disposePreparedAsync(prepared, attempt.completion);
+    /**
+     * Loads the plugin {@code manifest} declares from the registry's own copy
+     * of {@code jar} (story 334, E20: the engineer's original is never
+     * referenced again) and checks that its descriptor agrees with the
+     * manifest: a plugin that agrees joins {@code prepared}; one that does not
+     * — or whose descriptor throws — joins {@code refused}, released with the
+     * installation's other leftovers, and its refusal joins {@code failures}.
+     */
+    private void prepare(Path jar, String jarName, PluginManifest manifest, PluginRegistry registry,
+                         List<PreparedInstall> prepared, List<PreparedInstall> refused, List<String> failures) {
+        ExternalPluginEntry entry;
+        ExternalPluginLoader.LoadResult loaded;
+        try {
+            entry = new ExternalPluginEntry(registry.stageJar(jar, manifest), manifest.pluginClass());
+            loaded = pluginLoader.load(entry);
+        } catch (IOException | PluginLoadException | RuntimeException | Error failure) {
+            failures.add(manifest.pluginClass() + " — " + failure.getMessage());
             return;
         }
-        List<PreparedInstall> rejected = new ArrayList<>();
+        PreparedInstall candidate = new PreparedInstall(new InstalledPlugin(entry, manifest, jarName), loaded);
+        try {
+            Optional<InstallRefusal> refusal = PluginRegistry.refusalFor(jarName, manifest, loaded.plugin());
+            if (refusal.isEmpty()) {
+                prepared.add(candidate);
+                return;
+            }
+            failures.add(refusalText(refusal.get()));
+        } catch (RuntimeException | Error failure) {
+            failures.add(manifest.pluginClass() + " — " + failure.getMessage());
+        }
+        refused.add(candidate);
+    }
+
+    private void completeInstallation(InstallationAttempt attempt, List<PreparedInstall> prepared,
+                                      List<PreparedInstall> refused, List<String> failures,
+                                      PluginRegistry registry, Runnable onInstalled) {
+        List<Runnable> releases = releasesOf(refused);
+        if (attempt.cancelled) {
+            releases.addAll(releasesOf(prepared));
+            runReleasesAsync(releases, attempt.completion);
+            return;
+        }
         for (PreparedInstall candidate : prepared) {
             try {
-                registry.registerLoaded(candidate.entry(), candidate.loaded());
-            } catch (PluginLoadException failure) {
-                failures.add(candidate.entry().className() + " — " + failure.getMessage());
-                rejected.add(candidate);
+                // Story 334 (E20, critique J9) — an entry of the same id is
+                // replaced; the registry hands it back, released off FX below.
+                registry.install(candidate.plugin(), candidate.loaded())
+                        .map(RemovedPlugin::disposal)
+                        .ifPresent(releases::add);
+            } catch (IllegalArgumentException failure) {
+                failures.add(candidate.plugin().entry().className() + " — " + failure.getMessage());
+                releases.addAll(releasesOf(List.of(candidate)));
             }
         }
         activeInstallation = null;
@@ -264,7 +373,7 @@ public final class PluginInstallPanel extends VBox {
             attempt.completion.completeExceptionally(failure);
             throw failure;
         } finally {
-            disposePreparedAsync(rejected, attempt.completion);
+            runReleasesAsync(releases, attempt.completion);
         }
     }
 
@@ -272,26 +381,47 @@ public final class PluginInstallPanel extends VBox {
         if (activeInstallation != null) activeInstallation.cancelled = true;
     }
 
-    private static void disposePreparedAsync(List<PreparedInstall> prepared, CompletableFuture<Void> completion) {
-        if (prepared.isEmpty()) {
+    /** What releases each prepared plugin no registry took: dispose it, then close its loader. */
+    private static List<Runnable> releasesOf(List<PreparedInstall> prepared) {
+        List<Runnable> releases = new ArrayList<>(prepared.size());
+        for (PreparedInstall candidate : prepared) {
+            releases.add(() -> {
+                try {
+                    candidate.loaded().plugin().dispose();
+                } finally {
+                    ExternalPluginLoader.closeQuietly(candidate.loaded().classLoader());
+                }
+            });
+        }
+        return releases;
+    }
+
+    private static void runReleasesAsync(List<Runnable> releases, CompletableFuture<Void> completion) {
+        if (releases.isEmpty()) {
             completion.complete(null);
             return;
         }
         // Virtual threads (JEP 444) keep third-party disposal and JAR closing off FX.
         Thread.ofVirtual().name("unpublished-plugin-dispose")
-                .start(() -> disposePrepared(prepared, completion));
+                .start(() -> runReleases(releases, completion));
     }
 
-    private static void disposePrepared(List<PreparedInstall> prepared, CompletableFuture<Void> completion) {
+    /**
+     * Runs every release, whatever unchecked exception one throws, then completes
+     * {@code completion} with the first failure, the others suppressed into
+     * it. One exception instance two plugins throw is kept once: an exception
+     * cannot suppress itself, and trying would end the loop with later
+     * plugins unreleased and {@code completion} never complete (story 334,
+     * the final review's NIT-1).
+     */
+    private static void runReleases(List<Runnable> releases, CompletableFuture<Void> completion) {
         Throwable firstFailure = null;
-        for (PreparedInstall candidate : prepared) {
+        for (Runnable release : releases) {
             try {
-                candidate.loaded().plugin().dispose();
+                release.run();
             } catch (RuntimeException | Error failure) {
                 if (firstFailure == null) firstFailure = failure;
-                else firstFailure.addSuppressed(failure);
-            } finally {
-                ExternalPluginLoader.closeQuietly(candidate.loaded().classLoader());
+                else if (firstFailure != failure) firstFailure.addSuppressed(failure);
             }
         }
         if (firstFailure == null) completion.complete(null);

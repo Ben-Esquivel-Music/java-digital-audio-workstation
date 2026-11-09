@@ -5,6 +5,8 @@ import com.benesquivelmusic.daw.core.automation.AutomationLane;
 import com.benesquivelmusic.daw.core.automation.AutomationParameter;
 import com.benesquivelmusic.daw.core.automation.AutomationPoint;
 import com.benesquivelmusic.daw.core.automation.ObjectParameterTarget;
+import com.benesquivelmusic.daw.core.comping.TakeComping;
+import com.benesquivelmusic.daw.core.comping.TakeLane;
 import com.benesquivelmusic.daw.core.marker.Marker;
 import com.benesquivelmusic.daw.core.marker.MarkerRange;
 import com.benesquivelmusic.daw.core.midi.MidiCcLane;
@@ -23,6 +25,7 @@ import com.benesquivelmusic.daw.core.mixer.spatial.BedBus;
 import com.benesquivelmusic.daw.core.mixer.spatial.BedChannelRouting;
 import com.benesquivelmusic.daw.core.plugin.LiveAnalyzerPlugin;
 import com.benesquivelmusic.daw.core.plugin.MidiEffectPlugin;
+import com.benesquivelmusic.daw.core.plugin.PluginSourceKind;
 import com.benesquivelmusic.daw.core.plugin.SpectrumAnalyzerPlugin;
 import com.benesquivelmusic.daw.core.plugin.TunerPlugin;
 import com.benesquivelmusic.daw.core.plugin.builtin.midi.ArpeggiatorPlugin;
@@ -34,7 +37,10 @@ import com.benesquivelmusic.daw.core.reference.ReferenceTrackManager;
 import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackGroup;
+import com.benesquivelmusic.daw.core.transport.TempoMap;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
+import com.benesquivelmusic.daw.sdk.plugin.ExternalPluginHost;
 import org.assertj.core.api.SoftAssertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -47,6 +53,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -68,9 +75,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Where the parity contract ({@link ProjectSchemaParityContractTest})
  * proves every written name is read, this family proves every value comes
  * back as saved. When the serializer gains a fact, add its assertion here in
- * the same change. The §3.1 rows owned by story 334 — the tempo map,
- * plugin-backed inserts, take stacks and comp selections — get their groups
- * here when that story makes them round-trip.</p>
+ * the same change. The §3.1 rows owned by story 334 have their groups: the
+ * tempo map ({@link #tempoMap}), plugin-backed inserts
+ * ({@link #pluginBackedInserts}) — both reopen paths resolve the family's
+ * installed plugins through {@link RoundTripInventoryProjects#PLUGINS} — and
+ * take stacks and comp selections ({@link #takeStacksAndCompSelections}).</p>
  */
 class ProjectRoundTripInventoryTest {
 
@@ -99,12 +108,14 @@ class ProjectRoundTripInventoryTest {
     static void saveAndReopenTheInventoryProject() throws IOException {
         DawProject original = RoundTripInventoryProjects.full(tempDir.resolve("assets"));
         ProjectDeserializer deserializer = new ProjectDeserializer();
+        deserializer.setPluginResolver(RoundTripInventoryProjects.PLUGINS);
         DawProject reopened = deserializer.deserialize(new ProjectSerializer().serialize(original));
         Reopened viaSerializer = new Reopened("ProjectSerializer → ProjectDeserializer",
                 original, reopened, deserializer.getUnreadItems());
 
         ProjectManager manager = new ProjectManager(
                 new CheckpointManager(new AutoSaveConfig(Duration.ofHours(1), 10, true)));
+        manager.setPluginResolver(RoundTripInventoryProjects.PLUGINS);
         ProjectMetadata metadata = manager.createProject("Inventory Session", tempDir);
         DawProject saved = RoundTripInventoryProjects.full(metadata.projectPath());
         saved(manager, saved);
@@ -121,15 +132,25 @@ class ProjectRoundTripInventoryTest {
         return reopenings.stream();
     }
 
-    /** The open honours every saved item; the one it reports is the effect no build recognises, kept in place. */
+    /**
+     * The open honours every saved item; the two it reports are kept in place:
+     * the MIDI effect no build recognises and the insert of a plugin that is
+     * not installed.
+     */
     @ParameterizedTest(name = "{0}")
     @MethodSource("reopenings")
-    void theOpenReportsOnlyTheUnrecognisedMidiEffect(Reopened r) {
-        assertThat(r.unread()).as("%s: unread items", r.path()).singleElement().satisfies(item -> {
+    void theOpenReportsOnlyTheUnrecognisedMidiEffectAndTheOfflineInsert(Reopened r) {
+        assertThat(r.unread()).as("%s: unread items", r.path()).satisfiesExactly(item -> {
             assertThat(item.kind()).isEqualTo(UnreadProjectItem.Kind.MIDI_EFFECT_NOT_RECOGNIZED);
             assertThat(item.location()).isEqualTo(new UnreadProjectItem.OnTrack(2, "Keys"));
             assertThat(item.index()).isEqualTo(1);
             assertThat(item.detail()).contains(RoundTripInventoryProjects.UNRESOLVED_EFFECT_ID);
+        }, item -> {
+            assertThat(item.kind()).isEqualTo(UnreadProjectItem.Kind.INSERT_NOT_LOADED);
+            assertThat(item.location()).isEqualTo(new UnreadProjectItem.OnTrack(0, "Drums"));
+            assertThat(item.index()).isEqualTo(4);
+            assertThat(item.insertName()).isEqualTo("Future Limiter");
+            assertThat(item.detail()).contains(RoundTripInventoryProjects.OFFLINE_PLUGIN_ID);
         });
     }
 
@@ -254,6 +275,61 @@ class ProjectRoundTripInventoryTest {
         softly.assertAll();
     }
 
+    /**
+     * §3.1 "Take stacks + comp selections (TakeComping, take lanes and comp
+     * regions)" — story 334: per track, every lane in order with its id,
+     * name and mute flag and its clips' saved values and segments; the comp
+     * regions; the main-lane clips adopted as comp output, hand edits
+     * included; no lane soloed.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("reopenings")
+    void takeStacksAndCompSelections(Reopened r) {
+        SoftAssertions softly = new SoftAssertions();
+        int[] lanes = {0};
+        forEachTrack(r, (track, expected, actual) -> {
+            TakeComping saved = expected.getTakeComping();
+            TakeComping comping = actual.getTakeComping();
+            fact(softly, r, track + "take lane count", comping.getTakeLaneCount(), saved.getTakeLaneCount());
+            for (int l = 0; l < Math.min(saved.getTakeLaneCount(), comping.getTakeLaneCount()); l++) {
+                TakeLane expectedLane = saved.getTakeLane(l);
+                TakeLane lane = comping.getTakeLane(l);
+                String name = track + "take lane " + l + " (" + expectedLane.getName() + ") ";
+                lanes[0]++;
+                fact(softly, r, name + "id", lane.getId(), expectedLane.getId());
+                fact(softly, r, name + "name", lane.getName(), expectedLane.getName());
+                fact(softly, r, name + "muted", lane.isMuted(), expectedLane.isMuted());
+                fact(softly, r, name + "soloed (never saved)", lane.isSoloed(), false);
+                fact(softly, r, name + "clips (saved values and segments)",
+                        savedValuesOf(lane.getClips()), savedValuesOf(expectedLane.getClips()));
+            }
+            fact(softly, r, track + "comp regions (lane, start, duration)",
+                    comping.getCompRegions(), saved.getCompRegions());
+            fact(softly, r, track + "comp output (saved values, hand edits included)",
+                    savedValuesOf(comping.compOutputOn(actual)), savedValuesOf(saved.compOutputOn(expected)));
+        });
+        Track drums = r.reopened().getTracks().getFirst();
+        fact(softly, r, "take lanes (non-vacuous)", lanes[0], 2);
+        fact(softly, r, "Drums comp regions (non-vacuous)", drums.getTakeComping().getCompRegions().size(), 2);
+        fact(softly, r, "Drums comp output clips (non-vacuous)", drums.getTakeComping().compOutputOn(drums).size(), 2);
+        fact(softly, r, "Drums second lane muted (non-vacuous)", drums.getTakeComping().getTakeLane(1).isMuted(), true);
+        softly.assertAll();
+    }
+
+    /** Every value a project writer saves for each clip, in order — {@code buildClipElement}'s attributes and children. */
+    private static List<List<Object>> savedValuesOf(List<AudioClip> clips) {
+        List<List<Object>> values = new ArrayList<>(clips.size());
+        for (AudioClip clip : clips) {
+            values.add(Arrays.asList(clip.getName(), clip.getStartBeat(), clip.getDurationBeats(),
+                    clip.getSourceOffsetBeats(), clip.getGainDb(), clip.isReversed(), clip.isLocked(),
+                    clip.getFadeInBeats(), clip.getFadeOutBeats(), clip.getFadeInCurveType(),
+                    clip.getFadeOutCurveType(), clip.getTimeStretchRatio(), clip.getPitchShiftSemitones(),
+                    clip.getStretchQuality(), clip.getSourceFilePath(), clip.getSourceSegmentPaths(),
+                    clip.gainEnvelope()));
+        }
+        return values;
+    }
+
     /** §3.1 "MIDI notes + CC lanes (Track.midiClip)" — story 330. */
     @ParameterizedTest(name = "{0}")
     @MethodSource("reopenings")
@@ -334,7 +410,7 @@ class ProjectRoundTripInventoryTest {
         softly.assertAll();
     }
 
-    /** §3.1 "Tempo + time signature (beat 0)" — the tempo map is story 334's row. */
+    /** §3.1 "Tempo + time signature (beat 0)" — the changes after beat 0 are {@link #tempoMap}'s row. */
     @ParameterizedTest(name = "{0}")
     @MethodSource("reopenings")
     void tempoAndTimeSignature(Reopened r) {
@@ -346,6 +422,21 @@ class ProjectRoundTripInventoryTest {
                 transport.getTimeSignatureNumerator(), saved.getTimeSignatureNumerator());
         fact(softly, r, "time signature denominator",
                 transport.getTimeSignatureDenominator(), saved.getTimeSignatureDenominator());
+        softly.assertAll();
+    }
+
+    /** §3.1 "TEMPO MAP (tempo/meter change lists)" — story 334. */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("reopenings")
+    void tempoMap(Reopened r) {
+        SoftAssertions softly = new SoftAssertions();
+        TempoMap saved = r.original().getTransport().getTempoMap();
+        TempoMap map = r.reopened().getTransport().getTempoMap();
+        fact(softly, r, "tempo changes (position, bpm, transition)", map.getTempoChanges(), saved.getTempoChanges());
+        fact(softly, r, "meter changes (position, numerator, denominator)",
+                map.getTimeSignatureChanges(), saved.getTimeSignatureChanges());
+        fact(softly, r, "tempo changes, beat 0 included (non-vacuous)", map.getTempoChangeCount(), 4);
+        fact(softly, r, "meter changes, beat 0 included (non-vacuous)", map.getTimeSignatureChangeCount(), 3);
         softly.assertAll();
     }
 
@@ -422,6 +513,34 @@ class ProjectRoundTripInventoryTest {
                 }
             }
         });
+        softly.assertAll();
+    }
+
+    /**
+     * §3.1 "Plugin-backed inserts (external JAR / CLAP)" — story 334: per
+     * channel and slot, a plugin's source kind, id, version and class, name,
+     * flags and sidechain, and its name-keyed parameters, parameter-store
+     * values or CLAP state; an offline insert's element as saved and its
+     * cause.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("reopenings")
+    void pluginBackedInserts(Reopened r) {
+        SoftAssertions softly = new SoftAssertions();
+        int[] pluginBacked = {0};
+        forEachChannel(r, (channel, expected, actual) -> {
+            List<InsertSlot> saved = expected.getInsertSlots();
+            List<InsertSlot> slots = actual.getInsertSlots();
+            for (int s = 0; s < Math.min(saved.size(), slots.size()); s++) {
+                List<Object> savedFacts = pluginFacts(r.original(), saved.get(s));
+                if (savedFacts.size() > 4) {
+                    pluginBacked[0]++;
+                }
+                fact(softly, r, channel + "insert " + s + " (" + saved.get(s).getName() + ") plugin facts",
+                        pluginFacts(r.reopened(), slots.get(s)), savedFacts);
+            }
+        });
+        fact(softly, r, "plugin-backed and offline inserts (non-vacuous)", pluginBacked[0], 6);
         softly.assertAll();
     }
 
@@ -681,6 +800,43 @@ class ProjectRoundTripInventoryTest {
         }
         int channel = project.getMixer().getChannels().indexOf(source);
         return channel >= 0 ? "channel:" + channel : "return:" + project.getMixer().getReturnBuses().indexOf(source);
+    }
+
+    /**
+     * A slot's name, bypass and expensive flags and sidechain, then — for an
+     * offline insert — its cause and saved element, or — for a plugin-backed
+     * one — the plugin's source kind, id, version and class and its saved
+     * values: the CLAP state, the name-keyed parameters of an annotated
+     * processor, or the parameter store's values by id.
+     */
+    private static List<Object> pluginFacts(DawProject project, InsertSlot slot) {
+        List<Object> facts = new ArrayList<>(List.of(slot.getName(), slot.isBypassed(), slot.isExpensive(),
+                sidechainOf(project, slot)));
+        if (slot.offline().isPresent()) {
+            facts.add(slot.offline().get().cause());
+            facts.add(slot.offline().get().saved());
+            return facts;
+        }
+        DawPlugin plugin = slot.getPlugin();
+        if (plugin == null || plugin instanceof LiveAnalyzerPlugin) {
+            return facts;
+        }
+        facts.add(PluginSourceKind.of(plugin));
+        facts.add(plugin.getDescriptor().id());
+        facts.add(plugin.getDescriptor().version());
+        facts.add(plugin.getClass());
+        if (plugin instanceof ExternalPluginHost host) {
+            facts.add(HexFormat.of().formatHex(host.saveState()));
+        } else if (ReflectivePresetSerializer.isSupported(slot.getProcessor())) {
+            facts.add(ReflectivePresetSerializer.snapshot(slot.getProcessor()));
+        } else {
+            Map<Integer, Double> store = new LinkedHashMap<>();
+            for (int i = 0; i < slot.getParameterStore().parameterCount(); i++) {
+                store.put(slot.getParameterStore().parameterIdAt(i), slot.getParameterStore().value(i));
+            }
+            facts.add(store);
+        }
+        return facts;
     }
 
     private static List<Object> analyzerFacts(InsertSlot slot) {

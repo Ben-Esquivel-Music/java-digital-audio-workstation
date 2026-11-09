@@ -426,7 +426,15 @@ public final class ProjectArchiver {
 
             // Resolve relative asset paths against the extracted directory; for
             // anything missing, give the resolver a chance to relocate it.
-            List<String> missing = resolveAssetPaths(project, extractDir, header, resolver);
+            List<String> missing;
+            try {
+                missing = resolveAssetPaths(project, extractDir, header, resolver);
+            } catch (RuntimeException | Error failed) {
+                // The restore fails, so nobody uses the project it read: release
+                // the plugins its inserts built (story 334); a failed disposal is logged.
+                ProjectDeserializer.disposeUnopened(project);
+                throw failed;
+            }
 
             return new ArchivedProject(project, extractDir, header, missing, unreadItems);
         } catch (IOException | RuntimeException e) {
@@ -512,8 +520,10 @@ public final class ProjectArchiver {
      * serializer then writes the selection compile, whose clips copy their
      * take clip's references: the same references the captured document
      * holds ({@link #capture}), so a selection drawn from a lane other than
-     * the soloed one is counted (PR #984 review), and the soloed lane, not
-     * saved, is not — then each track's SoundFont path when {@code options}
+     * the soloed one is counted (PR #984 review) — then every take lane's
+     * clips, which the saved project carries as well (story 334, studio
+     * ruling E16: every lane's files are project content, the soloed lane's
+     * included) — then each track's SoundFont path when {@code options}
      * include SoundFonts. {@link #previewAssetSizes} only reads the refs;
      * {@link #consolidateInPlace} and the freshly read project of
      * {@link #openArchive} update them.

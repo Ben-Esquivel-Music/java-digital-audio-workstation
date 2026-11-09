@@ -2,12 +2,13 @@ package com.benesquivelmusic.daw.core.persistence;
 
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
+import com.benesquivelmusic.daw.core.mixer.OfflineCause;
+import com.benesquivelmusic.daw.core.plugin.AudioFormatPluginContext;
 import com.benesquivelmusic.daw.core.plugin.LiveAnalyzerPlugin;
 import com.benesquivelmusic.daw.core.plugin.SoundWaveTelemetryPlugin;
 import com.benesquivelmusic.daw.core.plugin.SpectrumAnalyzerPlugin;
 import com.benesquivelmusic.daw.core.plugin.TunerPlugin;
 import com.benesquivelmusic.daw.sdk.analysis.WindowType;
-import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import org.w3c.dom.Element;
 
 /** Stable identities and configuration for transparent, hosted analyzer inserts. */
@@ -30,8 +31,43 @@ final class AnalyzerInsertPersistence {
     }
 
     /**
-     * Rebuilds the analyzer insert {@code element} saves, or returns
-     * {@code null} for an analyzer this build does not know.
+     * Whether {@code analyzerId} names an analyzer this build has: the ids
+     * {@link #read} rebuilds.
+     *
+     * @param analyzerId an {@code analyzer-plugin-id} as saved
+     * @return {@code true} for a known analyzer
+     */
+    static boolean knows(String analyzerId) {
+        return switch (analyzerId) {
+            case SpectrumAnalyzerPlugin.PLUGIN_ID, TunerPlugin.PLUGIN_ID, SoundWaveTelemetryPlugin.PLUGIN_ID -> true;
+            default -> false;
+        };
+    }
+
+    /**
+     * Logs an analyzer insert this build does not know, which the reader keeps
+     * offline at its place, as saved (story 334, studio ruling E6 (b)):
+     * {@code <strip>: insert <k> '<name>' analyzer '<id>' is not an analyzer
+     * this build knows; it is kept as saved and passes audio through}, the
+     * name and the id quoted by {@link UnreadProjectItem#logText}. Logged
+     * only, not counted: an analyzer changes nothing the engineer hears
+     * (story 330, studio ruling D1).
+     *
+     * @param strip       the mixer strip the insert is saved on, as the log names it
+     * @param insertIndex the insert's zero-based position among the strip's saved inserts
+     * @param name        the name the offline insert shows
+     * @param analyzerId  the {@code analyzer-plugin-id} as saved
+     */
+    static void logUnknown(UnreadProjectItem.Location strip, int insertIndex, String name, String analyzerId) {
+        LOGGER.log(System.Logger.Level.WARNING, strip.describe() + ": insert " + (insertIndex + 1) + " '"
+                + UnreadProjectItem.logText(name) + "' "
+                + OfflineInsertDetails.detail(new OfflineCause.UnknownAnalyzer(analyzerId))
+                + "; it is kept as saved and passes audio through");
+    }
+
+    /**
+     * Rebuilds the analyzer insert {@code element} saves; the reader asks
+     * {@link #knows} first.
      *
      * @param element     the {@code <insert>} element
      * @param format      the project's audio format, which the analyzer is
@@ -44,22 +80,19 @@ final class AnalyzerInsertPersistence {
      * @param insertIndex the insert's zero-based position among the strip's
      *                    saved {@code <insert>} elements (the log numbers it
      *                    from 1)
-     * @return the insert slot, or {@code null}
+     * @return the insert slot
+     * @throws IllegalArgumentException for an analyzer this build does not
+     *                                  {@linkplain #knows know}
      */
     static InsertSlot read(Element element, AudioFormat format, UnreadProjectItem.Location strip, int insertIndex) {
-        LiveAnalyzerPlugin plugin = switch (element.getAttribute("analyzer-plugin-id")) {
+        String analyzerId = element.getAttribute("analyzer-plugin-id");
+        LiveAnalyzerPlugin plugin = switch (analyzerId) {
             case SpectrumAnalyzerPlugin.PLUGIN_ID -> new SpectrumAnalyzerPlugin();
             case TunerPlugin.PLUGIN_ID -> new TunerPlugin();
             case SoundWaveTelemetryPlugin.PLUGIN_ID -> new SoundWaveTelemetryPlugin();
-            default -> null;
+            default -> throw new IllegalArgumentException("not an analyzer this build knows: " + analyzerId);
         };
-        if (plugin == null) return null;
-        plugin.initialize(new PluginContext() {
-            @Override public double getSampleRate() { return format.sampleRate(); }
-            @Override public int getBufferSize() { return format.bufferSize(); }
-            @Override public int getAudioChannels() { return format.channels(); }
-            @Override public void log(String message) { LOGGER.log(System.Logger.Level.INFO, message); }
-        });
+        plugin.initialize(new AudioFormatPluginContext(format));
         restoreConfiguration(element, plugin, strip.describe() + ": insert " + (insertIndex + 1) + " analyzer "
                 + plugin.getDescriptor().id());
         if (!element.hasAttribute("analyzer-active")

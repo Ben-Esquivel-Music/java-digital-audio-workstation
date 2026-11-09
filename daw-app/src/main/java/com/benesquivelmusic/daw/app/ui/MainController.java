@@ -50,6 +50,7 @@ import com.benesquivelmusic.daw.core.export.RenderQueue;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.ChannelNameSnapshotReconciler;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
+import com.benesquivelmusic.daw.core.persistence.InstalledPluginStore;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
 import com.benesquivelmusic.daw.core.persistence.archive.ProjectArchiver;
@@ -58,8 +59,11 @@ import com.benesquivelmusic.daw.core.plugin.BuiltInPluginGraph;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.app.ui.inspector.InspectorSelection;
+import com.benesquivelmusic.daw.app.ui.plugin.PluginText;
+import com.benesquivelmusic.daw.core.plugin.MetronomePlugin;
 import com.benesquivelmusic.daw.core.plugin.PluginInvocationSupervisor;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
+import com.benesquivelmusic.daw.core.plugin.RestoreReport;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.Metronome;
@@ -194,6 +198,8 @@ public final class MainController {
      * of each reassignment so a project switch is reflected on the next scan.
      */
     private volatile DawProject project;
+    /** Where the installed-plugin registry persists (story 334); built once in {@link #initialize()}. */
+    private InstalledPluginStore installedPluginStore;
     private PluginRegistry pluginRegistry;
     private ProjectManager projectManager;
     private UndoManager undoManager;
@@ -568,6 +574,72 @@ public final class MainController {
      */
     public void setFxDispatcher(FxDispatcher dispatcher) {
         this.fxDispatcher = java.util.Objects.requireNonNull(dispatcher, "dispatcher");
+        // Story 334 (studio-engineer rulings E9, G4, G19) — the one startup
+        // notification of the installed-plugin registry, shown once its restore
+        // (started in initialize()) has checked every entry. Null only in a
+        // pure-unit context that never ran initialize().
+        if (pluginRegistry != null) {
+            pluginRegistry.restore().thenAccept(report -> FxDispatcher.runOnFx(fxDispatcher,
+                    () -> announceRegistryRestore(report)));
+        }
+    }
+
+    /**
+     * Shows what the installed-plugin registry's startup restore has to tell
+     * the engineer — at most one WARNING per startup, with a
+     * {@code Manage Plugins…} action (studio-engineer rulings E9 and G4).
+     */
+    private void announceRegistryRestore(RestoreReport report) {
+        if (notificationBar == null) {
+            return;
+        }
+        missingPluginsMessage(report).ifPresent(message -> notificationBar.show(NotificationLevel.WARNING, message,
+                PluginText.text("pluginRegistry.startupMissing.action"), this::onManagePlugins));
+    }
+
+    /**
+     * The words of the installed-plugin registry's one startup notification
+     * (studio-engineer rulings E9 and G4): the applicable sentences in this
+     * order, joined by one space — the list could not be read (which always
+     * stands alone: such a list has no entries), entries could not be read and
+     * were removed, entries did not load and stay listed as Missing. When the
+     * read could not keep the copy of the list it owed, the first two say so
+     * and that the list is left as it is, never that a copy was kept
+     * ({@code .notCopied}; ruling-3 Q2, finding A2). Package-private +
+     * {@code static} for tests.
+     *
+     * @param report what the startup restore found
+     * @return the notification's text; empty when there is nothing to tell
+     */
+    static Optional<String> missingPluginsMessage(RestoreReport report) {
+        Objects.requireNonNull(report, "report must not be null");
+        List<String> sentences = new ArrayList<>(3);
+        boolean copyKept = !report.listCopyOwed();
+        if (report.listUnreadable()) {
+            sentences.add(PluginText.text(copyKept ? "pluginRegistry.startupUnreadable"
+                    : "pluginRegistry.startupUnreadable.notCopied"));
+        }
+        if (report.removedEntries() > 0) {
+            sentences.add(PluginText.text(copyKept ? "pluginRegistry.startupRemoved"
+                    : "pluginRegistry.startupRemoved.notCopied", report.removedEntries(),
+                    Integer.toString(report.removedEntries())));
+        }
+        int missing = report.missing().size();
+        if (missing > 0) {
+            sentences.add(PluginText.text("pluginRegistry.startupMissing", missing, Integer.toString(missing)));
+        }
+        return sentences.isEmpty() ? Optional.empty() : Optional.of(String.join(" ", sentences));
+    }
+
+    /**
+     * Shows that the list of installed plugins could not be saved (studio
+     * ruling G5) — once per session, which the store guarantees, with no
+     * action.
+     */
+    private void announceRegistrySaveFailure() {
+        if (notificationBar != null) {
+            notificationBar.show(NotificationLevel.WARNING, PluginText.text("pluginRegistry.saveFailed"));
+        }
     }
 
     /**
@@ -1178,7 +1250,17 @@ public final class MainController {
     @FXML
     private void initialize() {
         project = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
-        pluginRegistry = new PluginRegistry();
+        // Story 334 (studio-engineer rulings E9, E20, G5) — the installed
+        // plugins persist in ~/.daw/plugin-registry.json, their JARs copied
+        // under ~/.daw/plugins. The restore starts now, off the FX thread (it
+        // constructs third-party classes), and the first project open waits
+        // for it. A failed write of the list is shown once per session; the
+        // hop runs after initialize() has built the notification bar (postFx
+        // always posts).
+        installedPluginStore = new InstalledPluginStore();
+        installedPluginStore.setSaveFailureListener(_ -> postFx(this::announceRegistrySaveFailure));
+        pluginRegistry = new PluginRegistry(installedPluginStore);
+        pluginRegistry.restore();
         undoManager = new UndoManager();
         // The undo-history listeners (dirty bit, menu sync + repaint) are
         // per-generation: rebuildViewModels() attaches them to this manager and
@@ -1285,6 +1367,13 @@ public final class MainController {
         // daemon virtual threads, which the JVM ends mid-write at exit: the one
         // shutdown hook waits for them, off the FX thread and at most 30 s.
         registerExitWriteWait(projectManager);
+        // Story 334 (studio-engineer ruling E9) — an install that reported
+        // success survives an immediate quit: the list's write joins that one
+        // wait, within its deadline. And a project open resolves its plugin
+        // inserts through the registry, on its parse worker, waiting for the
+        // startup restore.
+        projectManager.alsoAwaitBeforeExit(installedPluginStore);
+        projectManager.setPluginResolver(pluginRegistry);
         // Story 187 — install the JavaFX lock-conflict dialog so opening a
         // project that is already locked by another session prompts the
         // user with Open Read-Only / Take Over / Cancel rather than
@@ -1312,6 +1401,10 @@ public final class MainController {
                         this::applySnapshotRestoredProject),
                 dispatcher());
         snapshotsController.setProjectActionsAllowed(this::projectActionsAllowed);
+        // Story 334 (studio-engineer ruling R1) — a snapshot's read runs on the
+        // FX thread, so it looks plugins up and never loads one: an installed
+        // JAR plugin restores offline until the project is saved and reopened.
+        snapshotsController.setPluginResolver(pluginRegistry.withoutLoading());
         toolbarStateStore = new ToolbarStateStore(prefs);
         keyBindingManager = new KeyBindingManager(prefs.node("keybindings"));
 
@@ -2124,6 +2217,39 @@ public final class MainController {
         }
     }
 
+    /**
+     * Binds every {@link MetronomePlugin} insert of {@code project} to
+     * {@code engineMetronome} (story 334, critique J3): a project read binds
+     * a first-party Metronome plugin to the project's own metronome only so
+     * its slot can be built, but the engine renders the application's — the
+     * one an insert made in session is bound to. Its stored bypass is then
+     * applied to the engine's metronome, through the slot, as at insert.
+     * Every door that installs a project reaches it, a snapshot restore too:
+     * each rebuilds the UI through {@link #handleProjectRebuild()}.
+     * Package-private + {@code static} for tests.
+     *
+     * @param project         the project just installed
+     * @param engineMetronome the metronome the audio engine renders
+     */
+    static void bindMetronomePlugins(DawProject project, Metronome engineMetronome) {
+        Objects.requireNonNull(engineMetronome, "engineMetronome must not be null");
+        List<MixerChannel> channels = new ArrayList<>(project.getMixer().getChannels());
+        channels.addAll(project.getMixer().getReturnBuses());
+        channels.add(project.getMixer().getMasterChannel());
+        for (MixerChannel channel : channels) {
+            for (InsertSlot slot : channel.getInsertSlots()) {
+                if (slot.getPlugin() instanceof MetronomePlugin plugin && plugin.getMetronome() != engineMetronome) {
+                    Metronome bound = plugin.getMetronome();
+                    if (bound != null) {
+                        bound.releasePluginBypass(slot);
+                    }
+                    plugin.bindMetronome(engineMetronome);
+                    slot.setBypassed(slot.isBypassed());
+                }
+            }
+        }
+    }
+
     private void createMetronomeController(Preferences prefs) {
         // Story 135 — share a single MetronomeSideOutputRouter across the app
         // so the click-to-cue routing chosen in the Recording settings
@@ -2517,6 +2643,10 @@ public final class MainController {
         createTransportController();
         mountPreRollPostRollControls();
         createMetronomeController(Preferences.userNodeForPackage(MainController.class));
+        // Story 334 (critique J3) — a reopened Metronome plugin insert was bound
+        // by the read to the project's own metronome, which the engine never
+        // renders: bind it to the engine's, as an insert made in session is.
+        bindMetronomePlugins(project, audioEngine.getMetronome());
         transportController.updateStatus();
         createTrackStripController();
         if (trackStripController != null) {

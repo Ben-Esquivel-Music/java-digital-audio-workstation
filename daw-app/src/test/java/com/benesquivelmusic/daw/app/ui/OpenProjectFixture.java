@@ -89,6 +89,15 @@ final class OpenProjectFixture implements AutoCloseable {
 
     /** The fixture over {@code projectManager} (a test that needs its own deserializer). */
     OpenProjectFixture(Path workspace, ProjectManager projectManager) throws Exception {
+        this(workspace, projectManager, new ProjectArchiver());
+    }
+
+    /**
+     * The fixture over {@code projectManager}, its archive restores read
+     * through {@code archiver} (a test that needs the archive's own read to
+     * resolve plugins).
+     */
+    OpenProjectFixture(Path workspace, ProjectManager projectManager, ProjectArchiver archiver) throws Exception {
         this.workspace = workspace;
         this.projectManager = projectManager;
         runOnFx(() -> {
@@ -100,7 +109,7 @@ final class OpenProjectFixture implements AutoCloseable {
                     new ProjectLifecycleController.Deps(project::get, project::set, undoManager::get,
                             undoManager::set, () -> { }, () -> { }, rebuilds::incrementAndGet,
                             () -> null, _ -> { }, this::repainted),
-                    new ProjectArchiver(), dispatcher);
+                    archiver, dispatcher);
             lifecycle.setClipRehydrator(new ClipRehydrator(decodes));
             lifecycle.setMissingAssetsPresenter(presenter);
             lifecycle.setWelcomePresenter(_ -> { });

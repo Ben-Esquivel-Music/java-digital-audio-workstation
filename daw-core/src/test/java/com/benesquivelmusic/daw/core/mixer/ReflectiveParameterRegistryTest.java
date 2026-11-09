@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.function.BiConsumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ReflectiveParameterRegistryTest {
@@ -110,6 +111,24 @@ class ReflectiveParameterRegistryTest {
                 ReflectiveParameterRegistry.getParameterDescriptors(MissingSetter.class))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("No matching setter");
+    }
+
+    /**
+     * Story 334 (finding FX2-1): the setters bind through the public lookup,
+     * which reaches a public class of a package exported to everyone — every
+     * built-in effect's processor is one, so each still binds, and setting
+     * each parameter to the value it holds runs its setter.
+     */
+    @Test
+    void everyBuiltInEffectsSettersBindAndRun() {
+        for (InsertEffectType type : InsertEffectFactory.availableTypes()) {
+            AudioProcessor processor = InsertEffectFactory.createSlot(type, 2, 48_000.0).getProcessor();
+            ReflectiveParameterRegistry.AudioParameterSetter setter =
+                    ReflectiveParameterRegistry.createAudioParameterSetter(processor);
+            ReflectiveParameterRegistry.getParameterValues(processor).forEach((id, value) ->
+                    assertThatCode(() -> setter.set(id, value)).as("%s parameter %d", type, id)
+                            .doesNotThrowAnyException());
+        }
     }
 
     @Test

@@ -692,10 +692,11 @@ public final class Transport {
     /**
      * Sets the initial tempo in BPM by replacing the tempo change event at beat 0.
      *
-     * @param tempo BPM value (must be between 20 and 999)
+     * @param tempo BPM value (must be between 20 and 999; NaN is refused like
+     *              an out-of-range value — story 334, studio ruling E10.5)
      */
     public void setTempo(double tempo) {
-        if (tempo < 20.0 || tempo > 999.0) {
+        if (!(tempo >= 20.0 && tempo <= 999.0)) {
             throw new IllegalArgumentException("tempo must be between 20 and 999 BPM: " + tempo);
         }
         tempoMap.addTempoChange(TempoChangeEvent.instant(0.0, tempo));

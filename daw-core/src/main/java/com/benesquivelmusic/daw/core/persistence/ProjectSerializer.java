@@ -6,6 +6,9 @@ import com.benesquivelmusic.daw.core.automation.AutomationLane;
 import com.benesquivelmusic.daw.core.automation.AutomationParameter;
 import com.benesquivelmusic.daw.core.automation.AutomationPoint;
 import com.benesquivelmusic.daw.core.automation.ObjectParameterTarget;
+import com.benesquivelmusic.daw.core.comping.CompRegion;
+import com.benesquivelmusic.daw.core.comping.TakeComping;
+import com.benesquivelmusic.daw.core.comping.TakeLane;
 import com.benesquivelmusic.daw.sdk.spatial.ObjectParameter;
 import com.benesquivelmusic.daw.core.marker.Marker;
 import com.benesquivelmusic.daw.core.marker.MarkerManager;
@@ -25,7 +28,9 @@ import com.benesquivelmusic.daw.core.mixer.snapshot.SendSnapshot;
 import com.benesquivelmusic.daw.core.mixer.spatial.BedBus;
 import com.benesquivelmusic.daw.core.mixer.spatial.BedBusManager;
 import com.benesquivelmusic.daw.core.mixer.spatial.BedChannelRouting;
+import com.benesquivelmusic.daw.core.plugin.LiveAnalyzerPlugin;
 import com.benesquivelmusic.daw.core.plugin.MidiEffectPlugin;
+import com.benesquivelmusic.daw.core.plugin.PluginSourceKind;
 import com.benesquivelmusic.daw.core.plugin.builtin.midi.ArpeggiatorPlugin;
 import com.benesquivelmusic.daw.core.preset.ReflectivePresetSerializer;
 import com.benesquivelmusic.daw.core.project.DawProject;
@@ -37,9 +42,15 @@ import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackFoldState;
 import com.benesquivelmusic.daw.core.track.TrackGroup;
+import com.benesquivelmusic.daw.core.transport.TempoChangeEvent;
+import com.benesquivelmusic.daw.core.transport.TempoMap;
+import com.benesquivelmusic.daw.core.transport.TimeSignatureChangeEvent;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy;
 import com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget;
+import com.benesquivelmusic.daw.sdk.editor.PluginParameterStore;
+import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
+import com.benesquivelmusic.daw.sdk.plugin.ExternalPluginHost;
 import com.benesquivelmusic.daw.sdk.spatial.ImmersiveFormat;
 import com.benesquivelmusic.daw.sdk.telemetry.AcousticTreatment;
 import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
@@ -67,12 +78,18 @@ import javax.xml.parsers.ParserConfigurationException;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.SequencedMap;
 import java.util.Set;
 import java.util.UUID;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Serializes a {@link DawProject} into XML for persistence.
@@ -83,6 +100,8 @@ import java.util.UUID;
  * checkpoint snapshots.</p>
  */
 public final class ProjectSerializer {
+
+    private static final Logger LOG = Logger.getLogger(ProjectSerializer.class.getName());
 
     /**
      * Serializes the given project to an XML string.
@@ -115,7 +134,8 @@ public final class ProjectSerializer {
      * audio-clip reference — a clip's {@code source-file} and each of its
      * {@code source-segment} paths, of every clip the document writes
      * ({@link com.benesquivelmusic.daw.core.comping.TakeComping#clipsAsSaved},
-     * the selection compile mid-audition included) — is looked up in
+     * the selection compile mid-audition included, and every take lane's
+     * clips) — is looked up in
      * {@link AssetReferenceRemap#clipReferences()} and then goes through the
      * same project-relative rule as {@link #serialize(DawProject)}; a
      * SoundFont path is looked up, by its {@link Path#toString()} form, in
@@ -411,7 +431,37 @@ public final class ProjectSerializer {
             elem.setAttribute("post-roll-bars", String.valueOf(prpr.postBars()));
             elem.setAttribute("pre-roll-enabled", String.valueOf(prpr.enabled()));
         }
+        buildTempoMap(document, elem, transport.getTempoMap());
         root.appendChild(elem);
+    }
+
+    /**
+     * The tempo map after beat 0 (story 334, studio ruling E7): the tempo
+     * changes, then the meter changes, each list in the map's position order,
+     * positions in transport (quarter-note) beats. Beat 0 lives only in the
+     * transport's {@code tempo} and {@code time-sig-*} attributes, so the
+     * lists never hold an entry at beat 0; a {@code transition} is the ramp
+     * into its entry.
+     */
+    private void buildTempoMap(Document document, Element transportElem, TempoMap tempoMap) {
+        for (TempoChangeEvent change : tempoMap.getTempoChanges()) {
+            if (change.positionInBeats() > 0) {
+                Element changeElem = document.createElement("tempo-change");
+                changeElem.setAttribute("position", String.valueOf(change.positionInBeats()));
+                changeElem.setAttribute("bpm", String.valueOf(change.bpm()));
+                changeElem.setAttribute("transition", change.transitionType().name());
+                transportElem.appendChild(changeElem);
+            }
+        }
+        for (TimeSignatureChangeEvent change : tempoMap.getTimeSignatureChanges()) {
+            if (change.positionInBeats() > 0) {
+                Element changeElem = document.createElement("meter-change");
+                changeElem.setAttribute("position", String.valueOf(change.positionInBeats()));
+                changeElem.setAttribute("numerator", String.valueOf(change.numerator()));
+                changeElem.setAttribute("denominator", String.valueOf(change.denominator()));
+                transportElem.appendChild(changeElem);
+            }
+        }
     }
 
     private void buildTracks(Document document, Element root, DawProject project, ReferenceRecorder references) {
@@ -472,14 +522,23 @@ public final class ProjectSerializer {
         // lane audition is a monitoring state, so mid-audition every writer
         // (Save, Save As, autosave checkpoint, snapshot, archive) saves the
         // selected comp, never the soloed take; otherwise the track's clips.
-        List<AudioClip> clips = track.getTakeComping().clipsAsSaved(track);
+        TakeComping comping = track.getTakeComping();
+        List<AudioClip> clips = comping.clipsAsSaved(track);
         if (!clips.isEmpty()) {
             Element clipsElem = document.createElement("clips");
             elem.appendChild(clipsElem);
             for (AudioClip clip : clips) {
-                clipsElem.appendChild(buildClipElement(document, clip, references));
+                Element clipElem = buildClipElement(document, clip, references);
+                // Story 334 (studio ruling E14): the comp output is marked, so the
+                // open adopts it and the next compile replaces exactly it. Only a
+                // main-lane clip carries the mark; lane clips never do.
+                if (comping.savesAsCompOutput(track, clip)) {
+                    clipElem.setAttribute("comp-output", "true");
+                }
+                clipsElem.appendChild(clipElem);
             }
         }
+        buildTakes(document, elem, comping, references);
 
         SoundFontAssignment sfAssignment = track.getSoundFontAssignment();
         if (sfAssignment != null) {
@@ -498,6 +557,50 @@ public final class ProjectSerializer {
         buildMidiEffectChain(document, elem, track);
 
         return elem;
+    }
+
+    /**
+     * Writes the track's {@code <takes>} element right after its
+     * {@code <clips>} (story 334; Persistence Integrity book §4.6; studio
+     * rulings E8, E13), or nothing when the track has no take lane: one
+     * {@code <take id name muted>} per lane in lane order — the id is the
+     * lane's canonical UUID — holding the lane's clips through
+     * {@link #buildClipElement}, so their asset references are written and
+     * recorded like every other clip's; then one
+     * {@code <comp-region take-id start-beat duration-beats>} per comp
+     * region in list order, naming its lane by id. A lane's solo is a
+     * monitoring state and is never written. Reads the comping only through
+     * its writer seams ({@link TakeComping#takeLanesAsSaved()},
+     * {@link TakeComping#clipsOf}, {@link TakeComping#compRegionsAsSaved()}).
+     */
+    private void buildTakes(Document document, Element trackElem, TakeComping comping,
+                            ReferenceRecorder references) {
+        List<TakeLane> lanes = comping.takeLanesAsSaved();
+        if (lanes.isEmpty()) {
+            return;
+        }
+        Element takesElem = document.createElement("takes");
+        for (TakeLane lane : lanes) {
+            Element takeElem = document.createElement("take");
+            takeElem.setAttribute("id", lane.getId());
+            takeElem.setAttribute("name", lane.getName());
+            takeElem.setAttribute("muted", String.valueOf(lane.isMuted()));
+            for (AudioClip clip : comping.clipsOf(lane)) {
+                takeElem.appendChild(buildClipElement(document, clip, references));
+            }
+            takesElem.appendChild(takeElem);
+        }
+        for (CompRegion region : comping.compRegionsAsSaved()) {
+            if (region.takeIndex() >= lanes.size()) {
+                continue; // names no lane: a compile skips it too
+            }
+            Element regionElem = document.createElement("comp-region");
+            regionElem.setAttribute("take-id", lanes.get(region.takeIndex()).getId());
+            regionElem.setAttribute("start-beat", String.valueOf(region.startBeat()));
+            regionElem.setAttribute("duration-beats", String.valueOf(region.durationBeats()));
+            takesElem.appendChild(regionElem);
+        }
+        trackElem.appendChild(takesElem);
     }
 
     /**
@@ -674,19 +777,28 @@ public final class ProjectSerializer {
         // always "Master", and a track channel is rebuilt from its track
         // (track@name is the single source — the channel's own name is the
         // one the track had when the channel was created).
-        mixerElem.appendChild(buildMixerChannelElement(document, "master", mixer.getMasterChannel(), mixer));
+        // Each strip is named as the reader names it, for the lines its inserts log.
+        mixerElem.appendChild(buildMixerChannelElement(document, "master", mixer.getMasterChannel(), mixer,
+                new UnreadProjectItem.InMixer("master")));
 
         Element channelsElem = document.createElement("channels");
         mixerElem.appendChild(channelsElem);
-        for (MixerChannel channel : mixer.getChannels()) {
-            channelsElem.appendChild(buildMixerChannelElement(document, "channel", channel, mixer));
+        List<MixerChannel> channels = mixer.getChannels();
+        for (int i = 0; i < channels.size(); i++) {
+            MixerChannel channel = channels.get(i);
+            channelsElem.appendChild(buildMixerChannelElement(document, "channel", channel, mixer,
+                    trackChannelStrip(project, channel, i)));
         }
 
         // A return bus beyond the mixer's default one is recreated with its name.
         Element returnBusesElem = document.createElement("return-buses");
         mixerElem.appendChild(returnBusesElem);
-        for (MixerChannel returnBus : mixer.getReturnBuses()) {
-            Element busElem = buildMixerChannelElement(document, "return-bus", returnBus, mixer);
+        List<MixerChannel> returnBuses = mixer.getReturnBuses();
+        for (int i = 0; i < returnBuses.size(); i++) {
+            MixerChannel returnBus = returnBuses.get(i);
+            Element busElem = buildMixerChannelElement(document, "return-bus", returnBus, mixer,
+                    new UnreadProjectItem.InMixer("return bus " + (i + 1) + " '"
+                            + UnreadProjectItem.logText(returnBus.getName()) + "'"));
             busElem.setAttribute("name", returnBus.getName());
             returnBusesElem.appendChild(busElem);
         }
@@ -759,8 +871,27 @@ public final class ProjectSerializer {
         }
     }
 
+    /**
+     * The track channel's strip as the log names it — and as the reader
+     * names it: the owning track, numbered from 1 in the project's track
+     * order, or {@code Mixer channel <channelIndex + 1>} for a channel no
+     * track owns.
+     */
+    private static UnreadProjectItem.Location trackChannelStrip(DawProject project, MixerChannel channel,
+                                                                int channelIndex) {
+        return project.getTrackForChannel(channel)
+                .<UnreadProjectItem.Location>map(owner -> new UnreadProjectItem.OnTrack(
+                        project.getTracks().indexOf(owner), owner.getName()))
+                .orElseGet(() -> new UnreadProjectItem.InMixer("channel " + (channelIndex + 1)));
+    }
+
+    /**
+     * Writes a master, track channel or return bus with its inserts, sends
+     * and budget; {@code strip} names the channel in the lines its inserts
+     * log.
+     */
     private Element buildMixerChannelElement(Document document, String tagName,
-                                             MixerChannel channel, Mixer mixer) {
+                                             MixerChannel channel, Mixer mixer, UnreadProjectItem.Location strip) {
         Element elem = document.createElement(tagName);
         elem.setAttribute("volume", String.valueOf(channel.getVolume()));
         elem.setAttribute("pan", String.valueOf(channel.getPan()));
@@ -784,8 +915,15 @@ public final class ProjectSerializer {
         if (!insertSlots.isEmpty()) {
             Element insertsElem = document.createElement("inserts");
             elem.appendChild(insertsElem);
-            for (InsertSlot slot : insertSlots) {
+            for (int i = 0; i < insertSlots.size(); i++) {
+                InsertSlot slot = insertSlots.get(i);
                 Element slotElem = document.createElement("insert");
+                Optional<OfflineInsert> offline = slot.offline();
+                if (offline.isPresent()) {
+                    writeOfflineInsert(document, slotElem, slot, offline.get(), mixer);
+                    insertsElem.appendChild(slotElem);
+                    continue;
+                }
                 slotElem.setAttribute("name", slot.getName());
                 slotElem.setAttribute("bypassed", String.valueOf(slot.isBypassed()));
                 // Story 129 (UI): always persist the per-insert "expensive"
@@ -795,23 +933,19 @@ public final class ProjectSerializer {
                 // to expensive (e.g. REVERB) after the user cleared it.
                 slotElem.setAttribute("expensive", String.valueOf(slot.isExpensive()));
                 AnalyzerInsertPersistence.write(slotElem, slot);
+                DawPlugin plugin = slot.getPlugin();
+                Optional<PluginSourceKind> kind = plugin == null || plugin instanceof LiveAnalyzerPlugin
+                        ? Optional.empty() : PluginSourceKind.of(plugin);
                 InsertEffectType effectType = slot.getEffectType();
-                if (effectType != null) {
+                if (kind.isPresent()) {
+                    // Story 334: every plugin-backed insert — first-party,
+                    // external JAR or CLAP — saves its plugin's identity, never
+                    // a built-in effect type, and its parameters or state.
+                    writePluginDescriptor(document, slotElem, slot, kind.get(), strip, i);
+                } else if (effectType != null) {
                     slotElem.setAttribute("effect-type", effectType.name());
                     if (ReflectivePresetSerializer.isSupported(slot.getProcessor())) {
-                        // Annotated processor — emit name-keyed parameters via
-                        // reflective snapshot. This is robust to parameter-id
-                        // renumbering and keeps save/load working automatically
-                        // when new @ProcessorParam fields are added.
-                        Map<String, Double> named =
-                                ReflectivePresetSerializer.snapshot(slot.getProcessor(),
-                                        slot.getParameterStore().snapshotPendingUiValues());
-                        for (Map.Entry<String, Double> entry : named.entrySet()) {
-                            Element paramElem = document.createElement("parameter");
-                            paramElem.setAttribute("name", entry.getKey());
-                            paramElem.setAttribute("value", String.valueOf(entry.getValue()));
-                            slotElem.appendChild(paramElem);
-                        }
+                        writeNamedParameters(document, slotElem, slot);
                     } else {
                         // Fallback for processors that do not (yet) declare
                         // @ProcessorParam annotations: preserve the legacy
@@ -827,18 +961,8 @@ public final class ProjectSerializer {
                     }
                 }
                 // Serialize sidechain source reference
-                MixerChannel scSource = slot.getSidechainSource();
-                if (scSource != null) {
-                    int scIndex = mixer.getChannels().indexOf(scSource);
-                    if (scIndex >= 0) {
-                        slotElem.setAttribute("sidechain-source", "channel:" + scIndex);
-                    } else {
-                        int rbIndex = mixer.getReturnBuses().indexOf(scSource);
-                        if (rbIndex >= 0) {
-                            slotElem.setAttribute("sidechain-source", "return:" + rbIndex);
-                        }
-                    }
-                }
+                sidechainKey(slot.getSidechainSource(), mixer)
+                        .ifPresent(key -> slotElem.setAttribute("sidechain-source", key));
                 insertsElem.appendChild(slotElem);
             }
         }
@@ -868,6 +992,140 @@ public final class ProjectSerializer {
         }
 
         return elem;
+    }
+
+    /**
+     * A processor's {@code @ProcessorParam} values, name-keyed through the
+     * reflective snapshot — robust to parameter-id renumbering, and complete
+     * when a processor gains a parameter — with the editor values its audio
+     * thread has not applied yet.
+     */
+    private static void writeNamedParameters(Document document, Element slotElem, InsertSlot slot) {
+        Map<String, Double> named = ReflectivePresetSerializer.snapshot(slot.getProcessor(),
+                slot.getParameterStore().snapshotPendingUiValues());
+        for (Map.Entry<String, Double> entry : named.entrySet()) {
+            Element paramElem = document.createElement("parameter");
+            paramElem.setAttribute("name", entry.getKey());
+            paramElem.setAttribute("value", String.valueOf(entry.getValue()));
+            slotElem.appendChild(paramElem);
+        }
+    }
+
+    /**
+     * A plugin-backed insert's descriptor (story 334; Persistence Integrity
+     * book §4.5): the plugin's source kind, stable id and version — never a
+     * file path — then a CLAP plugin's state, or the parameters: name-keyed
+     * when the plugin's processor declares {@code @ProcessorParam}
+     * accessors, else every value of the slot's parameter store by id.
+     */
+    private static void writePluginDescriptor(Document document, Element slotElem, InsertSlot slot,
+                                              PluginSourceKind kind, UnreadProjectItem.Location strip,
+                                              int insertIndex) {
+        DawPlugin plugin = slot.getPlugin();
+        slotElem.setAttribute("plugin-source", kind.token());
+        slotElem.setAttribute("plugin-id", plugin.getDescriptor().id());
+        slotElem.setAttribute("plugin-version", plugin.getDescriptor().version());
+        if (kind == PluginSourceKind.CLAP && plugin instanceof ExternalPluginHost host) {
+            writePluginState(document, slotElem, slot, host, strip, insertIndex);
+        } else if (ReflectivePresetSerializer.isSupported(slot.getProcessor())) {
+            writeNamedParameters(document, slotElem, slot);
+        } else {
+            PluginParameterStore store = slot.getParameterStore();
+            for (int j = 0; j < store.parameterCount(); j++) {
+                Element paramElem = document.createElement("parameter");
+                paramElem.setAttribute("id", String.valueOf(store.parameterIdAt(j)));
+                paramElem.setAttribute("value", String.valueOf(store.value(j)));
+                slotElem.appendChild(paramElem);
+            }
+        }
+    }
+
+    /**
+     * A CLAP plugin's state, asked of the plugin here, during the capture,
+     * on the thread that owns the model (studio ruling E10.4), and written
+     * inline as Base64 when it is not empty (E10.3). A plugin that fails to
+     * return its state never empties the slot's saved one (E10.2): the state
+     * it last loaded or saved is written instead and the failure is logged;
+     * with no such state nothing is written, and the line says the insert
+     * reopens at its defaults (studio ruling G8).
+     */
+    private static void writePluginState(Document document, Element slotElem, InsertSlot slot,
+                                         ExternalPluginHost host, UnreadProjectItem.Location strip, int insertIndex) {
+        byte[] state;
+        try {
+            state = host.saveState();
+            if (state.length > 0) {
+                slot.rememberPluginState(state);
+            }
+        } catch (RuntimeException failed) {
+            state = slot.lastPluginState();
+            String notReturned = strip.describe() + ": insert " + (insertIndex + 1) + " '"
+                    + UnreadProjectItem.logText(slot.getName()) + "' CLAP plugin '"
+                    + UnreadProjectItem.logText(host.getDescriptor().id()) + "' did not return its state";
+            LOG.log(Level.WARNING, state.length > 0
+                    ? notReturned + "; the state it last saved is kept"
+                    : notReturned + ", and it has no earlier saved state; it will reopen at its defaults");
+        }
+        if (state.length > 0) {
+            Element stateElem = document.createElement("plugin-state");
+            stateElem.setTextContent(Base64.getEncoder().encodeToString(state));
+            slotElem.appendChild(stateElem);
+        }
+    }
+
+    /**
+     * Writes an offline insert back as its file saved it (Persistence
+     * Integrity book §4.5; story 334): every attribute in the order it was
+     * read, then its {@code <parameter>} and {@code <plugin-state>} children.
+     * Two values come from the live slot: the bypass decision when a mixer
+     * snapshot recall changed it (an absent saved flag still {@code false}
+     * stays absent), and a sidechain key that resolved at open, written from
+     * the live source so it follows strip moves — and omitted once that strip
+     * is gone. A key that did not resolve is written back as saved.
+     */
+    private static void writeOfflineInsert(Document document, Element slotElem, InsertSlot slot,
+                                           OfflineInsert offline, Mixer mixer) {
+        SequencedMap<String, String> written = new LinkedHashMap<>(offline.saved().attributes());
+        if (slot.isBypassed() != "true".equalsIgnoreCase(written.get("bypassed"))) {
+            written.put("bypassed", String.valueOf(slot.isBypassed()));
+        }
+        if (offline.sidechainResolvedAtOpen()) {
+            Optional<String> live = sidechainKey(slot.getSidechainSource(), mixer);
+            if (live.isPresent()) {
+                written.put("sidechain-source", live.get());
+            } else {
+                written.remove("sidechain-source");
+            }
+        }
+        written.forEach(slotElem::setAttribute);
+        for (SavedInsertChild child : offline.saved().children()) {
+            Element childElem = switch (child.tag()) {
+                case PARAMETER -> document.createElement("parameter");
+                case PLUGIN_STATE -> document.createElement("plugin-state");
+            };
+            child.attributes().forEach(childElem::setAttribute);
+            if (!child.text().isEmpty()) {
+                childElem.setTextContent(child.text());
+            }
+            slotElem.appendChild(childElem);
+        }
+    }
+
+    /**
+     * The {@code sidechain-source} key of {@code source}: {@code channel:<i>}
+     * or {@code return:<i>} by its position in the mixer; empty for no
+     * source, or for a strip the mixer no longer holds.
+     */
+    private static Optional<String> sidechainKey(MixerChannel source, Mixer mixer) {
+        if (source == null) {
+            return Optional.empty();
+        }
+        int channelIndex = mixer.getChannels().indexOf(source);
+        if (channelIndex >= 0) {
+            return Optional.of("channel:" + channelIndex);
+        }
+        int returnIndex = mixer.getReturnBuses().indexOf(source);
+        return returnIndex >= 0 ? Optional.of("return:" + returnIndex) : Optional.empty();
     }
 
     private Element buildCpuBudgetElement(Document document, TrackCpuBudget cpuBudget) {

@@ -51,6 +51,10 @@ These tests are binding acceptance criteria. They run headless, and none of them
 - Found in story 330 (the parity harness implementer's adjacent finding).
 - Cross-refs: story 101, story 334, story 330 (the parity harness).
 
+## Note from Story 334
+
+Story 334 (studio ruling E10.10): an insert the open cannot load stays in its place as an offline insert (`InsertSlot.ofOffline`) that holds no plugin (`getPlugin()` is `null`), so a plugin-parameter lane that targets it can drive nothing while it is offline. Such a lane is kept and written back as saved — never dropped, never retargeted — and drives the plugin again once the insert loads at a later open. Since story 334 a first-party, external JAR or CLAP plugin insert reopens holding its plugin (`InsertSlot.getPlugin()`); a built-in DSP slot the reader rebuilds from its `effect-type` still holds none.
+
 ## Status
 
 - Deferred

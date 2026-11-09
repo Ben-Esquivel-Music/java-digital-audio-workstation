@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.drag.DragSourceKind;
 import com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor;
+import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
+import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.plugin.PluginBrowser;
 import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
@@ -15,6 +17,7 @@ import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 import javafx.application.Platform;
 import javafx.geometry.Pos;
+import javafx.scene.Node;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.input.ClipboardContent;
@@ -42,6 +45,12 @@ import java.util.logging.Logger;
  *       supports double-click to open the {@link PluginParameterEditorPanel}
  *       for editing that effect's parameters, right-click to remove, and
  *       drag-and-drop for reordering.</li>
+ *   <li><b>Offline</b> — an insert a project open kept at its place,
+ *       passing audio through, because it could not load what the file saved
+ *       (story 334, studio-engineer ruling E22): a warn mark in place of the
+ *       bypass toggle, the muted name, a tooltip naming the cause and what to
+ *       do, Remove and reordering only — no editor, no "Expensive" flag, no
+ *       sidechain selector.</li>
  * </ul>
  *
  * <p>When an {@link UndoManager} is provided, all insert add/remove/reorder
@@ -61,6 +70,12 @@ public final class InsertEffectRack extends VBox {
     private static final Logger LOG = Logger.getLogger(InsertEffectRack.class.getName());
     private static final double RACK_WIDTH = 70;
     private static final DataFormat SLOT_INDEX_FORMAT = new DataFormat("application/x-insert-slot-index");
+    /** Style class an offline insert's row adds beside {@code insert-slot-populated} (story 334, ruling E22). */
+    static final String OFFLINE_STYLE_CLASS = "insert-slot-offline";
+    /** Style class of the warn mark standing in an offline row for the bypass toggle. */
+    static final String OFFLINE_MARK_STYLE_CLASS = "insert-slot-offline-mark";
+    /** Style class of an offline row's muted name. */
+    static final String OFFLINE_NAME_STYLE_CLASS = "insert-slot-offline-name";
 
     private final MixerChannel channel;
     private final int audioChannels;
@@ -218,6 +233,9 @@ public final class InsertEffectRack extends VBox {
         for (int i = 0; i < slots.size(); i++) {
             getChildren().add(buildPopulatedSlot(i, slots.get(i)));
         }
+        if (slots.stream().anyMatch(slot -> slot.offline().isPresent())) {
+            tintOfflineMarks();
+        }
 
         // Add empty slots up to MAX_INSERT_SLOTS
         // Only the next available slot is enabled; further empty slots are disabled
@@ -349,6 +367,12 @@ public final class InsertEffectRack extends VBox {
         row.getStyleClass().add("insert-slot-populated");
         row.setStyle("-fx-padding: 1 2 1 2;");
 
+        Optional<OfflineInsert> offline = slot.offline();
+        if (offline.isPresent()) {
+            buildOfflineSlot(row, slotIndex, slot, offline.get());
+            return row;
+        }
+
         // Bypass toggle
         ToggleButton bypassBtn = new ToggleButton();
         bypassBtn.setSelected(!slot.isBypassed());
@@ -414,7 +438,95 @@ public final class InsertEffectRack extends VBox {
         row.setOnContextMenuRequested(event ->
                 contextMenu.show(row, event.getScreenX(), event.getScreenY()));
 
-        // Drag-and-drop for reordering
+        installReorderDrag(row, nameLabel, slotIndex);
+
+        row.getChildren().addAll(bypassBtn, nameLabel);
+
+        // Add sidechain source selector for processors whose capabilities
+        // report sidechain input support (reflection-based introspection).
+        if (mixer != null && slot.getCapabilities().providesSidechainInput()) {
+            VBox wrapper = new VBox(1);
+            wrapper.getChildren().addAll(row, buildSidechainSelector(slot));
+            return wrapper;
+        }
+
+        return row;
+    }
+
+    /**
+     * Fills {@code row} for an offline insert — one a project open kept at its
+     * place, passing audio through, because it could not load what the file
+     * saved (story 334; studio-engineer rulings E22 and E3). The row keeps
+     * {@code insert-slot-populated} and adds {@code insert-slot-offline}: a
+     * warn-tinted {@link DawIcon#WARNING} mark stands where the bypass toggle
+     * would be (a toggle with no audible effect is a dead control; the stored
+     * bypass decision is kept as saved), the name is muted and opens no editor,
+     * the row's tooltip says why the insert is offline and what to do, and its
+     * context menu holds Remove only. It moves like any row and shows no
+     * sidechain selector (its saved key is kept, ruling E1).
+     */
+    private void buildOfflineSlot(HBox row, int slotIndex, InsertSlot slot, OfflineInsert offline) {
+        row.getStyleClass().add(OFFLINE_STYLE_CLASS);
+        String tooltip = OfflineInsertText.tooltip(slot.getName(), offline.cause());
+        Tooltip.install(row, new Tooltip(tooltip));
+        row.setAccessibleText(OfflineInsertText.accessible(slot.getName()));
+
+        Label nameLabel = new Label(truncate(slot.getName(), 8));
+        nameLabel.getStyleClass().add(OFFLINE_NAME_STYLE_CLASS);
+        nameLabel.setStyle("-fx-font-size: 9px;");
+        nameLabel.setTooltip(new Tooltip(tooltip));
+        nameLabel.setMaxWidth(RACK_WIDTH - 20);
+
+        MenuItem removeItem = new MenuItem(OfflineInsertText.removeItem());
+        removeItem.setOnAction(_ -> removeEffect(slotIndex));
+        ContextMenu contextMenu = new ContextMenu(removeItem);
+        row.setOnContextMenuRequested(event ->
+                contextMenu.show(row, event.getScreenX(), event.getScreenY()));
+
+        installReorderDrag(row, nameLabel, slotIndex);
+
+        row.getChildren().addAll(offlineMark(), nameLabel);
+    }
+
+    /**
+     * The offline state mark: a {@link DawIcon#WARNING} glyph the size of the
+     * bypass toggle it replaces, tinted to the label's CSS-resolved text fill
+     * (the {@code -warn} role) whenever that fill resolves or changes — an SVG
+     * glyph's paint has no CSS hook of its own.
+     */
+    private static Label offlineMark() {
+        Label mark = new Label();
+        mark.getStyleClass().add(OFFLINE_MARK_STYLE_CLASS);
+        mark.setMaxSize(12, 14);
+        mark.setMinSize(12, 14);
+        Node glyph = IconNode.of(DawIcon.WARNING, 10);
+        mark.setGraphic(glyph);
+        mark.textFillProperty().addListener((_, _, fill) -> IconNode.tint(glyph, fill));
+        IconNode.tint(glyph, mark.getTextFill());
+        return mark;
+    }
+
+    /**
+     * Tints every offline mark the last rebuild rendered to its resolved text
+     * fill, once CSS has been applied to the rows it added: deterministic,
+     * where the marks' text-fill listener depends on the fill changing. A
+     * rack not yet in a scene is tinted by that listener when CSS first
+     * resolves.
+     */
+    private void tintOfflineMarks() {
+        if (getScene() == null) {
+            return;
+        }
+        applyCss();
+        for (Node node : lookupAll("." + OFFLINE_MARK_STYLE_CLASS)) {
+            if (node instanceof Label mark) {
+                IconNode.tint(mark.getGraphic(), mark.getTextFill());
+            }
+        }
+    }
+
+    /** Lets {@code row} be dragged onto a sibling row to reorder the chain. */
+    private void installReorderDrag(HBox row, Label nameLabel, int slotIndex) {
         row.setOnDragDetected(event -> {
             Dragboard db = row.startDragAndDrop(TransferMode.MOVE);
             ClipboardContent content = new ClipboardContent();
@@ -456,18 +568,6 @@ public final class InsertEffectRack extends VBox {
             event.consume();
         });
         row.setOnDragDone(this::notifyAdvisorEndDrag);
-
-        row.getChildren().addAll(bypassBtn, nameLabel);
-
-        // Add sidechain source selector for processors whose capabilities
-        // report sidechain input support (reflection-based introspection).
-        if (mixer != null && slot.getCapabilities().providesSidechainInput()) {
-            VBox wrapper = new VBox(1);
-            wrapper.getChildren().addAll(row, buildSidechainSelector(slot));
-            return wrapper;
-        }
-
-        return row;
     }
 
     // ── Effect picker ───────────────────────────────────────────────────────

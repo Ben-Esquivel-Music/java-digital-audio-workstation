@@ -3,10 +3,14 @@ package com.benesquivelmusic.daw.core.preset;
 import com.benesquivelmusic.daw.core.dsp.CompressorProcessor;
 import com.benesquivelmusic.daw.core.dsp.DelayProcessor;
 import com.benesquivelmusic.daw.core.dsp.ReverbProcessor;
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
+import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.SequencedMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
@@ -15,9 +19,12 @@ import static org.assertj.core.api.Assertions.within;
  * Tests for {@link ReflectivePresetSerializer} covering the requirements
  * enumerated in the preset-serializer issue: snapshot completeness, full
  * restore, round-trip preservation, forward-compatible unknown-key handling,
- * and clamping of out-of-range values.
+ * and clamping of out-of-range values — and, story 334, the outcome of each
+ * restored value ({@link ReflectivePresetSerializer#restoreEach}). Public, as
+ * is its test processor: the serializer reads accessors through
+ * {@code MethodHandles.publicLookup()}.
  */
-class ReflectivePresetSerializerTest {
+public class ReflectivePresetSerializerTest {
 
     private static final double EPS = 1e-9;
 
@@ -228,7 +235,109 @@ class ReflectivePresetSerializerTest {
         assertThat(restored.getMix()).isCloseTo(0.4, within(EPS));
     }
 
+    @Test
+    void restoreEachReportsClampsRejectionsAndUnknownNames() {
+        CompressorProcessor comp = newCompressor();
+        SequencedMap<String, Double> values = new LinkedHashMap<>();
+        values.put("Threshold", -90.0);       // declared range [-60, 0]
+        values.put("Ratio", 8.0);
+        values.put("LookAhead", 5.0);
+        values.put("Attack", Double.NaN);
+        values.put("Knee", Double.POSITIVE_INFINITY);
+        values.put("Release", null);
+
+        List<ParameterRestore> outcomes = ReflectivePresetSerializer.restoreEach(comp, values);
+
+        assertThat(outcomes).as("one outcome per value, in its order").containsExactly(
+                new ParameterRestore.Clamped("Threshold", -90.0, -60.0, -60.0, 0.0),
+                new ParameterRestore.Applied("Ratio", 8.0),
+                new ParameterRestore.Unknown("LookAhead", 5.0),
+                new ParameterRestore.NotFinite("Attack", Double.NaN),
+                new ParameterRestore.NotFinite("Knee", Double.POSITIVE_INFINITY),
+                new ParameterRestore.NotFinite("Release", Double.NaN));
+        assertThat(comp.getThresholdDb()).isCloseTo(-60.0, within(EPS));
+        assertThat(comp.getRatio()).isCloseTo(8.0, within(EPS));
+        assertThat(comp.getKneeDb()).as("an infinite value is not applied")
+                .isCloseTo(newCompressor().getKneeDb(), within(EPS));
+        assertThat(ReflectivePresetSerializer.restore(newCompressor(), values))
+                .as("restore counts the applied and the clamped values").isEqualTo(2);
+
+        RejectingProcessor rejecting = new RejectingProcessor();
+        SequencedMap<String, Double> refused = new LinkedHashMap<>();
+        refused.put("Ratio", RejectingProcessor.REFUSED);
+        assertThat(ReflectivePresetSerializer.restoreEach(rejecting, refused))
+                .as("a setter's IllegalArgumentException for a value inside the range is a rejection")
+                .containsExactly(new ParameterRestore.Rejected("Ratio", RejectingProcessor.REFUSED, 4.0));
+        assertThat(ReflectivePresetSerializer.restore(rejecting, refused)).isZero();
+
+        assertThat(ReflectivePresetSerializer.restoreEach(new UnannotatedProcessor(), values))
+                .as("every name is unknown to a processor without annotations")
+                .allMatch(ParameterRestore.Unknown.class::isInstance)
+                .hasSize(values.size());
+    }
+
     private static CompressorProcessor newCompressor() {
         return new CompressorProcessor(2, 44100.0);
+    }
+
+    /** A processor whose setter refuses one value inside the parameter's declared range. */
+    public static final class RejectingProcessor implements AudioProcessor {
+
+        /** The value inside [1, 20] the setter refuses. */
+        static final double REFUSED = 13.0;
+
+        private double ratio = 4.0;
+
+        @ProcessorParam(id = 0, name = "Ratio", min = 1.0, max = 20.0, defaultValue = 4.0)
+        public double getRatio() {
+            return ratio;
+        }
+
+        public void setRatio(double value) {
+            if (value == REFUSED) {
+                throw new IllegalArgumentException("ratio " + value + " is not supported");
+            }
+            ratio = value;
+        }
+
+        @Override
+        public void process(float[][] input, float[][] output, int frames) {
+        }
+
+        @Override
+        public void reset() {
+        }
+
+        @Override
+        public int getInputChannelCount() {
+            return 1;
+        }
+
+        @Override
+        public int getOutputChannelCount() {
+            return 1;
+        }
+    }
+
+    /** A processor that declares no {@link ProcessorParam} accessors. */
+    public static final class UnannotatedProcessor implements AudioProcessor {
+
+        @Override
+        public void process(float[][] input, float[][] output, int frames) {
+        }
+
+        @Override
+        public void reset() {
+        }
+
+        @Override
+        public int getInputChannelCount() {
+            return 1;
+        }
+
+        @Override
+        public int getOutputChannelCount() {
+            return 1;
+        }
     }
 }

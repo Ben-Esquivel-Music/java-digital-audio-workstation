@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.GlueClipsAction;
 import com.benesquivelmusic.daw.core.audioimport.AudioFileImporter;
+import com.benesquivelmusic.daw.core.comping.TakeLane;
 import com.benesquivelmusic.daw.core.export.AdmBwfExporter;
 import com.benesquivelmusic.daw.core.export.WavExporter;
 import com.benesquivelmusic.daw.core.project.DawProject;
@@ -773,6 +774,49 @@ class ClipRehydratorTest {
         assertThat(session.sources()).containsExactlyElementsOf(expected);
         assertThat(decoder.decodes()).as("one permit: decodes run in the scheduled order")
                 .containsExactlyElementsOf(expected);
+    }
+
+    /**
+     * Takes that are not heard never delay audio that is (story 334;
+     * studio ruling G10): every source a main-lane clip holds decodes
+     * before any source only take-lane clips hold — a main-lane source that
+     * starts after the playhead ahead of a lane-only source that covers it.
+     * A source a lap and its comp slice share keeps the slice's place, and
+     * its one decode gives the lap its audio too.
+     */
+    @Test
+    void mainLaneSourcesDecodeBeforeSourcesOnlyTakeLanesHold() throws Exception {
+        DawProject project = new DawProject("Lanes", FORMAT);
+        Track track = project.createAudioTrack("Vox");
+        Path laterComp = wav("later-comp.wav", RATE, 1_000, 1);
+        Path coveringTake = wav("covering-take.wav", RATE, 1_000, 1);
+        Path shared = wav("shared.wav", RATE, 1_000, 1);
+        AudioClip later = clip(track, "comp later", 12.0, 2.0, laterComp);
+        AudioClip slice = clip(track, "shared comp", 20.0, 1.0, shared);
+        TakeLane lane = new TakeLane("Take 1");
+        AudioClip covering = new AudioClip("covering take", 0.0, 16.0, coveringTake.toString());
+        AudioClip lap = new AudioClip("shared lap", 6.0, 4.0, shared.toString());
+        lane.addClip(covering);
+        lane.addClip(lap);
+        track.getTakeComping().addTakeLane(lane);
+        RecordingSourceDecoder decoder = new RecordingSourceDecoder();
+        CollectingRehydrationListener listener = new CollectingRehydrationListener();
+
+        RehydrationSession session = new ClipRehydrator(decoder, 1, UNLIMITED)
+                .start(project, MissingAssetsReport.EMPTY, 8.0, listener);
+        listener.awaitFinished();
+        RehydrationSession.AttachResult result = listener.applyAll(session);
+
+        List<AssetReference> expected = List.of(
+                new AssetReference.SingleFile(laterComp.toString()),
+                new AssetReference.SingleFile(shared.toString()),
+                new AssetReference.SingleFile(coveringTake.toString()));
+        assertThat(session.sources()).containsExactlyElementsOf(expected);
+        assertThat(decoder.decodes()).as("one permit: decodes run in the scheduled order")
+                .containsExactlyElementsOf(expected);
+        assertThat(result.attached()).containsExactlyInAnyOrder(later, slice, lap, covering);
+        assertThat(lap.getAudioData()).as("the lap shares its comp slice's decode").isSameAs(slice.getAudioData());
+        assertThat(covering.getAudioData()).isNotNull();
     }
 
     // ── fixtures ────────────────────────────────────────────────────────────

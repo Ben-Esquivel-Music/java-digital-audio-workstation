@@ -6,6 +6,9 @@ import com.benesquivelmusic.daw.core.automation.AutomationParameter;
 import com.benesquivelmusic.daw.core.automation.AutomationPoint;
 import com.benesquivelmusic.daw.core.automation.InterpolationMode;
 import com.benesquivelmusic.daw.core.automation.ObjectParameterTarget;
+import com.benesquivelmusic.daw.core.comping.CompRegion;
+import com.benesquivelmusic.daw.core.comping.TakeComping;
+import com.benesquivelmusic.daw.core.comping.TakeLane;
 import com.benesquivelmusic.daw.sdk.spatial.ObjectParameter;
 import com.benesquivelmusic.daw.core.marker.Marker;
 import com.benesquivelmusic.daw.core.marker.MarkerRange;
@@ -28,8 +31,17 @@ import com.benesquivelmusic.daw.core.mixer.snapshot.SendSnapshot;
 import com.benesquivelmusic.daw.core.mixer.spatial.BedBus;
 import com.benesquivelmusic.daw.core.mixer.spatial.BedBusManager;
 import com.benesquivelmusic.daw.core.mixer.spatial.BedChannelRouting;
+import com.benesquivelmusic.daw.core.plugin.AudioFormatPluginContext;
+import com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin;
+import com.benesquivelmusic.daw.core.plugin.BuiltInPluginGraph;
+import com.benesquivelmusic.daw.core.plugin.LoadedPlugin;
 import com.benesquivelmusic.daw.core.plugin.MidiEffectPlugin;
+import com.benesquivelmusic.daw.core.plugin.PluginIdentity;
+import com.benesquivelmusic.daw.core.plugin.PluginResolution;
+import com.benesquivelmusic.daw.core.plugin.PluginResolver;
+import com.benesquivelmusic.daw.core.plugin.PluginSourceKind;
 import com.benesquivelmusic.daw.core.plugin.builtin.midi.ArpeggiatorPlugin;
+import com.benesquivelmusic.daw.core.preset.ParameterRestore;
 import com.benesquivelmusic.daw.core.preset.ReflectivePresetSerializer;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.project.edit.NudgeSettings;
@@ -46,13 +58,22 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackColor;
 import com.benesquivelmusic.daw.core.track.TrackFoldState;
 import com.benesquivelmusic.daw.core.track.TrackType;
+import com.benesquivelmusic.daw.core.transport.TempoChangeEvent;
+import com.benesquivelmusic.daw.core.transport.TempoTransitionType;
+import com.benesquivelmusic.daw.core.transport.TimeSignatureChangeEvent;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.audio.ClipGainEnvelope;
 import com.benesquivelmusic.daw.sdk.audio.CurveShape;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy;
 import com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget;
 import com.benesquivelmusic.daw.sdk.edit.RippleMode;
+import com.benesquivelmusic.daw.sdk.editor.PluginParameterStore;
+import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
+import com.benesquivelmusic.daw.sdk.plugin.ExternalPluginHost;
+import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
+import com.benesquivelmusic.daw.sdk.plugin.PluginStateRejectedException;
 import com.benesquivelmusic.daw.sdk.spatial.ImmersiveFormat;
 import com.benesquivelmusic.daw.sdk.telemetry.*;
 import com.benesquivelmusic.daw.sdk.transport.ClickOutput;
@@ -73,6 +94,7 @@ import javax.xml.parsers.ParserConfigurationException;
 import java.awt.geom.Rectangle2D;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
@@ -82,6 +104,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -89,6 +112,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalDouble;
+import java.util.OptionalInt;
 import java.util.SequencedMap;
 import java.util.Set;
 import java.util.UUID;
@@ -111,10 +136,12 @@ public final class ProjectDeserializer {
     private static final double MAX_AZIMUTH_EXCLUSIVE = Math.nextDown(360.0);
 
     /**
-     * How {@code ProjectSerializer.buildMidiClip} writes a note, a CC lane or
-     * a CC event: its tag and its attributes, in the writer's order — the
-     * order the snippet a skipped item's WARNING quotes ({@link #savedAs})
-     * lists them in, never the DOM's.
+     * How {@code ProjectSerializer} writes a note, a CC lane or a CC event
+     * ({@code buildMidiClip}), a tempo or meter change
+     * ({@code buildTransport}), or a comp region ({@code buildTakes}): its
+     * tag and its attributes, in the writer's
+     * order — the order the snippet a skipped item's WARNING quotes
+     * ({@link #savedAs}) lists them in, never the DOM's.
      *
      * @param tag        the element's tag
      * @param attributes the attributes the writer emits, in its order
@@ -127,6 +154,12 @@ public final class ProjectDeserializer {
     private static final WrittenForm CC_LANE = new WrittenForm("cc-lane",
             List.of("type", "cc-number", "high-resolution", "channel", "height-ratio"));
     private static final WrittenForm CC_EVENT = new WrittenForm("event", List.of("column", "value"));
+    private static final WrittenForm TEMPO_CHANGE = new WrittenForm("tempo-change",
+            List.of("position", "bpm", "transition"));
+    private static final WrittenForm METER_CHANGE = new WrittenForm("meter-change",
+            List.of("position", "numerator", "denominator"));
+    private static final WrittenForm COMP_REGION = new WrittenForm("comp-region",
+            List.of("take-id", "start-beat", "duration-beats"));
 
     private final List<String> missingFiles = new ArrayList<>();
 
@@ -139,8 +172,8 @@ public final class ProjectDeserializer {
 
     /**
      * Whether the call in progress dropped saved content it lists no
-     * {@linkplain #unreadItems item} for — a malformed or duplicate track id
-     * it replaced with a fresh one, the child elements or text of a MIDI
+     * {@linkplain #unreadItems item} for — a malformed or duplicate track or
+     * take-lane id it replaced with a fresh one, the child elements or text of a MIDI
      * effect it kept as a placeholder, or a VCA group whose id repeats an
      * earlier group's, which it skipped with its members — see
      * {@link #losesSavedContent()}. Per-call state, like {@link #unreadItems}.
@@ -156,6 +189,9 @@ public final class ProjectDeserializer {
      * {@link #missingFiles}: one deserialization at a time per instance.
      */
     private Path projectDirectory;
+
+    /** Turns a saved JAR or CLAP plugin identity into a plugin; see {@link #setPluginResolver}. */
+    private volatile PluginResolver pluginResolver = PluginResolver.NONE;
 
     /**
      * Creates a deserializer backed by the production
@@ -175,6 +211,23 @@ public final class ProjectDeserializer {
     public ProjectDeserializer(MigrationRegistry migrationRegistry) {
         this.migrationRegistry = java.util.Objects.requireNonNull(
                 migrationRegistry, "migrationRegistry");
+    }
+
+    /**
+     * Sets how this deserializer turns a saved external JAR or CLAP plugin
+     * insert into a plugin (story 334; Persistence Integrity book §4.5): the
+     * installed-plugin registry for the opens that hand the project to the
+     * application, and {@link PluginResolver#NONE} — the default — for a read
+     * whose project is only re-serialized or checked, which then keeps every
+     * such insert offline and writes it back as saved. A first-party plugin
+     * insert never goes through the resolver: every read resolves it from
+     * this build's own plugins. The resolver runs on the thread that calls
+     * {@link #deserialize(String, Path)}, and may construct third-party code.
+     *
+     * @param resolver the resolver
+     */
+    public void setPluginResolver(PluginResolver resolver) {
+        this.pluginResolver = java.util.Objects.requireNonNull(resolver, "resolver must not be null");
     }
 
     /**
@@ -228,10 +281,24 @@ public final class ProjectDeserializer {
      * memberships, channel links and bed routings it could not honour —
      * naming a track the file does not contain, a malformed id, a channel
      * linked to itself, or a repeat of an earlier assignment (removed; their
-     * containers are kept). Each item was logged once at WARNING when it was
-     * found ({@link UnreadProjectItem#logLine()}). Problems with pre/post-roll
-     * values, with track ids and with VCA groups (an unreadable gain, a
-     * repeated id) are logged only and are not listed.
+     * containers are kept), and the transport's tempo or meter changes and
+     * beat-0 tempo or meter that are not usable (skipped; story 334); and,
+     * story 334, inserts the open could not load (kept offline at their
+     * place, written back as saved), a strip's ninth or later insert
+     * (skipped), insert parameters it could not apply as saved (rejected,
+     * clamped, unknown, repeated or not a finite number), a working
+     * insert's {@code sidechain-source} that names no strip (removed), and
+     * a track's comp regions that name no take of the track, hold an
+     * unusable start or duration, or overlap an earlier region (skipped).
+     * Each item was logged once at WARNING when it was found
+     * ({@link UnreadProjectItem#logLine()}). Problems with pre/post-roll
+     * values, with track ids and take-lane ids and with VCA groups (an
+     * unreadable gain, a repeated id) are logged only and are not listed,
+     * and so are a tempo or meter change at beat 0 that repeats the beat-0
+     * attributes, an analyzer insert this build does not know (kept offline,
+     * written back as saved), an offline insert's child content no writer
+     * produces, and a clip saved as comp output on a track that has no takes
+     * (kept as an ordinary clip).
      *
      * <p>The list is cleared at the start of each deserialization call; the
      * result is a copy, because one deserializer instance serves many loads
@@ -252,20 +319,30 @@ public final class ProjectDeserializer {
      * {@linkplain UnreadProjectItem.Kind#losesSavedContent() loses its saved
      * content}, a malformed or duplicate track id replaced by a fresh one
      * (logged only: the saved id is gone, and take folders and manifests on
-     * disk still carry it), child elements or non-blank text of a MIDI
-     * effect kept as a placeholder (logged and dropped), or a VCA group whose
-     * id repeats an earlier group's (logged and skipped with its label,
-     * gain, colour and members). {@code ProjectManager} backs the original
-     * file up before the first save of such an open.
+     * disk still carry it), a malformed or duplicate take-lane id replaced
+     * by a fresh one (logged only; the file's comp regions resolved by the
+     * id as saved), child elements or non-blank text of a MIDI
+     * effect kept as a placeholder or of an offline insert other than its
+     * {@code <parameter>} and {@code <plugin-state>} children, a plugin
+     * state on an insert whose plugin takes none (each logged and dropped),
+     * or a VCA group whose id repeats an earlier group's (logged and skipped
+     * with its label, gain, colour and members). {@code ProjectManager}
+     * backs the original file up before the first save of such an open.
      *
      * <p>Nothing else the open adjusts loses saved content: a track without
      * an id gets a fresh one and a non-canonical spelling of a valid id is
-     * restored as the same UUID; a missing asset's reference is kept as
-     * written; a CC lane's unusable height ratio is view layout, and a
+     * restored as the same UUID; a take lane without an id gets a fresh one,
+     * and a clip saved as comp output on a track that has no takes stays an
+     * ordinary clip, the mark meaning nothing there; a missing asset's
+     * reference is kept as written; a CC lane's unusable height ratio is
+     * view layout, and a
      * malformed pre/post-roll value a transport preference; a VCA group's
      * unreadable gain carries no level and opens at 0 dB, the attribute's
-     * default; a placeholder's attributes are written back as saved. Reset
-     * with the unread items at the start of each deserialization call.</p>
+     * default; a placeholder's attributes are written back as saved, and so
+     * is an offline insert, with its parameters and plugin state; a
+     * tempo or meter change at beat 0 that repeats the beat-0 attributes
+     * adds nothing they do not already hold. Reset with the unread items at
+     * the start of each deserialization call.</p>
      *
      * @return {@code true} when the next save of the deserialized project
      *         would not write back everything its file saved
@@ -354,9 +431,12 @@ public final class ProjectDeserializer {
      * item the open cannot honour as written — a MIDI note, CC lane or CC
      * event that cannot be read, an invalid arpeggiator setting, a MIDI
      * effect this build does not recognise, a mixer assignment it cannot
-     * honour — never fails the load: it is skipped, adjusted, kept as a
-     * placeholder or removed, logged, and listed in
-     * {@link #getUnreadItems()}.</p>
+     * honour, a comp region it cannot honour — never fails the load: it is
+     * skipped, adjusted, kept as a placeholder or removed, logged, and
+     * listed in {@link #getUnreadItems()}. Take lanes keep the ids they were
+     * saved with too, so every comp region resolves to the lane it named;
+     * the main-lane clips saved as comp output are adopted as the restored
+     * comping's output, never recompiled (story 334).</p>
      *
      * <p>Called on whichever thread opens the project (the caller of
      * {@code ProjectManager.openProject}, a recovery subtask of
@@ -505,7 +585,37 @@ public final class ProjectDeserializer {
         DawProject project = new DawProject(projectName, audioFormat);
         ProjectMetadata meta = new ProjectMetadata(projectName, createdAt, lastModified, null);
         project.setMetadata(meta);
+        try {
+            parseContent(root, project);
+        } catch (Throwable failure) {
+            // Nobody installs a project whose read failed: release the plugins
+            // its inserts built (a JAR plugin's loader keeps its file open)
+            // before the failure leaves, whatever it is — a plugin's code can
+            // throw a checked exception it does not declare (story 334).
+            disposeUnopened(project);
+            throw failure;
+        }
+        return project;
+    }
 
+    /**
+     * Releases every insert of a project nobody will install — a read that
+     * failed half way, or a project read only to be re-serialized or checked.
+     * Its plugins are disposed once no render uses them, which for such a
+     * project is at once; a disposal failure is logged at FINE.
+     *
+     * @param project the project to release
+     */
+    public static void disposeUnopened(DawProject project) {
+        project.disposeInsertsWhenQuiescent().whenComplete((done, failure) -> {
+            if (failure != null) {
+                LOG.log(Level.FINE, "Releasing the inserts of a project that was not opened failed", failure);
+            }
+        });
+    }
+
+    /** Reads everything below the audio format into {@code project}, in the order the writer emits it. */
+    private void parseContent(Element root, DawProject project) {
         // Parse transport
         List<Element> transportElements = getDirectChildElements(root, "transport");
         if (!transportElements.isEmpty()) {
@@ -647,21 +757,16 @@ public final class ProjectDeserializer {
                 project.setLayoutJson(json);
             }
         }
-
-        return project;
     }
 
     private void parseTransport(Element elem, Transport transport) {
-        double tempo = parseDoubleAttr(elem, "tempo", 120.0);
-        if (tempo >= 20.0 && tempo <= 999.0) {
-            transport.setTempo(tempo);
-        }
-
-        int tsNumerator = parseIntAttr(elem, "time-sig-numerator", 4);
-        int tsDenominator = parseIntAttr(elem, "time-sig-denominator", 4);
-        if (tsNumerator > 0 && tsDenominator > 0) {
-            transport.setTimeSignature(tsNumerator, tsDenominator);
-        }
+        // The tempo map (story 334): the beat-0 attributes first, then the
+        // lists of changes after beat 0, whose beat-0 entries are compared
+        // with what the attributes put in force.
+        parseBeatZeroTempo(elem, transport);
+        parseBeatZeroMeter(elem, transport);
+        parseTempoChanges(elem, transport);
+        parseMeterChanges(elem, transport);
 
         // Loop: flag and bounds go out as ONE window when the parsed bounds
         // are valid (story 315 review — an enable-then-region pair would let
@@ -705,6 +810,204 @@ public final class ProjectDeserializer {
             boolean enabled = parseBooleanAttr(elem, "pre-roll-enabled");
             transport.setPreRollPostRoll(new PreRollPostRoll(preBars, postBars, enabled));
         }
+    }
+
+    /**
+     * The beat-0 tempo (story 334, studio ruling E7): absent, it is 120 BPM,
+     * silently; a value that is not a number from 20 to 999 — NaN and the
+     * infinities included — is skipped and reported, and 120 BPM stays.
+     */
+    private void parseBeatZeroTempo(Element elem, Transport transport) {
+        if (!elem.hasAttribute("tempo")) {
+            return;
+        }
+        String raw = elem.getAttribute("tempo");
+        OptionalDouble tempo = usableBpm(raw);
+        if (tempo.isPresent()) {
+            transport.setTempo(tempo.getAsDouble());
+            return;
+        }
+        reportUnread(new UnreadProjectItem(UnreadProjectItem.Kind.TEMPO_MAP_ENTRY_SKIPPED,
+                new UnreadProjectItem.InTransport(UnreadProjectItem.TransportEntry.BEAT_ZERO_TEMPO), 0,
+                "tempo '" + UnreadProjectItem.logText(raw) + "' is not a number from 20 to 999; "
+                        + transport.getTempo() + " is used", 1));
+    }
+
+    /**
+     * The beat-0 meter (story 334, studio rulings E7 and ruling-2 G2): an
+     * absent attribute is 4, silently; a present one that is not a positive
+     * whole number is reported — the numerator before the denominator, the
+     * first such one only — and the pair stays 4/4.
+     */
+    private void parseBeatZeroMeter(Element elem, Transport transport) {
+        int[] meter = {4, 4};
+        String[] attributes = {"time-sig-numerator", "time-sig-denominator"};
+        for (int i = 0; i < attributes.length; i++) {
+            if (!elem.hasAttribute(attributes[i])) {
+                continue;
+            }
+            String raw = elem.getAttribute(attributes[i]);
+            OptionalInt value = positiveWholeNumber(raw);
+            if (value.isEmpty()) {
+                reportUnread(new UnreadProjectItem(UnreadProjectItem.Kind.TEMPO_MAP_ENTRY_SKIPPED,
+                        new UnreadProjectItem.InTransport(UnreadProjectItem.TransportEntry.BEAT_ZERO_METER), 0,
+                        attributes[i] + " '" + UnreadProjectItem.logText(raw)
+                                + "' is not a positive whole number; 4/4 is used", 1));
+                return;
+            }
+            meter[i] = value.getAsInt();
+        }
+        transport.setTimeSignature(meter[0], meter[1]);
+    }
+
+    /**
+     * The tempo changes after beat 0 (story 334, studio rulings E7 and E19),
+     * numbered from 1 among the saved {@code <tempo-change>} elements: the
+     * reader takes exactly what the model takes, finite values only. An
+     * entry is skipped whole and reported — the first failing check names
+     * the reason — when its position is not a beat after beat 0, its bpm is
+     * not a number from 20 to 999, its transition is not exactly
+     * {@code INSTANT}, {@code LINEAR} or {@code CURVED}, or its position
+     * repeats an earlier accepted entry's (the first in document order
+     * wins). An entry at beat 0 ({@code -0.0} included) that repeats the
+     * tempo the beat-0 attribute put in force adds nothing: it is logged
+     * only. Entries out of order are taken; the model sorts them.
+     */
+    private void parseTempoChanges(Element elem, Transport transport) {
+        double beatZeroTempo = transport.getTempo();
+        Map<Double, Integer> acceptedAt = new HashMap<>();
+        List<Element> changes = getDirectChildElements(elem, "tempo-change");
+        for (int i = 0; i < changes.size(); i++) {
+            Element change = changes.get(i);
+            String rawPosition = change.getAttribute("position");
+            String rawBpm = change.getAttribute("bpm");
+            String rawTransition = change.getAttribute("transition");
+            OptionalDouble position = finiteNumber(rawPosition);
+            OptionalDouble bpm = usableBpm(rawBpm);
+            Optional<TempoTransitionType> transition = transitionType(rawTransition);
+            String reason;
+            if (position.isEmpty() || !(position.getAsDouble() > 0)) {
+                if (position.isPresent() && position.getAsDouble() == 0.0 && bpm.isPresent()
+                        && Double.compare(bpm.getAsDouble(), beatZeroTempo) == 0) {
+                    LOG.log(Level.WARNING, "Transport: tempo change " + (i + 1) + " at position '"
+                            + UnreadProjectItem.logText(rawPosition)
+                            + "' repeats the tempo at beat 0; it is not added");
+                    continue;
+                }
+                reason = notAPositionAfterBeatZero(rawPosition);
+            } else if (bpm.isEmpty()) {
+                reason = "bpm '" + UnreadProjectItem.logText(rawBpm) + "' is not a number from 20 to 999";
+            } else if (transition.isEmpty()) {
+                reason = "transition '" + UnreadProjectItem.logText(rawTransition)
+                        + "' is not INSTANT, LINEAR or CURVED";
+            } else if (acceptedAt.containsKey(position.getAsDouble())) {
+                reason = "position '" + UnreadProjectItem.logText(rawPosition) + "' repeats tempo change "
+                        + acceptedAt.get(position.getAsDouble());
+            } else {
+                transport.getTempoMap().addTempoChange(
+                        new TempoChangeEvent(position.getAsDouble(), bpm.getAsDouble(), transition.get()));
+                acceptedAt.put(position.getAsDouble(), i + 1);
+                continue;
+            }
+            reportUnread(new UnreadProjectItem(UnreadProjectItem.Kind.TEMPO_MAP_ENTRY_SKIPPED,
+                    new UnreadProjectItem.InTransport(UnreadProjectItem.TransportEntry.TEMPO_CHANGES), i,
+                    reason + savedAs(change, TEMPO_CHANGE), 1));
+        }
+    }
+
+    /**
+     * The meter changes after beat 0 (story 334, studio rulings E7 and E19),
+     * numbered from 1 among the saved {@code <meter-change>} elements, read
+     * as {@link #parseTempoChanges} reads the tempo changes: skipped whole and
+     * reported when the position is not a beat after beat 0, the numerator
+     * or the denominator (checked in that order) is not a positive whole
+     * number, or the position repeats an earlier accepted entry's; an entry
+     * at beat 0 that repeats the beat-0 meter is logged only.
+     */
+    private void parseMeterChanges(Element elem, Transport transport) {
+        int beatZeroNumerator = transport.getTimeSignatureNumerator();
+        int beatZeroDenominator = transport.getTimeSignatureDenominator();
+        Map<Double, Integer> acceptedAt = new HashMap<>();
+        List<Element> changes = getDirectChildElements(elem, "meter-change");
+        for (int i = 0; i < changes.size(); i++) {
+            Element change = changes.get(i);
+            String rawPosition = change.getAttribute("position");
+            String rawNumerator = change.getAttribute("numerator");
+            String rawDenominator = change.getAttribute("denominator");
+            OptionalDouble position = finiteNumber(rawPosition);
+            OptionalInt numerator = positiveWholeNumber(rawNumerator);
+            OptionalInt denominator = positiveWholeNumber(rawDenominator);
+            String reason;
+            if (position.isEmpty() || !(position.getAsDouble() > 0)) {
+                if (position.isPresent() && position.getAsDouble() == 0.0
+                        && numerator.isPresent() && numerator.getAsInt() == beatZeroNumerator
+                        && denominator.isPresent() && denominator.getAsInt() == beatZeroDenominator) {
+                    LOG.log(Level.WARNING, "Transport: meter change " + (i + 1) + " at position '"
+                            + UnreadProjectItem.logText(rawPosition)
+                            + "' repeats the meter at beat 0; it is not added");
+                    continue;
+                }
+                reason = notAPositionAfterBeatZero(rawPosition);
+            } else if (numerator.isEmpty()) {
+                reason = "numerator '" + UnreadProjectItem.logText(rawNumerator) + "' is not a positive whole number";
+            } else if (denominator.isEmpty()) {
+                reason = "denominator '" + UnreadProjectItem.logText(rawDenominator)
+                        + "' is not a positive whole number";
+            } else if (acceptedAt.containsKey(position.getAsDouble())) {
+                reason = "position '" + UnreadProjectItem.logText(rawPosition) + "' repeats meter change "
+                        + acceptedAt.get(position.getAsDouble());
+            } else {
+                transport.getTempoMap().addTimeSignatureChange(new TimeSignatureChangeEvent(
+                        position.getAsDouble(), numerator.getAsInt(), denominator.getAsInt()));
+                acceptedAt.put(position.getAsDouble(), i + 1);
+                continue;
+            }
+            reportUnread(new UnreadProjectItem(UnreadProjectItem.Kind.TEMPO_MAP_ENTRY_SKIPPED,
+                    new UnreadProjectItem.InTransport(UnreadProjectItem.TransportEntry.METER_CHANGES), i,
+                    reason + savedAs(change, METER_CHANGE), 1));
+        }
+    }
+
+    /** The reason a tempo-map entry whose {@code position} is not after beat 0 is skipped. */
+    private static String notAPositionAfterBeatZero(String rawPosition) {
+        return "position '" + UnreadProjectItem.logText(rawPosition) + "' is not a beat position after beat 0";
+    }
+
+    /** A tempo of the model's range, 20 to 999 BPM, parsed from {@code raw}; empty when it is not one. */
+    private static OptionalDouble usableBpm(String raw) {
+        OptionalDouble bpm = finiteNumber(raw);
+        return bpm.isPresent() && bpm.getAsDouble() >= 20.0 && bpm.getAsDouble() <= 999.0
+                ? bpm : OptionalDouble.empty();
+    }
+
+    /** A finite number parsed from {@code raw}; empty when it does not parse or is NaN or infinite. */
+    private static OptionalDouble finiteNumber(String raw) {
+        try {
+            double value = Double.parseDouble(raw.strip());
+            return Double.isFinite(value) ? OptionalDouble.of(value) : OptionalDouble.empty();
+        } catch (NumberFormatException notANumber) {
+            return OptionalDouble.empty();
+        }
+    }
+
+    /** A whole number greater than 0 parsed from {@code raw}; empty when it is not one. */
+    private static OptionalInt positiveWholeNumber(String raw) {
+        try {
+            int value = Integer.parseInt(raw.strip());
+            return value > 0 ? OptionalInt.of(value) : OptionalInt.empty();
+        } catch (NumberFormatException notAWholeNumber) {
+            return OptionalInt.empty();
+        }
+    }
+
+    /** The transition {@code raw} names exactly, as the model spells it; empty for any other text. */
+    private static Optional<TempoTransitionType> transitionType(String raw) {
+        for (TempoTransitionType type : TempoTransitionType.values()) {
+            if (type.name().equals(raw)) {
+                return Optional.of(type);
+            }
+        }
+        return Optional.empty();
     }
 
     /**
@@ -851,15 +1154,27 @@ public final class ProjectDeserializer {
             }
         }
 
-        // Parse clips
+        // Parse clips; the main-lane clips saved as comp output are adopted
+        // once the take lanes and comp regions are restored (story 334).
+        Map<Integer, AudioClip> savedAsCompOutput = new LinkedHashMap<>();
         List<Element> clipsContainers = getDirectChildElements(elem, "clips");
         if (!clipsContainers.isEmpty()) {
             List<Element> clipElements = getDirectChildElements(clipsContainers.getFirst(), "clip");
             for (int i = 0; i < clipElements.size(); i++) {
-                AudioClip clip = parseClip(clipElements.get(i), i, location);
+                Element clipElem = clipElements.get(i);
+                AudioClip clip = parseClip(clipElem, "", i, location);
+                boolean compOutput = parseBooleanAttr(clipElem, "comp-output");
                 track.addClip(clip);
+                if (compOutput) {
+                    savedAsCompOutput.put(i, clip);
+                }
             }
         }
+        List<Element> takesContainers = getDirectChildElements(elem, "takes");
+        if (!takesContainers.isEmpty()) {
+            parseTakes(takesContainers.getFirst(), track, location);
+        }
+        adoptSavedCompOutput(track, savedAsCompOutput, location);
 
         // Parse SoundFont assignment
         List<Element> sfElements = getDirectChildElements(elem, "soundfont-assignment");
@@ -932,6 +1247,171 @@ public final class ProjectDeserializer {
             return UUID.randomUUID();
         }
         return id;
+    }
+
+    /**
+     * Restores the take lanes and comp regions of {@code track} from its
+     * {@code <takes>} element (story 334; Persistence Integrity book §4.6;
+     * studio rulings E8, E13, E15). Each {@code <take>}, numbered from 1, is
+     * a lane in document order: its id ({@link #restoreTakeId}), its name —
+     * {@code Take <t>} when absent or blank — its mute flag, and its
+     * {@code <clip>} children through the main lane's clip reader, whose
+     * WARNINGs name the take ({@code take <t> '<name>' clip <c> '<name>'}).
+     * A lane with no clips is kept. The comp regions then resolve their lane
+     * by the id as saved, before any fresh id was given, a repeated id to the
+     * first lane carrying it ({@link #parseCompRegions}). The lanes' solo is
+     * never saved: every lane opens unsoloed. Nothing is compiled.
+     */
+    private void parseTakes(Element takesElem, Track track, UnreadProjectItem.OnTrack location) {
+        TakeComping comping = track.getTakeComping();
+        Map<String, Integer> laneBySavedId = new HashMap<>();
+        Map<UUID, String> restoredIds = new HashMap<>();
+        List<Element> takeElements = getDirectChildElements(takesElem, "take");
+        for (int t = 0; t < takeElements.size(); t++) {
+            Element takeElem = takeElements.get(t);
+            String rawId = takeElem.getAttribute("id");
+            String name = takeElem.getAttribute("name");
+            if (name.isBlank()) {
+                name = "Take " + (t + 1);
+            }
+            String takeInLog = "take " + (t + 1) + " '" + UnreadProjectItem.logText(name) + "'";
+            TakeLane lane = new TakeLane(restoreTakeId(rawId, takeInLog, location, restoredIds), name);
+            lane.setMuted(parseBooleanAttr(takeElem, "muted"));
+            List<Element> clipElements = getDirectChildElements(takeElem, "clip");
+            for (int c = 0; c < clipElements.size(); c++) {
+                lane.addClip(parseClip(clipElements.get(c), takeInLog + " ", c, location));
+            }
+            comping.addTakeLane(lane);
+            if (!rawId.isEmpty()) {
+                laneBySavedId.putIfAbsent(rawId, t);
+            }
+        }
+        parseCompRegions(takesElem, comping, laneBySavedId, location);
+    }
+
+    /**
+     * The id a take lane is restored with: its saved {@code id} when that is
+     * a UUID in canonical {@link UUID#toString()} form that no earlier lane
+     * of the track took (the id its comp regions name it by). A missing id,
+     * one that is not a canonical UUID, or one an earlier lane took gets a
+     * fresh id instead, with a WARNING naming the track and the take
+     * ({@code takeInLog}), as {@link #restoreTrackId} does for a track (story
+     * 330 R1; studio ruling E15): a missing id loses nothing, while a
+     * malformed or repeated one is saved content the next save drops
+     * ({@link #losesSavedContent()}). {@code restoredIds} receives the id
+     * with the take that took it.
+     */
+    private UUID restoreTakeId(String raw, String takeInLog, UnreadProjectItem.OnTrack location,
+                               Map<UUID, String> restoredIds) {
+        if (raw.isEmpty()) {
+            LOG.log(Level.WARNING, location.describe() + ": " + takeInLog + " has no id; a new id is used");
+            return UUID.randomUUID();
+        }
+        Optional<UUID> canonical = canonicalUuid(raw);
+        if (canonical.isEmpty()) {
+            LOG.log(Level.WARNING, location.describe() + ": " + takeInLog + " id '" + UnreadProjectItem.logText(raw)
+                    + "' is not a UUID; a new id is used");
+            droppedUnlistedContent = true;
+            return UUID.randomUUID();
+        }
+        String earlier = restoredIds.putIfAbsent(canonical.get(), takeInLog);
+        if (earlier != null) {
+            LOG.log(Level.WARNING, location.describe() + ": " + takeInLog + " id " + canonical.get()
+                    + " is already used by " + earlier + "; a new id is used");
+            droppedUnlistedContent = true;
+            return UUID.randomUUID();
+        }
+        return canonical.get();
+    }
+
+    /** The UUID {@code raw} spells in canonical {@link UUID#toString()} form; empty for any other text. */
+    private static Optional<UUID> canonicalUuid(String raw) {
+        try {
+            UUID uuid = UUID.fromString(raw);
+            return uuid.toString().equals(raw) ? Optional.of(uuid) : Optional.empty();
+        } catch (IllegalArgumentException notAUuid) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * The comp regions of a track's {@code <takes>}, numbered from 1 among
+     * the saved {@code <comp-region>} elements (story 334, studio ruling
+     * E15). A region is skipped and reported ({@code COMP_REGION_SKIPPED},
+     * arming the degraded-open backup) when the first of these fails, in
+     * order: its {@code take-id} names a take of this track as saved
+     * ({@code laneBySavedId}); its {@code start-beat} is a finite beat
+     * &ge; 0; its {@code duration-beats} is a finite number &gt; 0; it does
+     * not overlap a region accepted before it (the first in document order
+     * is kept). The accepted regions are set at once, in document order —
+     * never through {@link TakeComping#addCompRegion}, which would drop an
+     * overlap in silence.
+     */
+    private void parseCompRegions(Element takesElem, TakeComping comping, Map<String, Integer> laneBySavedId,
+                                  UnreadProjectItem.OnTrack location) {
+        List<CompRegion> accepted = new ArrayList<>();
+        List<Integer> acceptedNumbers = new ArrayList<>();
+        List<Element> regionElements = getDirectChildElements(takesElem, "comp-region");
+        for (int r = 0; r < regionElements.size(); r++) {
+            Element regionElem = regionElements.get(r);
+            String rawTake = regionElem.getAttribute("take-id");
+            String rawStart = regionElem.getAttribute("start-beat");
+            String rawDuration = regionElem.getAttribute("duration-beats");
+            Integer laneIndex = rawTake.isEmpty() ? null : laneBySavedId.get(rawTake);
+            OptionalDouble start = finiteNumber(rawStart);
+            OptionalDouble duration = finiteNumber(rawDuration);
+            String reason;
+            if (laneIndex == null) {
+                reason = "take '" + UnreadProjectItem.logText(rawTake) + "' is not a take on this track";
+            } else if (start.isEmpty() || start.getAsDouble() < 0) {
+                reason = "start-beat '" + UnreadProjectItem.logText(rawStart) + "' is not a beat position ≥ 0";
+            } else if (duration.isEmpty() || !(duration.getAsDouble() > 0)) {
+                reason = "duration-beats '" + UnreadProjectItem.logText(rawDuration)
+                        + "' is not a positive number of beats";
+            } else {
+                CompRegion region = new CompRegion(laneIndex, start.getAsDouble(), duration.getAsDouble());
+                int overlapped = firstOverlapped(accepted, acceptedNumbers, region);
+                if (overlapped == 0) {
+                    accepted.add(region);
+                    acceptedNumbers.add(r + 1);
+                    continue;
+                }
+                reason = "it overlaps comp region " + overlapped;
+            }
+            reportUnread(new UnreadProjectItem(UnreadProjectItem.Kind.COMP_REGION_SKIPPED, location, r,
+                    reason + savedAs(regionElem, COMP_REGION), 1));
+        }
+        comping.setCompRegions(accepted);
+    }
+
+    /** The number of the first of {@code accepted} that {@code region} overlaps; 0 when it overlaps none. */
+    private static int firstOverlapped(List<CompRegion> accepted, List<Integer> acceptedNumbers, CompRegion region) {
+        for (int a = 0; a < accepted.size(); a++) {
+            if (accepted.get(a).overlaps(region.startBeat(), region.endBeat())) {
+                return acceptedNumbers.get(a);
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Adopts the main-lane clips the file saved as comp output
+     * ({@code clip@comp-output}, keyed by their clip index) as the current
+     * pass's output of the track's restored comping (story 334, studio
+     * ruling E14), so the next compile replaces exactly them; the open never
+     * compiles. On a track that has no takes the mark means nothing: each
+     * marked clip stays an ordinary clip, with a WARNING, and no backup.
+     */
+    private void adoptSavedCompOutput(Track track, Map<Integer, AudioClip> savedAsCompOutput,
+                                      UnreadProjectItem.OnTrack location) {
+        TakeComping comping = track.getTakeComping();
+        if (comping.isActive()) {
+            savedAsCompOutput.values().forEach(comping::adoptCompOutput);
+            return;
+        }
+        savedAsCompOutput.forEach((clipIndex, clip) -> LOG.log(Level.WARNING, location.describe() + ": "
+                + describeClip(clipIndex, clip.getName())
+                + " is saved as comp output, but the track has no takes; it is kept as an ordinary clip"));
     }
 
     /**
@@ -1206,32 +1686,8 @@ public final class ProjectDeserializer {
      */
     private UnresolvedMidiEffect unresolvedMidiEffect(Element elem, int chainIndex,
                                                       UnreadProjectItem.OnTrack location) {
-        SequencedMap<String, String> attributes = new LinkedHashMap<>();
-        NamedNodeMap attributeNodes = elem.getAttributes();
-        for (int i = 0; i < attributeNodes.getLength(); i++) {
-            Node attribute = attributeNodes.item(i);
-            attributes.put(attribute.getNodeName(), attribute.getNodeValue());
-        }
-        int childElements = 0;
-        boolean text = false;
-        NodeList children = elem.getChildNodes();
-        for (int i = 0; i < children.getLength(); i++) {
-            Node child = children.item(i);
-            if (child instanceof Element) {
-                childElements++;
-            } else if (child instanceof Text content && !content.getData().isBlank()) {
-                text = true;
-            }
-        }
-        if (childElements > 0 || text) {
-            String dropped = childElements == 0 ? "text"
-                    : childElements + (childElements == 1 ? " child element" : " child elements")
-                            + (text ? " and text" : "");
-            boolean several = childElements + (text ? 1 : 0) > 1;
-            LOG.log(Level.WARNING, location.describe() + ": MIDI effect " + (chainIndex + 1) + " has "
-                    + dropped + " no writer produces; " + (several ? "they are" : "it is") + " dropped");
-            droppedUnlistedContent = true;
-        }
+        SequencedMap<String, String> attributes = savedAttributes(elem);
+        dropUnwrittenContent(location.describe() + ": MIDI effect " + (chainIndex + 1), elem, 0);
         UnresolvedMidiEffect placeholder = new UnresolvedMidiEffect(attributes);
         String pluginId = placeholder.pluginId();
         reportUnread(new UnreadProjectItem(UnreadProjectItem.Kind.MIDI_EFFECT_NOT_RECOGNIZED, location,
@@ -1244,16 +1700,82 @@ public final class ProjectDeserializer {
     }
 
     /**
-     * Rebuilds the {@code clipIndex}-th {@code <clip>} saved on the track at
-     * {@code location}; its WARNINGs name the track and the clip
-     * ({@link #describeClip}).
+     * Every attribute of {@code elem}, name to value, in the order the DOM
+     * holds them (the JDK's DOM keeps an element's attributes sorted by name):
+     * what a placeholder — an unrecognised MIDI effect, an offline insert and
+     * its kept children — writes back as saved.
      */
-    private AudioClip parseClip(Element elem, int clipIndex, UnreadProjectItem.OnTrack location) {
+    private static SequencedMap<String, String> savedAttributes(Element elem) {
+        SequencedMap<String, String> attributes = new LinkedHashMap<>();
+        NamedNodeMap attributeNodes = elem.getAttributes();
+        for (int i = 0; i < attributeNodes.getLength(); i++) {
+            Node attribute = attributeNodes.item(i);
+            attributes.put(attribute.getNodeName(), attribute.getNodeValue());
+        }
+        return attributes;
+    }
+
+    /**
+     * Logs and drops the content of a placeholder's element that no writer
+     * produces, and that the next save therefore cannot write back: its child
+     * elements beyond the {@code keptElements} the placeholder keeps, and its
+     * non-blank text (or CDATA) — {@code <subject> has 1 child element no
+     * writer produces; it is dropped} (story 330 precedent; {@link #losesSavedContent()}).
+     *
+     * @param subject      the placeholder as the log names it, e.g. {@code Track 2 'Vox': insert 2}
+     * @param elem         the placeholder's element
+     * @param keptElements how many of its child elements the placeholder keeps
+     */
+    private void dropUnwrittenContent(String subject, Element elem, int keptElements) {
+        int childElements = -keptElements;
+        boolean text = false;
+        NodeList children = elem.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            Node child = children.item(i);
+            if (child instanceof Element) {
+                childElements++;
+            } else if (child instanceof Text content && !content.getData().isBlank()) {
+                text = true;
+            }
+        }
+        dropContent(subject, childElements, text);
+    }
+
+    /**
+     * Logs {@code <subject> has <what> no writer produces; it is dropped} and
+     * records that the next save loses saved content; nothing when there is
+     * nothing to drop.
+     *
+     * @param subject       the element as the log names it
+     * @param childElements how many of its child elements are dropped
+     * @param text          whether its non-blank text is dropped
+     */
+    private void dropContent(String subject, int childElements, boolean text) {
+        if (childElements > 0 || text) {
+            String dropped = childElements == 0 ? "text"
+                    : childElements + (childElements == 1 ? " child element" : " child elements")
+                            + (text ? " and text" : "");
+            boolean several = childElements + (text ? 1 : 0) > 1;
+            LOG.log(Level.WARNING, subject + " has " + dropped + " no writer produces; "
+                    + (several ? "they are" : "it is") + " dropped");
+            droppedUnlistedContent = true;
+        }
+    }
+
+    /**
+     * Rebuilds the {@code clipIndex}-th {@code <clip>} saved on the track at
+     * {@code location} — of its main lane, or of one of its take lanes; its
+     * WARNINGs name the track, then {@code takeInLog} — empty for a
+     * main-lane clip, {@code take <t> '<name>' } for a lane clip (story 334,
+     * studio ruling G9), so a lane clip is never taken for the main lane's
+     * clip of the same number — then the clip ({@link #describeClip}).
+     */
+    private AudioClip parseClip(Element elem, String takeInLog, int clipIndex, UnreadProjectItem.OnTrack location) {
         String name = elem.getAttribute("name");
         if (name.isEmpty()) {
             name = "Untitled Clip";
         }
-        String clipInLog = describeClip(clipIndex, name);
+        String clipInLog = takeInLog + describeClip(clipIndex, name);
 
         double startBeat = Math.max(0.0, parseDoubleAttr(elem, "start-beat", 0.0));
         double durationBeats = Math.max(0.001, parseDoubleAttr(elem, "duration-beats", 1.0));
@@ -1342,7 +1864,8 @@ public final class ProjectDeserializer {
 
     /**
      * {@code clip <clipIndex + 1> '<name>'}: a clip as its WARNINGs name it —
-     * its position among the track's saved {@code <clip>} elements, counted
+     * its position among the saved {@code <clip>} elements of its lane (the
+     * track's main lane, or a take), counted
      * from 1, since clip names repeat (a duplicate or a paste keeps the
      * name), and its name as restored, which the timeline shows, quoted by
      * {@link UnreadProjectItem#logText}.
@@ -1793,7 +2316,7 @@ public final class ProjectDeserializer {
     /**
      * Applies a {@code <master>}, {@code <return-bus>} or {@code <channel>}
      * element to {@code channel}; {@code strip} names the channel in the
-     * WARNINGs of its analyzer inserts ({@link AnalyzerInsertPersistence#read}).
+     * WARNINGs and items of its inserts ({@link #parseInsertSlot}).
      */
     private void applyMixerChannelAttrs(Element elem, MixerChannel channel, UnreadProjectItem.Location strip,
                                         DawProject project) {
@@ -1888,93 +2411,604 @@ public final class ProjectDeserializer {
     }
 
     /**
-     * Restores the {@code insertIndex}-th saved {@code <insert>} of
-     * {@code channel} — counted over the elements, so one that is skipped
-     * still takes its position — whose strip the log names as {@code strip}.
+     * The names a writer puts on an {@code <insert>}, read by name on every
+     * saved insert before the reader decides what the insert is (story 334):
+     * the write/read parity contract judges every insert on its own.
+     *
+     * @param name          {@code name}, empty when absent
+     * @param bypassed      {@code bypassed}
+     * @param expensive     {@code expensive}, empty when absent
+     * @param sidechainKey  {@code sidechain-source}, empty when absent
+     * @param analyzerId    {@code analyzer-plugin-id}, when present
+     * @param pluginSource  {@code plugin-source}, when present
+     * @param pluginId      {@code plugin-id}, empty when absent
+     * @param pluginVersion {@code plugin-version}, empty when absent
+     * @param effectType    {@code effect-type}, empty when absent
      */
-    private void parseInsertSlot(Element elem, int insertIndex, MixerChannel channel,
-                                 UnreadProjectItem.Location strip, DawProject project) {
-        try {
-            InsertSlot slot = createInsertSlot(elem, insertIndex, strip, project);
-            if (slot == null) return;
-            InsertEffectType effectType = slot.getEffectType();
-            if (parseBooleanAttr(elem, "bypassed")) {
-                slot.setBypassed(true);
-            }
-            // Story 129 (UI): per-insert "expensive" flag drives the
-            // BypassExpensive degradation policy. Absent attribute keeps
-            // the factory default chosen by InsertSlot.
-            String expensiveAttr = elem.getAttribute("expensive");
-            if (expensiveAttr != null && !expensiveAttr.isEmpty()) {
-                slot.setExpensive(Boolean.parseBoolean(expensiveAttr));
-            }
+    private record InsertNames(String name, boolean bypassed, String expensive, String sidechainKey,
+                               Optional<String> analyzerId, Optional<String> pluginSource, String pluginId,
+                               String pluginVersion, String effectType) {
 
-            // Restore parameter values.
-            //
-            // New-format presets carry a human-readable "name" attribute and
-            // are restored via the reflective preset serializer (which clamps
-            // out-of-range values and skips unknown keys for forward
-            // compatibility). Legacy projects saved before the preset system
-            // use the id-keyed path.
-            List<Element> paramElements = getDirectChildElements(elem, "parameter");
-            if (effectType != null && !paramElements.isEmpty()) {
-                Map<String, Double> namedValues = new LinkedHashMap<>();
-                List<Element> legacyIdElements = new ArrayList<>();
-                for (Element paramElem : paramElements) {
-                    String paramName = paramElem.getAttribute("name");
-                    double paramValue = parseDoubleAttr(paramElem, "value", Double.NaN);
-                    if (Double.isNaN(paramValue)) {
-                        continue;
-                    }
-                    if (paramName != null && !paramName.isEmpty()) {
-                        namedValues.put(paramName, paramValue);
-                    } else {
-                        legacyIdElements.add(paramElem);
-                    }
-                }
-                if (!namedValues.isEmpty()
-                        && ReflectivePresetSerializer.isSupported(slot.getProcessor())) {
-                    ReflectivePresetSerializer.restore(slot.getProcessor(), namedValues);
-                }
-                if (!legacyIdElements.isEmpty()) {
-                    BiConsumer<Integer, Double> handler =
-                            InsertEffectFactory.createParameterHandler(effectType, slot.getProcessor());
-                    for (Element paramElem : legacyIdElements) {
-                        int paramId = parseIntAttr(paramElem, "id", -1);
-                        double paramValue = parseDoubleAttr(paramElem, "value", Double.NaN);
-                        if (paramId >= 0 && !Double.isNaN(paramValue)) {
-                            handler.accept(paramId, paramValue);
-                        }
-                    }
+        static InsertNames of(Element elem) {
+            return new InsertNames(elem.getAttribute("name"), parseBooleanAttr(elem, "bypassed"),
+                    elem.getAttribute("expensive"), elem.getAttribute("sidechain-source"),
+                    elem.hasAttribute("analyzer-plugin-id")
+                            ? Optional.of(elem.getAttribute("analyzer-plugin-id")) : Optional.empty(),
+                    elem.hasAttribute("plugin-source")
+                            ? Optional.of(elem.getAttribute("plugin-source")) : Optional.empty(),
+                    elem.getAttribute("plugin-id"), elem.getAttribute("plugin-version"),
+                    elem.getAttribute("effect-type"));
+        }
+
+        /**
+         * The name an insert the open does not load shows and its lines quote
+         * (studio rulings preamble): the saved name when it is not blank, else
+         * the saved {@code effect-type}, plugin id or analyzer id, else
+         * {@code Insert <insertIndex + 1>}.
+         */
+        String label(int insertIndex) {
+            for (String saved : List.of(name, effectType, pluginId, analyzerId.orElse(""))) {
+                if (!saved.isBlank()) {
+                    return saved;
                 }
             }
-
-            // Restore sidechain source reference
-            String scSourceStr = elem.getAttribute("sidechain-source");
-            if (!scSourceStr.isEmpty()) {
-                MixerChannel scSource = resolveSidechainSource(scSourceStr, project.getMixer());
-                if (scSource != null) {
-                    slot.setSidechainSource(scSource);
-                }
-            }
-
-            channel.addInsert(slot);
-        } catch (IllegalArgumentException ignored) {
-            // skip unknown effect types
+            return "Insert " + (insertIndex + 1);
         }
     }
 
-    private InsertSlot createInsertSlot(Element elem, int insertIndex, UnreadProjectItem.Location strip,
-                                        DawProject project) {
-        if (elem.hasAttribute("analyzer-plugin-id")) {
-            return AnalyzerInsertPersistence.read(elem, project.getFormat(), strip, insertIndex);
+    /** What the reader made of a saved {@code <insert>}: a working slot, or why the insert is offline. */
+    private sealed interface InsertLoad permits InsertLoad.Working, InsertLoad.Offline {
+
+        /**
+         * A slot that loaded, its parameters applied.
+         *
+         * @param slot        the slot, not yet in its channel
+         * @param adjustments the details of the parameters it could not apply
+         *                    as saved, in document order
+         */
+        record Working(InsertSlot slot, List<String> adjustments) implements InsertLoad {
         }
-        String effectTypeStr = elem.getAttribute("effect-type");
-        if (effectTypeStr.isEmpty()) return null;
-        InsertEffectType effectType = InsertEffectType.valueOf(effectTypeStr);
-        if (effectType == InsertEffectType.CLAP_PLUGIN) return null;
-        return InsertEffectFactory.createSlot(effectType, project.getFormat().channels(),
-                project.getFormat().sampleRate());
+
+        /**
+         * An insert the open could not load; nothing of it is left constructed.
+         *
+         * @param cause why
+         */
+        record Offline(OfflineCause cause) implements InsertLoad {
+        }
+    }
+
+    /**
+     * Restores the {@code insertIndex}-th saved {@code <insert>} of
+     * {@code channel} — counted over the elements, so one that is skipped
+     * still takes its position — whose strip the log names as {@code strip}
+     * (story 334; Persistence Integrity book §4.5). The open never fails
+     * because of an insert and never shortens a chain silently: an insert it
+     * cannot load is kept at its place, offline, and written back as saved;
+     * a ninth or later insert, which a strip cannot hold, is skipped and
+     * reported.
+     */
+    private void parseInsertSlot(Element elem, int insertIndex, MixerChannel channel,
+                                 UnreadProjectItem.Location strip, DawProject project) {
+        InsertNames names = InsertNames.of(elem);
+        if (channel.getInsertSlots().size() >= MixerChannel.MAX_INSERT_SLOTS) {
+            reportUnread(UnreadProjectItem.atInsert(UnreadProjectItem.Kind.INSERT_SKIPPED, strip, insertIndex,
+                    names.label(insertIndex), "the strip already holds " + MixerChannel.MAX_INSERT_SLOTS + " inserts"));
+            return;
+        }
+        switch (loadInsert(elem, names, insertIndex, strip, project)) {
+            case InsertLoad.Working working -> addWorkingInsert(names, working, insertIndex, channel, strip, project);
+            case InsertLoad.Offline offline ->
+                    addOfflineInsert(elem, names, offline.cause(), insertIndex, channel, strip, project);
+        }
+    }
+
+    /** Builds the slot an {@code <insert>} saves, by its identity: an analyzer, a plugin, or a built-in effect. */
+    private InsertLoad loadInsert(Element elem, InsertNames names, int insertIndex,
+                                  UnreadProjectItem.Location strip, DawProject project) {
+        if (names.analyzerId().isPresent()) {
+            String analyzerId = names.analyzerId().get();
+            return AnalyzerInsertPersistence.knows(analyzerId)
+                    ? new InsertLoad.Working(
+                            AnalyzerInsertPersistence.read(elem, project.getFormat(), strip, insertIndex), List.of())
+                    : new InsertLoad.Offline(new OfflineCause.UnknownAnalyzer(analyzerId));
+        }
+        if (names.pluginSource().isPresent()) {
+            Optional<PluginSourceKind> kind = PluginSourceKind.ofToken(names.pluginSource().get());
+            if (kind.isEmpty() || names.pluginId().isBlank()) {
+                return new InsertLoad.Offline(new OfflineCause.NoIdentity());
+            }
+            PluginIdentity identity = new PluginIdentity(kind.get(), names.pluginId(), names.pluginVersion());
+            return switch (identity.kind()) {
+                case BUILT_IN -> loadFirstPartyPlugin(elem, identity, insertIndex, strip, project);
+                case JAR, CLAP -> loadResolvedPlugin(elem, identity, insertIndex, strip, project);
+            };
+        }
+        if (!names.effectType().isEmpty()) {
+            return loadBuiltInEffect(elem, names.effectType(), project.getFormat());
+        }
+        return new InsertLoad.Offline(new OfflineCause.NoIdentity());
+    }
+
+    /** A built-in DSP insert from the rack's built-in list: its slot is named for its type (studio ruling R15). */
+    private static InsertLoad loadBuiltInEffect(Element elem, String effectType, AudioFormat format) {
+        InsertEffectType type;
+        try {
+            type = InsertEffectType.valueOf(effectType);
+        } catch (IllegalArgumentException unknown) {
+            return new InsertLoad.Offline(new OfflineCause.UnknownEffectType(effectType));
+        }
+        if (type == InsertEffectType.CLAP_PLUGIN) {
+            return new InsertLoad.Offline(new OfflineCause.NoIdentity());
+        }
+        InsertSlot slot;
+        try {
+            slot = InsertEffectFactory.createSlot(type, format.channels(), format.sampleRate());
+        } catch (IllegalArgumentException formatRejected) {
+            return new InsertLoad.Offline(
+                    new OfflineCause.FormatNotSupported(effectType, format.channels(), format.sampleRate()));
+        }
+        return new InsertLoad.Working(slot, restoreParameters(elem, slot));
+    }
+
+    /**
+     * A first-party plugin insert: resolved from this build's own providers
+     * by its id at every door, never through the resolver (studio ruling
+     * E11); its version is the build's, so a difference logs nothing.
+     */
+    private InsertLoad loadFirstPartyPlugin(Element elem, PluginIdentity identity, int insertIndex,
+                                            UnreadProjectItem.Location strip, DawProject project) {
+        Optional<BuiltInDawPlugin> plugin = BuiltInDawPlugin.createById(identity.id());
+        if (plugin.isEmpty()) {
+            return new InsertLoad.Offline(new OfflineCause.UnknownBuiltInPlugin(identity.id()));
+        }
+        InsertSlot slot;
+        try {
+            slot = new BuiltInPluginGraph(ProcessorRegistry.getInstance()).createSlot(plugin.get(),
+                    new AudioFormatPluginContext(project.getFormat()), project.getMetronome());
+        } catch (RuntimeException | LinkageError failed) {
+            // createSlot disposed the plugin. No first-party plugin rejects a
+            // project's audio format when it is initialized today; one that
+            // does is to be worded with the format cause instead — "built-in
+            // plugin '<id>' cannot run in this project's audio format
+            // (channels <c>, sample rate <r> Hz)" (studio ruling G20).
+            return new InsertLoad.Offline(new OfflineCause.FailedToLoad(identity.kind(), identity.id(),
+                    identity.version(), PluginResolution.FailedToLoad.of(failed).failure()));
+        }
+        return finishPluginInsert(elem, slot, identity, plugin.get().getDescriptor().version(), insertIndex, strip);
+    }
+
+    /**
+     * An external JAR or CLAP plugin insert, through the
+     * {@linkplain #setPluginResolver resolver}: loaded at its saved identity
+     * whatever the installed version (studio ruling E4), which a difference
+     * logs at INFO (E21). Anything the resolver throws but the virtual
+     * machine's own error — a plugin's own code failing as it loads, a
+     * {@link StackOverflowError} included ({@link PluginResolution.FailedToLoad#rethrowIfFatal})
+     * — leaves the insert offline as failed to load (ruling-3 C3, finding
+     * FX2-7); a resolver releases what it built before it throws.
+     */
+    private InsertLoad loadResolvedPlugin(Element elem, PluginIdentity identity, int insertIndex,
+                                          UnreadProjectItem.Location strip, DawProject project) {
+        PluginSourceKind kind = identity.kind();
+        String id = identity.id();
+        String version = identity.version();
+        PluginResolution resolution;
+        try {
+            resolution = pluginResolver.resolve(identity, new AudioFormatPluginContext(project.getFormat()));
+        } catch (Throwable failed) {
+            PluginResolution.FailedToLoad.rethrowIfFatal(failed);
+            return new InsertLoad.Offline(new OfflineCause.FailedToLoad(kind, id, version,
+                    PluginResolution.FailedToLoad.of(failed).failure()));
+        }
+        return switch (resolution) {
+            case PluginResolution.Resolved resolved -> loadPlugin(elem, identity, resolved.loaded(), insertIndex, strip);
+            case PluginResolution.NotInstalled _ ->
+                    new InsertLoad.Offline(new OfflineCause.NotInstalled(kind, id, version));
+            case PluginResolution.InstalledAsOtherKind other ->
+                    new InsertLoad.Offline(new OfflineCause.InstalledAsOtherKind(kind, id, version,
+                            other.installedKind()));
+            case PluginResolution.MissingAtStartup _ ->
+                    new InsertLoad.Offline(new OfflineCause.MissingAtStartup(kind, id, version));
+            case PluginResolution.NotLoadedBySnapshotRestore _ ->
+                    new InsertLoad.Offline(new OfflineCause.NotLoadedBySnapshotRestore(kind, id, version));
+            case PluginResolution.FailedToLoad failed ->
+                    new InsertLoad.Offline(new OfflineCause.FailedToLoad(kind, id, version, failed.failure()));
+        };
+    }
+
+    /**
+     * Puts a resolved plugin in a slot, activates it and gives it what its
+     * file saved; logs at INFO when it opens with another version than the
+     * one saved (E21). Whatever the plugin's own code throws disposes it
+     * first; then anything but the virtual machine's own error — a
+     * {@link StackOverflowError} included — leaves the insert offline as
+     * failed to load (ruling-3 C3, finding FX2-7), and the virtual machine's
+     * own error propagates.
+     */
+    private InsertLoad loadPlugin(Element elem, PluginIdentity identity, LoadedPlugin loaded, int insertIndex,
+                                  UnreadProjectItem.Location strip) {
+        DawPlugin plugin = loaded.plugin();
+        String installedVersion;
+        Optional<InsertSlot> created;
+        try {
+            installedVersion = plugin.getDescriptor().version();
+            created = InsertEffectFactory.createSlotFromPlugin(plugin);
+            if (created.isPresent()) {
+                plugin.activate();
+            }
+        } catch (Throwable failed) {
+            disposeQuietly(loaded.disposal());
+            PluginResolution.FailedToLoad.rethrowIfFatal(failed);
+            return new InsertLoad.Offline(new OfflineCause.FailedToLoad(identity.kind(), identity.id(),
+                    identity.version(), PluginResolution.FailedToLoad.of(failed).failure()));
+        }
+        if (created.isEmpty()) {
+            disposeQuietly(loaded.disposal());
+            // Studio ruling G12: no exception was thrown, so none is named.
+            return new InsertLoad.Offline(new OfflineCause.FailedToLoad(identity.kind(), identity.id(),
+                    identity.version(), "the installed version " + installedVersion + " has no audio processor"));
+        }
+        InsertSlot slot = created.get();
+        slot.setDisposal(loaded.disposal());
+        InsertLoad load = finishPluginInsert(elem, slot, identity, installedVersion, insertIndex, strip);
+        if (load instanceof InsertLoad.Working && !installedVersion.equals(identity.version())) {
+            LOG.log(Level.INFO, strip.describe() + ": insert " + (insertIndex + 1) + " '"
+                    + UnreadProjectItem.logText(slot.getName()) + "' " + identity.kind().displayName()
+                    + " plugin '" + UnreadProjectItem.logText(identity.id()) + "' was saved with version '"
+                    + UnreadProjectItem.logText(identity.version()) + "' and opens with installed version "
+                    + installedVersion);
+        }
+        return load;
+    }
+
+    /**
+     * Gives a loaded plugin insert what its file saved: a CLAP plugin its
+     * state (a state the plugin does not take leaves the insert offline —
+     * never a plugin at its defaults, studio ruling E4), then the parameters
+     * (§3.3); last, it asks the plugin once for its latency (ruling-4 Q8), so
+     * the plugin is asked in the state the delay compensation will find it
+     * in. A plugin that fails at any of these steps is disposed first,
+     * whatever it threw; then anything but the virtual machine's own error —
+     * a {@link StackOverflowError} included (ruling-3 C3, finding FX2-7) —
+     * leaves the insert offline as failed to load, and the virtual machine's
+     * own error propagates. A latency query that throws names the call:
+     * "{@code <exception> when asked for its latency}"; a plugin that cannot
+     * state its latency cannot be compensated. The answer is not kept: the
+     * compensation asks the plugin itself (E1). A {@code <plugin-state>} the
+     * plugin takes no state from is content no writer produces: logged and
+     * dropped.
+     */
+    private InsertLoad finishPluginInsert(Element elem, InsertSlot slot, PluginIdentity identity,
+                                          String installedVersion, int insertIndex,
+                                          UnreadProjectItem.Location strip) {
+        List<Element> states = getDirectChildElements(elem, "plugin-state");
+        int unreadStates = states.size();
+        if (identity.kind() == PluginSourceKind.CLAP && !states.isEmpty()) {
+            Optional<OfflineCause> notTaken;
+            try {
+                notTaken = loadPluginState(states.getFirst(), slot, identity, installedVersion);
+            } catch (Throwable fatal) {
+                // Only the virtual machine's own error leaves loadPluginState.
+                disposeQuietly(slot::disposeAfterQuiescence);
+                throw fatal;
+            }
+            if (notTaken.isPresent()) {
+                disposeQuietly(slot::disposeAfterQuiescence);
+                return new InsertLoad.Offline(notTaken.get());
+            }
+            unreadStates--;
+        }
+        List<String> adjustments;
+        try {
+            adjustments = restoreParameters(elem, slot);
+        } catch (Throwable failed) {
+            disposeQuietly(slot::disposeAfterQuiescence);
+            PluginResolution.FailedToLoad.rethrowIfFatal(failed);
+            return new InsertLoad.Offline(new OfflineCause.FailedToLoad(identity.kind(), identity.id(),
+                    identity.version(), PluginResolution.FailedToLoad.of(failed).failure()));
+        }
+        try {
+            slot.getProcessor().getLatencySamples();
+        } catch (Throwable failed) {
+            disposeQuietly(slot::disposeAfterQuiescence);
+            PluginResolution.FailedToLoad.rethrowIfFatal(failed);
+            return new InsertLoad.Offline(new OfflineCause.FailedToLoad(identity.kind(), identity.id(),
+                    identity.version(), PluginResolution.FailedToLoad.of(failed).failure() + LATENCY_QUERY_FAILED));
+        }
+        dropContent(strip.describe() + ": insert " + (insertIndex + 1), unreadStates, false);
+        return new InsertLoad.Working(slot, adjustments);
+    }
+
+    /** What a failure to load names after the exception when the plugin's latency query threw (ruling-4 Q8). */
+    private static final String LATENCY_QUERY_FAILED = " when asked for its latency";
+
+    /**
+     * Loads a CLAP plugin's saved state ({@code <plugin-state>}, Base64 text)
+     * into it and remembers it on the slot. What the plugin throws as it
+     * loads the state — a {@link StackOverflowError} included — is a state it
+     * did not take; the virtual machine's own error propagates
+     * ({@link PluginResolution.FailedToLoad#rethrowIfFatal}).
+     *
+     * @return why the plugin did not take it, or empty when it did (or the state is empty)
+     */
+    private static Optional<OfflineCause> loadPluginState(Element stateElem, InsertSlot slot, PluginIdentity identity,
+                                                          String installedVersion) {
+        byte[] state;
+        try {
+            state = Base64.getDecoder().decode(stateElem.getTextContent().strip());
+        } catch (IllegalArgumentException notBase64) {
+            // File damage: the plugin is never given it (studio ruling G7).
+            return Optional.of(new OfflineCause.StateUnreadable(identity.kind(), identity.id(), identity.version()));
+        }
+        if (state.length == 0) {
+            return Optional.empty();
+        }
+        if (!(slot.getPlugin() instanceof ExternalPluginHost host)) {
+            return Optional.of(new OfflineCause.StateRejected(identity.kind(), identity.id(), identity.version(),
+                    installedVersion, ""));
+        }
+        try {
+            host.loadState(state);
+        } catch (PluginStateRejectedException rejected) {
+            return Optional.of(new OfflineCause.StateRejected(identity.kind(), identity.id(), identity.version(),
+                    installedVersion, ""));
+        } catch (Throwable failed) {
+            PluginResolution.FailedToLoad.rethrowIfFatal(failed);
+            return Optional.of(new OfflineCause.StateRejected(identity.kind(), identity.id(), identity.version(),
+                    installedVersion, PluginResolution.FailedToLoad.of(failed).failure()));
+        }
+        slot.rememberPluginState(state);
+        return Optional.empty();
+    }
+
+    /**
+     * Runs the disposal of a plugin no channel holds; what the plugin's own
+     * disposal throws is logged at FINE — all but the virtual machine's own
+     * error ({@link PluginResolution.FailedToLoad#rethrowIfFatal}), which
+     * propagates.
+     */
+    private static void disposeQuietly(Runnable disposal) {
+        try {
+            disposal.run();
+        } catch (Throwable failed) {
+            PluginResolution.FailedToLoad.rethrowIfFatal(failed);
+            LOG.log(Level.FINE, "Disposing a plugin the open did not keep failed", failed);
+        }
+    }
+
+    /**
+     * Applies the {@code <parameter>} children of a working insert, in
+     * document order, and returns the detail of each one it could not apply
+     * as saved — an {@link UnreadProjectItem.Kind#INSERT_PARAMETER_ADJUSTED}
+     * item each; the parameters after it are still applied (studio rulings
+     * E6 (e)-(g), E12 R6-R12). A named parameter goes through the
+     * processor's {@code @ProcessorParam} accessors
+     * ({@link ReflectivePresetSerializer#restoreEach}); an id-keyed one
+     * through the effect's parameter handler for a built-in DSP insert, and
+     * through the slot's parameter store for a plugin, applied to the plugin
+     * now ({@link InsertSlot#applyParameterNow}, studio ruling G3). "{@code <v>
+     * is used}" names the value the parameter holds after the open.
+     *
+     * @throws IllegalStateException when a built-in effect's setter fails
+     *                               other than by refusing its value (a build
+     *                               defect); a plugin's failure propagates as
+     *                               it was thrown
+     */
+    private static List<String> restoreParameters(Element elem, InsertSlot slot) {
+        List<Element> parameterElements = getDirectChildElements(elem, "parameter");
+        if (parameterElements.isEmpty()) {
+            return List.of();
+        }
+        AudioProcessor processor = slot.getProcessor();
+        Map<String, Double> namedValues = ReflectivePresetSerializer.isSupported(processor)
+                ? ReflectivePresetSerializer.snapshot(processor) : Map.of();
+        // A built-in DSP insert holds no plugin; every slot with a plugin
+        // keeps its id-keyed values in its parameter store.
+        InsertEffectType builtInType = slot.getPlugin() == null ? slot.getEffectType() : null;
+        Map<Integer, Double> builtInValues = builtInType == null
+                ? Map.of() : InsertEffectFactory.getParameterValues(builtInType, processor);
+        BiConsumer<Integer, Double> builtInHandler = builtInType == null
+                ? null : InsertEffectFactory.createParameterHandler(builtInType, processor);
+        PluginParameterStore store = slot.getParameterStore();
+        Set<String> names = new HashSet<>();
+        Set<Integer> ids = new HashSet<>();
+        List<String> adjustments = new ArrayList<>();
+        for (Element parameter : parameterElements) {
+            String name = parameter.getAttribute("name");
+            String rawId = parameter.getAttribute("id");
+            String rawValue = parameter.getAttribute("value");
+            String quotedValue = " value '" + UnreadProjectItem.logText(rawValue) + "'";
+            if (!name.isEmpty()) {
+                String subject = "parameter '" + UnreadProjectItem.logText(name) + "'" + quotedValue;
+                Double inForce = namedValues.get(name);
+                OptionalDouble value = finiteNumber(rawValue);
+                if (!names.add(name)) {
+                    adjustments.add(subject + REPEATS_AN_EARLIER_PARAMETER);
+                } else if (inForce == null) {
+                    adjustments.add(subject + NOT_A_PARAMETER_OF_THIS_INSERT);
+                } else if (value.isEmpty()) {
+                    adjustments.add(subject + " is not a finite number; " + inForce + " is used");
+                } else {
+                    SequencedMap<String, Double> saved = new LinkedHashMap<>();
+                    saved.put(name, value.getAsDouble());
+                    switch (ReflectivePresetSerializer.restoreEach(processor, saved).getFirst()) {
+                        case ParameterRestore.Applied _ -> { }
+                        case ParameterRestore.Clamped clamped -> adjustments.add(subject + " is outside "
+                                + clamped.min() + "–" + clamped.max() + "; " + clamped.applied() + " is used");
+                        case ParameterRestore.Rejected rejected ->
+                                adjustments.add(subject + " is rejected by the insert; " + rejected.inForce() + " is used");
+                        case ParameterRestore.Unknown _ -> adjustments.add(subject + NOT_A_PARAMETER_OF_THIS_INSERT);
+                        case ParameterRestore.NotFinite _ ->
+                                adjustments.add(subject + " is not a finite number; " + inForce + " is used");
+                    }
+                }
+                continue;
+            }
+            OptionalInt id = wholeNumberFromZero(rawId);
+            if (id.isEmpty()) {
+                adjustments.add("a parameter with no name or id (value '" + UnreadProjectItem.logText(rawValue)
+                        + "') is not applied");
+                continue;
+            }
+            int parameterId = id.getAsInt();
+            String subject = "parameter id " + parameterId + quotedValue;
+            int storeIndex = builtInType == null ? storeIndexOf(store, parameterId) : -1;
+            Double inForce = builtInType != null ? builtInValues.get(parameterId)
+                    : storeIndex >= 0 ? Double.valueOf(store.value(storeIndex)) : null;
+            OptionalDouble value = finiteNumber(rawValue);
+            if (!ids.add(parameterId)) {
+                adjustments.add(subject + REPEATS_AN_EARLIER_PARAMETER);
+            } else if (inForce == null) {
+                adjustments.add(subject + NOT_A_PARAMETER_OF_THIS_INSERT);
+            } else if (value.isEmpty()) {
+                adjustments.add(subject + " is not a finite number; " + inForce + " is used");
+            } else if (builtInHandler != null) {
+                if (!appliedByTheEffect(builtInHandler, parameterId, value.getAsDouble())) {
+                    adjustments.add(subject + " is rejected by the insert; "
+                            + InsertEffectFactory.getParameterValues(builtInType, processor).get(parameterId)
+                            + " is used");
+                }
+            } else {
+                PluginParameter declared = store.parameter(storeIndex);
+                double applied = Math.max(declared.minValue(), Math.min(declared.maxValue(), value.getAsDouble()));
+                try {
+                    slot.applyParameterNow(parameterId, applied);
+                    if (applied != value.getAsDouble()) {
+                        adjustments.add(subject + " is outside " + declared.minValue() + "–" + declared.maxValue()
+                                + "; " + applied + " is used");
+                    }
+                } catch (IllegalArgumentException refused) {
+                    adjustments.add(subject + " is rejected by the insert; " + store.value(storeIndex) + " is used");
+                }
+            }
+        }
+        return adjustments;
+    }
+
+    private static final String REPEATS_AN_EARLIER_PARAMETER = " repeats an earlier parameter; it is not applied";
+    private static final String NOT_A_PARAMETER_OF_THIS_INSERT = " is not a parameter of this insert; it is not applied";
+
+    /**
+     * Applies an id-keyed value through a built-in effect's parameter
+     * handler. The handler of an annotated processor wraps what the setter
+     * throws in an {@link IllegalStateException} whose cause is an
+     * {@link InvocationTargetException}: a refusal like an
+     * {@link IllegalArgumentException}.
+     *
+     * @return {@code false} when the effect refused the value
+     */
+    private static boolean appliedByTheEffect(BiConsumer<Integer, Double> handler, int parameterId, double value) {
+        try {
+            handler.accept(parameterId, value);
+            return true;
+        } catch (IllegalArgumentException refused) {
+            return false;
+        } catch (IllegalStateException failed) {
+            if (failed.getCause() instanceof InvocationTargetException) {
+                return false;
+            }
+            throw failed;
+        }
+    }
+
+    /** The store index of {@code parameterId}, or {@code -1} when the store has no such parameter. */
+    private static int storeIndexOf(PluginParameterStore store, int parameterId) {
+        for (int index = 0; index < store.parameterCount(); index++) {
+            if (store.parameterIdAt(index) == parameterId) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    /** {@code raw} as a whole number &ge; 0, or empty. */
+    private static OptionalInt wholeNumberFromZero(String raw) {
+        try {
+            int value = Integer.parseInt(raw.strip());
+            return value >= 0 ? OptionalInt.of(value) : OptionalInt.empty();
+        } catch (NumberFormatException notANumber) {
+            return OptionalInt.empty();
+        }
+    }
+
+    /**
+     * Adds a working insert to its channel with its saved flags: the stored
+     * bypass decision, the expensive flag and the sidechain source. A
+     * {@code sidechain-source} that names no strip of the project is removed
+     * and reported: the insert detects on its own input (studio ruling E12
+     * R14).
+     */
+    private void addWorkingInsert(InsertNames names, InsertLoad.Working working, int insertIndex,
+                                  MixerChannel channel, UnreadProjectItem.Location strip, DawProject project) {
+        InsertSlot slot = working.slot();
+        if (names.bypassed()) {
+            slot.setBypassed(true);
+        }
+        applyExpensive(slot, names.expensive());
+        for (String adjustment : working.adjustments()) {
+            reportUnread(UnreadProjectItem.atInsert(UnreadProjectItem.Kind.INSERT_PARAMETER_ADJUSTED, strip,
+                    insertIndex, slot.getName(), adjustment));
+        }
+        if (!names.sidechainKey().isEmpty()) {
+            MixerChannel source = resolveSidechainSource(names.sidechainKey(), project.getMixer());
+            if (source != null) {
+                slot.setSidechainSource(source);
+            } else {
+                reportUnread(new UnreadProjectItem(UnreadProjectItem.Kind.MIXER_REFERENCE_REMOVED, strip, insertIndex,
+                        "insert " + (insertIndex + 1) + " '" + UnreadProjectItem.logText(slot.getName())
+                                + "' sidechain-source '" + UnreadProjectItem.logText(names.sidechainKey())
+                                + "' names no strip in this project; the insert detects on its own input", 1));
+            }
+        }
+        channel.addInsert(slot);
+    }
+
+    /**
+     * Adds an insert the open could not load to its channel, at its place:
+     * offline, passing audio through, holding its element as saved for the
+     * next save (Persistence Integrity book §4.5). Its child content no
+     * writer produces is logged first; its sidechain key resolves like any
+     * slot's and is never reported (studio ruling E1); then its line — an
+     * unknown analyzer is logged only, every other cause is counted.
+     */
+    private void addOfflineInsert(Element elem, InsertNames names, OfflineCause cause, int insertIndex,
+                                  MixerChannel channel, UnreadProjectItem.Location strip, DawProject project) {
+        List<SavedInsertChild> children = new ArrayList<>();
+        List<Element> parameters = getDirectChildElements(elem, "parameter");
+        for (Element parameter : parameters) {
+            children.add(new SavedInsertChild(SavedInsertChild.Tag.PARAMETER, savedAttributes(parameter), ""));
+        }
+        List<Element> states = getDirectChildElements(elem, "plugin-state");
+        for (Element state : states) {
+            children.add(new SavedInsertChild(SavedInsertChild.Tag.PLUGIN_STATE, savedAttributes(state),
+                    state.getTextContent()));
+        }
+        dropUnwrittenContent(strip.describe() + ": insert " + (insertIndex + 1), elem,
+                parameters.size() + states.size());
+        SavedInsert saved = new SavedInsert(savedAttributes(elem), children);
+        MixerChannel sidechain = names.sidechainKey().isEmpty()
+                ? null : resolveSidechainSource(names.sidechainKey(), project.getMixer());
+        String label = names.label(insertIndex);
+        InsertSlot slot = InsertSlot.ofOffline(label, project.getFormat().channels(),
+                new OfflineInsert(cause, saved, sidechain != null));
+        slot.setBypassed(names.bypassed());
+        applyExpensive(slot, names.expensive());
+        slot.setSidechainSource(sidechain);
+        if (cause instanceof OfflineCause.UnknownAnalyzer unknown) {
+            AnalyzerInsertPersistence.logUnknown(strip, insertIndex, label, unknown.analyzerId());
+        } else {
+            reportUnread(UnreadProjectItem.atInsert(UnreadProjectItem.Kind.INSERT_NOT_LOADED, strip, insertIndex,
+                    label, OfflineInsertDetails.detail(cause)));
+        }
+        channel.addInsert(slot);
+    }
+
+    /** Applies a saved {@code expensive} flag (story 129); an absent one keeps the slot's default. */
+    private static void applyExpensive(InsertSlot slot, String expensive) {
+        if (!expensive.isEmpty()) {
+            slot.setExpensive(Boolean.parseBoolean(expensive));
+        }
     }
 
     private MixerChannel resolveSidechainSource(String ref, Mixer mixer) {

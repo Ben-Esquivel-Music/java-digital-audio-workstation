@@ -108,11 +108,11 @@ package finds **zero** references to `getMidiClip`, `getTakeComping`, `getTakeGr
   pre/post-roll attributes (`ProjectSerializer.java:252-254`); no `pre-roll` token exists anywhere
   in the deserializer.
 - **The tempo map cannot be expressed.** `Transport` is backed by a full `TempoMap`
-  (`Transport.java:74`) that the timeline ruler already consults (`TimelineRulerModel.java:58`), but
+  (`Transport.java:74`, stale at 334) that the timeline ruler already consults (`TimelineRulerModel.java:58`), but
   the format serializes exactly one beat-0 tempo and time signature (`ProjectSerializer.java:235`
-  onward). Tempo or meter changes are unrepresentable end to end.
+  onward, stale at 334). Tempo or meter changes are unrepresentable end to end.
 - **Take stacks and comping are never persisted.** Tracks own `TakeComping` and a take-group map
-  (`Track.java:98-99`); loop recording populates them (`RecordingPipeline.java:294`) and the comp
+  (`Track.java:98-99`, stale at 334); loop recording populates them (`RecordingPipeline.java:294`) and the comp
   tool consumes them in production — yet the serializer emits no take-lane, take-group, or
   comp-region element of any kind (the only `take` token is the `takes-folded` fold-state attribute,
   `ProjectSerializer.java:292`).
@@ -451,19 +451,42 @@ against permanently.
     PreRollPostRollControlsTest                 │                  │                │                         │
   Loop region + punch region                    │ yes              │ yes            │ OK — keep               │ —
   Tempo + time signature (beat 0)               │ yes              │ yes            │ OK — keep               │ —
-  TEMPO MAP (tempo/meter change lists)          │ NO — format      │ NO             │ BROKEN: inexpressible   │ 334
-                                                │ cannot express   │                │                         │
+  TEMPO MAP (tempo/meter change lists):         │ yes (<tempo-     │ yes            │ OK — restored (334); an │ 334
+    ProjectSerializer.buildTransport,           │ change>,         │                │ unusable entry or a     │
+    ProjectDeserializer.parseTransport;         │ <meter-change>   │                │ beat-0 attribute is     │
+    TempoMapPersistenceTest                     │ after beat 0)    │                │ skipped and reported    │
   Automation breakpoints                        │ yes              │ yes            │ OK — keep               │ —
-  Built-in insert slots + parameters            │ yes (reflective  │ yes            │ OK — keep               │ —
-                                                │ snapshot)        │                │                         │
-  Plugin-backed inserts (external JAR / CLAP)   │ type-less stub   │ NO — dropped,  │ BROKEN: chain corrupts  │ 334
-                                                │ (name only)      │ chain shifts   │                         │
-  Take stacks + comp selections (TakeComping,   │ NO               │ NO             │ BROKEN: takes lost      │ 334
-    takeGroups)                                 │                  │                │                         │
-  Recorded-clip segment list (multi-segment     │ first segment    │ n/a            │ BROKEN: capture side    │ Book 2
-    takes)                                      │ only, temp path  │                │ owned by story 323      │ (323)
-  Installed third-party plugin registry         │ NO (in-memory    │ NO             │ BROKEN: app-scoped,     │ 334
-    (app-level, not per-project)                │ only)            │                │ forgets on restart      │
+  Built-in insert slots + parameters:           │ yes (reflective  │ yes            │ OK — keep; a type this  │ 334
+    ProjectSerializer.buildMixerChannelElement, │ snapshot)        │                │ build does not know or  │
+    ProjectDeserializer.parseInsertSlot;        │                  │                │ cannot run in the       │
+    OfflineInsertPersistenceTest,               │                  │                │ project's format stays  │
+    InsertParameterRestoreTest                  │                  │                │ in place offline; a     │
+                                                │                  │                │ rejected, clamped or    │
+                                                │                  │                │ unknown parameter is    │
+                                                │                  │                │ reported (334)          │
+  Plugin-backed inserts (first-party, external  │ yes (descriptor: │ yes, by id     │ OK — restored (334); an │ 334
+    JAR, CLAP):                                 │ plugin-source,   │ (JAR: through  │ unresolvable insert     │
+    ProjectSerializer.buildMixerChannelElement, │ -id, -version;   │ the installed- │ stays in place offline, │
+    ProjectDeserializer.parseInsertSlot;        │ parameters or    │ plugin         │ passes audio through    │
+    PluginInsertDescriptorPersistenceTest,      │ plugin-state)    │ registry);     │ and is written back as  │
+    MixedInsertChainPersistenceTest,            │                  │ CLAP offline   │ saved                   │
+    OfflinePluginInsertReopenTest               │                  │ until 034      │                         │
+  Take stacks + comp selections (TakeComping,   │ yes (<takes>,    │ yes (comp      │ OK — restored (334); an │ 334
+    take lanes and comp regions):               │ comp-output)     │ output         │ unusable comp region is │
+    ProjectSerializer.buildTrackElement,        │                  │ adopted, never │ skipped and reported    │
+    ProjectDeserializer.parseTrack;             │                  │ recompiled)    │                         │
+    TakeStackPersistenceTest,                   │                  │                │                         │
+    LoopRecordedTakeStackReopenTest             │                  │                │                         │
+  Recorded-clip segment list (multi-segment     │ yes (<source-    │ yes            │ OK — restored (323)     │ Book 2
+    takes)                                      │ segment>,        │                │                         │ (323)
+                                                │ project-         │                │                         │
+                                                │ relative)        │                │                         │
+  Installed third-party plugin registry         │ yes (~/.daw/     │ yes, at        │ OK — restored (334); an │ 334
+    (app-level, not per-project):               │ plugin-          │ startup        │ entry whose file fails  │
+    InstalledPluginStore,                       │ registry.json,   │                │ stays listed as Missing │
+    PluginRegistry.restore;                     │ atomic)          │                │                         │
+    InstalledPluginStoreTest,                   │                  │                │                         │
+    PluginRegistryRestartTest                   │                  │                │                         │
   Mixer channel volume/pan/sends, VCA groups,   │ yes              │ yes            │ OK for valid data —     │ 367
     cue buses (id-keyed references: track       │                  │                │ keep (control truth:    │
     identity row)                               │                  │                │ Book 1, 322); damaged   │
@@ -629,9 +652,41 @@ Story 334's fix for §1.2's dropped inserts:
   **unresolved placeholder slot** in the same chain position: audibly bypassed, visually distinct in
   the rack, carrying the descriptor so a later install or relink restores it losslessly. The chain
   *never* shifts and the slot is *never* silently deleted — the mix topology is data, not a cache.
+- The placeholder's user-facing word is **Offline** (story 334 E22); it is a pass-through at 0
+  latency whatever its stored bypass, keeps its sidechain key, and resolves only when a project is
+  opened (a snapshot restore loads no installed plugin: studio ruling R1, future story 428).
+  First-party plugins persist through the same descriptor (`plugin-source="built-in"`) and resolve
+  by descriptor id among this build's own providers (`BuiltInDawPlugin.createById`), never through a
+  class named in the file.
+- A plugin whose own code throws while its insert opens — a `StackOverflowError` and a checked
+  exception it does not declare included — is disposed and its insert opens as the placeholder,
+  failed to load (a CLAP plugin that throws on its saved state has refused it); only the virtual
+  machine's own error fails the open, after the plugin is disposed.
+  The load's last step asks the slot's processor once for its latency: a plugin whose query throws
+  cannot be compensated, so it opens as the placeholder too, its detail naming the call
+  (`… failed to load (NullPointerException when asked for its latency)`; story 334 ruling 4 Q8; a
+  query that fails mid-session is future story 432). A processor's `@ProcessorParam` setters are
+  bound through the public lookup, which needs no read of a JAR plugin's module: in the
+  application's own launch daw.core is a named module that does not read it.
 - The installed-plugin registry (entries + manifest provenance from the story-303 install flow)
-  persists in the app configuration directory and re-registers at startup. Per-project descriptors +
-  app-level registry together make third-party chains survive both project reopen and restart.
+  persists in `~/.daw/plugin-registry.json` (atomic) and re-registers at startup
+  (`PluginRegistry.restore`); an entry whose file fails then stays listed as Missing, never dropped.
+  The JAR is copied under `~/.daw/plugins/<id>/<version>/` (a rebuild of an installed version goes
+  to `<version>~<n>`); install refuses a manifest whose id/version disagree with the plugin's
+  descriptor. A JAR copy no entry holds is deleted at the first startup that reads the list with no
+  problem and finds no kept copy of it (E20 as story 334's ruling 4 Q7 amended it): a startup that
+  finds a problem with the list keeps a copy of it, `plugin-registry.json.<stamp>.bak`, which may
+  name JAR copies no entry holds any more, so while any such copy is beside the list, the sweep
+  deletes nothing and logs why once (future story 431 lists and restores the copies).
+  Per-project descriptors + app-level registry together make third-party chains survive both
+  project reopen and restart.
+- A read constructs plugins (first-party ones at every door, third-party ones wherever it resolves
+  through the registry), so a project read that is never installed releases them
+  (`ProjectDeserializer.disposeUnopened`): a parse that fails after building inserts, and in daw-app
+  the gated open's exit without an install, the archive restore's and the journal replay's
+  intermediate project, the recovery gate's replay, a snapshot restore that fails before its
+  install, and a snapshot compare (story 334). An installed project's plugins are never released
+  this way.
 - *Rejected — jar path as identity:* paths break on machine moves (§3.3); identity is the
   manifest id the install flow already validates.
 - *Rejected — refusing to load a project with unresolvable plugins:* punishes collaboration and
@@ -649,8 +704,8 @@ open unchanged:
 - **Transport**: pre/post-roll restore joins the existing loop/punch parsing; the tempo map
   serializes its full tempo-change and meter-change lists (position, value, transition type), the
   single beat-0 attributes retained as the backward-compatible degenerate case.
-- **Takes**: per-track take lanes, take groups, and comp selections serialize alongside clips,
-  referencing takes by id so the comping surface reopens exactly as left. Segment-file durability
+- **Takes**: per-track take lanes and comp regions serialize alongside clips, comp regions
+  referencing lanes by id, so the comping surface reopens exactly as left. Segment-file durability
   for the referenced audio is story 323's output (Book 2); 334's schema stores the ordered file list
   the capture side finalises.
 
@@ -724,7 +779,7 @@ state → save → close → reopen → assert. The reviewer's question for any 
 | MIDI | Piano-roll notes, CC lanes, per-track MIDI effect chains identical |
 | Transport | Tempo map (all changes), time signatures, loop, punch, pre/post-roll identical |
 | Mixer | Insert chains identical in content **and order**, including plugin-backed slots (resolved or placeholder) |
-| Takes | Take lanes, groups, comp selections identical; comp tool resumes where it left off |
+| Takes | Take lanes and comp selections identical; comp output adopted; comp tool resumes where it left off |
 | App level | Installed plugin registry survives restart; project opens on another machine when the folder travels (§3.3) |
 
 ### 5.2 The write contract
@@ -918,10 +973,17 @@ An open that could not honour everything its file saved gets the same protection
 §9.4): a **degraded-open backup**, `project.daw.degraded.<UTC stamp>[-n].bak`, next to the
 pre-migration one. `ProjectManager.openProject` arms it once per load when
 `ProjectDeserializer.losesSavedContent()` says the next save would drop saved content — a skipped
-MIDI note, CC lane or CC event, an adjusted arpeggiator setting, a removed mixer assignment, a
-malformed or duplicate track id replaced by a fresh one, a placeholder MIDI effect's dropped child
-elements or text, or a skipped VCA group whose id repeats an earlier group's — and the first save
-writes it before `project.daw` is overwritten (story 330). An open that is also a migration writes
+MIDI note, CC lane or CC event, an adjusted arpeggiator setting, a removed mixer assignment (since
+story 334 also a working insert's `sidechain-source` that names no strip), a malformed or duplicate
+track id replaced by a fresh one, a placeholder MIDI effect's dropped child elements or text, a
+skipped VCA group whose id repeats an earlier group's, and, since story 334, a skipped tempo or
+meter change, a skipped comp region, a skipped ninth insert, an adjusted insert parameter, a
+malformed or repeated take id, an offline insert's dropped child content, or a plugin state on an
+insert whose plugin takes none — and the first save writes it before `project.daw` is overwritten
+(story 330). An offline insert written back as saved arms nothing, and neither does an unknown
+analyzer (kept offline and logged only), a redundant beat-0 tempo or meter entry, a missing take
+id, a comp-output mark on a track without takes, or a plugin version that differs from the saved
+one (an INFO line only). An open that is also a migration writes
 one backup, the `v<from>` one. The degraded backup is never shown as a migration: the Migration
 History view, the hub's migrated badge and the roll-back match only `v<n>` names. The file-level
 rules are in `docs/project-migrations.md`, "The Degraded-Open Backup".
@@ -1089,7 +1151,7 @@ gets its safe close primitive.
 ### Stage 6 — Full-State Persistence: Plugin Inserts, Take Stacks, Tempo Map (story 334)
 
 **Scope.** The §4.5 plugin-slot descriptor + unresolved placeholder (chain order inviolate);
-app-level installed-plugin registry persistence; §4.6 take lanes / groups / comp selections; the
+app-level installed-plugin registry persistence; §4.6 take lanes and comp regions; the
 tempo-map schema. All additions extend the Stage-2 parity harness in the same PRs. Registry
 persistence closes the flagged gap from **story 303** (landed with a truthful no-persistence notice
 — the notice comes out when the gap closes). Take-stack audio durability depends on Book 2's
@@ -1175,8 +1237,8 @@ Where each construct in this book attaches to today's tree.
 | Clip rehydrator (§4.3) | absent — `ProjectDeserializer.java:539` path-only clips; consumers `RenderPipeline.java:894-895`, `:1069`, `ClipOverlayRenderer.java:152`; `AudioClip.java:327` never load-called | new load-side service in the open pipeline (329) |
 | Missing-assets surface (§4.3) | collected at `ProjectDeserializer.java:532`, `:535`; accessor `:133` test-only; unconditional success `ProjectLifecycleController.java:866` | report + relink UI; qualified open outcome (329) |
 | Parity harness (§4.4) | landed in 330, all `daw-core` tests in `persistence`: `ProjectSchemaParityContractTest` (every written element path, attribute and text is read and every name the reader asks for is written; source-derived guards over the writer and reader files; `FaultInjection` hides one item per read idiom — `midi-effect-chain`, `midi-effect@plugin-id`, `transport@pre-roll-bars`, `@pre-roll-enabled`, `@punch-start-frames`, `midi-clip`, `midi-clip/notes/note`, `track@id`, `metadata/name#text` — and the report names it; `everyLegacyInputIsReadWhenPresentAndNeverWritten` pins the schema-1 names still read and never written: `send@mode` and `midi-effect@class`); `ProjectRoundTripInventoryTest` (the `full` inventory project saved and reopened through `ProjectSerializer`/`ProjectDeserializer` and through `ProjectManager`, compared fact by fact per §3.1 row; every family variant's audio format round-trips); helpers `XmlSchemaParity`, `DomReadRecorder`, `PersistenceSourceScan` | every later schema stage adds its items and assertions in the same PR (334) |
-| Plugin-slot descriptor (§4.5) | `InsertEffectFactory.java:86-107` null types; `ProjectSerializer.java:510-512` guard; `ProjectDeserializer.java:893-902` drop; `PluginRegistry.java:25-37` in-memory registry | descriptor + placeholder + persisted registry (334) |
-| Tempo-map / take schema (§4.6) | `Transport.java:74` map unserialized (`ProjectSerializer.java:235`); `Track.java:98-99` takes unserialized; ruler already map-driven `TimelineRulerModel.java:58` | schema additions under migration registry (334) |
+| Plugin-slot descriptor (§4.5) | landed in 334: `ProjectSerializer.writePluginDescriptor` writes `plugin-source`, `plugin-id` and `plugin-version` with the parameters or a CLAP `<plugin-state>`, and `writeOfflineInsert` writes an offline insert back as saved; `ProjectDeserializer.parseInsertSlot` resolves a first-party plugin by `BuiltInDawPlugin.createById` and a JAR or CLAP descriptor through the injected `PluginResolver` (`ProjectManager.setPluginResolver`), and keeps an insert it cannot load in place as `InsertSlot.ofOffline` (a `PassThroughProcessor` slot whose `OfflineInsert` holds the cause and the saved element); `PluginRegistry` over `InstalledPluginStore` is the persisted registry and the open's resolver, and `PluginRegistry.withoutLoading()` the snapshot door's lookup | an offline insert loads in place once its plugin is installed (418); a snapshot restore loads installed plugins off the FX thread (428); Manage Plugins lists and restores the kept copies of the plugin list (431); a latency query that fails mid-session is faulted like a process fault (432); CLAP descriptors open offline until story 034 resolves a CLAP id |
+| Tempo-map / take schema (§4.6) | landed in 334 (schema 3): `ProjectSerializer.buildTempoMap` writes `<tempo-change>` and `<meter-change>` after beat 0 and `ProjectDeserializer.parseTransport` reads them; `ProjectSerializer.buildTakes` writes `<takes>` (take lanes with their clips, comp regions by take id) and `buildTrackElement` marks comp output (`clip@comp-output`); `ProjectDeserializer.parseTakes` restores the lanes and regions, and `adoptSavedCompOutput` adopts the marked clips (`TakeComping.adoptCompOutput`) without recompiling | playback, metronome, capture and punch follow the tempo map (425); the ruler draws bars from the meter map (426); a tempo track authors changes (427) |
 | Recovery gate (§4.7) | Welcome-only `ProjectLifecycleController.java:1248`; staleness gate `ProjectHealthScanner.java:173-178` + `ProjectLockManager.java:65`; rotation hazard `ProjectJournalCoordinator.java:358-372`; dark default `SettingsModel.java:78`, `ProjectJournalCoordinator.java:185-191` | gate inside `loadProjectFromPath` before journal open; seal-based detection; default ON (332) |
 | Exit coordinator (§4.8) | landed in 333: `ExitCoordinator` in daw-app `ui` — the primary stage's close-request filter, File ▸ Exit, File ▸ Close Project and the close-then-continue primitive ask it, and `Application.stop()` runs its application-stop fallback (§4.8's note); the tail is `ProjectFolderCloser` and DISPOSE is `MainController.disposeWindowLifetime()`; the closing checkpoint is `CheckpointOrigin.CLOSING`; `ProjectManager.closeProject()` saves nothing and retires the lease after the owed work; Save As is `SaveAsFlow`, and the stolen-lock path is the “Project Taken Over” dialog (`ProjectClosePrompts`); `LockStolenException`'s Javadoc and `LockStatusIndicator`'s tooltip describe what is built | the maturity rule's demolition: story 387 plus an Undo Close toast (§5.4's record); the close-then-continue primitive's first caller: future story 405, project workspaces and the workspace switcher (Project Manager book §3.1); story 333's other known limits, each with its owner, in its Resolution |
 | Retention unification (§4.8) | index seeding landed in 331: `CheckpointManager.start` seeds the index from `checkpoints/` (only names `CheckpointFileName.parse` accepts), and the prune counts and deletes across sessions; still today: no-op policy (`applyRetentionPolicy`, with no policy set), orphan setter (`setRetentionPolicy`, no production caller); ghost directory `BackupRetentionController.java:94-95`, `:127-129`; rows `SettingsDialog.java:146` | policy delivered to the real directory, counting only checkpoints and keeping 331's prune exemption (335) |

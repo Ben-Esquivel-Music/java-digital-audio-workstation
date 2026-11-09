@@ -341,10 +341,10 @@ class TrackControlBinderStripTest {
                 assertThat(rig.strip.insertsProperty()).isEmpty();
                 rig.channel.addInsert(new InsertSlot("Comp", new Passthrough()));
                 assertThat(rig.strip.insertsProperty())
-                        .containsExactly(new InsertSlotModel("Comp", true, false));
+                        .containsExactly(new InsertSlotModel("Comp", true, false, false, "Comp"));
                 rig.channel.setInsertBypassed(0, true);
                 assertThat(rig.strip.insertsProperty())
-                        .containsExactly(new InsertSlotModel("Comp", false, true));
+                        .containsExactly(new InsertSlotModel("Comp", false, true, false, "Comp"));
             } finally {
                 rig.close();
             }

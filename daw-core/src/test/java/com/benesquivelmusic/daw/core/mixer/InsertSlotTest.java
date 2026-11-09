@@ -4,6 +4,11 @@ import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.SequencedMap;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -28,6 +33,32 @@ class InsertSlotTest {
 
         slot.setBypassed(false);
         assertThat(slot.isBypassed()).isFalse();
+    }
+
+    @Test
+    void anOfflineSlotPassesThroughAndExposesItsSavedElement() {
+        SequencedMap<String, String> attributes = new LinkedHashMap<>();
+        attributes.put("effect-type", "NOT_A_TYPE");
+        attributes.put("name", "Old FX");
+        SavedInsert saved = new SavedInsert(attributes, List.of(new SavedInsertChild(
+                SavedInsertChild.Tag.PARAMETER, new LinkedHashMap<>(Map.of("id", "3")), "")));
+        OfflineInsert descriptor = new OfflineInsert(new OfflineCause.UnknownEffectType("NOT_A_TYPE"), saved, false);
+
+        InsertSlot slot = InsertSlot.ofOffline("Old FX", 2, descriptor);
+
+        assertThat(slot.offline()).contains(descriptor);
+        assertThat(slot.offline().orElseThrow().saved().attribute("effect-type")).contains("NOT_A_TYPE");
+        assertThat(slot.getProcessor()).isEqualTo(new PassThroughProcessor(2));
+        assertThat(slot.getPlugin()).isNull();
+        assertThat(slot.isInstrument()).isFalse();
+        assertThat(slot.isExpensive()).isFalse();
+        assertThat(slot.getCapabilities().providesSidechainInput()).isFalse();
+        assertThat(slot.getProcessor().getLatencySamples()).isZero();
+        float[][] input = {{0.25f, -0.5f, 1f}, {-0.75f, 0.125f, 0f}};
+        float[][] output = new float[2][3];
+        slot.getProcessor().process(input, output, 3);
+        assertThat(output).as("output equals input").isDeepEqualTo(input);
+        assertThat(new InsertSlot("Compressor", new StubProcessor()).offline()).as("a working slot").isEmpty();
     }
 
     @Test

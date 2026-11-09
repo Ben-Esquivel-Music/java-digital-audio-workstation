@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.mixer;
 
 import com.benesquivelmusic.daw.core.plugin.clap.ClapPluginScanner;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
+import com.benesquivelmusic.daw.sdk.plugin.PluginStateRejectedException;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -219,8 +220,11 @@ class ClapPluginManagerTest {
         ClapInsertEffect effect = new ClapInsertEffect(host);
         InsertSlot slot = new InsertSlot("CLAP Plugin", effect);
 
-        // Not initialized, so load is silently skipped
-        manager.loadPluginState(slot, new byte[]{1, 2, 3});
+        // The state reaches the host, which, not initialized, has no state
+        // support and rejects a non-empty state (story 334, studio ruling E4).
+        assertThatThrownBy(() -> manager.loadPluginState(slot, new byte[]{1, 2, 3}))
+                .isInstanceOf(PluginStateRejectedException.class);
+        manager.loadPluginState(slot, new byte[0]);
     }
 
     @Test

@@ -33,6 +33,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       after a journal was discarded, which no UI path can refuse since
  *       rulings L3 (a) and L4, use the late switch's never-rate-limited
  *       WARNING (ruling L3 (b)).</li>
+ *   <li>Story 334, {@code MainController}: the installed-plugin registry
+ *       persisted in its store and restored at startup, the store's writes
+ *       joining the one exit wait right after the pinned pair, the open
+ *       resolving through the registry and a snapshot's read through its
+ *       lookup only (studio rulings E9 and R1); the one startup notification
+ *       attached once (G19) and the save failure's with no action (G5); and
+ *       a reopened Metronome plugin bound to the engine's metronome right
+ *       after it is built (critique J3).</li>
  * </ul>
  *
  * <p>Comments are stripped before matching; whitespace is collapsed.</p>
@@ -131,6 +139,49 @@ class SourcePinnedWiringTest {
                 .as("and the other overload is that one, with the late switch's own report when it is stopped")
                 .contains("whenNoAppWriteIsPending(name, alreadyDone, refused, switchNow,"
                         + " Optional.of(() -> reportStoppedAfterItsWork(alreadyDone)));");
+    }
+
+    @Test
+    void theInstalledPluginRegistryPersistsIsAwaitedAtExitResolvesOpensAndIsAnnouncedOnce() throws IOException {
+        String code = code(UI.resolve("MainController.java"));
+
+        assertThat(methodBody(code, "private void initialize()"))
+                .as("persisted in ~/.daw, its restore started at once, a failed write shown")
+                .contains("installedPluginStore = new InstalledPluginStore();"
+                        + " installedPluginStore.setSaveFailureListener(_ -> postFx(this::announceRegistrySaveFailure));"
+                        + " pluginRegistry = new PluginRegistry(installedPluginStore); pluginRegistry.restore();")
+                .as("the list's write joins the one exit wait, right after the pinned pair; opens resolve through"
+                        + " the registry")
+                .contains("projectManager = new ProjectManager(checkpointManager, recentProjectsStore);"
+                        + " registerExitWriteWait(projectManager);"
+                        + " projectManager.alsoAwaitBeforeExit(installedPluginStore);"
+                        + " projectManager.setPluginResolver(pluginRegistry);")
+                .as("a snapshot's read, on the FX thread, looks plugins up and loads none (R1)")
+                .contains("snapshotsController.setPluginResolver(pluginRegistry.withoutLoading());");
+        assertThat(code).as("one registry, one store").containsOnlyOnce("new PluginRegistry(")
+                .containsOnlyOnce("new InstalledPluginStore(");
+
+        String calls = callsIn(UI.resolve("MainController.java"));
+        assertThat(occurrences(calls, "pluginRegistry.restore().thenAccept(")).as("G19: attached once")
+                .isEqualTo(1);
+        assertThat(methodBody(code, "public void setFxDispatcher(FxDispatcher dispatcher)"))
+                .contains("pluginRegistry.restore().thenAccept(report -> FxDispatcher.runOnFx(fxDispatcher,"
+                        + " () -> announceRegistryRestore(report)));");
+        assertThat(methodBody(code, "private void announceRegistryRestore(RestoreReport report)"))
+                .as("one WARNING, with Manage Plugins… (E9, G4)")
+                .contains("missingPluginsMessage(report).ifPresent(message ->"
+                        + " notificationBar.show(NotificationLevel.WARNING, message,"
+                        + " PluginText.text(\"pluginRegistry.startupMissing.action\"), this::onManagePlugins));");
+        assertThat(methodBody(code, "private void announceRegistrySaveFailure()"))
+                .as("one WARNING, no action (G5)")
+                .contains("notificationBar.show(NotificationLevel.WARNING,"
+                        + " PluginText.text(\"pluginRegistry.saveFailed\"));");
+
+        assertThat(methodBody(code, "private void handleProjectRebuild()"))
+                .as("J3: right after the engine's metronome is built, every door that installs a project")
+                .contains("createMetronomeController(Preferences.userNodeForPackage(MainController.class));"
+                        + " bindMetronomePlugins(project, audioEngine.getMetronome());");
+        assertThat(occurrences(calls, "bindMetronomePlugins(")).as("declared and called once").isEqualTo(2);
     }
 
     /** {@code file}'s code: comments stripped, string literals kept, whitespace collapsed. */

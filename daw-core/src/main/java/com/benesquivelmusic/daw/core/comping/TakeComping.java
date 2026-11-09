@@ -90,6 +90,17 @@ import java.util.Set;
  * {@link #compileSelection()}), so a save, an autosave checkpoint, a
  * snapshot or an archive taken mid-audition holds the selected comp, and
  * the audition keeps playing untouched (PR #984 review).</p>
+ *
+ * <p><strong>Persistence</strong> (story 334, studio rulings E8, E14). A
+ * project writer saves every take lane — its id, name, mute flag and clips
+ * ({@link #takeLanesAsSaved()}, {@link #clipsOf(TakeLane)}) — the comp
+ * regions, each naming its lane by id ({@link #compRegionsAsSaved()}), and
+ * marks the main-lane clips that are comp output
+ * ({@link #savesAsCompOutput}); a lane's solo is never saved. The open
+ * restores the lanes and regions and then adopts the marked clips as the
+ * current pass's output ({@link #adoptCompOutput}): it never compiles, so
+ * hand edits to the comp survive, and the next compile replaces exactly
+ * the adopted clips.</p>
  */
 public final class TakeComping {
 
@@ -340,34 +351,139 @@ public final class TakeComping {
     }
 
     /**
-     * Returns the live clips whose asset references are the ones the
-     * {@linkplain #clipsAsSaved(Track) saved clips} carry — what a writer
-     * that packages or rewrites asset references (an archive, a
-     * consolidation) must walk for {@code track}. Not auditioning, that is
-     * the track's clips. During an audition the saved comp clips are
-     * detached slices that copy their take clip's source file and segment
-     * list, so the holders are the track's non-comp clips and each take-lane
-     * clip the selection slices (once each, in slice order): rewriting a
-     * holder's reference is what the next {@link #clipsAsSaved(Track)}
-     * writes, and the soloed lane — not saved — is not packaged.
+     * Returns the live clips whose asset references are the ones a saved
+     * project carries for {@code track} — what a writer that packages or
+     * rewrites asset references (an archive, a consolidation, its size
+     * preview, the pre-archive missing-file check) must walk. First the
+     * holders of the {@linkplain #clipsAsSaved(Track) saved main lane}: not
+     * auditioning, the track's clips; during an audition the saved comp
+     * clips are detached slices that copy their take clip's source file and
+     * segment list, so the track's non-comp clips and each take-lane clip the
+     * selection slices (once each, in slice order) — rewriting a holder's
+     * reference is what the next {@link #clipsAsSaved(Track)} writes. Then
+     * every take-lane clip not already among them, lane by lane in lane
+     * order: every lane is saved with the project (story 334, studio ruling
+     * E16), the soloed one included, so every lane's files are project
+     * content an archive packages. Reads the lanes and their clips through
+     * snapshots, as the other writer seams do.
      *
      * @param track this comping's track
-     * @return the live reference holders (unmodifiable)
+     * @return the live reference holders, each once (unmodifiable)
      * @throws IllegalArgumentException if {@code track} is not this comping's track
      */
     public List<AudioClip> referenceHoldersAsSaved(Track track) {
         requireOwnTrack(track);
+        List<AudioClip> holders;
+        Set<AudioClip> held = Collections.newSetFromMap(new IdentityHashMap<>());
         if (!isAuditioning()) {
-            return track.getClips();
+            holders = snapshot(track.getClips());
+            held.addAll(holders);
+        } else {
+            holders = userClipsOn(track);
+            held.addAll(holders);
+            for (Slice slice : planSlices(false)) {
+                if (held.add(slice.takeClip())) {
+                    holders.add(slice.takeClip());
+                }
+            }
         }
-        List<AudioClip> holders = userClipsOn(track);
-        Set<AudioClip> sources = Collections.newSetFromMap(new IdentityHashMap<>());
-        for (Slice slice : planSlices(false)) {
-            if (sources.add(slice.takeClip())) {
-                holders.add(slice.takeClip());
+        for (TakeLane lane : snapshot(takeLanes)) {
+            for (AudioClip laneClip : snapshot(lane.getClips())) {
+                if (held.add(laneClip)) {
+                    holders.add(laneClip);
+                }
             }
         }
         return Collections.unmodifiableList(holders);
+    }
+
+    /**
+     * Returns the take lanes a project writer saves, in lane order (story
+     * 334): every lane, read through a {@linkplain #snapshot(List)
+     * snapshot}. A lane's solo — the audition — is a monitoring state the
+     * writer never saves.
+     *
+     * @return the lanes (a new, unmodifiable list)
+     */
+    public List<TakeLane> takeLanesAsSaved() {
+        return Collections.unmodifiableList(snapshot(takeLanes));
+    }
+
+    /**
+     * Returns the comp regions a project writer saves, in list order (story
+     * 334), read through a {@linkplain #snapshot(List) snapshot}.
+     *
+     * @return the regions (a new, unmodifiable list)
+     */
+    public List<CompRegion> compRegionsAsSaved() {
+        return Collections.unmodifiableList(snapshot(compRegions));
+    }
+
+    /**
+     * Returns the clips of {@code lane} a project writer saves, in lane
+     * order (story 334), read through a {@linkplain #snapshot(List) snapshot}.
+     *
+     * @param lane a take lane
+     * @return the lane's clips (a new, unmodifiable list)
+     */
+    public List<AudioClip> clipsOf(TakeLane lane) {
+        Objects.requireNonNull(lane, "lane must not be null");
+        return Collections.unmodifiableList(snapshot(lane.getClips()));
+    }
+
+    /**
+     * Returns whether {@code savedClip}, one of the
+     * {@linkplain #clipsAsSaved(Track) clips a writer saves} for
+     * {@code track}, is saved as this comping's output (story 334, studio
+     * ruling E14): a clip of the track that is {@linkplain #isCompOutput comp
+     * output}, or — mid-audition — a detached
+     * {@linkplain #compileSelection() selection} slice, which is what the
+     * main lane's comp output is as saved. Only while the comping has a take
+     * lane: the writer saves the lanes alongside, and the mark means
+     * nothing on a track without them.
+     *
+     * @param track     this comping's track
+     * @param savedClip a clip of {@link #clipsAsSaved(Track)}
+     * @return {@code true} if the writer marks the clip as comp output
+     * @throws IllegalArgumentException if {@code track} is not this comping's track
+     */
+    public boolean savesAsCompOutput(Track track, AudioClip savedClip) {
+        requireOwnTrack(track);
+        Objects.requireNonNull(savedClip, "savedClip must not be null");
+        if (snapshot(takeLanes).isEmpty()) {
+            return false;
+        }
+        if (isCompOutput(savedClip)) {
+            return true;
+        }
+        if (!isAuditioning()) {
+            return false;
+        }
+        for (AudioClip clip : snapshot(track.getClips())) {
+            if (clip == savedClip) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Adopts {@code clip}, a main-lane clip the project file marked as comp
+     * output, as output of the current pass (story 334, studio ruling E14):
+     * the open restores the lanes and the comp regions, then adopts the
+     * saved comp output this way, so the next compile replaces exactly those
+     * clips — hand edits to them (fades, gain, trims, splits) survive the
+     * reopen, and a range never plays twice. The open never compiles.
+     *
+     * @param clip the clip to adopt
+     * @throws IllegalStateException if the comping has no take lane
+     */
+    public void adoptCompOutput(AudioClip clip) {
+        Objects.requireNonNull(clip, "clip must not be null");
+        if (!isActive()) {
+            throw new IllegalStateException("a comping with no take lane has no comp output to adopt");
+        }
+        clip.setCompOutputOwner(currentPass);
     }
 
     /**

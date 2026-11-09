@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectType;
 import com.benesquivelmusic.daw.core.plugin.ExternalPluginEntry;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
+import com.benesquivelmusic.daw.core.plugin.RestoreReport;
 import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
@@ -36,6 +37,7 @@ import javafx.stage.FileChooser;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.ref.WeakReference;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -45,6 +47,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 
 /**
@@ -191,6 +194,34 @@ public final class PluginBrowser extends DawgDialog<PluginBrowser.Selection> {
             add.setDisable(true);
             tree.getSelectionModel().selectedItemProperty().addListener((_, _, selected) ->
                     add.setDisable(selected == null || selected.getValue() instanceof GroupRow));
+        }
+
+        // Story 334 — as the Manage Plugins list does (critique J27): a browser
+        // opened while the startup restore still checks the installed plugins
+        // lists only those loaded so far, so its third-party group is read again
+        // once the restore has published what became of each entry. The restore
+        // holds the browser only weakly: one closed while a restore that never
+        // completes still runs (a hung plugin constructor, ruling-3 Q6) is not
+        // kept for the session (finding FX2-6).
+        if (registry != null) {
+            CompletableFuture<RestoreReport> restoring = registry.restore();
+            if (!restoring.isDone()) {
+                WeakReference<PluginBrowser> browser = new WeakReference<>(this);
+                restoring.thenAccept(_ -> refreshWhileReachable(browser));
+            }
+        }
+    }
+
+    /** Re-reads {@code browser}'s third-party group on the FX thread, unless the browser was collected. */
+    private static void refreshWhileReachable(WeakReference<PluginBrowser> browser) {
+        PluginBrowser reachable = browser.get();
+        if (reachable != null) {
+            FxDispatcher.runOnFx(reachable.fxDispatcher, () -> {
+                PluginBrowser stillReachable = browser.get();
+                if (stillReachable != null) {
+                    stillReachable.refreshThirdParty();
+                }
+            });
         }
     }
 

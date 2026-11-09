@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.persistence;
 
 import com.benesquivelmusic.daw.core.persistence.migration.MigrationReport;
+import com.benesquivelmusic.daw.core.plugin.PluginResolver;
 import com.benesquivelmusic.daw.core.project.DawProject;
 
 import java.io.IOException;
@@ -18,6 +19,7 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
@@ -302,6 +304,32 @@ public final class ProjectManager {
 
     /** Installed by the application open pipeline; invoked after lock negotiation, before parsing or checkpoints. */
     public void setRecoveryGate(RecoveryGate gate) { recoveryGate = Objects.requireNonNull(gate); }
+
+    /**
+     * Sets how this manager's opens turn a saved external JAR or CLAP plugin
+     * insert into a plugin — the installed-plugin registry in the
+     * application (story 334); see {@link ProjectDeserializer#setPluginResolver}.
+     *
+     * @param resolver the resolver
+     */
+    public void setPluginResolver(PluginResolver resolver) {
+        deserializer.setPluginResolver(resolver);
+    }
+
+    /** The other writers {@link #awaitWritesBeforeExit()} waits for, in registration order (story 334). */
+    private final List<PendingWrites> alsoAwaitedBeforeExit = new CopyOnWriteArrayList<>();
+
+    /**
+     * Makes {@link #awaitWritesBeforeExit()} also wait for {@code writes} —
+     * the installed-plugin registry's store in the application (story 334,
+     * studio ruling E9: an install that reported success survives an
+     * immediate quit) — under its one deadline.
+     *
+     * @param writes the writer to wait for
+     */
+    public void alsoAwaitBeforeExit(PendingWrites writes) {
+        alsoAwaitedBeforeExit.add(Objects.requireNonNull(writes, "writes must not be null"));
+    }
 
     /**
      * The save generation of the open project — what its backup owes, where
@@ -637,8 +665,18 @@ public final class ProjectManager {
             }
             // Each step that can still fail comes first: until adopt() returned, the outgoing project is untouched.
             PreparedProject loaded = readProject(projectDirectory, projectFile);
-            recordRecentProject(projectDirectory);
-            ProjectLockManager accepted = prepared.adopt();
+            ProjectLockManager accepted;
+            try {
+                recordRecentProject(projectDirectory);
+                accepted = prepared.adopt();
+            } catch (IOException | RuntimeException | Error failure) {
+                // Nobody installs what this open read: release the plugins its
+                // inserts built (story 334; a JAR plugin keeps its file open).
+                if (loaded.project() != null) {
+                    ProjectDeserializer.disposeUnopened(loaded.project());
+                }
+                throw failure;
+            }
             // The fence comes before any release: the outgoing lease goes only once the work owed in its folder ended.
             CompletableFuture<Void> savesQueued = whenSavesIdle();
             CompletableFuture<Void> headIdle = fence(null);
@@ -1479,13 +1517,19 @@ public final class ProjectManager {
      * checkpoint or safety copy, as long as the save writer waits for it
      * (ruling J3); then, with the time left, every job the checkpoint writers
      * hold, of any origin, any generation and any folder, until they hold
-     * none. A write
+     * none; then, with what is left of the same deadline, each writer
+     * {@linkplain #alsoAwaitBeforeExit registered} to be waited for — the
+     * installed-plugin registry's store (story 334) — that had a write
+     * pending when the wait started. A write
      * asked for after its half began may be waited for too, within the same
      * deadline. It completes, cancels and interrupts nothing.</p>
      *
-     * <p>It logs at {@code INFO} that it waits only if either writer held a
-     * write when it started; with none, it returns at once. When the deadline
-     * runs out it logs at {@code WARNING} and returns {@code false}: the JVM
+     * <p>It logs at {@code INFO} that it waits only if the save writer or the
+     * checkpoint writers held a write when it started; with no write pending
+     * anywhere, it returns at once. A registered writer is waited for without
+     * a line of its own. When the deadline runs out for the saves or the
+     * checkpoints it logs at {@code WARNING}; when it runs out for any write it
+     * waited for it returns {@code false}: the JVM
      * then ends the writers, and {@code project.daw} holds the last save that
      * finished, whole (the atomic replace). Both lines are best effort. The
      * JDK's {@code LogManager} resets every logging handler from a shutdown
@@ -1509,14 +1553,19 @@ public final class ProjectManager {
         synchronized (saveQueue) {
             savesPending = saveWriterRunning;
         }
-        if (!savesPending && !checkpointManager.holdsAJob()) {
+        boolean projectWritesPending = savesPending || checkpointManager.holdsAJob();
+        List<PendingWrites> othersPending = alsoAwaitedBeforeExit.stream().filter(PendingWrites::pending).toList();
+        if (!projectWritesPending && othersPending.isEmpty()) {
             return true;
         }
-        LOG.info(() -> "Waiting up to " + boundText(bound) + " for the saves and checkpoints still being written"
-                + " before the application exits");
+        if (projectWritesPending) {
+            LOG.info(() -> "Waiting up to " + boundText(bound) + " for the saves and checkpoints still being"
+                    + " written before the application exits");
+        }
         boolean finished;
         try {
-            finished = (!savesPending || savesIdleBefore(deadline)) && checkpointManager.awaitNoJobUntil(deadline);
+            finished = !projectWritesPending
+                    || (!savesPending || savesIdleBefore(deadline)) && checkpointManager.awaitNoJobUntil(deadline);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             LOG.warning(() -> "The wait for the saves and checkpoints still being written was interrupted; the"
@@ -1527,6 +1576,23 @@ public final class ProjectManager {
             LOG.warning(() -> "Saves or checkpoints were still being written " + boundText(bound) + " after the"
                     + " application began to exit; the application exits without them, and project.daw holds the"
                     + " last save that finished");
+        }
+        return othersFinishedBefore(othersPending, deadline) && finished;
+    }
+
+    /**
+     * Whether each of {@code writers} finished its pending writes before
+     * {@code deadline} ({@link System#nanoTime()}).
+     */
+    private static boolean othersFinishedBefore(List<PendingWrites> writers, long deadline) {
+        boolean finished = true;
+        for (PendingWrites writer : writers) {
+            try {
+                finished &= writer.awaitUntil(deadline);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
         }
         return finished;
     }

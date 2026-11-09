@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.track.TrackType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -16,7 +17,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * The side-effect-free "comp as saved" seam (PR #984 review): what a project
  * writer saves for a comped track mid-audition, and which live clips carry
  * the saved references — without advancing the pass or touching any live
- * state.
+ * state; and, story 334, the writer seams that save every lane and mark the
+ * comp output, and the seam the open adopts the saved comp output through.
  */
 class TakeCompingSavedCompTest {
 
@@ -80,7 +82,12 @@ class TakeCompingSavedCompTest {
         track.addClip(user);
 
         assertThat(comping.clipsAsSaved(track)).containsExactlyElementsOf(track.getClips());
-        assertThat(comping.referenceHoldersAsSaved(track)).containsExactlyElementsOf(track.getClips());
+        List<AudioClip> holders = new ArrayList<>(track.getClips());
+        holders.add(lane0Take);
+        holders.add(lane1Take);
+        assertThat(comping.referenceHoldersAsSaved(track))
+                .as("the track's clips, then every lane's clips: every lane is saved (story 334, E16)")
+                .containsExactlyElementsOf(holders);
     }
 
     @Test
@@ -105,7 +112,9 @@ class TakeCompingSavedCompTest {
         new CompileCompAction(track).execute();
         audition(1);
 
-        assertThat(comping.referenceHoldersAsSaved(track)).containsExactly(user, lane0Take);
+        assertThat(comping.referenceHoldersAsSaved(track))
+                .as("the user clip, the selection's take clip, then the other lanes' clips — the soloed one's too")
+                .containsExactly(user, lane0Take, lane1Take);
     }
 
     @Test
@@ -116,7 +125,82 @@ class TakeCompingSavedCompTest {
         comping.clearCompRegions();
 
         assertThat(comping.clipsAsSaved(track)).containsExactly(user);
-        assertThat(comping.referenceHoldersAsSaved(track)).containsExactly(user);
+        assertThat(comping.referenceHoldersAsSaved(track)).containsExactly(user, lane0Take, lane1Take);
+    }
+
+    @Test
+    void theCompOutputIsSavedAsCompOutputAndAUserClipIsNot() {
+        AudioClip user = new AudioClip("User", 9.0, 1.0, "/media/user.wav");
+        track.addClip(user);
+        AudioClip comp = comping.compOutputOn(track).getFirst();
+
+        assertThat(comping.savesAsCompOutput(track, comp)).isTrue();
+        assertThat(comping.savesAsCompOutput(track, user)).isFalse();
+    }
+
+    @Test
+    void midAuditionTheSelectionSlicesAreSavedAsCompOutputAndTheUserClipsAreNot() {
+        AudioClip user = new AudioClip("User", 9.0, 1.0, "/media/user.wav");
+        track.addClip(user);
+        audition(1);
+
+        List<AudioClip> saved = comping.clipsAsSaved(track);
+
+        assertThat(saved).hasSize(2);
+        assertThat(comping.savesAsCompOutput(track, saved.getFirst())).as("the user clip").isFalse();
+        assertThat(comping.savesAsCompOutput(track, saved.get(1))).as("the detached selection slice").isTrue();
+    }
+
+    @Test
+    void aCompWithNoLaneSavesNoClipAsCompOutput() {
+        AudioClip comp = comping.compOutputOn(track).getFirst();
+        comping.removeTakeLane(comping.getTakeLane(1));
+        comping.removeTakeLane(comping.getTakeLane(0));
+
+        assertThat(comping.isCompOutput(comp)).as("fixture: the clip keeps its tag").isTrue();
+        assertThat(comping.savesAsCompOutput(track, comp))
+                .as("the mark means nothing without the lanes the writer saves alongside").isFalse();
+    }
+
+    @Test
+    void anAdoptedClipIsCurrentOutputAndTheNextCompileReplacesExactlyIt() {
+        AudioClip user = new AudioClip("User", 9.0, 1.0, "/media/user.wav");
+        track.addClip(user);
+        AudioClip compiled = comping.compOutputOn(track).getFirst();
+        track.removeClip(compiled);
+        AudioClip reopened = new AudioClip(compiled.getName(), compiled.getStartBeat(), compiled.getDurationBeats(),
+                compiled.getSourceFilePath());
+        reopened.setSourceSegmentPaths(compiled.getSourceSegmentPaths());
+        reopened.setFadeInBeats(0.5);
+        track.addClip(reopened);
+
+        comping.adoptCompOutput(reopened);
+
+        assertThat(comping.compOutputOn(track)).containsExactly(reopened);
+        assertThat(comping.isSupersededOutput(reopened)).isFalse();
+        new CompileCompAction(track).execute();
+        assertThat(track.getClips()).as("the user clip and one fresh compile; the adopted clip replaced")
+                .hasSize(2).contains(user).doesNotContain(reopened);
+    }
+
+    @Test
+    void aCompingWithNoLaneAdoptsNothing() {
+        Track bare = new Track("Bass", TrackType.AUDIO);
+
+        assertThatThrownBy(() -> bare.getTakeComping().adoptCompOutput(new AudioClip("x", 0.0, 1.0, null)))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void theWriterSeamsAreCopiesInOrder() {
+        TakeLane lane0 = comping.getTakeLane(0);
+
+        assertThat(comping.takeLanesAsSaved()).containsExactlyElementsOf(comping.getTakeLanes());
+        assertThat(comping.compRegionsAsSaved()).containsExactlyElementsOf(comping.getCompRegions());
+        assertThat(comping.clipsOf(lane0)).containsExactly(lane0Take);
+        List<TakeLane> saved = comping.takeLanesAsSaved();
+        comping.addTakeLane(new TakeLane("Take 3"));
+        assertThat(saved).as("a copy, not a live view").hasSize(2);
     }
 
     @Test

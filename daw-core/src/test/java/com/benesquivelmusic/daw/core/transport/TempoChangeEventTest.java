@@ -61,6 +61,21 @@ class TempoChangeEventTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    /** Story 334, studio ruling E10.5: a position or tempo that is not finite is refused like an out-of-range one. */
+    @Test
+    void shouldRejectNonFiniteValues() {
+        assertThatThrownBy(() -> TempoChangeEvent.instant(Double.NaN, 120.0))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> TempoChangeEvent.linear(Double.POSITIVE_INFINITY, 120.0))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> TempoChangeEvent.curved(Double.NEGATIVE_INFINITY, 120.0))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> TempoChangeEvent.instant(8.0, Double.NaN))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> TempoChangeEvent.instant(8.0, Double.POSITIVE_INFINITY))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     @Test
     void shouldRejectNullTransitionType() {
         assertThatThrownBy(() -> new TempoChangeEvent(0.0, 120.0, null))

@@ -12,7 +12,6 @@ import java.lang.reflect.Method;
 import java.util.HashSet;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Discovers the {@link PluginCapabilities} of an
@@ -36,16 +35,20 @@ import java.util.concurrent.ConcurrentHashMap;
  *       can be instantiated generically by the host.</li>
  * </ol>
  *
- * <p>Results are cached in a {@link ConcurrentHashMap} keyed by the processor's
- * {@link Class}, so repeated lookups are O(1) after the first call.</p>
+ * <p>Results are cached per processor {@link Class} in a {@link ClassValue},
+ * so repeated lookups are O(1) after the first call. A {@code ClassValue}'s
+ * entry is held by the class itself, so the cache never keeps a class
+ * reachable: a JAR plugin's class — and the class loader of its insert, one
+ * per insert and project open — can be collected once the insert is disposed
+ * (story 334).</p>
  *
  * <p>This class has only static members and a private constructor; it must not
  * be instantiated.</p>
  */
 public final class PluginCapabilityIntrospector {
 
-    private static final ConcurrentHashMap<Class<?>, PluginCapabilities> CACHE =
-            new ConcurrentHashMap<>();
+    /** The capabilities of each class introspected so far; replaced whole by {@link #clearCache()}. */
+    private static volatile ClassValue<PluginCapabilities> cache = newCache();
 
     private PluginCapabilityIntrospector() {
         // utility class — not instantiable
@@ -97,12 +100,21 @@ public final class PluginCapabilityIntrospector {
         if (processorClass == null) {
             return PluginCapabilities.NONE;
         }
-        return CACHE.computeIfAbsent(processorClass, PluginCapabilityIntrospector::compute);
+        return cache.get(processorClass);
     }
 
-    /** Clears the capability cache. Intended for tests. */
+    /** Clears the capability cache: every class is introspected again. Intended for tests. */
     static void clearCache() {
-        CACHE.clear();
+        cache = newCache();
+    }
+
+    private static ClassValue<PluginCapabilities> newCache() {
+        return new ClassValue<>() {
+            @Override
+            protected PluginCapabilities computeValue(Class<?> type) {
+                return compute(type);
+            }
+        };
     }
 
     private static PluginCapabilities compute(Class<?> cls) {

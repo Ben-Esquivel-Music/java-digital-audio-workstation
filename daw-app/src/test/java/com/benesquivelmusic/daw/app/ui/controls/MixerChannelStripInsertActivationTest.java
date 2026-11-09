@@ -33,8 +33,8 @@ class MixerChannelStripInsertActivationTest {
         runOnFxThread(() -> {
             MixerChannelStrip strip = new MixerChannelStrip();
             strip.setChannelName("Drums");
-            strip.insertsProperty().add(new InsertSlotModel("EQ", true, false));
-            strip.insertsProperty().add(new InsertSlotModel("Comp", false, true));
+            strip.insertsProperty().add(new InsertSlotModel("EQ", true, false, false, "EQ"));
+            strip.insertsProperty().add(new InsertSlotModel("Comp", false, true, false, "Comp"));
 
             StackPane parent = new StackPane(strip);
             parent.getStyleClass().add("root-pane");

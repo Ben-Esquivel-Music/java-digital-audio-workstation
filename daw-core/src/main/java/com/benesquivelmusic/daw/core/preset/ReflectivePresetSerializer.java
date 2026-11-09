@@ -11,7 +11,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.SequencedMap;
 
 /**
  * Reflective preset serializer that snapshots and restores the complete state
@@ -25,15 +25,25 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>Reflected method handles are cached per processor class via
  * {@link MethodHandle}s — reflection happens at most once per class, never on
- * the real-time audio path. Unknown keys on restore are silently skipped
- * (forward compatibility), and out-of-range values are clamped to the declared
+ * the real-time audio path. The cache is a {@link ClassValue}, whose entry
+ * each class holds itself, so it never keeps a class reachable: a JAR
+ * plugin's class — and the class loader of its insert, one per insert and
+ * project open — can be collected once the insert is disposed (story 334).
+ * Unknown keys on restore are skipped (forward
+ * compatibility), and out-of-range values are clamped to the declared
  * {@code [min, max]} range to prevent invalid state from malformed preset
- * files.</p>
+ * files; {@link #restore} does both silently, while {@link #restoreEach}
+ * reports what it did with every value ({@link ParameterRestore}).</p>
  */
 public final class ReflectivePresetSerializer {
 
     private static final MethodHandles.Lookup LOOKUP = MethodHandles.publicLookup();
-    private static final Map<Class<?>, List<PresetParam>> CACHE = new ConcurrentHashMap<>();
+    private static final ClassValue<List<PresetParam>> CACHE = new ClassValue<>() {
+        @Override
+        protected List<PresetParam> computeValue(Class<?> type) {
+            return discover(type);
+        }
+    };
 
     private ReflectivePresetSerializer() {
         // utility class
@@ -88,10 +98,15 @@ public final class ReflectivePresetSerializer {
      * processor) are silently skipped. Values outside the declared
      * {@code [min, max]} range are clamped to that range so that malformed or
      * hand-edited preset files cannot put a processor into an invalid state.
-     * {@code null} and {@code NaN} values are ignored.</p>
+     * {@code null}, {@code NaN} and infinite values are ignored, and so is a
+     * value the processor's setter refuses with an
+     * {@link IllegalArgumentException}. The outcomes are those of
+     * {@link #restoreEach}, which reports each.</p>
      *
-     * @return the number of parameters successfully applied
-     * @throws NullPointerException if either argument is {@code null}
+     * @return the number of parameters applied, as saved or clamped
+     * @throws NullPointerException  if either argument is {@code null}
+     * @throws IllegalStateException if a setter or getter fails other than by
+     *                               refusing its value
      */
     public static int restore(AudioProcessor processor, Map<String, Double> values) {
         if (processor == null) {
@@ -100,35 +115,97 @@ public final class ReflectivePresetSerializer {
         if (values == null) {
             throw new NullPointerException("values must not be null");
         }
-        List<PresetParam> params = reflect(processor.getClass());
-        if (params.isEmpty()) {
-            return 0;
+        return (int) restoreEach(processor, new LinkedHashMap<>(values)).stream()
+                .filter(outcome -> outcome instanceof ParameterRestore.Applied
+                        || outcome instanceof ParameterRestore.Clamped)
+                .count();
+    }
+
+    /**
+     * Restores every named parameter from {@code values} onto
+     * {@code processor}, in the map's order, and says what happened to each
+     * entry (story 334: the project reader reports every value it could not
+     * apply as saved).
+     *
+     * <ul>
+     *   <li>{@link ParameterRestore.Unknown} — the processor declares no
+     *       parameter of that name (every name, for a processor without
+     *       {@link ProcessorParam} accessors);</li>
+     *   <li>{@link ParameterRestore.NotFinite} — the value is {@code null},
+     *       NaN or infinite, and is not applied;</li>
+     *   <li>{@link ParameterRestore.Clamped} — the value is outside the
+     *       declared {@code [min, max]} range, and the nearest bound is
+     *       applied;</li>
+     *   <li>{@link ParameterRestore.Rejected} — the setter refused the value
+     *       it was given — the saved value, or the nearest bound of one
+     *       outside the declared range — with an
+     *       {@link IllegalArgumentException}; the value then in force is read
+     *       through the getter;</li>
+     *   <li>{@link ParameterRestore.Applied} — the value was applied as
+     *       saved.</li>
+     * </ul>
+     *
+     * <p>Uses the per-class cache of {@link #isSupported}, {@link #snapshot}
+     * and {@link #restore}: no reflection after a class's first use.</p>
+     *
+     * @param processor the processor to restore
+     * @param values    the saved values by parameter name, in the order to apply them
+     * @return one outcome per entry of {@code values}, in its order
+     * @throws NullPointerException  if either argument is {@code null}
+     * @throws IllegalStateException if a setter or getter fails other than by
+     *                               refusing its value
+     */
+    public static List<ParameterRestore> restoreEach(AudioProcessor processor, SequencedMap<String, Double> values) {
+        if (processor == null) {
+            throw new NullPointerException("processor must not be null");
         }
+        if (values == null) {
+            throw new NullPointerException("values must not be null");
+        }
+        List<PresetParam> params = reflect(processor.getClass());
         Map<String, PresetParam> byName = new LinkedHashMap<>(params.size() * 2);
         for (PresetParam p : params) {
             byName.put(p.name, p);
         }
-        int applied = 0;
+        List<ParameterRestore> outcomes = new ArrayList<>(values.size());
         for (Map.Entry<String, Double> entry : values.entrySet()) {
-            PresetParam p = byName.get(entry.getKey());
-            if (p == null) {
-                continue; // forward compatibility — unknown key
-            }
-            Double raw = entry.getValue();
-            if (raw == null || Double.isNaN(raw)) {
-                continue;
-            }
-            double clamped = Math.max(p.min, Math.min(p.max, raw));
-            try {
-                p.setter.invoke(processor, clamped);
-                applied++;
-            } catch (Throwable t) {
-                throw new IllegalStateException(
-                        "Failed to invoke setter for preset parameter '" + p.name
-                                + "' on " + processor.getClass().getSimpleName(), t);
-            }
+            outcomes.add(restoreOne(processor, byName.get(entry.getKey()), entry.getKey(), entry.getValue()));
         }
-        return applied;
+        return List.copyOf(outcomes);
+    }
+
+    /** Applies one saved value to the parameter {@code p} declares ({@code null}: none of that name). */
+    private static ParameterRestore restoreOne(AudioProcessor processor, PresetParam p, String name, Double raw) {
+        if (p == null) {
+            return new ParameterRestore.Unknown(name, raw == null ? Double.NaN : raw);
+        }
+        if (raw == null || !Double.isFinite(raw)) {
+            return new ParameterRestore.NotFinite(name, raw == null ? Double.NaN : raw);
+        }
+        double applied = Math.max(p.min, Math.min(p.max, raw));
+        try {
+            p.setter.invoke(processor, applied);
+        } catch (IllegalArgumentException refused) {
+            return new ParameterRestore.Rejected(name, raw, valueOf(processor, p));
+        } catch (Throwable t) {
+            throw new IllegalStateException(
+                    "Failed to invoke setter for preset parameter '" + p.name
+                            + "' on " + processor.getClass().getSimpleName(), t);
+        }
+        return applied == raw
+                ? new ParameterRestore.Applied(name, applied)
+                : new ParameterRestore.Clamped(name, raw, applied, p.min, p.max);
+    }
+
+    /** The parameter's value, read through its cached getter. */
+    private static double valueOf(AudioProcessor processor, PresetParam p) {
+        try {
+            return (double) p.getter.invoke(processor);
+        } catch (Throwable t) {
+            throw new IllegalStateException(
+                    "Failed to invoke getter for preset parameter '" + p.name
+                            + "' on " + processor.getClass().getSimpleName(), t);
+        }
     }
 
     // ── JSON (minimal, schema-restricted) ───────────────────────────────────
@@ -201,7 +278,7 @@ public final class ReflectivePresetSerializer {
     // ── Internals ───────────────────────────────────────────────────────────
 
     private static List<PresetParam> reflect(Class<?> processorClass) {
-        return CACHE.computeIfAbsent(processorClass, ReflectivePresetSerializer::discover);
+        return CACHE.get(processorClass);
     }
 
     private static List<PresetParam> discover(Class<?> processorClass) {

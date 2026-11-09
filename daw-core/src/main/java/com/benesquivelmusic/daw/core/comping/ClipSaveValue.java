@@ -11,8 +11,14 @@ import java.util.List;
 /**
  * Every value a project writer saves for one audio clip — the attributes
  * and children {@code ProjectSerializer.buildClipElement} writes — and
- * nothing else: not the clip's id, its audio array, its source-rate
- * metadata or its comp-output tag, none of which reach the file.
+ * nothing else: not the clip's id, its audio array or its source-rate
+ * metadata, none of which reach the file, nor its comp-output tag. The tag
+ * does reach the file since story 334, as the main-lane {@code <clip>}'s
+ * {@code comp-output} mark ({@link TakeComping#savesAsCompOutput}), but it
+ * is no value of the clip's own: the audition dirty rule compares the comp
+ * output with the {@linkplain TakeComping#compileSelection() selection
+ * compile}, whose detached clips carry no tag yet save with the mark too,
+ * so the comparison ignores it.
  *
  * <p>Two clips with equal values save identically, so a list of them
  * compares "would a save write the same thing" regardless of identity

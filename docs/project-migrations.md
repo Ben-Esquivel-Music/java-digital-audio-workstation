@@ -116,14 +116,28 @@ first, by the same mechanism as the migration backup.
   skipped a MIDI note, a CC lane or a CC event, adjusted an arpeggiator
   setting, or removed a mixer assignment (a cue send, VCA member,
   channel link or bed routing naming a track the file does not hold, a
-  malformed id, a channel linked to itself, or a repeat); it replaced a
-  malformed or duplicate track id; it dropped the child elements or text
-  of a MIDI effect it kept as a placeholder; or it skipped a VCA group
-  whose id repeats an earlier group's. What the open does without
+  malformed id, a channel linked to itself, or a repeat; since story
+  334 also a working insert's `sidechain-source` that names no strip);
+  it replaced a malformed or duplicate track id; it dropped the child
+  elements or text of a MIDI effect it kept as a placeholder; or it
+  skipped a VCA group whose id repeats an earlier group's. Since story
+  334 these arm it too: a skipped tempo or meter change (a beat-0
+  `tempo` or `time-sig-*` attribute that is present but unusable
+  included), a skipped comp region, a skipped ninth insert, an adjusted
+  insert parameter (a saved value the open could not apply as saved),
+  a malformed or repeated take id replaced by a fresh one,
+  an offline insert's dropped child content, and a plugin state on an
+  insert whose plugin takes none. What the open does without
   losing saved content arms nothing: an unrecognised MIDI effect kept
   with its attributes, a missing track id, a valid id written in a
   non-canonical form, a missing asset, and a VCA group gain that is not
-  a number (it holds no level to lose). Nor does a view or transport
+  a number (it holds no level to lose). Since story 334 neither does an
+  offline insert written back as saved, an unknown analyzer (kept
+  offline in its place, logged only), a redundant beat-0 tempo or meter
+  entry (one that repeats the beat-0 attributes, logged only), a
+  missing take id, a comp-output mark on a track without takes (kept as
+  an ordinary clip, logged only), or a plugin whose installed version
+  differs from the saved one (an INFO line only). Nor does a view or transport
   preference the open resets, though the next save writes the value it
   used: a CC lane's unusable height ratio, a malformed pre/post-roll
   value, and an analyzer setting the reader cannot use (the analyzer
@@ -160,6 +174,7 @@ each version changed. Every bump registers exactly one step in
 |---------|--------------------------------|--------------|
 | 1 | — | Baseline. The schema was not frozen while version 1 was current: files from 2026-03-28 on all say `version="1"`, and elements were added without a bump (for example `<midi-effect-chain>`, the transport's `pre-roll-bars` / `post-roll-bars` / `pre-roll-enabled`, `<source-segment>`). Readers therefore never require an element to be present: each tolerates its absence and restores it when present. |
 | 2 | `MidiEffectPluginIdMigration` — "add per-track MIDI clips; key MIDI effects by id" (format-only: no dialog) | Each track carries its MIDI clip as a `<midi-clip>` child (notes, CC lanes with breakpoints; written only when the clip holds something). `<midi-effect>` entries are keyed by the plugin's stable `plugin-id` instead of its Java `class` name; the step rewrites the arpeggiator's class name and leaves any other class name as it is (the reader keeps such an entry as a placeholder that writes its attributes back). `mixer/master@name` and `mixer/channels/channel@name` (derived duplicates the reader never honoured) and `send@mode` (a lossy view of `send@tap`) are no longer written; `send@mode` is still read when `tap` is absent. Track ids, the transport's pre/post-roll and the MIDI-effect chain, already present in version 1 files, are now read back. |
+| 3 | an inline `ProjectMigration.formatOnly(2, …)` step (`MigrationRegistry.TAKES_TEMPO_AND_PLUGIN_DESCRIPTORS`) — "add plugin insert descriptors, take lanes, comp regions and the tempo map" (format-only: no dialog; the step changes nothing but the version) | Plugin-backed inserts carry `plugin-source` / `plugin-id` / `plugin-version` and their parameters or a `<plugin-state>`; an insert the open cannot load is kept and written back as saved. `<transport>` holds `<tempo-change>` and `<meter-change>` entries after beat 0. A track holds `<takes>` (take lanes with their clips, comp regions by `take-id`) and marks comp output with `clip@comp-output`. Older files lack them and open with empty lists; a plugin insert an older build saved as a name-only stub opens offline, counted as an insert not loaded (the file records no plugin identity for it), and is written back as saved. |
 
 ## Non-Goals
 

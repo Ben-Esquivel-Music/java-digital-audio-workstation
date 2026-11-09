@@ -6,7 +6,6 @@ import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.AccessibleRole;
-import javafx.scene.Group;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
@@ -15,10 +14,8 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
-import javafx.scene.paint.Color;
 import javafx.scene.paint.Paint;
 import javafx.scene.shape.Rectangle;
-import javafx.scene.shape.Shape;
 
 import java.util.Locale;
 import java.util.MissingResourceException;
@@ -195,8 +192,8 @@ public final class NotificationPill extends StackPane {
         // (story 277). Same resolved-CSS discipline as the severity glyph;
         // never a hard-coded token mirror. (Review S1.)
         dismissButton.textFillProperty().addListener(
-                (_, _, fill) -> tintIcon(closeIcon, fill));
-        tintIcon(closeIcon, dismissButton.getTextFill());
+                (_, _, fill) -> IconNode.tint(closeIcon, fill));
+        IconNode.tint(closeIcon, dismissButton.getTextFill());
         dismissButton.setOnAction(_ -> {
             if (onDismiss != null) {
                 onDismiss.run();
@@ -246,43 +243,11 @@ public final class NotificationPill extends StackPane {
     /**
      * Re-tints the severity glyph to the accent bar's resolved CSS fill
      * so the two never diverge across levels or a theme swap (story 277).
-     * No-op until both a glyph and a resolved {@link Color} fill exist.
+     * No-op until both a glyph and a resolved colour fill exist
+     * ({@link IconNode#tint}).
      */
     private void retintGlyph(Paint barFill) {
-        tintIcon(iconHolder.getGraphic(), barFill);
-    }
-
-    /**
-     * Tints {@code icon} to {@code paint} when both an icon and a
-     * resolved {@link Color} exist; a no-op otherwise. Locks both the
-     * severity glyph (to the accent bar's resolved fill) and the dismiss
-     * glyph (to the button's resolved {@code -fx-text-fill}) to a
-     * CSS-resolved colour — never a hard-coded token mirror.
-     */
-    private static void tintIcon(Node icon, Paint paint) {
-        if (icon != null && paint instanceof Color color) {
-            tint(icon, color);
-        }
-    }
-
-    /**
-     * Tints every {@link Shape} in the icon group to {@code color},
-     * preserving which shapes were stroked vs. filled. IconNode has no
-     * built-in tint API so we walk the returned group.
-     */
-    private static void tint(Node iconNode, Color color) {
-        if (iconNode instanceof Group group) {
-            for (Node child : group.getChildren()) {
-                tint(child, color);
-            }
-        } else if (iconNode instanceof Shape shape) {
-            if (shape.getStroke() != null) {
-                shape.setStroke(color);
-            }
-            if (shape.getFill() != null && !Color.TRANSPARENT.equals(shape.getFill())) {
-                shape.setFill(color);
-            }
-        }
+        IconNode.tint(iconHolder.getGraphic(), barFill);
     }
 
     private static String localizedLevelName(NotificationLevel level) {

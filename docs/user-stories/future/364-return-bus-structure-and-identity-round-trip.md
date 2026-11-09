@@ -62,6 +62,10 @@ These tests are binding acceptance criteria. They run headless, and none of them
 - Design references: Persistence Integrity design book §3.1 (the return-bus row, PARTIAL, owner 364), §4.4 (the harness), §6.3 (schema evolution, the degraded-open backup), rejection §9.4.
 - Cross-refs: story 330 (track identity, the open report, the degraded-open backup), story 188 (migration registry), story 367 (mixer containers degrade item by item).
 
+## Note from Story 334
+
+Story 334 (studio ruling E12, R14) reports a working insert's `sidechain-source` that names no strip: the open removes it as a mixer assignment (`MIXER_REFERENCE_REMOVED`, located at the insert's strip) with the WARNING `<strip>: mixer assignment <n> removed — insert <k> '<name>' sidechain-source '<key>' names no strip in this project; the insert detects on its own input`, and the degraded-open backup is armed. One case is live on every open of such a file: a master insert keyed from a return bus the file creates (`return:<i>`) cannot resolve, because `ProjectDeserializer.parseMixer` reads the master's inserts before the return buses. The loss is now reported, no longer silent. Resolving sidechain keys after every return bus exists is this story's (the ruling's note for it). An offline insert keeps a key that did not resolve as saved and writes it back verbatim (E1), so only working inserts lose such a key.
+
 ## Status
 
 - Deferred
