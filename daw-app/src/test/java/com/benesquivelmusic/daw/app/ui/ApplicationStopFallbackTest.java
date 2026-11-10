@@ -41,6 +41,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.UnaryOperator;
 import java.util.logging.Handler;
 import java.util.logging.Level;
@@ -102,6 +103,13 @@ class ApplicationStopFallbackTest {
 
     private ExitFixture fixture;
     private CompletableFuture<Void> stopped;
+    /**
+     * Says, on the FX thread, whether the Save As under way at the stop has
+     * ended: its stage is done or, for the exit's own Save As, whose stage
+     * only the exit's FLUSH keeps, its progress dialog is no longer shown;
+     * {@code null} in a test with none, and once it was waited for.
+     */
+    private BooleanSupplier saveAsEnded;
     /** Undoes {@link #recordTheLifecycleLogAtFine()}, after the test. */
     private Runnable lifecycleLogRestore = () -> { };
     // Held strongly: the log manager keeps a logger only weakly, so a handler added to one nobody holds may be lost.
@@ -138,6 +146,7 @@ class ApplicationStopFallbackTest {
                 // The fixture is closed, and its fence lowered, even when the stop does not let go in time.
                 try {
                     unwindTheStop();
+                    awaitTheSaveAsEnd();
                 } finally {
                     fixture.close();
                 }
@@ -1070,9 +1079,14 @@ class ApplicationStopFallbackTest {
         fixture.save.saveAsTargets.answer(call -> Optional.of(call.directory().resolve(call.name())));
         SaveFlowFixture.Publishes.Hold copy = fixture.save.publishes.holdNext(path ->
                 path.getFileName().toString().equals("project.daw") && path.toString().contains(".saving-as.tmp"));
+        // The exit's FLUSH keeps this Save As's stage, out of the test's reach; once its copy began, only its end
+        // clears its progress dialog.
+        saveAsEnded = () -> fixture.save.saveAsFlow().progressDialog() == null;
         try {
             fixture.closeBox();
             copy.awaitHeld();
+            assertThat(onFx(() -> fixture.save.saveAsFlow().progressDialog())).as("fixture: the copy's progress shows")
+                    .isNotNull();
 
             stopped = fixture.stopTheApplication();
             ExitFixture.awaitStopped(stopped);
@@ -1080,6 +1094,7 @@ class ApplicationStopFallbackTest {
         } finally {
             copy.release();
         }
+        awaitTheSaveAsEnd();
         fixture.save.settle();
 
         assertThat(fixture.save.takeoverHeaders).as("fixture: R7's exit dialog asked once").hasSize(1);
@@ -1387,7 +1402,9 @@ class ApplicationStopFallbackTest {
                 path.getFileName().toString().equals("project.daw") && path.toString().contains(".saving-as.tmp"));
         try {
             fixture.save.saveAsTargets.choose(workspace.resolve("Song A copy"));
-            runOnFx(() -> fixture.save.saveAsFlow().start(SaveAsFlow.Prefill.COPY));
+            CompletableFuture<SaveAsFlow.SaveAsResult> saveAs = onFx(() -> fixture.save.saveAsFlow()
+                    .start(SaveAsFlow.Prefill.COPY)).toCompletableFuture();
+            saveAsEnded = saveAs::isDone;
             copy.awaitHeld();
 
             stopped = fixture.stopTheApplication();
@@ -1404,6 +1421,7 @@ class ApplicationStopFallbackTest {
         } finally {
             copy.release();
         }
+        awaitTheSaveAsEnd();
         fixture.save.settle();
     }
 
@@ -1441,7 +1459,9 @@ class ApplicationStopFallbackTest {
                 path.getFileName().toString().equals("project.daw") && path.toString().contains(".saving-as.tmp"));
         try {
             fixture.save.saveAsTargets.choose(workspace.resolve("Song A copy"));
-            runOnFx(() -> fixture.save.saveAsFlow().start(SaveAsFlow.Prefill.COPY));
+            CompletableFuture<SaveAsFlow.SaveAsResult> saveAs = onFx(() -> fixture.save.saveAsFlow()
+                    .start(SaveAsFlow.Prefill.COPY)).toCompletableFuture();
+            saveAsEnded = saveAs::isDone;
             copy.awaitHeld();
 
             stopped = fixture.stopTheApplication();
@@ -1457,6 +1477,7 @@ class ApplicationStopFallbackTest {
         } finally {
             copy.release();
         }
+        awaitTheSaveAsEnd();
         fixture.save.settle();
     }
 
@@ -1988,6 +2009,25 @@ class ApplicationStopFallbackTest {
             }
             return stopped.isDone();
         }, "the stop let go");
+    }
+
+    /**
+     * Waits, bounded, until the Save As under way at the stop has ended.
+     * Story 333's known limits, Category 5: the application-stop fallback
+     * does not wait for a Save As under way, and in the application the end
+     * of the process cuts it; future story 398 owns a bounded wait for it.
+     * This test JVM goes on, so the Save As goes on by itself and writes into
+     * the workspace; the test waits for its end before the teardown closes
+     * the fixture and deletes the workspace. How it ended is not asserted:
+     * what becomes of a Save As under way at the stop is future story 398's
+     * to decide.
+     */
+    private void awaitTheSaveAsEnd() throws Exception {
+        BooleanSupplier ended = saveAsEnded;
+        saveAsEnded = null;
+        if (ended != null) {
+            fixture.await(ended, "the Save As ended");
+        }
     }
 
     private List<String> messages(Level level) {
