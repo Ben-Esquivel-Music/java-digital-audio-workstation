@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.persistence;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.comping.TakeLane;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 
@@ -22,9 +23,12 @@ import java.util.function.Supplier;
  *
  * <p>{@link #start} runs on the owner thread. It snapshots the clips that
  * qualify — no audio, an {@linkplain AssetReference#isOpenable() openable}
- * reference, and not already a row of the open's missing-assets report —
- * groups them by {@link AssetReference} (one decode per source, decision
- * D4), orders the sources so the playhead's come first (D10), and starts a
+ * reference, and not already a row of the open's missing-assets report;
+ * the main lane's clips and, since story 334, every take lane's, so a swipe
+ * after the open never compiles silent slices — groups them by
+ * {@link AssetReference} (one decode per source, decision D4), orders the
+ * sources the main lane plays first and the playhead's first among them
+ * (D10), and starts a
  * {@link RehydrationSession} that decodes them on virtual threads. Readiness
  * is per clip, not a whole-project gate: playback never waits for the run,
  * and a clip that lands mid-playback joins in place, because rendering is
@@ -121,9 +125,10 @@ public final class ClipRehydrator {
      * decoding happens on the session's decode threads, which report to
      * {@code listener} (see {@link RehydrationListener} for its threading).
      *
-     * <p>The decode order: sources with a clip spanning {@code playheadBeat}
-     * first, then sources by the earliest clip start at or after it, then
-     * the rest by their earliest clip start.</p>
+     * <p>The decode order: the sources a main-lane clip holds, then those
+     * only take-lane clips hold; within each group, sources with a clip
+     * spanning {@code playheadBeat} first, then sources by the earliest clip
+     * start at or after it, then the rest by their earliest clip start.</p>
      *
      * @param project      the project just installed; its sample rate is read here, once
      * @param atOpen       the open's missing-assets report: sources it names are not decoded
@@ -147,29 +152,60 @@ public final class ClipRehydrator {
         return session;
     }
 
-    /** The sources of the qualifying clips, one per asset reference, in decode order. */
+    /**
+     * The sources of the qualifying clips, one per asset reference, in decode
+     * order: first every source a main-lane clip holds — what plays — in the
+     * playhead order (D10) of its main-lane clips; then the sources only
+     * take-lane clips hold (story 334, studio ruling E16), in the playhead
+     * order of their lane clips. Takes that are not heard never delay audio
+     * that is (studio ruling G10). A lane clip holding a source a main-lane
+     * clip holds too — a lap and the comp slices of it share one take key —
+     * gets its audio from that one decode.
+     */
     static List<AssetReference> scheduledSources(DawProject project, MissingAssetsReport skip,
                                                  double playheadBeat) {
-        Map<AssetReference, Placement> placements = new LinkedHashMap<>();
+        Map<AssetReference, Placement> heard = new LinkedHashMap<>();
+        Map<AssetReference, Placement> laneOnly = new LinkedHashMap<>();
         for (Track track : project.getTracks()) {
             for (AudioClip clip : track.getClips()) {
-                if (clip.getAudioData() != null) {
-                    continue;
-                }
-                Optional<AssetReference> source = AssetReference.of(clip);
-                if (source.isEmpty() || !source.get().isOpenable() || skip.contains(source.get())) {
-                    continue;
-                }
-                placements.merge(source.get(), Placement.of(clip, playheadBeat), Placement::merge);
+                place(clip, skip, playheadBeat, heard);
             }
         }
+        for (Track track : project.getTracks()) {
+            for (TakeLane lane : track.getTakeComping().getTakeLanes()) {
+                for (AudioClip clip : lane.getClips()) {
+                    place(clip, skip, playheadBeat, laneOnly);
+                }
+            }
+        }
+        laneOnly.keySet().removeAll(heard.keySet());
+        List<AssetReference> sources = new ArrayList<>(heard.size() + laneOnly.size());
+        sources.addAll(inDecodeOrder(heard));
+        sources.addAll(inDecodeOrder(laneOnly));
+        return List.copyOf(sources);
+    }
+
+    /** Adds {@code clip}'s source to {@code placements} when the clip qualifies (no audio, openable, not reported). */
+    private static void place(AudioClip clip, MissingAssetsReport skip, double playheadBeat,
+                              Map<AssetReference, Placement> placements) {
+        if (clip.getAudioData() != null) {
+            return;
+        }
+        Optional<AssetReference> source = AssetReference.of(clip);
+        if (source.isEmpty() || !source.get().isOpenable() || skip.contains(source.get())) {
+            return;
+        }
+        placements.merge(source.get(), Placement.of(clip, playheadBeat), Placement::merge);
+    }
+
+    private static List<AssetReference> inDecodeOrder(Map<AssetReference, Placement> placements) {
         List<Map.Entry<AssetReference, Placement>> ordered = new ArrayList<>(placements.entrySet());
         ordered.sort(Map.Entry.comparingByValue(Placement.DECODE_ORDER));
         List<AssetReference> sources = new ArrayList<>(ordered.size());
         for (Map.Entry<AssetReference, Placement> entry : ordered) {
             sources.add(entry.getKey());
         }
-        return List.copyOf(sources);
+        return sources;
     }
 
     /**

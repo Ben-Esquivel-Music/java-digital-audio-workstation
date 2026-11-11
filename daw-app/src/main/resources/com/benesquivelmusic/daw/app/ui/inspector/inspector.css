@@ -28,6 +28,8 @@
     -insp-text-mute:   #7A808C;
     -insp-line-soft:   #2A2D36;
     -insp-accent:      #7C8CFF;
+    -insp-warn:        #E6B450;
+    -insp-focus-ring:  #5C8CFF;
 
     -fx-background-color: -insp-surface-2;
     -fx-border-color: -insp-line-soft;
@@ -98,6 +100,31 @@
     -fx-background-color: -insp-surface-3;
     -fx-text-fill: -insp-text;
     -fx-padding: 4 8 4 8;
+}
+
+/* Story 334 (studio-engineer ruling E22) — an offline insert's row in the
+ * INSERTS section: its dot on the warn role, its secondary "Offline" label
+ * muted (the insert does not process). */
+.inspector-drawer .insert-dot-offline {
+    -fx-text-fill: -insp-warn;
+}
+
+.inspector-drawer .inspector-row-offline {
+    -fx-text-fill: -insp-text-mute;
+}
+
+/* Story 334 (ruling R-N1) — the offline word is the row's one keyboard stop:
+ * a button with no button chrome, its muted fill kept. The resting border is
+ * transparent and of the ring's width, so the ring moves nothing. */
+.inspector-drawer .inspector-row-offline-info {
+    -fx-background-color: transparent;
+    -fx-padding: 0;
+    -fx-border-color: transparent;
+    -fx-border-width: 1;
+}
+
+.inspector-drawer .inspector-row-offline-info:focused {
+    -fx-border-color: -insp-focus-ring;
 }
 
 .inspector-drawer .inspector-prepost-toggle {

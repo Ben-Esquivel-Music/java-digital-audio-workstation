@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointEvent;
 import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
+import com.benesquivelmusic.daw.core.persistence.journal.JournalListener;
 import com.benesquivelmusic.daw.core.session.SessionManager;
 import com.benesquivelmusic.daw.core.session.WorkingSession;
 
@@ -34,6 +35,7 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -224,10 +226,27 @@ final class ExitFixture implements AutoCloseable {
     ExitFixture(Path workspace, AutoSaveConfig config, boolean journaling, UnaryOperator<JournalEnding> ending,
                 boolean recoveryGate, com.benesquivelmusic.daw.core.persistence.RecentProjectsStore recentProjects,
                 ProjectDeserializer deserializer) throws Exception {
+        this(workspace, config, journaling, ending, recoveryGate, recentProjects, deserializer,
+                UnaryOperator.identity());
+    }
+
+    /**
+     * @param journaling     whether journaled persistence is on (Song A's journal open and its session opened)
+     * @param ending         wraps the production journal ending (a test holds or fails a seal)
+     * @param recoveryGate   whether the opens run the recovery gate, as the application installs it
+     * @param recentProjects the project manager's recent projects — the list the Welcome window shows — or none
+     *                       when {@code null}
+     * @param deserializer   the project manager's reader of the projects it opens
+     * @param listenerWrap   wraps the listener each journal the coordinator opens reports to (a test holds the
+     *                       journal writer's report of a batch, story 433)
+     */
+    ExitFixture(Path workspace, AutoSaveConfig config, boolean journaling, UnaryOperator<JournalEnding> ending,
+                boolean recoveryGate, com.benesquivelmusic.daw.core.persistence.RecentProjectsStore recentProjects,
+                ProjectDeserializer deserializer, UnaryOperator<JournalListener> listenerWrap) throws Exception {
         save = new SaveFlowFixture(workspace, config, recentProjects, new FxDispatcher(), deserializer);
         songA = save.songA;
         journal = new ProjectJournalCoordinator(save.progress, onFx(NotificationBar::new), save.dispatcher,
-                () -> journaling, () -> bus, save.checkpoints, sessions, InstantSource.system());
+                () -> journaling, () -> bus, save.checkpoints, sessions, InstantSource.system(), listenerWrap);
         checkpointRecording = save.checkpoints.addEventListener(event -> events.add("checkpoint "
                 + event.getClass().getSimpleName() + (event instanceof CheckpointEvent.Written written
                 ? " " + written.origin() : "")));
@@ -541,6 +560,20 @@ final class ExitFixture implements AutoCloseable {
     void awaitTheJournalEnded() throws Exception {
         await(() -> !journal.isOpen(), "the journal end began");
         journal.drainWithoutSealFor(songA, null);
+    }
+
+    /**
+     * Waits until Song A's open journal has appended, fsynced and rotated past
+     * every record offered before the call — a checkpoint marker's rotation
+     * included (ProjectJournalCoordinator#flushOpenJournal) — bounded by GUARD,
+     * so a listing of the folder never races a write in flight (story 433; story
+     * 334, ruling R-T1). It may run on the FX thread: the journal writer only
+     * posts to that thread, never waits for it.
+     */
+    void awaitJournalWrites() throws Exception {
+        CompletableFuture.runAsync(journal::flushOpenJournal,
+                        task -> Thread.ofVirtual().name("exit-fixture-journal-barrier").start(task))
+                .get(SaveFlowFixture.GUARD.toMillis(), TimeUnit.MILLISECONDS);
     }
 
     /** The progress surface made last. */

@@ -159,6 +159,18 @@ class TransportTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    /** Story 334, studio ruling E10.5: NaN is refused like an out-of-range tempo, and the tempo stays. */
+    @Test
+    void shouldRejectANaNTempo() {
+        Transport transport = new Transport();
+        transport.setTempo(97.5);
+        assertThatThrownBy(() -> transport.setTempo(Double.NaN))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> transport.setTempo(Double.POSITIVE_INFINITY))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(transport.getTempo()).isEqualTo(97.5);
+    }
+
     @Test
     void shouldSetTimeSignature() {
         Transport transport = new Transport();

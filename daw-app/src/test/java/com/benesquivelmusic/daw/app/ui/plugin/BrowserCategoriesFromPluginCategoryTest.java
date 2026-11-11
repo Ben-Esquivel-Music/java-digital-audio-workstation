@@ -2,13 +2,19 @@ package com.benesquivelmusic.daw.app.ui.plugin;
 
 import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
 import com.benesquivelmusic.daw.app.ui.plugin.PluginBrowser.BrowserRow;
+import com.benesquivelmusic.daw.app.ui.plugin.PluginBrowser.BuiltInRow;
 import com.benesquivelmusic.daw.app.ui.plugin.PluginBrowser.GroupRow;
 import com.benesquivelmusic.daw.app.ui.plugin.fixtures.InstallFixturePluginA;
 import com.benesquivelmusic.daw.app.ui.plugin.fixtures.InstallFixturePluginC;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
-import com.benesquivelmusic.daw.core.plugin.ExternalPluginEntry;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.sdk.editor.PluginManifest;
+
+import javafx.scene.control.ButtonBar;
+import javafx.scene.control.ButtonType;
+import javafx.scene.control.DialogPane;
+import javafx.scene.control.TreeItem;
+import javafx.scene.control.TreeView;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -16,6 +22,9 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Locale;
+import java.util.Optional;
+import java.util.stream.Stream;
 
 import static com.benesquivelmusic.daw.app.ui.snapshot.FxSnapshotTest.runOnFxThread;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -44,8 +53,8 @@ class BrowserCategoriesFromPluginCategoryTest {
 
         PluginRegistry registry = new PluginRegistry();
         try {
-            registry.register(new ExternalPluginEntry(jar, InstallFixturePluginA.class.getName()));
-            registry.register(new ExternalPluginEntry(jar, InstallFixturePluginC.class.getName()));
+            PluginTestJars.install(registry, jar, InstallFixturePluginA.class);
+            PluginTestJars.install(registry, jar, InstallFixturePluginC.class);
 
             List<BrowserRow> model = PluginBrowser.buildModel(
                     InsertEffectFactory.availableTypes(), true, registry.getLoadedPlugins());
@@ -89,6 +98,69 @@ class BrowserCategoriesFromPluginCategoryTest {
         } finally {
             registry.disposeAll();
         }
+    }
+
+    /**
+     * Story 334, ruling R-N2: a search keeps the plugin the user chose while
+     * the filtered tree still lists it, so Add stays enabled; a search that
+     * hides it drops it, and clearing the search does not bring it back.
+     */
+    @Test
+    void aSearchKeepsAChoiceItStillListsAndDropsOneItHides() {
+        PluginBrowser browser = runOnFxThread(() -> new PluginBrowser(null, true, "Test / Insert 1"));
+        BrowserRow chosen = runOnFxThread(() -> {
+            TreeView<BrowserRow> tree = browser.treeForTest();
+            TreeItem<BrowserRow> first = rowsUnder(tree.getRoot())
+                    .filter(item -> item.getValue() instanceof BuiltInRow)
+                    .findFirst()
+                    .orElseThrow();
+            tree.getSelectionModel().select(first);
+            return first.getValue();
+        });
+
+        search(browser, chosen.displayText().toLowerCase(Locale.ROOT));
+        assertThat(selectedRow(browser)).as("the search still lists the choice: it stays chosen").contains(chosen);
+        assertThat(addDisabled(browser)).as("Add stays enabled").isFalse();
+
+        search(browser, "no-such-plugin");
+        assertThat(selectedRow(browser)).as("the search hides the choice: nothing is selected").isEmpty();
+        assertThat(addDisabled(browser)).as("Add is disabled").isTrue();
+
+        search(browser, "");
+        assertThat(selectedRow(browser)).as("clearing the search does not bring the choice back").isEmpty();
+    }
+
+    // ── Browser helpers ───────────────────────────────────────────────────────
+
+    /** Types {@code query} into the browser's search box, on the FX thread. */
+    private static void search(PluginBrowser browser, String query) {
+        runOnFxThread(() -> {
+            browser.applyFilterForTest(query);
+            return Boolean.TRUE;
+        });
+    }
+
+    /** Every row under {@code item}, depth first in tree order; {@code item} itself is not one of them. */
+    private static Stream<TreeItem<BrowserRow>> rowsUnder(TreeItem<BrowserRow> item) {
+        return item.getChildren().stream().flatMap(child -> Stream.concat(Stream.of(child), rowsUnder(child)));
+    }
+
+    /** The browser's selected row; empty when nothing is selected. */
+    private static Optional<BrowserRow> selectedRow(PluginBrowser browser) {
+        return runOnFxThread(() -> Optional.ofNullable(browser.treeForTest().getSelectionModel().getSelectedItem())
+                .map(TreeItem::getValue));
+    }
+
+    /** Whether the browser's Add button is disabled; found by its button data, as the footer lays it out. */
+    private static boolean addDisabled(PluginBrowser browser) {
+        return runOnFxThread(() -> {
+            DialogPane pane = browser.getDialogPane();
+            ButtonType add = pane.getButtonTypes().stream()
+                    .filter(type -> type.getButtonData() == ButtonBar.ButtonData.OK_DONE)
+                    .findFirst()
+                    .orElseThrow();
+            return pane.lookupButton(add).isDisabled();
+        });
     }
 
     // ── Model navigation helpers ──────────────────────────────────────────────

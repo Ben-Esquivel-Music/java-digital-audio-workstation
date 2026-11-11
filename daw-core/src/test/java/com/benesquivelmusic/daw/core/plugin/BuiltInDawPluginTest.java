@@ -199,4 +199,21 @@ class BuiltInDawPluginTest {
             assertThat(entry.category()).isEqualTo(plugin.getCategory());
         }
     }
+
+    /**
+     * Story 334: a saved first-party insert resolves by its descriptor id
+     * among this build's own providers, each lookup a fresh instance.
+     */
+    @Test
+    void createByIdMakesAFreshInstanceOfThePluginWithThatId() {
+        for (BuiltInDawPlugin discovered : BuiltInDawPlugin.discoverAll()) {
+            String id = discovered.getDescriptor().id();
+            BuiltInDawPlugin created = BuiltInDawPlugin.createById(id).orElseThrow();
+            assertThat(created.getClass()).as(id).isEqualTo(discovered.getClass());
+            assertThat(created).as("a fresh instance").isNotSameAs(BuiltInDawPlugin.createById(id).orElseThrow());
+        }
+        assertThat(BuiltInDawPlugin.createById("com.benesquivelmusic.daw.x")).isEmpty();
+        assertThat(BuiltInDawPlugin.createById(DeEsserPlugin.class.getName()))
+                .as("a class name is not an id").isEmpty();
+    }
 }

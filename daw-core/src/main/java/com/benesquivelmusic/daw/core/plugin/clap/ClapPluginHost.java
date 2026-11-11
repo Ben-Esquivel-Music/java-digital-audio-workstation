@@ -486,6 +486,17 @@ public final class ClapPluginHost implements ExternalPluginHost {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Empty when the plugin has no state extension or is not initialized.
+     * A {@code clap_plugin_state.save} that returns {@code false} or fails
+     * throws instead of returning empty, so that a failed save is never
+     * taken for "no state" (story 334, studio ruling E10.2).</p>
+     *
+     * @throws IllegalStateException when the plugin supports state but did
+     *                               not save it
+     */
     @Override
     public byte[] saveState() {
         if (stateSave == null || pluginSegment == null) {
@@ -507,24 +518,44 @@ public final class ClapPluginHost implements ExternalPluginHost {
                     ClapBindings.CLAP_OSTREAM_LAYOUT.byteOffset(
                             MemoryLayout.PathElement.groupElement("write")),
                     writeStub);
+            boolean ok;
             try {
-                boolean ok = (boolean) stateSave.invoke(pluginSegment, ostream);
-                return ok ? output.toByteArray() : new byte[0];
+                ok = (boolean) stateSave.invoke(pluginSegment, ostream);
             } catch (Throwable e) {
-                return new byte[0];
+                throw new IllegalStateException("The CLAP plugin failed to save its state", e);
             }
+            if (!ok) {
+                throw new IllegalStateException("The CLAP plugin did not save its state");
+            }
+            return output.toByteArray();
         } finally {
             CURRENT_WRITE_TARGET.remove();
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>An empty state loads nothing. A non-empty state given to a plugin
+     * with no state extension, or not initialized, and a
+     * {@code clap_plugin_state.load} that returns {@code false}, are the
+     * plugin not taking the state (story 334, studio ruling E4).</p>
+     *
+     * @throws PluginStateRejectedException when the plugin has no state
+     *                                      support for a non-empty state, or
+     *                                      reports that it did not load it
+     * @throws ClapException                when the load call itself fails
+     */
     @Override
     public void loadState(byte[] state) {
         Objects.requireNonNull(state, "state must not be null");
-        if (stateLoad == null || pluginSegment == null || state.length == 0) {
-            // Plugin does not support the state extension, is not initialized,
-            // or there is nothing to restore.
+        if (state.length == 0) {
+            // There is nothing to restore.
             return;
+        }
+        if (stateLoad == null || pluginSegment == null) {
+            // The plugin does not support the state extension, or is not initialized.
+            throw new PluginStateRejectedException("the plugin has no state support");
         }
 
         CURRENT_READ_SOURCE.set(state);
@@ -541,10 +572,14 @@ public final class ClapPluginHost implements ExternalPluginHost {
                     ClapBindings.CLAP_ISTREAM_LAYOUT.byteOffset(
                             MemoryLayout.PathElement.groupElement("read")),
                     readStub);
+            boolean ok;
             try {
-                stateLoad.invoke(pluginSegment, istream);
+                ok = (boolean) stateLoad.invoke(pluginSegment, istream);
             } catch (Throwable e) {
                 throw new ClapException("Failed to load plugin state: " + e.getMessage(), e);
+            }
+            if (!ok) {
+                throw new PluginStateRejectedException("the plugin reported that it did not load its state");
             }
         } finally {
             CURRENT_READ_SOURCE.remove();

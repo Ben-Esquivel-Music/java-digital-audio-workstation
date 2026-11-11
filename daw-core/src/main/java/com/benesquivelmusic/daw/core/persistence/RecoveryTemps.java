@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.persistence;
 
+import com.benesquivelmusic.daw.core.project.DawProject;
 import org.w3c.dom.Document;
 
 import java.io.IOException;
@@ -108,12 +109,15 @@ public record RecoveryTemps(List<Path> files, Path newerHead) {
         } catch (IOException notWellFormed) {
             return false;
         }
+        DawProject checked;
         try {
-            new ProjectDeserializer().deserialize(document, folder);
+            checked = new ProjectDeserializer().deserialize(document, folder);
         } catch (RuntimeException refused) {
             throw new IOException("The interrupted save " + temp + " could not be checked for recovery ("
                     + reason(refused) + "); nothing was deleted", refused);
         }
+        // The read is a check only: release the plugins its inserts built (story 334).
+        ProjectDeserializer.disposeUnopened(checked);
         return true;
     }
 

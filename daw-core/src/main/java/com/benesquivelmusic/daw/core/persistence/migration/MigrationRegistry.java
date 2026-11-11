@@ -42,7 +42,16 @@ public final class MigrationRegistry {
      * versions and what each changed are listed in the "Schema Version
      * History" section of {@code docs/project-migrations.md}.
      */
-    public static final int CURRENT_VERSION = 2;
+    public static final int CURRENT_VERSION = 3;
+
+    /**
+     * What the format-only 2 → 3 step adds (story 334): the schema gains
+     * plugin insert descriptors, take lanes, comp regions and the tempo map,
+     * which a schema 2 file simply lacks, so the step changes nothing in the
+     * document but its version.
+     */
+    static final String TAKES_TEMPO_AND_PLUGIN_DESCRIPTORS =
+            "add plugin insert descriptors, take lanes, comp regions and the tempo map";
 
     /**
      * The number of versions before "now" beyond which migrations can be
@@ -253,10 +262,11 @@ public final class MigrationRegistry {
     /**
      * Returns the registry baked into this build. The current schema
      * version is {@value #CURRENT_VERSION}; the registry holds exactly one
-     * migration per step from version 1 up to it — today the single
-     * format-only 1 → 2 step that keys MIDI effects by their plugin id.
-     * Future schema bumps must register exactly one migration per step
-     * here.
+     * migration per step from version 1 up to it — today the format-only
+     * 1 → 2 and 2 → 3 steps: the first keys MIDI effects by their plugin
+     * id, the second only marks the schema that adds plugin insert
+     * descriptors, take lanes, comp regions and the tempo map. Future schema
+     * bumps must register exactly one migration per step here.
      */
     public static MigrationRegistry defaultRegistry() {
         return DefaultRegistryHolder.INSTANCE;
@@ -302,6 +312,8 @@ public final class MigrationRegistry {
         private static final MigrationRegistry INSTANCE =
                 MigrationRegistry.builder(CURRENT_VERSION)
                         .add(MidiEffectPluginIdMigration.step())
+                        .add(ProjectMigration.formatOnly(2, TAKES_TEMPO_AND_PLUGIN_DESCRIPTORS,
+                                document -> document))
                         .build();
     }
 }

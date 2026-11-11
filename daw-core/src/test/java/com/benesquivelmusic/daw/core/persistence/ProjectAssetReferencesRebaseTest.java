@@ -139,7 +139,7 @@ class ProjectAssetReferencesRebaseTest {
     }
 
     @Test
-    void theWalkCollectsEveryLaneOnceButTheArchiveWalkKeepsItsSavedHolders() {
+    void theWalkCollectsEveryLaneOnceAndTheArchiveWalkHoldsEveryLaneToo() {
         DawProject project = new DawProject("Song A", AudioFormat.CD_QUALITY);
         Track vox = project.createAudioTrack("Vox");
         AudioClip onTrack = new AudioClip("track", 0, 4, tmp.resolve("a.wav").toString());
@@ -158,7 +158,8 @@ class ProjectAssetReferencesRebaseTest {
 
         assertThat(every).as("the track's clips, then the lane's, a clip held twice once")
                 .containsExactly(onTrack.getSourceFilePath(), laneClip.getSourceFilePath());
-        assertThat(saved).as("not auditioning, the saved holders are the track's clips alone")
-                .containsExactly(onTrack.getSourceFilePath());
+        assertThat(saved).as("the saved holders are the track's clips, then every lane's — the project saves"
+                        + " every lane (story 334, studio ruling E16) — a clip held twice once")
+                .containsExactly(onTrack.getSourceFilePath(), laneClip.getSourceFilePath());
     }
 }

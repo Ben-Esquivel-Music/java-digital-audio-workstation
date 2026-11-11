@@ -63,9 +63,9 @@ class MixerChannelStripInsertDotPaintTest {
         Color[] fills = runOnFxThread(() -> {
             MixerChannelStrip strip = new MixerChannelStrip();
             // index 0: active + not bypassed  → dot must be -mcs-accent
-            strip.insertsProperty().add(new InsertSlotModel("EQ", true, false));
+            strip.insertsProperty().add(new InsertSlotModel("EQ", true, false, false, "EQ"));
             // index 1: bypassed               → dot must be -mcs-text-mute
-            strip.insertsProperty().add(new InsertSlotModel("Comp", true, true));
+            strip.insertsProperty().add(new InsertSlotModel("Comp", true, true, false, "Comp"));
 
             StackPane root = new StackPane(strip);
             root.getStyleClass().add("root-pane");

@@ -1,9 +1,13 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.dialogs.RecoveryChoice;
+import com.benesquivelmusic.daw.app.ui.plugin.fixtures.LevelInsertFixture;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.persistence.*;
 import com.benesquivelmusic.daw.core.persistence.journal.*;
+import com.benesquivelmusic.daw.core.plugin.LoadedPlugin;
+import com.benesquivelmusic.daw.core.plugin.PluginResolution;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.session.SessionManager;
 import org.junit.jupiter.api.Test;
@@ -684,6 +688,65 @@ class OpenRecoveryGateTest {
         assertThat(Files.readAllBytes(folder.resolve("project.daw"))).isEqualTo(head);
         assertThat(Evidence.of(folder)).isEqualTo(before);
     }
+
+    /**
+     * Story 334 (critique J11) — the replayed project is read only to be written as the head, and nothing
+     * installs it: whether that write succeeds or fails, the plugins its read built are released, once.
+     */
+    @org.junit.jupiter.params.ParameterizedTest(name = "the write fails: {0}")
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void theReplayedProjectReleasesItsPluginsWhetherItsWriteSucceedsOrFails(boolean writeFails) throws Exception {
+        Path folder = project("Song");
+        crash(folder);
+        AtomicInteger releases = new AtomicInteger();
+        ProjectDeserializer reader = new ProjectDeserializer();
+        reader.setPluginResolver((identity, context) -> {
+            LevelInsertFixture plugin = new LevelInsertFixture();
+            plugin.initialize(context);
+            return new PluginResolution.Resolved(new LoadedPlugin(plugin, releases::incrementAndGet));
+        });
+        DawProject replayed = reader.deserialize(WITH_A_PLUGIN_INSERT);
+        assertThat(replayed.getMixerChannelForTrack(replayed.getTracks().getFirst()).getInsertSlots())
+                .as("fixture: the replay's read built the plugin").singleElement()
+                .extracting(InsertSlot::getPlugin).isInstanceOf(LevelInsertFixture.class);
+
+        Throwable thrown = catchThrowable(() -> recoverEverything(folder, (head, content, beforeReplace) -> {
+            if (writeFails) throw new IOException("the head could not be replaced");
+            beforeReplace.verify();
+            replaceHead(head, content);
+        }, plan -> new RecoveryResult(replayed, 1, List.of())));
+
+        if (writeFails) {
+            assertThat(thrown).as("fixture: the write failed").isNotNull();
+        } else {
+            assertThat(thrown).isNull();
+            assertThat(Files.readString(folder.resolve("project.daw"))).as("fixture: the replay was written")
+                    .contains("plugin-id=\"test.level\"");
+        }
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (releases.get() == 0 && System.nanoTime() - deadline < 0) {
+            Thread.sleep(10);
+        }
+        assertThat(releases).as("the replayed project's plugin is released once").hasValue(1);
+    }
+
+    /** One track whose strip holds the Level JAR plugin. */
+    private static final String WITH_A_PLUGIN_INSERT = """
+            <daw-project version="%d">
+              <metadata><name>Song</name></metadata>
+              <audio-format sample-rate="48000.0" channels="2" bit-depth="24" buffer-size="256"/>
+              <tracks>
+                <track id="00000000-0000-0000-0000-0000000000a1" name="Vox" type="AUDIO"/>
+              </tracks>
+              <mixer>
+                <master volume="1.0"/>
+                <channels>
+                  <channel volume="1.0"><inserts><insert bypassed="false" expensive="false" name="Level" plugin-id="test.level" plugin-source="jar" plugin-version="1.0"/></inserts></channel>
+                </channels>
+                <return-buses/>
+              </mixer>
+            </daw-project>
+            """.formatted(com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION);
 
     /** A chooser that may touch the disk; it runs after the plan is built and before the choice acts. */
     @FunctionalInterface private interface Chooser { RecoveryChoice choose(RecoverySummary summary) throws IOException; }

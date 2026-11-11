@@ -1,5 +1,10 @@
 package com.benesquivelmusic.daw.app.ui.plugin;
 
+import com.benesquivelmusic.daw.core.plugin.ExternalPluginEntry;
+import com.benesquivelmusic.daw.core.plugin.ExternalPluginLoader;
+import com.benesquivelmusic.daw.core.plugin.InstalledPlugin;
+import com.benesquivelmusic.daw.core.plugin.PluginLoadException;
+import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.sdk.editor.PluginManifest;
 import com.benesquivelmusic.daw.sdk.editor.PluginManifestReader;
 import com.benesquivelmusic.daw.sdk.editor.PluginManifestWriter;
@@ -24,8 +29,11 @@ import java.util.jar.JarOutputStream;
  * the fixture through the parent test classpath anyway — the loader's
  * {@code URLClassLoader} delegates to its parent — so the on-disk JAR need only
  * exist. Copying the bytes keeps the JAR honest rather than empty.</p>
+ *
+ * <p>Public, with public methods, for the story-334 tests outside this package
+ * that install a plugin as the install flow does ({@link #install}).</p>
  */
-final class PluginTestJars {
+public final class PluginTestJars {
 
     private PluginTestJars() {
         // test utility
@@ -43,7 +51,7 @@ final class PluginTestJars {
      * @param classes   the fixture classes whose bytes to embed
      * @return the JAR path
      */
-    static Path buildJar(Path dir, String jarName,
+    public static Path buildJar(Path dir, String jarName,
                          List<PluginManifest> manifests, List<Class<?>> classes) throws IOException {
         String json = manifests == null || manifests.isEmpty()
                 ? null
@@ -62,7 +70,7 @@ final class PluginTestJars {
      * @param classes      the fixture classes whose bytes to embed
      * @return the JAR path
      */
-    static Path buildJarWithManifestJson(Path dir, String jarName,
+    public static Path buildJarWithManifestJson(Path dir, String jarName,
                                          String manifestJson, List<Class<?>> classes) throws IOException {
         Path jar = dir.resolve(jarName);
         try (JarOutputStream out = new JarOutputStream(Files.newOutputStream(jar))) {
@@ -93,12 +101,34 @@ final class PluginTestJars {
      * @param cls the fixture class
      * @return the manifest
      */
-    static PluginManifest manifest(Class<? extends DawPlugin> cls) {
+    public static PluginManifest manifest(Class<? extends DawPlugin> cls) {
         try {
             DawPlugin instance = cls.getDeclaredConstructor().newInstance();
             return new PluginManifest(cls.getName(), instance.getDescriptor());
         } catch (ReflectiveOperationException e) {
             throw new IllegalStateException("cannot instantiate fixture " + cls, e);
         }
+    }
+
+    /**
+     * Installs the plugin {@code type} from {@code jar} as the install flow
+     * does (story 334): the registry's copy of the JAR, a catalogue instance
+     * loaded with a class loader of its own, and the manifest as provenance;
+     * an entry of the same id it replaces is released at once.
+     *
+     * @param registry the registry to install into
+     * @param jar      a JAR built by {@link #buildJar} that declares {@code type}
+     * @param type     the fixture class
+     * @return the catalogue instance and its class loader
+     */
+    public static ExternalPluginLoader.LoadResult install(PluginRegistry registry, Path jar,
+                                                          Class<? extends DawPlugin> type)
+            throws IOException, PluginLoadException {
+        PluginManifest manifest = manifest(type);
+        ExternalPluginEntry entry = new ExternalPluginEntry(registry.stageJar(jar, manifest), type.getName());
+        ExternalPluginLoader.LoadResult loaded = ExternalPluginLoader.loadWithClassLoader(entry);
+        registry.install(new InstalledPlugin(entry, manifest, jar.getFileName().toString()), loaded)
+                .ifPresent(removed -> removed.disposal().run());
+        return loaded;
     }
 }

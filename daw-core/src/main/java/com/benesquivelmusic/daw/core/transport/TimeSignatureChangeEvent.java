@@ -7,7 +7,7 @@ package com.benesquivelmusic.daw.core.transport;
  * along with the new numerator (beats per bar) and denominator (note value
  * of each beat).</p>
  *
- * @param positionInBeats the beat position where this time signature change occurs (must be &ge; 0)
+ * @param positionInBeats the beat position where this time signature change occurs (finite and &ge; 0)
  * @param numerator       beats per bar (must be positive)
  * @param denominator     note value of each beat (must be positive)
  */
@@ -15,12 +15,14 @@ public record TimeSignatureChangeEvent(double positionInBeats, int numerator, in
         implements Comparable<TimeSignatureChangeEvent> {
 
     /**
-     * Creates a time signature change event with validation.
+     * Creates a time signature change event with validation: a position that
+     * is not finite is refused like a negative one (story 334, studio ruling
+     * E10.5).
      */
     public TimeSignatureChangeEvent {
-        if (positionInBeats < 0) {
+        if (!Double.isFinite(positionInBeats) || positionInBeats < 0) {
             throw new IllegalArgumentException(
-                    "positionInBeats must not be negative: " + positionInBeats);
+                    "positionInBeats must be finite and not negative: " + positionInBeats);
         }
         if (numerator <= 0) {
             throw new IllegalArgumentException(

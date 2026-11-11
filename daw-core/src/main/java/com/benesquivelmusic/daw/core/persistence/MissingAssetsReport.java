@@ -8,7 +8,9 @@ import com.benesquivelmusic.daw.core.track.Track;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -31,7 +33,8 @@ import java.util.Set;
  * missing} ones (a row that silences clips) and the
  * {@linkplain #shorterAssetCount() shorter} ones (a file that holds less than
  * its clips span, loaded as it is); {@link #silentClipCount()} counts the
- * distinct clips that have no audio because of a row.</p>
+ * distinct main-lane clips that have no audio because of a row (a take-lane
+ * clip does not play, so it is never silent).</p>
  *
  * <p>Reference tracks are not rows: nothing loads their audio yet (future
  * story 359), so a relink would restore nothing. Their missing paths are
@@ -77,9 +80,12 @@ public record MissingAssetsReport(List<MissingAsset> assets, List<String> missin
      *   <li>A reference-track file in {@code missingFiles} goes to
      *       {@link #missingReferenceTrackPaths()}.</li>
      * </ul>
-     * Rows are in project order (tracks, then each track's clips); every
-     * clip holding a row's reference is a holder, and the holders without
-     * audio are its silent clips.
+     * Rows are in project order (tracks, then each track's main-lane clips,
+     * then its take lanes' clips, lane by lane); every clip holding a row's
+     * reference is a holder — a take-lane clip included, so a missing file
+     * only an unselected take holds is a missing asset (story 334, studio
+     * ruling E16) — and the main-lane holders without audio are its silent
+     * clips: a take-lane clip does not play, so it is never a silent clip.
      *
      * @param project          the deserialized project
      * @param missingFiles     the deserializer's missing references (may repeat)
@@ -94,7 +100,9 @@ public record MissingAssetsReport(List<MissingAsset> assets, List<String> missin
         Map<AssetReference, List<MissingAsset.Holder>> holders = new LinkedHashMap<>();
         Map<AssetReference, List<MissingAsset.Holder>> silent = new LinkedHashMap<>();
         for (Track track : project.getTracks()) {
-            for (AudioClip clip : track.getClips()) {
+            Set<AudioClip> mainLane = Collections.newSetFromMap(new IdentityHashMap<>());
+            mainLane.addAll(track.getClips());
+            for (AudioClip clip : ProjectAssetReferences.everyClipOf(track)) {
                 Optional<AssetReference> reference = AssetReference.of(clip);
                 if (reference.isEmpty()) {
                     continue;
@@ -103,7 +111,7 @@ public record MissingAssetsReport(List<MissingAsset> assets, List<String> missin
                 holders.computeIfAbsent(reference.get(), key -> new ArrayList<>()).add(holder);
                 List<MissingAsset.Holder> silentOfReference =
                         silent.computeIfAbsent(reference.get(), key -> new ArrayList<>());
-                if (clip.getAudioData() == null) {
+                if (clip.getAudioData() == null && mainLane.contains(clip)) {
                     silentOfReference.add(holder);
                 }
             }
@@ -254,8 +262,9 @@ public record MissingAssetsReport(List<MissingAsset> assets, List<String> missin
     }
 
     /**
-     * Returns the number of distinct clips that have no audio because of a
-     * row — every row's {@link MissingAsset#silentHolders()} together. A
+     * Returns the number of distinct main-lane clips that have no audio
+     * because of a row — every row's {@link MissingAsset#silentHolders()}
+     * together; a take-lane clip is never one. A
      * {@link MissingAssetReason#CHANGED_ON_DISK} row adds none; an
      * {@link MissingAssetReason#ADM_OBJECT_UNKNOWN} row adds only the clips
      * it silences.

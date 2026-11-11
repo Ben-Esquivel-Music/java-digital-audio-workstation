@@ -132,6 +132,11 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
     static final int VISIBLE_INSERTS = 4;
     /** Visible send slot rows before the overflow indicator (§5.4). */
     static final int VISIBLE_SENDS = 2;
+    /**
+     * Style class of an offline insert's status dot (story 334, ruling E22),
+     * filled with {@code -mcs-warn} by {@code mixer-channel-strip.css}.
+     */
+    private static final String OFFLINE_STYLE_CLASS = "offline";
 
     // Proportional-layout bands (story §5.4 "no fixed pixel offsets keyed to
     // a single default"). Single-sourced here so insert rows, send rows and
@@ -530,6 +535,9 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
     private Node insertRow(int index, InsertSlotModel slot) {
         Label name = new Label(slot.name());
         name.getStyleClass().add("mixer-channel-strip-slot-name");
+        // The row's words go on its name, which assistive technology reads; a layout
+        // row is not exposed to it (story 334, ruling R-N1).
+        name.setAccessibleText(slot.accessibleText());
         name.setMaxWidth(Double.MAX_VALUE);
         HBox.setHgrow(name, Priority.ALWAYS);
 
@@ -538,8 +546,12 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
         // The active/bypassed colour is decided once, here, by the shared
         // helper; the .active style class is consumed by
         // mixer-channel-strip.css so the rendered fill and the
-        // insertDotActive(int) test seam cannot disagree.
-        if (insertDotActive(slot)) {
+        // insertDotActive(int) test seam cannot disagree. An offline slot
+        // (story 334, ruling E22) is never active: its dot takes .offline,
+        // which the stylesheet fills with -mcs-warn.
+        if (slot.offline()) {
+            dot.getStyleClass().add(OFFLINE_STYLE_CLASS);
+        } else if (insertDotActive(slot)) {
             dot.getStyleClass().add("active");
         }
 

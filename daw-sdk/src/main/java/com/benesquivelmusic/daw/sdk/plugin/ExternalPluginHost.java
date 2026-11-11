@@ -98,16 +98,25 @@ public interface ExternalPluginHost extends DawPlugin, AudioProcessor {
      * <p>The returned bytes can later be passed to {@link #loadState(byte[])}
      * to restore the plugin to this exact configuration.</p>
      *
-     * @return the serialized state, or an empty array if the plugin does
-     *         not support state persistence
+     * @return the serialized state; empty when the plugin has no state
+     *         support
+     * @throws IllegalStateException when the plugin supports state but failed
+     *                               to save it — never reported as an empty
+     *                               state, which a caller would take for "no
+     *                               state"
      */
     byte[] saveState();
 
     /**
-     * Restores the plugin state from a previously saved byte array.
+     * Restores the plugin state from a previously saved byte array. An empty
+     * array restores nothing.
      *
      * @param state the serialized state obtained from {@link #saveState()}
-     * @throws IllegalArgumentException if the state data is invalid or corrupt
+     * @throws PluginStateRejectedException when the plugin itself reports that
+     *                                      it did not take the state, or has
+     *                                      no state support but was given a
+     *                                      non-empty state
+     * @throws IllegalArgumentException     if the state data is invalid or corrupt
      */
     void loadState(byte[] state);
 }

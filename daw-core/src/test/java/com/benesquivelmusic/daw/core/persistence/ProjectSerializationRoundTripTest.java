@@ -948,6 +948,13 @@ class ProjectSerializationRoundTripTest {
         InsertSlot restoredSlot = restoredChannel.getInsertSlots().get(0);
         // Invalid source index should result in null (no sidechain)
         assertThat(restoredSlot.getSidechainSource()).isNull();
+        // ... and the open reports the removed assignment (story 334, studio ruling E12 R14).
+        assertThat(deserializer.getUnreadItems()).singleElement().satisfies(item -> {
+            assertThat(item.kind()).isEqualTo(UnreadProjectItem.Kind.MIXER_REFERENCE_REMOVED);
+            assertThat(item.location()).isEqualTo(new UnreadProjectItem.OnTrack(0, "Track"));
+            assertThat(item.detail()).isEqualTo("insert 1 'Compressor' sidechain-source 'channel:99' names no strip"
+                    + " in this project; the insert detects on its own input");
+        });
     }
 
     @Test

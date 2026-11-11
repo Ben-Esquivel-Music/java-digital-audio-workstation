@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.mixer;
 import com.benesquivelmusic.daw.core.audio.EffectsChain;
 import com.benesquivelmusic.daw.core.concurrent.ChangeNotifier;
 import com.benesquivelmusic.daw.core.plugin.PluginInvocationSupervisor;
+import com.benesquivelmusic.daw.core.plugin.PluginResolution;
 import com.benesquivelmusic.daw.core.track.TrackColor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
@@ -629,23 +630,60 @@ public final class MixerChannel {
         return false;
     }
 
-    /** Project shutdown retires processors; rack view refresh never owns this operation. */
+    /**
+     * Project shutdown retires processors; rack view refresh never owns this operation.
+     *
+     * <p>Every slot is disposed, whatever another slot's plugin throws as it
+     * is disposed — a checked exception it does not declare, a
+     * {@link StackOverflowError}, one exception instance the plugins of two
+     * slots both throw, even the virtual machine's own error, which waits
+     * until every slot is disposed (story 334, findings FX2-5 and FX2-7, and
+     * the final review's NIT-1). The returned future then fails with the first
+     * failure, the others suppressed into it; the virtual machine's own error
+     * comes first ({@link PluginResolution.FailedToLoad#isFatal}).</p>
+     *
+     * @return completes once every slot is disposed
+     */
     public synchronized java.util.concurrent.CompletableFuture<Void> disposeInsertsWhenQuiescent() {
         List<InsertSlot> retired = List.copyOf(ownedSlots);
         ownedSlots.clear();
         insertSlots.clear();
         insertSnapshot = List.of();
         return effectsChain.retireAll(() -> {
-            RuntimeException failure = null;
+            Throwable failure = null;
             for (InsertSlot slot : retired) {
                 try {
                     slot.disposeAfterQuiescence();
-                } catch (RuntimeException e) {
-                    if (failure == null) { failure = e; } else { failure.addSuppressed(e); }
+                } catch (Throwable failed) {
+                    failure = withFailure(failure, failed);
                 }
             }
-            if (failure != null) { throw failure; }
+            switch (failure) {
+                case null -> { }
+                case RuntimeException unchecked -> throw unchecked;
+                case Error error -> throw error;
+                default -> throw new IllegalStateException("A plugin failed while its insert was disposed", failure);
+            }
         });
+    }
+
+    /**
+     * {@code failed} added to {@code failure}, the first so far: the virtual
+     * machine's own error leads. The same instance thrown again — a plugin's
+     * shared exception, thrown by two of its slots — is kept once, never
+     * suppressed into itself, which {@link Throwable#addSuppressed} refuses by
+     * throwing (story 334, the final review's NIT-1).
+     */
+    private static Throwable withFailure(Throwable failure, Throwable failed) {
+        if (failure == null || failed == failure) {
+            return failed;
+        }
+        if (PluginResolution.FailedToLoad.isFatal(failed) && !PluginResolution.FailedToLoad.isFatal(failure)) {
+            failed.addSuppressed(failure);
+            return failed;
+        }
+        failure.addSuppressed(failed);
+        return failure;
     }
 
     /**

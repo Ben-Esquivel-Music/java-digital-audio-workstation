@@ -97,7 +97,16 @@ class ProjectSchemaParityContractTest {
                     "writes an UnresolvedMidiEffect back with the attribute names it was read with: the names"
                     + " come from the file, not from this build, and the deserializer reads all of them"
                     + " in bulk (getAttributes() in ProjectDeserializer.unresolvedMidiEffect), which handles"
-                    + " the names no writer holds as literals; plugin-id is read by name"));
+                    + " the names no writer holds as literals; plugin-id is read by name"),
+            new PersistenceSourceScan.DynamicWriteSite("ProjectSerializer.java",
+                    "written.forEach(slotElem::setAttribute)",
+                    "writes an offline insert back with the attribute names it was read with: the names come from"
+                    + " the file; the deserializer copies them in bulk (savedAttributes in ProjectDeserializer)"
+                    + " after reading every name this build writes on an <insert> by name"),
+            new PersistenceSourceScan.DynamicWriteSite("ProjectSerializer.java",
+                    "child.attributes().forEach(childElem::setAttribute)",
+                    "writes an offline insert's <parameter> and <plugin-state> children back with the attribute"
+                    + " names they were read with, copied in bulk by savedAttributes"));
 
     /**
      * The only methods allowed to create an element whose tag is a parameter.
@@ -120,8 +129,9 @@ class ProjectSchemaParityContractTest {
     static final List<PersistenceSourceScan.DeclaredNameRead> DECLARED_NAME_READS = List.of(
             new PersistenceSourceScan.DeclaredNameRead("ProjectDeserializer.java",
                     "attributes.put(attribute.getNodeName(), attribute.getNodeValue())",
-                    "copies an unrecognised MIDI effect's attributes into its placeholder: getNodeName() of"
-                    + " an Attr is an attribute name, not an element lookup"));
+                    "copies an unrecognised MIDI effect's attributes into its placeholder, and an offline insert's"
+                    + " attributes and kept children (savedAttributes): getNodeName() of an Attr is an attribute"
+                    + " name, not an element lookup"));
 
     /**
      * Names the deserializer asks for that no current file carries.
@@ -205,16 +215,18 @@ class ProjectSchemaParityContractTest {
             """;
 
     /*
-     * Floors set from the first green run: 76 element and 176 attribute names
-     * in the writer sources, 598 path-level items emitted by the family, and
-     * 75 element names the reader sources look up.
+     * Floors set from the story-334 run that added the take lanes, comp
+     * regions and comp-output marks (each measured on its own, in assertion
+     * order): 82 element and 184 attribute names in the writer sources, 664
+     * path-level items emitted by the family, and 81 element names the reader
+     * sources look up.
      * A count below its floor means the scan or the family lost coverage;
      * lower a floor only in the change that removes items from the schema.
      */
-    private static final int WRITER_ELEMENT_NAME_FLOOR = 76;
-    private static final int WRITER_ATTRIBUTE_NAME_FLOOR = 176;
-    private static final int EMITTED_ITEM_FLOOR = 598;
-    private static final int READER_ELEMENT_LOOKUP_FLOOR = 75;
+    private static final int WRITER_ELEMENT_NAME_FLOOR = 82;
+    private static final int WRITER_ATTRIBUTE_NAME_FLOOR = 184;
+    private static final int EMITTED_ITEM_FLOOR = 664;
+    private static final int READER_ELEMENT_LOOKUP_FLOOR = 81;
 
     private static final Path ASSET_ROOT = Path.of("").toAbsolutePath().resolve("inventory-assets");
 
@@ -228,7 +240,12 @@ class ProjectSchemaParityContractTest {
 
     @BeforeAll
     static void recordTheFamily() throws IOException {
-        family = new XmlSchemaParity().requireNamedReads(writerAttributeNames());
+        // Story 334: every <insert> is judged on its own — the reader reads
+        // each name this build writes on an insert by name, on every insert,
+        // before it decides what the insert is (a plugin descriptor, a built-in
+        // effect, an analyzer, or one it keeps offline and copies in bulk).
+        family = new XmlSchemaParity().requireNamedReads(writerAttributeNames())
+                .requireEveryInstance("**/inserts/insert");
         for (RoundTripInventoryProjects.Variant variant : RoundTripInventoryProjects.variants(ASSET_ROOT)) {
             Recorded recorded = record(variant.project(), Set.of());
             family.record(variant.name(), recorded.emitted(), recorded.reads());
@@ -246,7 +263,9 @@ class ProjectSchemaParityContractTest {
         Document written = ProjectDeserializer.parseXml(new ProjectSerializer().serialize(project));
         Map<SchemaItem, List<Element>> emitted = XmlSchemaParity.emitted(written);
         DomReadRecorder reads = new DomReadRecorder(hidden);
-        DawProject reopened = new ProjectDeserializer().deserialize(reads.wrap(written), null);
+        ProjectDeserializer deserializer = new ProjectDeserializer();
+        deserializer.setPluginResolver(RoundTripInventoryProjects.PLUGINS);
+        DawProject reopened = deserializer.deserialize(reads.wrap(written), null);
         return new Recorded(written, emitted, reads, reopened);
     }
 
@@ -403,8 +422,9 @@ class ProjectSchemaParityContractTest {
      * name-level guard cannot see whether each parent got them, so this pins
      * the family's path-level population of every reuse site. (The mixer
      * insert's id-keyed {@code parameter@id} form is not among them: the
-     * serializer writes it only for a built-in processor without
-     * {@code @ProcessorParam} accessors, and the one such processor,
+     * serializer writes it for a plugin whose processor has no
+     * {@code @ProcessorParam} accessors — the family holds one on a track
+     * channel — and for such a built-in processor, of which the one,
      * {@code ParametricEqProcessor}, has no id-keyed parameters to write.)
      */
     @Test
@@ -415,6 +435,9 @@ class ProjectSchemaParityContractTest {
             required.add(channel + "/inserts/insert@effect-type");
             required.add(channel + "/inserts/insert@analyzer-plugin-id");
             required.add(channel + "/inserts/insert@sidechain-source");
+            required.add(channel + "/inserts/insert@plugin-source");
+            required.add(channel + "/inserts/insert@plugin-id");
+            required.add(channel + "/inserts/insert@plugin-version");
             required.add(channel + "/inserts/insert/parameter@name");
             required.add(channel + "/sends/send@tap");
             required.add(channel + "/cpu-budget@policy");
@@ -463,7 +486,8 @@ class ProjectSchemaParityContractTest {
         }
         assertThat(lookedUpElements).as("element names the reader sources look up")
                 .hasSizeGreaterThanOrEqualTo(READER_ELEMENT_LOOKUP_FLOOR)
-                .contains("midi-clip", "midi-effect-chain", "transport");
+                .contains("midi-clip", "midi-effect-chain", "transport", "tempo-change", "meter-change",
+                        "plugin-state", "takes", "take", "comp-region");
         assertThat(elementNames).as("writer element names").hasSizeGreaterThanOrEqualTo(WRITER_ELEMENT_NAME_FLOOR)
                 .contains("daw-project", "midi-clip", "midi-effect-chain");
         assertThat(attributeNames).as("writer attribute names")
@@ -474,7 +498,14 @@ class ProjectSchemaParityContractTest {
                 .contains(SchemaItem.attribute("daw-project/tracks/track", "id"),
                         SchemaItem.element("daw-project/tracks/track/midi-clip"),
                         SchemaItem.element("daw-project/tracks/track/midi-effect-chain"),
-                        SchemaItem.attribute("daw-project/transport", "pre-roll-bars"));
+                        SchemaItem.attribute("daw-project/transport", "pre-roll-bars"),
+                        SchemaItem.attribute("daw-project/transport/tempo-change", "transition"),
+                        SchemaItem.attribute("daw-project/transport/meter-change", "denominator"),
+                        SchemaItem.text("daw-project/mixer/master/inserts/insert/plugin-state"),
+                        SchemaItem.attribute("daw-project/mixer/channels/channel/inserts/insert", "plugin-id"),
+                        SchemaItem.attribute("daw-project/tracks/track/takes/comp-region", "take-id"),
+                        SchemaItem.attribute("daw-project/tracks/track/takes/take/clip/source-segment", "path"),
+                        SchemaItem.attribute("daw-project/tracks/track/clips/clip", "comp-output"));
 
         Element root = full.written().getDocumentElement();
         assertThat(full.reads().consumed(root)).as("the reader consumed the root through the view").isTrue();
@@ -563,6 +594,26 @@ class ProjectSchemaParityContractTest {
                             "daw-project/transport@punch-enabled")),
                     Arguments.of("child list", "daw-project/tracks/track/midi-clip", List.of()),
                     Arguments.of("child list", "daw-project/tracks/track/midi-clip/notes/note", List.of()),
+                    Arguments.of("child list", "daw-project/transport/tempo-change", List.of()),
+                    Arguments.of("child list", "daw-project/transport/meter-change", List.of()),
+                    // Each entry is then skipped; its position and bpm are still read by name.
+                    Arguments.of("getAttribute", "daw-project/transport/tempo-change@transition", List.of()),
+                    // Every track-channel descriptor then has no identity and is kept
+                    // offline, its children copied in bulk: only the parameter-store
+                    // plugin writes id-keyed parameters on that path.
+                    Arguments.of("getAttribute", "daw-project/mixer/channels/channel/inserts/insert@plugin-id",
+                            List.of("daw-project/mixer/channels/channel/inserts/insert/parameter@id")),
+                    // Empty text is no state to load.
+                    Arguments.of("getTextContent", "daw-project/mixer/master/inserts/insert/plugin-state#text",
+                            List.of()),
+                    // With no lane, each comp region names no take and is skipped; its
+                    // snippet still reads its attributes by name, and every main-lane
+                    // clip's comp-output mark is still read.
+                    Arguments.of("child list", "daw-project/tracks/track/takes/take", List.of()),
+                    // Each region then names no take and is skipped; its snippet reads the rest.
+                    Arguments.of("getAttribute", "daw-project/tracks/track/takes/comp-region@take-id", List.of()),
+                    // An unmarked clip is an ordinary clip; nothing else is read because of it.
+                    Arguments.of("parseBooleanAttr", "daw-project/tracks/track/clips/clip@comp-output", List.of()),
                     // A reference to a track whose id is unknown is dropped before its values are read.
                     Arguments.of("getAttribute", "daw-project/tracks/track@id", List.of(
                             "daw-project/mixer/cue-buses/cue-bus/cue-send@gain",

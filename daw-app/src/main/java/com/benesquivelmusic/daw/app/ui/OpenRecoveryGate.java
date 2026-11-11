@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.dialogs.RecoveryChoice;
 import com.benesquivelmusic.daw.core.persistence.LockStolenException;
+import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
 import com.benesquivelmusic.daw.core.persistence.ProjectLockManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
@@ -177,12 +178,18 @@ final class OpenRecoveryGate {
                 RecoveryResult replayed;
                 try { replayed = replay.recover(plan); }
                 catch (JournalRecoveryException failure) { throw new ReplayFailed(failure, false); }
-                lock.verifyHeld();
-                keepInterruptedSave(plan);
-                String xml;
-                try { xml = new ProjectSerializer().serialize(replayed.recoveredProject()); }
-                catch (IOException failure) { throw new ReplayFailed(failure, true); }
-                replaceHead(head, xml, lock);
+                try {
+                    lock.verifyHeld();
+                    keepInterruptedSave(plan);
+                    String xml;
+                    try { xml = new ProjectSerializer().serialize(replayed.recoveredProject()); }
+                    catch (IOException failure) { throw new ReplayFailed(failure, true); }
+                    replaceHead(head, xml, lock);
+                } finally {
+                    // Story 334 (critique J11) — the replayed project is read only to be written as the head,
+                    // which the open then reads: nothing installs it, so its plugins are released.
+                    ProjectDeserializer.disposeUnopened(replayed.recoveredProject());
+                }
                 RecoverySummary.Changes changes = ((RecoverySummary.Replay) plan.summary().recovery()).changes();
                 yield new Result(replayed.appliedRecordCount(), Math.toIntExact(changes.count() - changes.rebuilt()),
                         replayed.unreadItems(), false);

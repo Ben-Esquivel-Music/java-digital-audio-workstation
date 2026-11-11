@@ -42,10 +42,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * ({@link MidiEffectPluginIdMigration}): a MIDI-effect chain entry keyed by
  * the arpeggiator's schema 1 class name is re-keyed by its plugin id, an
  * unknown class name is left untouched, nothing else in the document changes,
- * and the step is recorded as format-only. Then the step end to end: a
- * schema 1 file opens with its chain and pre/post-roll restored and an empty
- * MIDI clip, its first save backs up the original once and writes version 2,
- * a newer file is refused, and a class named in the file is never loaded.
+ * and the step is recorded as format-only. Then the step end to end, through
+ * the whole production chain: a schema 1 file opens with its chain and
+ * pre/post-roll restored and an empty MIDI clip, its first save backs up the
+ * original once and writes the current version, a newer file is refused, and
+ * a class named in the file is never loaded.
  */
 class SchemaV1ToV2MigrationTest {
 
@@ -111,13 +112,20 @@ class SchemaV1ToV2MigrationTest {
             </daw-project>
             """;
 
+    /**
+     * The production 1 → 2 step on its own, so the golden documents stay
+     * schema 2 whatever the current version is; the end-to-end tests below
+     * run the whole production chain.
+     */
+    private static final MigrationRegistry ONE_TO_TWO =
+            MigrationRegistry.builder(2).add(MidiEffectPluginIdMigration.step()).build();
+
     @TempDir
     Path tempDir;
 
     @Test
     void goldenSchemaOneFileMigratesToTheExpectedSchemaTwoDocument() throws Exception {
-        MigrationRegistry.MigrationResult result =
-                MigrationRegistry.defaultRegistry().migrate(parse(V1_WITH_CHAIN_AND_PRE_ROLL));
+        MigrationRegistry.MigrationResult result = ONE_TO_TWO.migrate(parse(V1_WITH_CHAIN_AND_PRE_ROLL));
 
         assertThat(serialize(result.document())).isEqualTo(serialize(parse(V2_WITH_CHAIN_AND_PRE_ROLL)));
         assertThat(result.report().fromVersion()).isEqualTo(1);
@@ -130,7 +138,7 @@ class SchemaV1ToV2MigrationTest {
 
     @Test
     void anOlderShapeOnlyChangesItsVersion() throws Exception {
-        Document migrated = MigrationRegistry.defaultRegistry().migrate(parse(V1_WITHOUT_EITHER)).document();
+        Document migrated = ONE_TO_TWO.migrate(parse(V1_WITHOUT_EITHER)).document();
 
         assertThat(serialize(migrated)).isEqualTo(serialize(parse(
                 V1_WITHOUT_EITHER.replace("version=\"1\"", "version=\"2\""))));
@@ -189,7 +197,7 @@ class SchemaV1ToV2MigrationTest {
     }
 
     @Test
-    void firstSaveBacksUpTheSchemaOneFileOnceAndWritesVersionTwo() throws Exception {
+    void firstSaveBacksUpTheSchemaOneFileOnceAndWritesTheCurrentVersion() throws Exception {
         ProjectManager manager = new ProjectManager(
                 new CheckpointManager(new AutoSaveConfig(Duration.ofHours(1), 10, true)));
         ProjectMetadata metadata = manager.createProject("Old Song", tempDir);
@@ -209,7 +217,8 @@ class SchemaV1ToV2MigrationTest {
         assertThat(backups).hasSize(1);
         assertThat(backups.getFirst().getFileName().toString()).startsWith("project.daw.v1.");
         assertThat(Files.readAllBytes(backups.getFirst())).isEqualTo(original);
-        assertThat(Files.readString(projectFile)).contains("<daw-project version=\"2\">");
+        assertThat(Files.readString(projectFile))
+                .contains("<daw-project version=\"" + MigrationRegistry.CURRENT_VERSION + "\">");
 
         saved(manager, project);
         assertThat(backupsIn(metadata.projectPath())).as("a second save writes no new backup").hasSize(1);
@@ -222,9 +231,10 @@ class SchemaV1ToV2MigrationTest {
 
     @Test
     void aNewerSchemaIsRefused() {
-        assertThatThrownBy(() -> new ProjectDeserializer().deserialize("<daw-project version=\"3\"/>"))
+        assertThatThrownBy(() -> new ProjectDeserializer().deserialize(
+                "<daw-project version=\"" + (MigrationRegistry.CURRENT_VERSION + 1) + "\"/>"))
                 .isInstanceOf(MigrationException.class)
-                .hasMessageContaining("newer than this build's version 2");
+                .hasMessageContaining("newer than this build's version " + MigrationRegistry.CURRENT_VERSION);
     }
 
     @Test

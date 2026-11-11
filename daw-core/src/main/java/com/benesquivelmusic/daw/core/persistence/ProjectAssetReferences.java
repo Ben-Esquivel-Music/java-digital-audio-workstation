@@ -173,8 +173,13 @@ public final class ProjectAssetReferences {
         return refs;
     }
 
-    /** A track's clips, then every take lane's clips, lane by lane. */
-    private static List<AudioClip> everyClipOf(Track track) {
+    /**
+     * A track's clips, then every take lane's clips, lane by lane — every
+     * clip the project file saves for the track (story 334): what the
+     * Save As re-pointing, the clip rehydrator, the missing-assets report
+     * and the relink walk. Owner thread.
+     */
+    static List<AudioClip> everyClipOf(Track track) {
         List<AudioClip> clips = new ArrayList<>(track.getClips());
         for (TakeLane lane : track.getTakeComping().getTakeLanes()) {
             clips.addAll(lane.getClips());

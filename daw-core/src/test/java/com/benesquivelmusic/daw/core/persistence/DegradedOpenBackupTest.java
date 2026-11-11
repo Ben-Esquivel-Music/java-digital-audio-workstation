@@ -33,14 +33,19 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * lane or event, a removed mixer assignment (a self-link included), an
  * adjusted arpeggiator setting, a malformed or duplicate track id, an
  * unrecognised MIDI effect's child elements or text, a VCA group whose id
- * repeats an earlier group's — loses that content on the next save, so
+ * repeats an earlier group's, a skipped tempo or meter change, an insert
+ * parameter the effect rejects, a skipped comp region, a malformed or
+ * repeated take-lane id (story 334) — loses that content on the next
+ * save, so
  * {@link ProjectManager} backs the original file up once, just before the
  * first save, as {@code project.daw.degraded.<stamp>.bak} (Persistence
  * Integrity book §9.4: never a quiet deletion). An open that loses nothing on
- * save — a placeholder written back as saved, a missing or merely
+ * save — a placeholder written back as saved (an offline insert included), a missing or merely
  * non-canonical track id, a missing asset, a reset CC lane height, a
  * malformed pre/post-roll, a VCA gain that is not a number, an analyzer
- * setting the reader cannot use (a view preference) — owes no backup.
+ * setting the reader cannot use (a view preference), a tempo change at beat 0
+ * that repeats the tempo attribute, a take lane with no id, a comp-output
+ * mark on a track without takes — owes no backup.
  * A migrated open that is also degraded takes the one migration backup. The
  * owed backup is settled by the first write even when there is no file to
  * copy, so no later save backs up that write's own output. The backup's INFO
@@ -63,6 +68,7 @@ class DegradedOpenBackupTest {
 
     private static final String A = "00000000-0000-0000-0000-0000000000a1";
     private static final String B = "00000000-0000-0000-0000-0000000000b1";
+    private static final String TAKE = "00000000-0000-0000-0000-0000000000c1";
     private static final String ABSENT = "00000000-0000-0000-0000-0000000000ff";
 
     /** A readable note (velocity 100) and an unreadable one (velocity 128) on the only track. */
@@ -256,6 +262,59 @@ class DegradedOpenBackupTest {
                         """)), false),
                 Arguments.of("a malformed pre/post-roll", file(midiTrack(B, ""),
                         "<transport pre-roll-bars=\"-3\" post-roll-bars=\"x\" pre-roll-enabled=\"true\"/>"), false),
+                Arguments.of("a skipped tempo change", file(midiTrack(A, ""), """
+                        <transport tempo="120.0">
+                          <tempo-change position="32.0" bpm="1200" transition="INSTANT"/>
+                        </transport>
+                        """), true),
+                Arguments.of("a tempo change at beat 0 that repeats the tempo attribute", file(midiTrack(A, ""), """
+                        <transport tempo="120.0">
+                          <tempo-change position="0.0" bpm="120.0" transition="INSTANT"/>
+                        </transport>
+                        """), false),
+                Arguments.of("a skipped comp region", file(audioTrack("""
+                        <takes>
+                          <take id="%s" name="Take 1" muted="false"/>
+                          <comp-region take-id="%s" start-beat="-4.0" duration-beats="4.0"/>
+                        </takes>
+                        """.formatted(TAKE, TAKE))), true),
+                Arguments.of("a malformed take id", file(audioTrack("""
+                        <takes><take id="abc" name="Take 1" muted="false"/></takes>
+                        """)), true),
+                Arguments.of("a repeated take id", file(audioTrack("""
+                        <takes>
+                          <take id="%s" name="Take 1" muted="false"/>
+                          <take id="%s" name="Take 2" muted="false"/>
+                        </takes>
+                        """.formatted(TAKE, TAKE))), true),
+                Arguments.of("a missing take id", file(audioTrack("""
+                        <takes><take name="Take 1" muted="false"/></takes>
+                        """)), false),
+                Arguments.of("a clip saved as comp output on a track without takes", file(audioTrack("""
+                        <clips>
+                          <clip name="Take" start-beat="0.0" duration-beats="4.0" comp-output="true"/>
+                        </clips>
+                        """)), false),
+                Arguments.of("an insert of an unknown built-in type, kept offline", file(midiTrack(A, ""), """
+                        <mixer>
+                          <master volume="1.0"/>
+                          <channels>
+                            <channel><inserts><insert effect-type="NOT_A_TYPE" name="Old FX"/></inserts></channel>
+                          </channels>
+                          <return-buses/>
+                        </mixer>
+                        """), false),
+                Arguments.of("an insert parameter the effect rejects", file(midiTrack(A, ""), """
+                        <mixer>
+                          <master volume="1.0"/>
+                          <channels>
+                            <channel><inserts>
+                              <insert effect-type="COMPRESSOR" name="Compressor"><parameter id="1" value="0.5"/></insert>
+                            </inserts></channel>
+                          </channels>
+                          <return-buses/>
+                        </mixer>
+                        """), true),
                 Arguments.of("an unusable analyzer setting", file(midiTrack(A, ""), """
                         <mixer>
                           <master volume="1.0">
@@ -297,8 +356,9 @@ class DegradedOpenBackupTest {
     void everyUnreadKindButAPlaceholderLosesItsSavedContent(UnreadProjectItem.Kind kind) {
         boolean expected = switch (kind) {
             case MIDI_NOTE_SKIPPED, CC_LANE_SKIPPED, CC_EVENT_SKIPPED, MIDI_EFFECT_SETTING_ADJUSTED,
-                 MIXER_REFERENCE_REMOVED -> true;
-            case MIDI_EFFECT_NOT_RECOGNIZED -> false;
+                 MIXER_REFERENCE_REMOVED, TEMPO_MAP_ENTRY_SKIPPED, COMP_REGION_SKIPPED, INSERT_SKIPPED,
+                 INSERT_PARAMETER_ADJUSTED -> true;
+            case MIDI_EFFECT_NOT_RECOGNIZED, INSERT_NOT_LOADED -> false;
         };
 
         assertThat(kind.losesSavedContent()).isEqualTo(expected);
@@ -452,6 +512,10 @@ class DegradedOpenBackupTest {
 
     private static String midiTrack(String id, String content) {
         return "<track id=\"" + id + "\" name=\"Keys\" type=\"MIDI\">\n" + content + "</track>\n";
+    }
+
+    private static String audioTrack(String content) {
+        return "<track id=\"" + A + "\" name=\"Vox\" type=\"AUDIO\">\n" + content + "</track>\n";
     }
 
     private static String file(String tracks) {

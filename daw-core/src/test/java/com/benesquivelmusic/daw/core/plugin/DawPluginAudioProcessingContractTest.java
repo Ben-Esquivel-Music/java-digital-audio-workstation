@@ -3,7 +3,9 @@ package com.benesquivelmusic.daw.core.plugin;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.mixer.ProcessorRegistry;
 import com.benesquivelmusic.daw.core.plugin.testjar.ExternalEffectPlugin;
+import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.midi.MidiEvent;
 import com.benesquivelmusic.daw.sdk.midi.SoundFontInfo;
@@ -14,13 +16,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
-import java.net.URI;
-import java.nio.file.FileSystem;
-import java.nio.file.FileSystems;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -296,6 +293,17 @@ class DawPluginAudioProcessingContractTest {
         assertThat(InsertEffectFactory.createSlotFromPlugin(plugin)).isEmpty();
     }
 
+    @Test
+    void aPluginWithNoProcessorHoldsItsGraphSlotTransparentlyInBothPrecisions() {
+        InsertSlot slot = new BuiltInPluginGraph(new ProcessorRegistry())
+                .createSlot(new MetronomePlugin(), stubContext(), new Metronome(SAMPLE_RATE, 2));
+        try {
+            assertTransparent(slot.getProcessor());
+        } finally {
+            slot.disposeAfterQuiescence();
+        }
+    }
+
     private void assertTransparent(com.benesquivelmusic.daw.sdk.audio.AudioProcessor processor) {
         float[][] input = {{0.25f, -0.5f}, {-0.75f, 0.125f}};
         float[][] output = new float[2][2];
@@ -398,42 +406,13 @@ class DawPluginAudioProcessingContractTest {
     }
 
     /**
-     * Builds a JAR file containing the compiled {@link ExternalEffectPlugin}
-     * class and its inner classes from the test classpath.
+     * Builds a JAR file declaring {@link ExternalEffectPlugin} in its manifest
+     * and holding the compiled class and its inner classes from the test
+     * classpath ({@link PluginTestJars}).
      */
     private Path buildExternalPluginJar() throws IOException {
-        Path jarPath = tempDir.resolve("test-external-plugin.jar");
-        URI jarUri = URI.create("jar:" + jarPath.toUri());
-
-        try (FileSystem jarFs = FileSystems.newFileSystem(jarUri, Map.of("create", "true"))) {
-            // Copy ExternalEffectPlugin and inner classes from test classpath
-            String baseName = ExternalEffectPlugin.class.getName().replace('.', '/');
-            String classResource = baseName + ".class";
-            copyClassToJar(jarFs, classResource);
-
-            // Copy inner classes (e.g., PassThroughProcessor)
-            for (Class<?> inner : ExternalEffectPlugin.class.getDeclaredClasses()) {
-                String innerResource = inner.getName().replace('.', '/') + ".class";
-                copyClassToJar(jarFs, innerResource);
-            }
-        }
-
-        return jarPath;
-    }
-
-    private static void copyClassToJar(FileSystem jarFs, String resourcePath) throws IOException {
-        try (var is = DawPluginAudioProcessingContractTest.class.getClassLoader()
-                .getResourceAsStream(resourcePath)) {
-            if (is == null) {
-                throw new IOException("Class resource not found on classpath: " + resourcePath);
-            }
-            Path entryPath = jarFs.getPath(resourcePath);
-            Path parent = entryPath.getParent();
-            if (parent != null) {
-                Files.createDirectories(parent);
-            }
-            Files.copy(is, entryPath);
-        }
+        return PluginTestJars.buildJar(tempDir, "test-external-plugin.jar",
+                List.of(PluginTestJars.manifest(ExternalEffectPlugin.class)), List.of(ExternalEffectPlugin.class));
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────

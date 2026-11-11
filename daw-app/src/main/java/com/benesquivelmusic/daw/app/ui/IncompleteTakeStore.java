@@ -40,8 +40,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * </ul>
  *
  * <p>In memory, one per project ({@link RecordCoordinator} owns it, rooted
- * at the project's directory); persisting takes in the project file is
- * story 334's. A registered take must lie under the project's
+ * at the project's directory). The take's lanes and clips persist with the
+ * project (story 334); its rescued status stays in its manifest — keeping
+ * it offered across reopen is future story 402. A registered take must lie
+ * under the project's
  * {@code audio/takes} — never the OS temporary directory (book §9 item 4),
  * never another project — which {@link RescuedTake} refuses otherwise.</p>
  *

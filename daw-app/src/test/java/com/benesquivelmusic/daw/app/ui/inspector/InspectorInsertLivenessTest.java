@@ -6,13 +6,19 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectType;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.mixer.OfflineCause;
+import com.benesquivelmusic.daw.core.mixer.OfflineInsert;
+import com.benesquivelmusic.daw.core.mixer.SavedInsert;
+import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.layout.HBox;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.SequencedMap;
 import java.util.concurrent.atomic.AtomicReference;
 import static com.benesquivelmusic.daw.app.ui.snapshot.FxSnapshotTest.runOnFxThread;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -64,6 +70,73 @@ final class InspectorInsertLivenessTest {
             } finally { drawer.disposeInsertBinding(); dispatcher.dispose(); }
             return null;
         });
+    }
+
+    /**
+     * An offline row's tooltip is formatted once per slot object and reused on
+     * later pulses, also across a rebuild that a bypass change or a reorder
+     * causes, while the bypass state is still read on every pulse; a fresh
+     * binding formats it again, to the same text. The offline word's accessible
+     * help is the row's tooltip String itself, so identity tells reuse from
+     * reformatting.
+     */
+    @Test
+    void offlineRowTooltipIsFormattedOncePerSlotWhileBypassStaysLive() {
+        runOnFxThread(() -> {
+            FxDispatcher dispatcher = new FxDispatcher();
+            InspectorDrawer drawer = new InspectorDrawer();
+            MixerChannel channel = new MixerChannel("Voice");
+            InsertSlot online = InsertEffectFactory.createSlot(InsertEffectType.COMPRESSOR, 2, 48_000);
+            InsertSlot offline = offlineSlot();
+            channel.addInsert(online);
+            channel.addInsert(offline);
+            drawer.bindInserts(() -> channel, (host, slot) -> { }, host -> { }, dispatcher);
+            try {
+                List<Node> rows0 = List.copyOf(drawer.getInsertsSection().getRowsContainer().getChildren());
+                String help0 = offlineWord(drawer).getAccessibleHelp();
+                assertThat(help0).isNotBlank();
+
+                dispatcher.pulse();
+                List<Node> rows1 = drawer.getInsertsSection().getRowsContainer().getChildren();
+                assertThat(rows1).hasSameSizeAs(rows0);
+                for (int i = 0; i < rows0.size(); i++) {
+                    assertThat(rows1.get(i)).isSameAs(rows0.get(i));
+                }
+
+                channel.setInsertBypassed(0, true);
+                dispatcher.pulse();
+                HBox onlineRow = (HBox) drawer.getInsertsSection().getRowsContainer().getChildren().getFirst();
+                assertThat(onlineRow).isNotSameAs(rows0.getFirst());
+                assertThat(onlineRow.getChildren().getFirst().getStyleClass()).contains("insert-dot-inactive");
+                assertThat(offlineWord(drawer).getAccessibleHelp()).isSameAs(help0);
+
+                channel.moveInsert(0, 1);
+                dispatcher.pulse();
+                assertThat(names(drawer)).containsExactly(offline.getName(), online.getName());
+                assertThat(offlineWord(drawer).getAccessibleHelp()).isSameAs(help0);
+
+                drawer.disposeInsertBinding();
+                drawer.bindInserts(() -> channel, (host, slot) -> { }, host -> { }, dispatcher);
+                assertThat(offlineWord(drawer).getAccessibleHelp()).isEqualTo(help0).isNotSameAs(help0);
+            } finally { drawer.disposeInsertBinding(); dispatcher.dispose(); }
+            return null;
+        });
+    }
+
+    /** An insert an open kept offline because the build has no effect type {@code NOT_A_TYPE}. */
+    private static InsertSlot offlineSlot() {
+        SequencedMap<String, String> attributes = new LinkedHashMap<>();
+        attributes.put("effect-type", "NOT_A_TYPE");
+        attributes.put("name", "Old FX");
+        return InsertSlot.ofOffline("Old FX", 2, new OfflineInsert(
+                new OfflineCause.UnknownEffectType("NOT_A_TYPE"), new SavedInsert(attributes, List.of()), false));
+    }
+
+    private static Button offlineWord(InspectorDrawer drawer) {
+        return drawer.getInsertsSection().getRowsContainer().getChildren().stream()
+                .map(node -> (HBox) node).flatMap(row -> row.getChildren().stream())
+                .filter(node -> node.getStyleClass().contains("inspector-row-offline-info"))
+                .map(node -> (Button) node).findFirst().orElseThrow();
     }
 
     private static List<String> names(InspectorDrawer drawer) {

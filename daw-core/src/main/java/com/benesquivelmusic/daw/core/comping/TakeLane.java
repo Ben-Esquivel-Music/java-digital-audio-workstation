@@ -21,16 +21,32 @@ public final class TakeLane {
     private boolean muted;
 
     /**
-     * Creates a new take lane with the given name.
+     * Creates a new take lane with the given name and a fresh id.
      *
      * @param name the display name (e.g. "Take 1", "Take 2")
      */
     public TakeLane(String name) {
-        this.id = UUID.randomUUID().toString();
+        this(UUID.randomUUID(), name);
+    }
+
+    /**
+     * Creates a take lane with the id it was saved with (story 334): the
+     * project reader restores each lane under its saved id, the id the
+     * file's comp regions name it by.
+     *
+     * @param id   the lane's id; {@link #getId()} returns its canonical
+     *             {@link UUID#toString()} form
+     * @param name the display name (e.g. "Take 1", "Take 2")
+     */
+    public TakeLane(UUID id, String name) {
+        this.id = Objects.requireNonNull(id, "id must not be null").toString();
         this.name = Objects.requireNonNull(name, "name must not be null");
     }
 
-    /** Returns the unique identifier for this take lane. */
+    /**
+     * Returns the unique identifier for this take lane: a canonical UUID,
+     * which the project file saves and its comp regions reference.
+     */
     public String getId() {
         return id;
     }

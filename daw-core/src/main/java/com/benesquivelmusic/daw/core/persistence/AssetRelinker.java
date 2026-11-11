@@ -8,9 +8,12 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Consumer;
 
 /**
@@ -19,8 +22,9 @@ import java.util.function.Consumer;
  * Integrity book §4.3; decision D17). Three steps, on two threads:
  * <ol>
  *   <li>{@link #request} — owner thread, no I/O: snapshots what the checks
- *       need from the live project (the clips that hold the asset, their
- *       names, how much audio each uses).</li>
+ *       need from the live project (the clips that hold the asset — on the
+ *       main lanes and the take lanes — their names, how much audio each
+ *       uses).</li>
  *   <li>{@link #prepare(Request, Path)} (Locate file) or
  *       {@link #prepare(Request, AssetReference)} (a
  *       {@link MissingAssetSearch} result) — a worker thread: decodes the
@@ -95,7 +99,7 @@ public final class AssetRelinker {
         double bpm = SourceShortfall.playbackTempo(project);
         List<Use> uses = new ArrayList<>();
         for (Track track : project.getTracks()) {
-            for (AudioClip clip : track.getClips()) {
+            for (AudioClip clip : ProjectAssetReferences.everyClipOf(track)) {
                 if (asset.isHeldBy(clip)) {
                     uses.add(new Use(clip.getName(), SourceShortfall.usedSeconds(clip, bpm)));
                 }
@@ -205,7 +209,9 @@ public final class AssetRelinker {
 
     /**
      * Relinks every clip of the candidate's project that still holds the
-     * asset: re-points it ({@link AudioClip#setSourceFilePath}, or for a take
+     * asset — on a main lane or, since story 334, a take lane, so a swipe
+     * after the relink compiles from the relinked take: re-points it
+     * ({@link AudioClip#setSourceFilePath}, or for a take
      * {@link AudioClip#setSourceSegmentPaths}, which keeps the head
      * invariant), attaches the decoded audio — the same array to every clip
      * of one source (of one bed or object of an ADM file), replacing audio it
@@ -216,9 +222,12 @@ public final class AssetRelinker {
      * the project dirty when it re-pointed a clip. Owner thread.
      *
      * <p>An ADM clip whose name selects no bed or object of the located file
-     * is re-pointed with no audio and is a
+     * is re-pointed with no audio and is counted in an
      * {@link MissingAssetReason#ADM_OBJECT_UNKNOWN} row of the result, as a
-     * reopen would make it.</p>
+     * reopen would count it: the row's silent clips are the main-lane ones
+     * among them — a take-lane clip does not play, so it is never a silent
+     * clip (story 334, studio ruling E16) — and the row is made even when
+     * every such clip is on a take lane.</p>
      *
      * @param candidate   a candidate {@link #prepare} returned
      * @param invalidator called once with the id of each re-pointed clip
@@ -233,12 +242,16 @@ public final class AssetRelinker {
         List<AudioClip> relinked = new ArrayList<>();
         List<MissingAsset.Holder> holders = new ArrayList<>();
         List<MissingAsset.Holder> unselected = new ArrayList<>();
+        List<MissingAsset.Holder> silent = new ArrayList<>();
         for (Track track : request.project().getTracks()) {
-            for (AudioClip clip : track.getClips()) {
+            Set<AudioClip> mainLane = Collections.newSetFromMap(new IdentityHashMap<>());
+            mainLane.addAll(track.getClips());
+            for (AudioClip clip : ProjectAssetReferences.everyClipOf(track)) {
                 if (!request.asset().isHeldBy(clip)) {
                     continue;
                 }
-                holders.add(MissingAsset.Holder.of(track, clip));
+                MissingAsset.Holder holder = MissingAsset.Holder.of(track, clip);
+                holders.add(holder);
                 repoint(clip, replacement);
                 Optional<DecodedAudio.ClipAudio> audio = decoded.forClip(clip.getName());
                 if (audio.isPresent()) {
@@ -246,7 +259,10 @@ public final class AssetRelinker {
                 } else {
                     clip.setSourceRateMetadata(null);
                     clip.setAudioData(null);
-                    unselected.add(MissingAsset.Holder.of(track, clip));
+                    unselected.add(holder);
+                    if (mainLane.contains(clip)) {
+                        silent.add(holder);
+                    }
                 }
                 // After the new audio is published: a conversion of the old one is dropped for good.
                 invalidator.accept(clip.getId());
@@ -259,7 +275,7 @@ public final class AssetRelinker {
         List<MissingAsset> rows = new ArrayList<>(1);
         if (!unselected.isEmpty() && decoded instanceof DecodedAudio.AdmAudio adm) {
             rows.add(new MissingAsset(replacement, MissingAssetReason.ADM_OBJECT_UNKNOWN,
-                    adm.unknownNamesDetail(unselected.size(), holders.size()), holders, unselected));
+                    adm.unknownNamesDetail(unselected.size(), holders.size()), holders, silent));
         }
         return new Applied(relinked, rows);
     }

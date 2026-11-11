@@ -278,17 +278,26 @@ class MigrationRegistryTest {
     @Test
     void defaultRegistryMatchesCurrentSerializerVersion() {
         // The production registry targets the version the serializer writes
-        // and holds exactly one step per version: today the single
-        // format-only 1 → 2 step (golden test: SchemaV1ToV2MigrationTest).
+        // and holds exactly one step per version: today the format-only
+        // 1 → 2 and 2 → 3 steps (golden tests: SchemaV1ToV2MigrationTest,
+        // SchemaV2ToV3MigrationTest).
         MigrationRegistry registry = MigrationRegistry.defaultRegistry();
         assertThat(registry.currentVersion()).isEqualTo(MigrationRegistry.CURRENT_VERSION);
-        assertThat(registry.migrations()).hasSize(1);
+        assertThat(registry.migrations()).hasSize(2);
         ProjectMigration step = registry.migrations().getFirst();
         assertThat(step.fromVersion()).isEqualTo(1);
         assertThat(step.toVersion()).isEqualTo(2);
         assertThat(step.description()).isEqualTo("add per-track MIDI clips; key MIDI effects by id");
         assertThat(step.changesAuthoredContent())
                 .as("the 1 → 2 step only re-expresses the format: no migration dialog")
+                .isFalse();
+        ProjectMigration second = registry.migrations().get(1);
+        assertThat(second.fromVersion()).isEqualTo(2);
+        assertThat(second.toVersion()).isEqualTo(3);
+        assertThat(second.description())
+                .isEqualTo("add plugin insert descriptors, take lanes, comp regions and the tempo map");
+        assertThat(second.changesAuthoredContent())
+                .as("the 2 → 3 step only marks the schema that adds new items: no migration dialog")
                 .isFalse();
     }
 

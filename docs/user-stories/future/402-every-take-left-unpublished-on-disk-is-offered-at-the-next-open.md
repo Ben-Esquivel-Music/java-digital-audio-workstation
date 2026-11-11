@@ -63,6 +63,22 @@ These tests are binding acceptance criteria. They run headless, and none of them
 - Design references: Recording Reliability design book §4.7 (the recovery scan); Persistence Integrity design book §5.3 (the open contract).
 - Cross-refs: story 327 (`TakeRecovery`, `IncompleteTakeStore`), story 332 (the open's recovery gate, which landed without the scan), story 333 (the application-stop fallback, ruling R4; the take wait, rulings R1 and R12 #9), story 334 (the take schema).
 
+## Extension: A Rescued Take Stays Offered for Review Across Reopen (Story 334)
+
+Story 334's studio ruling E17 folds this goal into this story. A rescued take whose clips were published into a track's lanes and clips now persists with the project like any take (story 334's take schema), but its rescued status is a fact of the take on disk, recorded in its `take.manifest` (`sealed-by`: `TakeManifest.SealedBy.DEVICE_LOSS` or `CRASH_RECOVERY`), and `project.daw` is not that fact's authority. The registry that offers the rescued take for review, `IncompleteTakeStore`, lives in memory, one per project (`RecordCoordinator.rescuedTakeStore`), and is fed only when a take is rescued; so after a reopen nothing offers a rescued take the engineer has not reviewed. `IncompleteTakeStore`'s class note names this story as the owner. It fits here because this story already makes every writable open run the take recovery and register what it finds in that registry, and its Resolution already has to choose the record that tells a published take from one never published.
+
+Goals and acceptance:
+
+1. Every writable open registers again, in the project's `IncompleteTakeStore`, every take under `audio/takes/` whose manifest says a failure sealed it and that the engineer has not reviewed, and offers it for review as the live rescue did. A take whose clips the project holds is offered for review only; it is never placed a second time (this story's goal "A take the project holds, or one the user removed, is not offered" keeps governing what is offered for placement).
+2. The Resolution chooses what marks a take as reviewed and records it where the status lives, in the take's manifest (one authority per fact), so a later open no longer offers it.
+
+Tests, binding as above (headless; none assumes a non-Windows environment):
+
+- **Rescued take across reopen**: a take the live rescue sealed (`DEVICE_LOSS`), its clips published, the project saved and reopened. The take is registered again and offered for review once, and its clips are not placed again. After it is reviewed, a reopen does not offer it.
+- **Fault check**, run once, turning that test red: the open without the re-registration.
+
+Code locators: `IncompleteTakeStore` (its class note, `register`, `registerRecoveredTakes`), `RecordCoordinator` (`rescuedTakeStore`, `registerRescuedTake`, the rescued take's "Review" notification), `TakeManifest.SealedBy`, `TakeRecovery.scan`.
+
 ## Status
 
 - Deferred

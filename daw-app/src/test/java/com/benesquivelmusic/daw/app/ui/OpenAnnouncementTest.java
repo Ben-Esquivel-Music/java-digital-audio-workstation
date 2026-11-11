@@ -12,6 +12,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -31,7 +32,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * one clause per kind of damage in a fixed order, counts only, singular and
  * plural right, absent at zero, never offering {@code Review…}; the archive
  * and journal-replay doors announce the items their own read found instead
- * of the reopen's.</p>
+ * of the reopen's — but for the reopen's findings on the inserts the door
+ * kept as saved (story 334).</p>
  */
 class OpenAnnouncementTest {
 
@@ -165,6 +167,11 @@ class OpenAnnouncementTest {
             case MIDI_EFFECT_SETTING_ADJUSTED -> "1 arpeggiator setting adjusted";
             case MIDI_EFFECT_NOT_RECOGNIZED -> "1 MIDI effect not recognized (kept as saved)";
             case MIXER_REFERENCE_REMOVED -> "1 mixer assignment removed";
+            case TEMPO_MAP_ENTRY_SKIPPED -> "1 tempo or meter change skipped";
+            case COMP_REGION_SKIPPED -> "1 comp region skipped";
+            case INSERT_NOT_LOADED -> "1 insert not loaded (bypassed, kept as saved)";
+            case INSERT_SKIPPED -> "1 insert skipped";
+            case INSERT_PARAMETER_ADJUSTED -> "1 insert parameter adjusted";
         };
         String two = switch (kind) {
             case MIDI_NOTE_SKIPPED -> "2 MIDI notes skipped";
@@ -172,6 +179,11 @@ class OpenAnnouncementTest {
             case MIDI_EFFECT_SETTING_ADJUSTED -> "2 arpeggiator settings adjusted";
             case MIDI_EFFECT_NOT_RECOGNIZED -> "2 MIDI effects not recognized (kept as saved)";
             case MIXER_REFERENCE_REMOVED -> "2 mixer assignments removed";
+            case TEMPO_MAP_ENTRY_SKIPPED -> "2 tempo or meter changes skipped";
+            case COMP_REGION_SKIPPED -> "2 comp regions skipped";
+            case INSERT_NOT_LOADED -> "2 inserts not loaded (bypassed, kept as saved)";
+            case INSERT_SKIPPED -> "2 inserts skipped";
+            case INSERT_PARAMETER_ADJUSTED -> "2 insert parameters adjusted";
         };
 
         OpenAnnouncement single = OpenAnnouncement.of(OpenDoor.PLAIN, SONG, MissingAssetsReport.EMPTY,
@@ -223,6 +235,40 @@ class OpenAnnouncementTest {
                 item(UnreadProjectItem.Kind.MIDI_NOTE_SKIPPED))).message())
                 .as("a kind with no item has no clause")
                 .isEqualTo("Opened project: Song — 1 MIDI note skipped, 1 mixer assignment removed");
+    }
+
+    /**
+     * Story 334, studio ruling E5: the clauses run timeline, track content,
+     * processing, routing — the ruling's example sentence without its assets,
+     * then one item of every kind, given in reverse.
+     */
+    @Test
+    void theTimelineContentProcessingRoutingClausesKeepTheirOrder() {
+        List<UnreadProjectItem> theRulingsExample = List.of(
+                item(UnreadProjectItem.Kind.MIXER_REFERENCE_REMOVED),
+                item(UnreadProjectItem.Kind.INSERT_PARAMETER_ADJUSTED),
+                item(UnreadProjectItem.Kind.INSERT_PARAMETER_ADJUSTED),
+                item(UnreadProjectItem.Kind.INSERT_NOT_LOADED),
+                item(UnreadProjectItem.Kind.COMP_REGION_SKIPPED),
+                item(UnreadProjectItem.Kind.MIDI_NOTE_SKIPPED),
+                item(UnreadProjectItem.Kind.MIDI_NOTE_SKIPPED),
+                item(UnreadProjectItem.Kind.MIDI_NOTE_SKIPPED),
+                item(UnreadProjectItem.Kind.TEMPO_MAP_ENTRY_SKIPPED));
+
+        assertThat(OpenAnnouncement.of(OpenDoor.PLAIN, SONG, MissingAssetsReport.EMPTY, theRulingsExample).message())
+                .isEqualTo("Opened project: Song — 1 tempo or meter change skipped, 3 MIDI notes skipped, 1 comp"
+                        + " region skipped, 1 insert not loaded (bypassed, kept as saved), 2 insert parameters"
+                        + " adjusted, 1 mixer assignment removed");
+
+        List<UnreadProjectItem> everyKindReversed = new ArrayList<>();
+        for (UnreadProjectItem.Kind kind : UnreadProjectItem.Kind.values()) {
+            everyKindReversed.addFirst(item(kind));
+        }
+        assertThat(OpenAnnouncement.of(OpenDoor.PLAIN, SONG, MissingAssetsReport.EMPTY, everyKindReversed).message())
+                .isEqualTo("Opened project: Song — 1 tempo or meter change skipped, 1 MIDI note skipped,"
+                        + " 2 CC events skipped, 1 comp region skipped, 1 arpeggiator setting adjusted,"
+                        + " 1 MIDI effect not recognized (kept as saved), 1 insert not loaded (bypassed, kept as"
+                        + " saved), 1 insert skipped, 1 insert parameter adjusted, 1 mixer assignment removed");
     }
 
     @Test
@@ -300,6 +346,40 @@ class OpenAnnouncementTest {
                         "Restored archive: Song (1 mixer assignment removed)", false));
     }
 
+    /**
+     * Story 334 (studio-engineer finding G1): the door's own read has no
+     * plugin registry, so whether an insert loaded, and what its parameters
+     * and its sidechain key came to, is the final open's — each counted once.
+     * The door holds a built-in parameter it clamped (and wrote as applied),
+     * an installed JAR insert it could not load and an unknown effect type;
+     * the final open loads the JAR insert and finds its parameter outside its
+     * range and its sidechain key naming no strip, and finds the unknown type
+     * again.
+     */
+    @Test
+    void anArchiveOrJournalDoorCountsTheOpensOfflineInsertsOnce() {
+        List<UnreadProjectItem> door = List.of(item(UnreadProjectItem.Kind.INSERT_PARAMETER_ADJUSTED),
+                item(UnreadProjectItem.Kind.INSERT_NOT_LOADED), item(UnreadProjectItem.Kind.INSERT_NOT_LOADED));
+        List<UnreadProjectItem> open = List.of(item(UnreadProjectItem.Kind.INSERT_PARAMETER_ADJUSTED),
+                item(UnreadProjectItem.Kind.MIXER_REFERENCE_REMOVED), item(UnreadProjectItem.Kind.INSERT_NOT_LOADED),
+                item(UnreadProjectItem.Kind.MIDI_EFFECT_NOT_RECOGNIZED));
+        String findings = "1 insert not loaded (bypassed, kept as saved), 2 insert parameters adjusted,"
+                + " 1 mixer assignment removed";
+
+        assertThat(OpenAnnouncement.of(new OpenDoor.ArchiveRestore("Song", List.of(), door),
+                Path.of("restored", "Song-20261108").toAbsolutePath(), MissingAssetsReport.EMPTY, open))
+                .as("the reopen's other items stay the door's to count")
+                .isEqualTo(new OpenAnnouncement(NotificationLevel.WARNING, "Restored archive: Song (" + findings + ")",
+                        false));
+        assertThat(OpenAnnouncement.of(new OpenDoor.JournalReplay(2, 0, door), SONG, MissingAssetsReport.EMPTY,
+                open)).isEqualTo(new OpenAnnouncement(NotificationLevel.WARNING,
+                        "Recovered 2 changes from the journal — " + findings, false));
+        assertThat(OpenAnnouncement.of(new OpenDoor.JournalReplay(2, 0, door), SONG, MissingAssetsReport.EMPTY,
+                List.of()).message())
+                .as("an insert the door kept offline and the final open loaded cleanly is not counted")
+                .isEqualTo("Recovered 2 changes from the journal — 1 insert parameter adjusted");
+    }
+
     @Test
     void theJournalReplayDoorAnnouncesItsOwnReadsItemsNeverTheReopens() {
         List<UnreadProjectItem> replayUnread = List.of(item(UnreadProjectItem.Kind.MIDI_EFFECT_SETTING_ADJUSTED),
@@ -332,7 +412,9 @@ class OpenAnnouncementTest {
     @Test
     void aJournalReplayThatCouldNotRebuildItsChangesIsQualifiedByItsOwnReadsItems() {
         List<UnreadProjectItem> replayUnread = List.of(item(UnreadProjectItem.Kind.MIDI_NOTE_SKIPPED));
-        List<UnreadProjectItem> reopenUnread = List.of(item(UnreadProjectItem.Kind.MIXER_REFERENCE_REMOVED));
+        // Story 334 (G1): a removed mixer assignment the reopen finds is its finding on an insert the door kept
+        // as saved, so it counts; a placeholder the door wrote back is found again and stays the door's to count.
+        List<UnreadProjectItem> reopenUnread = List.of(item(UnreadProjectItem.Kind.MIDI_EFFECT_NOT_RECOGNIZED));
 
         assertThat(OpenAnnouncement.of(new OpenDoor.JournalReplay(2, 2, replayUnread), SONG,
                 MissingAssetsReport.EMPTY, reopenUnread)).isEqualTo(new OpenAnnouncement(NotificationLevel.WARNING,
@@ -370,15 +452,22 @@ class OpenAnnouncementTest {
         return item(kind, 1);
     }
 
-    /** An unread item of {@code kind} standing for {@code count} saved items (other than 1 only for a lane). */
+    /**
+     * An unread item of {@code kind} standing for {@code count} saved items
+     * (other than 1 only for a lane), located where its kind's scope admits
+     * and naming its insert when its kind does.
+     */
     private static UnreadProjectItem item(UnreadProjectItem.Kind kind, int count) {
-        UnreadProjectItem.Location location = kind.isTrackScoped()
-                ? new UnreadProjectItem.OnTrack(0, "Keys")
-                : new UnreadProjectItem.InMixer("cue bus 'Singer'");
+        UnreadProjectItem.Location location = switch (kind.scope()) {
+            case TRACK -> new UnreadProjectItem.OnTrack(0, "Keys");
+            case TRACK_OR_MIXER -> new UnreadProjectItem.InMixer("cue bus 'Singer'");
+            case TRANSPORT -> new UnreadProjectItem.InTransport(UnreadProjectItem.TransportEntry.TEMPO_CHANGES);
+        };
         UnreadProjectItem.EventLane lane = kind == UnreadProjectItem.Kind.CC_EVENT_SKIPPED
                 ? new UnreadProjectItem.EventLane(0, MidiCcLaneType.MOD_WHEEL, 1)
                 : null;
-        return new UnreadProjectItem(kind, location, 0, "for the test", count, lane);
+        return new UnreadProjectItem(kind, location, 0, "for the test", count, lane,
+                kind.namesItsInsert() ? "Comp" : "");
     }
 
     private static MissingAsset silencingNoClip(String file) {

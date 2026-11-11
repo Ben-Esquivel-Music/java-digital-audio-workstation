@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.persistence;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.persistence.SaveTestSupport.RecordingMover;
 import com.benesquivelmusic.daw.core.persistence.SaveTestSupport.RecordingMover.Publish;
+import com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -217,7 +218,8 @@ class ProjectFileSymbolicLinkTest {
                 .singleElement().satisfies(backup -> assertThat(Files.readAllBytes(backup))
                         .as("the schema 1 document").isEqualTo(original));
         assertThat(Files.readSymbolicLink(projectFile)).as("the link stays").isEqualTo(SHARED_SONG);
-        assertThat(Files.readString(song)).as("the save's capture").contains("<daw-project version=\"2\"");
+        assertThat(Files.readString(song)).as("the save's capture")
+                .contains("<daw-project version=\"" + MigrationRegistry.CURRENT_VERSION + "\"");
     }
 
     /**
@@ -260,7 +262,8 @@ class ProjectFileSymbolicLinkTest {
                 .singleElement().satisfies(backup -> assertThat(Files.readAllBytes(backup))
                         .as("the schema 1 document").isEqualTo(original));
         assertThat(Files.readSymbolicLink(projectFile)).as("the link stays").isEqualTo(SHARED_SONG);
-        assertThat(Files.readString(song)).as("the save's capture").contains("<daw-project version=\"2\"");
+        assertThat(Files.readString(song)).as("the save's capture")
+                .contains("<daw-project version=\"" + MigrationRegistry.CURRENT_VERSION + "\"");
     }
 
     @Test

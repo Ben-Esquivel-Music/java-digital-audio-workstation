@@ -4,11 +4,14 @@ import java.nio.file.Path;
 import java.util.Objects;
 
 /**
- * Represents the configuration needed to load an external plugin from a JAR file.
- *
- * <p>Users provide the path to a pre-compiled JAR and the fully qualified class name
- * of their {@link com.benesquivelmusic.daw.sdk.plugin.DawPlugin} implementation.
- * This eliminates the need for {@code META-INF/services} configuration inside the JAR.</p>
+ * Represents the configuration needed to load an external plugin from a JAR file:
+ * the JAR and the fully qualified name of the
+ * {@link com.benesquivelmusic.daw.sdk.plugin.DawPlugin} class it holds, as the
+ * JAR's manifest ({@code META-INF/daw-plugin.json}) declares it — no
+ * {@code META-INF/services} configuration is needed inside the JAR. An
+ * installed plugin's entry names the registry's own copy of the JAR (story
+ * 334); its identity is the manifest's plugin id ({@link InstalledPlugin}),
+ * never this path.
  *
  * @param jarPath   the filesystem path to the plugin JAR file
  * @param className the fully qualified class name of the DawPlugin implementation

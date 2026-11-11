@@ -42,7 +42,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * out first — and a write still held then lands once released, since the wait
  * completes and interrupts nothing; and at once, logging nothing, when
  * nothing is being written. Writes are held at the {@link AtomicFileWriter}
- * mover seam; the wait runs on a thread of its own, as the hook does.
+ * mover seam; the wait runs on a thread of its own, as the hook does. A
+ * writer registered to be waited for too (story 334: the installed-plugin
+ * registry's store) is waited for after them, under the same deadline, also
+ * when no save is pending.
  */
 class ExitWaitsForTheWritesTest {
 
@@ -217,6 +220,96 @@ class ExitWaitsForTheWritesTest {
         assertThat(messages(Level.WARNING)).as("only the save writer's own wait ran out, never the wait at exit")
                 .containsExactly("The checkpoint of the save of " + directory + " was still being written after"
                         + " 300 ms; the save completes without it, and it is still written");
+    }
+
+    /**
+     * Story 334 (studio ruling E9, critique J10): a writer registered with
+     * {@link ProjectManager#alsoAwaitBeforeExit} — the installed-plugin
+     * registry's store — is waited for after the saves, under the same
+     * deadline, without a line of its own.
+     */
+    @Test
+    void aRegisteredPendingWriterIsAwaitedWithinTheSameDeadline() throws Exception {
+        HeldWriter registry = new HeldWriter();
+        manager.alsoAwaitBeforeExit(registry);
+        Gate headHeld = hold(headMover.holdNext(HEAD));
+        CompletableFuture<SaveOutcome> save = manager.save(project("Saved before the exit"));
+        headHeld.awaitReached();
+
+        CompletableFuture<Boolean> exit = exitWait(Duration.ofSeconds(TIMEOUT_SECONDS));
+        headHeld.release();
+        assertThat(await(save)).isInstanceOf(SaveOutcome.Saved.class);
+        assertThat(stillWaitingAfter(exit, Duration.ofMillis(300)))
+                .as("after the saves, the registered writer is waited for").isTrue();
+
+        registry.release();
+        assertThat(await(exit)).isTrue();
+        assertThat(messages(Level.INFO)).as("the saves' one line").hasSize(1);
+        assertThat(messages(Level.WARNING)).isEmpty();
+    }
+
+    /**
+     * Critique J10: with no save and no checkpoint being written, a
+     * registered writer's pending write is still waited for — the common
+     * case of an install just before a quit — and nothing is logged.
+     */
+    @Test
+    void aRegisteredPendingWriterIsAwaitedWhenNoSaveIsPending() throws Exception {
+        HeldWriter registry = new HeldWriter();
+        manager.alsoAwaitBeforeExit(registry);
+
+        CompletableFuture<Boolean> exit = exitWait(Duration.ofSeconds(TIMEOUT_SECONDS));
+        assertThat(stillWaitingAfter(exit, Duration.ofMillis(300))).as("the registered write is waited for").isTrue();
+
+        registry.release();
+        assertThat(await(exit)).isTrue();
+        assertThat(logged).as("no line about saves that were never pending").isEmpty();
+    }
+
+    /**
+     * One deadline for every write: a registered writer is given what is left
+     * of the deadline the wait started with, never a bound of its own; when
+     * it runs out the wait returns {@code false}.
+     */
+    @Test
+    void aRegisteredWriterSharesTheOneDeadline() throws Exception {
+        HeldWriter registry = new HeldWriter();
+        manager.alsoAwaitBeforeExit(registry);
+        Gate headHeld = hold(headMover.holdNext(HEAD));
+        manager.save(project("Held past the bound"));
+        headHeld.awaitReached();
+        Duration bound = Duration.ofSeconds(2);
+
+        long called = System.nanoTime();
+        boolean finished = await(exitWait(bound));
+
+        assertThat(finished).isFalse();
+        assertThat(Duration.ofNanos(registry.deadline - called))
+                .as("the deadline counted from the wait's start, not from the writer's turn")
+                .isBetween(bound, bound.plusSeconds(1));
+        registry.release();
+    }
+
+    /** A registered writer whose one write is pending until the test releases it; it records its deadline. */
+    private static final class HeldWriter implements PendingWrites {
+
+        private final CountDownLatch released = new CountDownLatch(1);
+        private volatile long deadline;
+
+        void release() {
+            released.countDown();
+        }
+
+        @Override
+        public boolean pending() {
+            return released.getCount() > 0;
+        }
+
+        @Override
+        public boolean awaitUntil(long deadlineNanos) throws InterruptedException {
+            deadline = deadlineNanos;
+            return released.await(Math.max(0L, deadlineNanos - System.nanoTime()), TimeUnit.NANOSECONDS);
+        }
     }
 
     /** Runs the wait at exit on a thread of its own, as the shutdown hook does. */

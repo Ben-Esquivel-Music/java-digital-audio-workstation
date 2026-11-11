@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.persistence;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.comping.TakeLane;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata;
@@ -164,19 +165,21 @@ public final class RehydrationSession {
      * Applies one outcome to the live project. Owner thread only.
      * <ul>
      *   <li>{@link RehydrationOutcome.Decoded}: every clip that currently
-     *       reads from the source and has no audio gets the decoded array —
+     *       reads from the source and has no audio — on a main lane or a
+     *       take lane — gets the decoded array —
      *       the same instance for every clip of one source (and, for an ADM
      *       file, of one bed or object). A recorded take's
      *       {@link SourceRateMetadata} is set before the array, which
      *       publishes both. An ADM clip whose name selects no bed or object
-     *       gets nothing and is a silent clip of an
-     *       {@link MissingAssetReason#ADM_OBJECT_UNKNOWN} row. When the
-     *       clips are an ADM import's ({@link DecodedAudio#isAdmImport}) but
-     *       the file decoded without ADM metadata, no clip gets anything —
-     *       each would play the same channels — and they are all silent clips
-     *       of such a row (D30). When a clip spans more audio than the
-     *       source holds ({@link SourceShortfall}: judged at the transport's
-     *       tempo, which the render pipeline plays every audio clip at — a
+     *       gets nothing and is counted in an
+     *       {@link MissingAssetReason#ADM_OBJECT_UNKNOWN} row, as one of its
+     *       silent clips when it is on a main lane. When the clips are an ADM
+     *       import's ({@link DecodedAudio#isAdmImport}) but the file decoded
+     *       without ADM metadata, no clip gets anything — each would play
+     *       the same channels — and they are all counted in such a row, the
+     *       main-lane ones as its silent clips (D30). When a clip spans more
+     *       audio than the source holds ({@link SourceShortfall}: judged at
+     *       the transport's tempo, which the render pipeline plays every audio clip at — a
      *       renderer that follows the tempo map must replace this with one
      *       beat-to-source-frame function both call (D37) — and which cannot
      *       tell a shorter file from a tempo slowed after the clip was cut),
@@ -184,12 +187,16 @@ public final class RehydrationSession {
      *       {@link MissingAssetReason#CHANGED_ON_DISK} row ("Shorter than the
      *       clip") that silences nothing.</li>
      *   <li>{@link RehydrationOutcome.Failed}: one row with the outcome's
-     *       reason, whose silent clips are the clips that still read from
-     *       the source and have no audio; no row when there are none.</li>
+     *       reason, whose silent clips are the main-lane clips that still
+     *       read from the source and have no audio — a take-lane clip plays
+     *       nothing, so it is a holder but never a silent clip (story 334);
+     *       no row when every clip that reads from it has audio.</li>
      * </ul>
      * A row names every clip that holds the source as a holder (a relink
      * re-points them all); its detail says which of them the reason
      * concerns when that is not all of them (D26).
+     * A take-lane clip does not play, so it is never a silent clip of any
+     * row (story 334, studio ruling E16).
      * Does nothing — returns {@link AttachResult#NONE} — once cancelled, for
      * another session's outcome, and for an outcome already applied. Never
      * marks the project dirty.
@@ -235,9 +242,10 @@ public final class RehydrationSession {
      * of the session, its clips silent without a row. Each such source
      * stops being pending and becomes an {@link MissingAssetReason#UNREADABLE}
      * row, {@value #LOADING_DID_NOT_COMPLETE}, whose silent clips are the
-     * clips that still read from it and have no audio (no row when there are
-     * none). Owner thread: call it when the end's notification is handled,
-     * after applying every outcome that arrived before it.
+     * main-lane clips that still read from it and have no audio (no row when
+     * every clip that reads from it has audio). Owner thread: call it when
+     * the end's notification is handled, after applying every outcome that
+     * arrived before it.
      *
      * <p>Does nothing — returns no rows — before the run's end was reported
      * (a source may still be decoding) and once the session is cancelled.
@@ -268,6 +276,7 @@ public final class RehydrationSession {
         List<AudioClip> attached = new ArrayList<>();
         int shortClips = 0;
         List<MissingAsset.Holder> unknown = new ArrayList<>();
+        List<MissingAsset.Holder> silent = new ArrayList<>();
         double heldSeconds = 0.0;
         double longestSpanSeconds = 0.0;
         for (HeldClip held : holding) {
@@ -278,6 +287,9 @@ public final class RehydrationSession {
             Optional<DecodedAudio.ClipAudio> selected = decoded.forClip(clip.getName());
             if (selected.isEmpty()) {
                 unknown.add(held.holder());
+                if (held.plays()) {
+                    silent.add(held.holder());
+                }
                 continue;
             }
             selected.get().attachTo(clip);
@@ -299,7 +311,7 @@ public final class RehydrationSession {
         }
         if (!unknown.isEmpty() && decoded instanceof DecodedAudio.AdmAudio adm) {
             rows.add(new MissingAsset(source, MissingAssetReason.ADM_OBJECT_UNKNOWN,
-                    adm.unknownNamesDetail(unknown.size(), holders.size()), holders, unknown));
+                    adm.unknownNamesDetail(unknown.size(), holders.size()), holders, silent));
         }
         return new AttachResult(attached, rows);
     }
@@ -314,30 +326,49 @@ public final class RehydrationSession {
 
     /**
      * One row naming every clip of {@code holding}, whose silent clips are
-     * those without audio; nothing when every one has audio.
+     * the main-lane clips without audio — a take-lane clip does not play, so
+     * it is never a silent clip (story 334, studio ruling E16), though a
+     * source only lanes hold still gets its row; nothing when every clip has
+     * audio.
      */
     private static AttachResult rowOfSilent(AssetReference source, MissingAssetReason reason, String detail,
                                             List<HeldClip> holding) {
+        boolean withoutAudio = false;
         List<MissingAsset.Holder> silent = new ArrayList<>();
         for (HeldClip held : holding) {
             if (held.clip().getAudioData() == null) {
-                silent.add(held.holder());
+                withoutAudio = true;
+                if (held.plays()) {
+                    silent.add(held.holder());
+                }
             }
         }
-        if (silent.isEmpty()) {
+        if (!withoutAudio) {
             return AttachResult.NONE;
         }
         return new AttachResult(List.of(), List.of(
                 new MissingAsset(source, reason, detail, holdersOf(holding), silent)));
     }
 
-    /** Every clip of the live project that reads from {@code source}, in project order. */
+    /**
+     * Every clip of the live project that reads from {@code source}, in
+     * project order: each track's main-lane clips, then its take lanes'
+     * clips, lane by lane (story 334) — a lane clip shares a decode with the
+     * comp slices cut from it, and must hold audio for a later swipe.
+     */
     private List<HeldClip> liveHolders(AssetReference source) {
         List<HeldClip> holding = new ArrayList<>();
         for (Track track : project.getTracks()) {
             for (AudioClip clip : track.getClips()) {
                 if (source.isHeldBy(clip)) {
-                    holding.add(new HeldClip(clip, MissingAsset.Holder.of(track, clip)));
+                    holding.add(new HeldClip(clip, MissingAsset.Holder.of(track, clip), true));
+                }
+            }
+            for (TakeLane lane : track.getTakeComping().getTakeLanes()) {
+                for (AudioClip clip : lane.getClips()) {
+                    if (source.isHeldBy(clip)) {
+                        holding.add(new HeldClip(clip, MissingAsset.Holder.of(track, clip), false));
+                    }
                 }
             }
         }
@@ -360,8 +391,13 @@ public final class RehydrationSession {
         return holders;
     }
 
-    /** A live clip that reads from a source, with its report holder. */
-    private record HeldClip(AudioClip clip, MissingAsset.Holder holder) {
+    /**
+     * A live clip that reads from a source, with its report holder.
+     *
+     * @param plays whether the clip is on its track's main lane, the lane that
+     *              plays; {@code false} for a take-lane clip
+     */
+    private record HeldClip(AudioClip clip, MissingAsset.Holder holder, boolean plays) {
         HeldClip {
             Objects.requireNonNull(clip, "clip must not be null");
             Objects.requireNonNull(holder, "holder must not be null");

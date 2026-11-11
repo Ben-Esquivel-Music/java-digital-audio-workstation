@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.ServiceConfigurationError;
 import java.util.ServiceLoader;
 import java.util.ServiceLoader.Provider;
@@ -184,6 +185,21 @@ public interface BuiltInDawPlugin extends DawPlugin {
      */
     static List<BuiltInDawPlugin> discoverAll() {
         return discoverWith(Function.identity());
+    }
+
+    /**
+     * Creates a fresh instance of the built-in plugin whose descriptor id is
+     * {@code pluginId} (story 334: a saved first-party insert reopens as the
+     * plugin it was). The id is looked up among this build's own providers —
+     * the module's {@code provides} clause, indexed once on first use — and
+     * never names a class to load.
+     *
+     * @param pluginId the plugin's descriptor id, as a project file saved it
+     * @return a new, uninitialized instance, or empty when no built-in plugin
+     *         has that id
+     */
+    static Optional<BuiltInDawPlugin> createById(String pluginId) {
+        return BuiltInPluginIndex.create(pluginId);
     }
 
     /**

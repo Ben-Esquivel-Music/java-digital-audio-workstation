@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.plugin.clap;
 
 import com.benesquivelmusic.daw.sdk.plugin.ExternalPluginFormat;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
+import com.benesquivelmusic.daw.sdk.plugin.PluginStateRejectedException;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
 import org.junit.jupiter.api.Test;
@@ -129,17 +130,30 @@ class ClapPluginHostTest {
         assertThat(host.getLatencySamples()).isEqualTo(0);
     }
 
+    /**
+     * A host without the state extension — here, not initialized, so it has
+     * neither the extension nor a plugin — saves an empty state and never
+     * throws: empty means "no state support", while a failed save throws
+     * (story 334, studio ruling E10.2). The failed-save branches need a
+     * native CLAP plugin (story 034).
+     */
     @Test
-    void shouldReturnEmptyStateWhenNotInitialized() {
+    void saveStateWithoutStateSupportIsEmpty() {
         ClapPluginHost host = new ClapPluginHost(Path.of("/test.clap"));
         assertThat(host.saveState()).isEmpty();
     }
 
+    /**
+     * A non-empty state given to a host without state support is the plugin
+     * rejecting it (story 334, studio ruling E4; ruling-2 G17), never a
+     * silent success that would leave the plugin at its defaults.
+     */
     @Test
-    void shouldAcceptLoadStateWithoutError() {
+    void aNonEmptyStateWithoutStateSupportIsRejected() {
         ClapPluginHost host = new ClapPluginHost(Path.of("/test.clap"));
-        host.loadState(new byte[]{1, 2, 3});
-        // No exception expected
+        assertThatThrownBy(() -> host.loadState(new byte[]{1, 2, 3}))
+                .isInstanceOf(PluginStateRejectedException.class)
+                .hasMessage("the plugin has no state support");
     }
 
     @Test

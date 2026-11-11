@@ -54,6 +54,10 @@ These tests are binding acceptance criteria. They run headless, and none of them
 - Skills: `javafx-application-design` §4, §11 (the rows come from records built off the FX thread), §15.
 - Cross-refs: story 329 (the announcement and the missing-assets dialog), story 330 (the unread items and the backup), story 336 (the log file sink), story 367 (more kinds of items).
 
+## Note from Story 334
+
+Story 334 (studio ruling E10.12) counts every insert the open could not load under one clause, `inserts not loaded (bypassed, kept as saved)`. The per-item detail must list each such insert's source kind, plugin id and saved version, so the engineer knows what to install. The facts are already on the item's detail line (for example `JAR plugin 'com.example.comp' version '1.2.0' is not installed`; `OfflineInsertDetails`) and on the slot (`InsertSlot.offline()` → `OfflineInsert.cause()`, an `OfflineCause`). Story 334 also adds items at the transport (`UnreadProjectItem.InTransport`, which describes itself as `Transport`: skipped tempo and meter changes), which need a group of their own beside the tracks and mixer containers.
+
 ## Status
 
 - Deferred

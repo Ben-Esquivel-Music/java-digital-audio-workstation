@@ -6,22 +6,24 @@ package com.benesquivelmusic.daw.core.transport;
  * <p>Each event specifies the beat position where the change takes effect,
  * the new tempo in BPM, and the type of transition from the preceding tempo.</p>
  *
- * @param positionInBeats the beat position where this tempo change occurs (must be &ge; 0)
- * @param bpm             the new tempo in beats per minute (must be between 20 and 999)
+ * @param positionInBeats the beat position where this tempo change occurs (finite and &ge; 0)
+ * @param bpm             the new tempo in beats per minute (between 20 and 999; never NaN)
  * @param transitionType  how the tempo transitions from the previous value
  */
 public record TempoChangeEvent(double positionInBeats, double bpm, TempoTransitionType transitionType)
         implements Comparable<TempoChangeEvent> {
 
     /**
-     * Creates a tempo change event with validation.
+     * Creates a tempo change event with validation: a position that is not
+     * finite and a NaN tempo are refused like an out-of-range one (story 334,
+     * studio ruling E10.5).
      */
     public TempoChangeEvent {
-        if (positionInBeats < 0) {
+        if (!Double.isFinite(positionInBeats) || positionInBeats < 0) {
             throw new IllegalArgumentException(
-                    "positionInBeats must not be negative: " + positionInBeats);
+                    "positionInBeats must be finite and not negative: " + positionInBeats);
         }
-        if (bpm < 20.0 || bpm > 999.0) {
+        if (!(bpm >= 20.0 && bpm <= 999.0)) {
             throw new IllegalArgumentException(
                     "bpm must be between 20 and 999: " + bpm);
         }

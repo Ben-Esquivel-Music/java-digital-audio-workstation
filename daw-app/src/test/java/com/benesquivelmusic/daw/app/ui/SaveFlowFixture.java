@@ -500,6 +500,12 @@ final class SaveFlowFixture implements AutoCloseable {
             eventRecording.run();
             // Bounded (story 333 review): a release that never ends fails the test instead of hanging it.
             projectManager.closeProject().get(GUARD.toMillis() * 3, TimeUnit.MILLISECONDS);
+            // A door's switch retires Song A's lease, which ends only once the checkpoint
+            // it claimed is written (ProjectManager.openProject); closeProject() releases
+            // the current lease only. Wait for the retired ones too, bounded as that wait
+            // is, so the @TempDir is deleted after every write this test started (story
+            // 433; story 334, ruling R-T1).
+            projectManager.whenRetiredLeasesReleased().get(GUARD.toMillis() * 3, TimeUnit.MILLISECONDS);
         }
     }
 

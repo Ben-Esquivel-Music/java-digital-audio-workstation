@@ -11,7 +11,6 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiConsumer;
 
 /**
@@ -29,7 +28,11 @@ import java.util.function.BiConsumer;
  * </ul>
  *
  * <p>Reflected method handles are cached per processor class so that reflection
- * happens at most once per class, never on the real-time audio path.</p>
+ * happens at most once per class, never on the real-time audio path. The
+ * cache is a {@link ClassValue}, whose entry each class holds itself, so it
+ * never keeps a class reachable: a JAR plugin's class — and the class loader
+ * of its insert, one per insert and project open — can be collected once the
+ * insert is disposed (story 334).</p>
  */
 public final class ReflectiveParameterRegistry {
 
@@ -38,15 +41,32 @@ public final class ReflectiveParameterRegistry {
         void set(int id, double value);
     }
 
-    /** Resolves and binds setters off the audio thread; invocation never boxes. */
+    /**
+     * Resolves and binds setters off the audio thread; invocation never boxes.
+     * The setters are unreflected through the {@linkplain MethodHandles#publicLookup()
+     * public lookup}, as {@code ReflectiveParameterBinder} and
+     * {@code ReflectivePresetSerializer} do: it reaches a public setter of a
+     * public class in a package exported to everyone — every built-in
+     * processor, and a JAR plugin's processor, whose class loader's unnamed
+     * module exports all its packages — without daw.core reading the class's
+     * module. A full-power lookup of daw.core would need that read, and in the
+     * application's own launch daw.core is a named module that does not read a
+     * plugin's unnamed module (story 334, finding FX2-1).
+     *
+     * @param processor the processor whose {@code @ProcessorParam} setters to bind
+     * @return the setter, applying a value to the parameter of the given id
+     * @throws IllegalStateException when a setter is not public or its class is
+     *                               not public in a package exported to everyone
+     */
     public static AudioParameterSetter createAudioParameterSetter(Object processor) {
         var parameters = reflect(processor.getClass());
         int[] ids = new int[parameters.size()];
         MethodHandle[] setters = new MethodHandle[parameters.size()];
+        MethodHandles.Lookup lookup = MethodHandles.publicLookup();
         try {
             for (int i = 0; i < parameters.size(); i++) {
                 ids[i] = parameters.get(i).id;
-                setters[i] = MethodHandles.lookup().unreflect(parameters.get(i).setter).bindTo(processor);
+                setters[i] = lookup.unreflect(parameters.get(i).setter).bindTo(processor);
             }
         } catch (IllegalAccessException e) {
             throw new IllegalStateException("Cannot bind processor parameters", e);
@@ -67,8 +87,13 @@ public final class ReflectiveParameterRegistry {
         };
     }
 
-    /** Per-class cache of reflected parameters. */
-    private static final Map<Class<?>, List<ReflectedParam>> CACHE = new ConcurrentHashMap<>();
+    /** Per-class cache of reflected parameters (see the class note). */
+    private static final ClassValue<List<ReflectedParam>> CACHE = new ClassValue<>() {
+        @Override
+        protected List<ReflectedParam> computeValue(Class<?> type) {
+            return discover(type);
+        }
+    };
 
     private ReflectiveParameterRegistry() {
         // utility class
@@ -156,7 +181,7 @@ public final class ReflectiveParameterRegistry {
     }
 
     private static List<ReflectedParam> reflect(Class<?> processorClass) {
-        return CACHE.computeIfAbsent(processorClass, ReflectiveParameterRegistry::discover);
+        return CACHE.get(processorClass);
     }
 
     private static List<ReflectedParam> discover(Class<?> processorClass) {

@@ -118,6 +118,8 @@ final class TrackStripController {
     static final String NO_INSERTS_TEXT = "(no inserts)";
     /** Style class of a bypassed insert indicator (consumed by styles.css). */
     static final String BYPASSED_STYLE_CLASS = "bypassed";
+    /** Style class of an offline insert indicator (story 334, ruling E22; consumed by styles.css). */
+    static final String OFFLINE_STYLE_CLASS = "offline";
 
     /**
      * The handles of one strip that the VM binding attaches to. Stored on the
@@ -979,7 +981,11 @@ final class TrackStripController {
      * Rebuilds the indicator row: one small badge per real insert slot
      * (abbreviated name, tooltip = full name; a bypassed slot carries the
      * {@value #BYPASSED_STYLE_CLASS} style class the stylesheet dims with the
-     * text-mute token), or the {@value #NO_INSERTS_TEXT} placeholder when the
+     * text-mute token; an offline slot — kept at its place, passing audio
+     * through, because the open could not load it — carries the
+     * {@value #OFFLINE_STYLE_CLASS} style class the stylesheet colours with the
+     * warn token, and its tooltip says so, whatever its stored bypass: story
+     * 334, ruling E22), or the {@value #NO_INSERTS_TEXT} placeholder when the
      * chain is empty. Package-visible for tests.
      */
     static void renderInsertIndicators(HBox insertChain, List<InsertSlotModel> inserts) {
@@ -993,11 +999,18 @@ final class TrackStripController {
         for (InsertSlotModel insert : inserts) {
             Label badge = new Label(abbreviateInsertName(insert.name()));
             badge.getStyleClass().add("track-insert-indicator");
-            if (insert.bypassed()) {
+            // Assistive technology reads the insert's name and state, not the three-letter
+            // abbreviation (story 334, ruling R-N1).
+            badge.setAccessibleText(insert.accessibleText());
+            if (insert.offline()) {
+                badge.getStyleClass().add(OFFLINE_STYLE_CLASS);
+                badge.setTooltip(new Tooltip(OfflineInsertText.badgeTooltip(insert.name())));
+            } else if (insert.bypassed()) {
                 badge.getStyleClass().add(BYPASSED_STYLE_CLASS);
+                badge.setTooltip(new Tooltip(insert.name() + " (bypassed)"));
+            } else {
+                badge.setTooltip(new Tooltip(insert.name()));
             }
-            badge.setTooltip(new Tooltip(insert.bypassed()
-                    ? insert.name() + " (bypassed)" : insert.name()));
             insertChain.getChildren().add(badge);
         }
     }

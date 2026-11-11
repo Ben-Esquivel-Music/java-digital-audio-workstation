@@ -59,3 +59,7 @@ For a studio engineer: the session's deliverable — the mixdown — cannot be p
 - Any new `DawAction`/`DawView` constants propagate to `DawViewTest`/`KeyBindingManagerTest`/`DawActionTest` per repo convention.
 - Hub/Welcome surface ownership is `PROJECT_MANAGER_DESIGN_BOOK.md`'s (book §7) — this story applies the mockup-fact cleanup bar (implement or remove), not a Hub redesign.
 - Cross-refs: story **344** (prerequisite: registry seed, single KeyBindingManager, harness A), stories **341–343/346–347** (later stages shrink harness B's seam ledger), existing **243/181/185/026/168** (reachability completed), existing **192** (palette coverage completed), story **333** (exit protocol, Book 3), story **328** (COMP slot, Book 2), story **319** (analyzer feeds, Book 1), story **339** (Book 4).
+
+## Note from Story 334
+
+Story 334 restores a track's take lanes, comp regions and comp output at open (studio ruling E8), so the comping surface's state survives a reopen at the model. The COMP tool that edits it is not selectable from the application: `KeyboardShortcutController` binds tool actions to `EditTool.POINTER`, `PENCIL`, `ERASER`, `SCISSORS` and `GLUE` (`TOOL_POINTER` … `TOOL_GLUE`) and none to `EditTool.COMP`. Story 334's studio ruling E18 makes COMP tool activation a note for this story and story 328, not a new story: this story's tool selector is the slot where COMP becomes selectable.

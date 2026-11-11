@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
+import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
 import com.benesquivelmusic.daw.core.persistence.ProjectLockManager;
 import com.benesquivelmusic.daw.core.persistence.journal.JournalRecord;
 import com.benesquivelmusic.daw.core.persistence.journal.JournalState;
@@ -21,16 +22,24 @@ import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.time.InstantSource;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.function.UnaryOperator;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static com.benesquivelmusic.daw.app.ui.SaveFlowFixture.onFx;
 import static com.benesquivelmusic.daw.app.ui.SaveFlowFixture.runOnFx;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Story 333, Goals — Tests, "Stolen-lock", the exit half (the studio
@@ -65,10 +74,14 @@ class StolenLockAtExitTest {
 
     private ExitFixture fixture;
     private Path songA;
+    /** Disarmed unless a test arms it: holds one report of Song A's journal writer (story 433). */
+    private HeldJournalReport heldReport;
 
     @BeforeEach
     void songAWithATakeSavedThenEdited() throws Exception {
-        fixture = new ExitFixture(workspace, AutoSaveConfig.DEFAULT);
+        heldReport = new HeldJournalReport();
+        fixture = new ExitFixture(workspace, AutoSaveConfig.DEFAULT, true, UnaryOperator.identity(), true, null,
+                new ProjectDeserializer(), heldReport);
         songA = fixture.songA;
         Files.write(songA.resolve("audio").resolve("take.wav"), new byte[1024]);
         runOnFx(() -> fixture.save.project.get().getTracks().getFirst()
@@ -89,7 +102,7 @@ class StolenLockAtExitTest {
         steal();
         String foreignLock = Files.readString(songA.resolve(ProjectLockManager.LOCK_FILE_NAME));
         byte[] head = Files.readAllBytes(songA.resolve("project.daw"));
-        Map<String, FileTime> original = withoutThisSessionsSegment(listing(songA));
+        Map<String, FileTime> original = originalListing();
         int checkpoints = SaveFlowFixture.checkpointFiles(songA).size();
         fixture.save.promptAnswer = "Save and close";
         fixture.save.takeoverAnswer = "Save As…";
@@ -123,7 +136,7 @@ class StolenLockAtExitTest {
         steal();
         String foreignLock = Files.readString(songA.resolve(ProjectLockManager.LOCK_FILE_NAME));
         byte[] head = Files.readAllBytes(songA.resolve("project.daw"));
-        Map<String, FileTime> original = withoutThisSessionsSegment(listing(songA));
+        Map<String, FileTime> original = originalListing();
         int checkpoints = SaveFlowFixture.checkpointFiles(songA).size();
         fixture.save.promptAnswer = "Save and close";
         fixture.save.takeoverAnswer = "Quit without saving";
@@ -162,7 +175,7 @@ class StolenLockAtExitTest {
         steal();
         String foreignLock = Files.readString(songA.resolve(ProjectLockManager.LOCK_FILE_NAME));
         byte[] head = Files.readAllBytes(songA.resolve("project.daw"));
-        Map<String, FileTime> original = withoutThisSessionsSegment(listing(songA));
+        Map<String, FileTime> original = originalListing();
         int checkpoints = SaveFlowFixture.checkpointFiles(songA).size();
 
         fixture.closeBox();
@@ -171,6 +184,82 @@ class StolenLockAtExitTest {
         assertThat(fixture.save.takeoverHeaders).as("no dialog").isEmpty();
         assertThat(fixture.unsavedPrompts).isEmpty();
         assertTheOriginalWasLeftToTheOtherSession(foreignLock, head, original, checkpoints);
+    }
+
+    /**
+     * Story 433's journal race, reproduced on demand (story 334, ruling R-T1):
+     * the save's checkpoint marker is appended and fsynced, and the journal
+     * writer's report of that batch — made before the segment rotation the
+     * marker asked for — is held, the window both failures met. The original's
+     * listing waits until the write in flight has ended, then leaves out the
+     * rotation's new segment as this session's newest and keeps the one the
+     * marker went into; the exit then writes nothing more to the original.
+     */
+    @Test
+    void theOriginalsListingWaitsForTheJournalWriteStillInFlight() throws Exception {
+        fixture.awaitJournalWrites();
+        int newest = newestSegmentIndex();
+        Path next = songA.resolve("journal").resolve(segmentName(newest + 1));
+        heldReport.arm();
+        try {
+            fixture.save.save();
+            fixture.save.settle();
+            heldReport.awaitEntered();
+            steal();
+            CompletableFuture<Map<String, FileTime>> taken = CompletableFuture.supplyAsync(() -> {
+                try {
+                    return originalListing();
+                } catch (Exception failure) {
+                    throw new CompletionException(failure);
+                }
+            }, task -> Thread.ofVirtual().name("stolen-lock-test-listing").start(task));
+
+            assertThatThrownBy(() -> taken.get(500, TimeUnit.MILLISECONDS))
+                    .as("the listing waits while the marker's write is in flight")
+                    .isInstanceOf(TimeoutException.class);
+            assertThat(next).as("the window is real: the marker is written, the rotation not yet made")
+                    .doesNotExist();
+
+            heldReport.release();
+            Map<String, FileTime> original = taken.get(ExitFixture.GUARD.toMillis(), TimeUnit.MILLISECONDS);
+            assertThat(next).as("the rotation made the next segment").exists();
+            assertThat(original).as("the rotation's segment is this session's newest, left out; the marker's is kept")
+                    .doesNotContainKey(segmentKey(newest + 1))
+                    .containsKey(segmentKey(newest));
+
+            String foreignLock = Files.readString(songA.resolve(ProjectLockManager.LOCK_FILE_NAME));
+            byte[] head = Files.readAllBytes(songA.resolve("project.daw"));
+            int checkpoints = SaveFlowFixture.checkpointFiles(songA).size();
+            fixture.closeBox();
+            fixture.awaitStep(ExitCoordinator.ExitStep.HIDE);
+
+            assertThat(fixture.save.takeoverHeaders).as("no dialog").isEmpty();
+            assertTheOriginalWasLeftToTheOtherSession(foreignLock, head, original, checkpoints);
+        } finally {
+            heldReport.release();
+        }
+    }
+
+    /** The index of the newest {@code journal/segment-NNN.bin} in Song A's folder. */
+    private int newestSegmentIndex() throws Exception {
+        Pattern segment = Pattern.compile("segment-(\\d+)\\.bin");
+        try (Stream<Path> entries = Files.list(songA.resolve("journal"))) {
+            return entries.map(entry -> segment.matcher(entry.getFileName().toString()))
+                    .filter(Matcher::matches)
+                    .mapToInt(matched -> Integer.parseInt(matched.group(1)))
+                    .max()
+                    .orElseThrow();
+        }
+    }
+
+    /** The file name of the journal's segment {@code index}, as the journal writer names it. */
+    private static String segmentName(int index) {
+        return String.format(Locale.ROOT, "segment-%03d.bin", index);
+    }
+
+    /** The key of the journal's segment {@code index} in a {@link #listing(Path)} of the project's folder. */
+    private static String segmentKey(int index) {
+        return Path.of("journal", segmentName(index)).toString();
     }
 
     /**
@@ -191,7 +280,7 @@ class StolenLockAtExitTest {
         java.util.concurrent.atomic.AtomicInteger checkpointsWhenAsked = new java.util.concurrent.atomic.AtomicInteger();
         fixture.save.whileTheTakeoverAsks = () -> {
             try {
-                whenAsked.compareAndSet(null, withoutThisSessionsSegment(listing(songA)));
+                whenAsked.compareAndSet(null, originalListing());
                 headWhenAsked.compareAndSet(null, Files.readAllBytes(songA.resolve("project.daw")));
                 checkpointsWhenAsked.set(SaveFlowFixture.checkpointFiles(songA).size());
             } catch (Exception failure) {
@@ -562,6 +651,16 @@ class StolenLockAtExitTest {
         assertThat(Files.readString(songA.resolve(ProjectLockManager.LOCK_FILE_NAME)))
                 .as("the other session's lock untouched").isEqualTo(foreignLock);
         assertThat(fixture.terminalExits).hasValue(1);
+    }
+
+    /**
+     * Song A's folder as the listings compare it, taken once the journal's write
+     * in flight has ended (ExitFixture#awaitJournalWrites), with this session's
+     * newest segment left out.
+     */
+    private Map<String, FileTime> originalListing() throws Exception {
+        fixture.awaitJournalWrites();
+        return withoutThisSessionsSegment(listing(songA));
     }
 
     /**

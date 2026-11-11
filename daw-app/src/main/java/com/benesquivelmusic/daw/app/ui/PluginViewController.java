@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.metering.AnalyzerFeeds;
 import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
 import com.benesquivelmusic.daw.app.ui.plugin.PluginEditorSession;
+import com.benesquivelmusic.daw.app.ui.plugin.PluginText;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
@@ -215,10 +216,17 @@ final class PluginViewController {
                     }
                 });
             } catch (RuntimeException | Error failure) {
-                finishOnFx(() -> {
-                    pendingActivations.remove(activation);
-                    if (!disposed) activationFailed(label, failure);
-                });
+                // Logged here, whatever becomes of the view: a load that fails after the window
+                // closed is still recorded, as the insert rack records its own. The activation is
+                // forgotten whatever the log throws, as the rack recovers (PR #990 review, ruling R5-2).
+                try {
+                    LOG.log(Level.WARNING, "Failed to activate " + label, failure);
+                } finally {
+                    finishOnFx(() -> {
+                        pendingActivations.remove(activation);
+                        if (!disposed) showActivationFailure(label, failure);
+                    });
+                }
             }
         });
     }
@@ -280,9 +288,23 @@ final class PluginViewController {
         };
     }
 
+    /**
+     * Opens {@code slot}'s editor in the Workshop pane, or focuses it when it
+     * is open — the one door the rack, the Inspector's pencil and the
+     * Workshop reach. An offline insert opens no editor (story 334, rulings E3
+     * and E22): it has no plugin to edit, and its surfaces say why it is
+     * offline.
+     *
+     * @param channel the slot's channel
+     * @param slot    the slot
+     * @throws IllegalArgumentException if {@code slot} is no longer in {@code channel}
+     */
     void openSlotEditor(MixerChannel channel, InsertSlot slot) {
         if (!channel.getInsertSlots().contains(slot)) {
             throw new IllegalArgumentException("The editor's slot is no longer in the channel");
+        }
+        if (slot.offline().isPresent()) {
+            return;
         }
         if (activeChannel == channel && activeSlot == slot && activeEditorSession != null) {
             focusActiveEditor();
@@ -348,9 +370,13 @@ final class PluginViewController {
 
     private void activationFailed(String label, Throwable failure) {
         LOG.log(Level.WARNING, "Failed to activate " + label, failure);
+        showActivationFailure(label, failure);
+    }
+
+    private void showActivationFailure(String label, Throwable failure) {
         deps.updateStatusBar().accept("Failed to activate " + label, null);
         deps.showNotification().accept(NotificationLevel.ERROR,
-                "Failed to activate " + label + ": " + failure.getMessage());
+                "Failed to activate " + label + ": " + PluginText.failureName(failure));
     }
 
     private static void addSegmentIfPresent(List<String> segments, String value) {

@@ -1,5 +1,8 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.plugin.PluginTestJars;
+import com.benesquivelmusic.daw.app.ui.plugin.fixtures.LevelInsertFixture;
+import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
@@ -8,6 +11,8 @@ import com.benesquivelmusic.daw.core.persistence.journal.ProjectContext;
 import com.benesquivelmusic.daw.core.persistence.journal.JournalRecord;
 import com.benesquivelmusic.daw.core.persistence.journal.JournalState;
 import com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry;
+import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
+import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.snapshot.SnapshotBrowserService;
 import com.benesquivelmusic.daw.core.snapshot.SnapshotEntry;
 import com.benesquivelmusic.daw.core.snapshot.SnapshotKind;
@@ -47,6 +52,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * degraded backup is owed (the archive and the checkpoint keep the
  * original). Exactly one notification, a WARNING, counts only, no
  * {@code Review…} (there are no missing assets).
+ *
+ * <p>Story 334 (studio-engineer finding G1) — the archive restore's and the
+ * journal replay's own read has no plugin registry, so an installed JAR
+ * plugin's insert is offline there and written back as saved; the final open
+ * loads it and is the one to find its out-of-range parameter and its
+ * sidechain key that names no strip. Through both doors the announcement
+ * counts those findings of the final open, the door's own clamp of a built-in
+ * parameter, and an unknown effect type once.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class UnreadItemsQualifyTheOpenAnnouncementTest {
@@ -67,6 +80,39 @@ class UnreadItemsQualifyTheOpenAnnouncementTest {
               </tracks>
             </daw-project>
             """.formatted(MigrationRegistry.CURRENT_VERSION);
+
+    /**
+     * Story 334, G1 — on Vox: a built-in Compressor whose Threshold is saved
+     * below its range; the installed Level JAR plugin with an id-keyed level
+     * above its range and a sidechain key that names no strip; an effect type
+     * this build does not know.
+     */
+    private static final String THREE_INSERTS = """
+            <daw-project version="%d">
+              <metadata><name>Song</name></metadata>
+              <audio-format sample-rate="48000.0" channels="2" bit-depth="24" buffer-size="256"/>
+              <tracks>
+                <track id="00000000-0000-0000-0000-0000000000a1" name="Drums" type="AUDIO"/>
+                <track id="00000000-0000-0000-0000-0000000000a2" name="Vox" type="AUDIO"/>
+              </tracks>
+              <mixer>
+                <master volume="1.0"/>
+                <channels>
+                  <channel volume="1.0"/>
+                  <channel volume="1.0"><inserts>
+                    <insert bypassed="false" effect-type="COMPRESSOR" expensive="false" name="Compressor"><parameter name="Threshold" value="-90.0"/></insert>
+                    <insert bypassed="false" expensive="false" name="Level" plugin-id="test.level" plugin-source="jar" plugin-version="1.0" sidechain-source="return:9"><parameter id="0" value="1.5"/></insert>
+                    <insert bypassed="false" effect-type="NOT_A_TYPE" expensive="false" name="Old FX"/>
+                  </inserts></channel>
+                </channels>
+                <return-buses/>
+              </mixer>
+            </daw-project>
+            """.formatted(MigrationRegistry.CURRENT_VERSION);
+
+    /** G1's announced clauses: the unknown type once, two parameters, the removed sidechain key. */
+    private static final String INSERT_FINDINGS = "1 insert not loaded (bypassed, kept as saved),"
+            + " 2 insert parameters adjusted, 1 mixer assignment removed";
 
     @TempDir
     Path workspace;
@@ -155,6 +201,76 @@ class UnreadItemsQualifyTheOpenAnnouncementTest {
         runOnFx(() -> snapshots.restoreEntry(entry));
 
         assertAnnouncedOnce("Restored snapshot: Before the edit — 1 MIDI note skipped");
+    }
+
+    @Test
+    void anArchiveRestoreCountsTheFinalOpensFindingsOnTheInsertsItKeptAsSaved() throws Exception {
+        PluginRegistry registry = registryWithTheLevelPlugin();
+        fixture.projectManager.setPluginResolver(registry);
+        try {
+            Path archive = archiveHolding("Song", THREE_INSERTS);
+            Path destination = Files.createDirectories(workspace.resolve("restored")).resolve("Song-20261108-120000");
+
+            fixture.lifecycle().restoreArchive(archive, destination, () -> { });
+            runOnFx(() -> { });
+
+            assertAnnouncedOnce("Restored archive: Song (" + INSERT_FINDINGS + ")");
+            assertTheFinalOpenLoadedTheLevelPlugin();
+        } finally {
+            releaseTheOpenProject(registry);
+        }
+    }
+
+    @Test
+    void aJournalReplayCountsTheFinalOpensFindingsOnTheInsertsItKeptAsSaved() throws Exception {
+        PluginRegistry registry = registryWithTheLevelPlugin();
+        fixture.projectManager.setPluginResolver(registry);
+        try {
+            Path directory = projectFolderHolding("Song", ONE_BAD_NOTE.replace("velocity=\"128\"", "velocity=\"90\""));
+            Path checkpoints = Files.createDirectories(ProjectContext.forProject(directory).checkpointDirectory());
+            Path checkpoint = Files.writeString(checkpoints.resolve("checkpoint-999-20261108T120000.daw"),
+                    THREE_INSERTS);
+            Path journal = Files.createDirectories(ProjectContext.forProject(directory).journalDirectory());
+            try (OutputStream out = Files.newOutputStream(journal.resolve("segment-000.bin"))) {
+                new JournalRecord(0L, Instant.EPOCH, JournalRecord.CHECKPOINT_TYPE, null,
+                        JournalState.capture(-1L, checkpoint)).writeTo(java.nio.channels.Channels.newChannel(out));
+            }
+
+            fixture.lifecycle().replayJournal(directory);
+            runOnFx(() -> { });
+
+            assertAnnouncedOnce("Recovered 0 changes from the journal — " + INSERT_FINDINGS);
+            assertTheFinalOpenLoadedTheLevelPlugin();
+        } finally {
+            releaseTheOpenProject(registry);
+        }
+    }
+
+    /** A registry with the Level JAR plugin installed, as the install flow installs it. */
+    private PluginRegistry registryWithTheLevelPlugin() throws Exception {
+        PluginRegistry registry = new PluginRegistry();
+        Path downloads = Files.createDirectories(workspace.resolve("downloads"));
+        PluginTestJars.install(registry, PluginTestJars.buildJar(downloads, "level.jar",
+                List.of(PluginTestJars.manifest(LevelInsertFixture.class)), List.of(LevelInsertFixture.class)),
+                LevelInsertFixture.class);
+        return registry;
+    }
+
+    private void assertTheFinalOpenLoadedTheLevelPlugin() {
+        DawProject opened = fixture.project.get();
+        List<InsertSlot> chain = opened.getMixerChannelForTrack(opened.getTracks().get(1)).getInsertSlots();
+        assertThat(chain).extracting(InsertSlot::getName).containsExactly("Compressor", "Level", "Old FX");
+        assertThat(chain.get(1).getPlugin()).as("fixture: the final open loaded the installed plugin")
+                .isInstanceOfSatisfying(LevelInsertFixture.class, plugin ->
+                        assertThat(plugin.level()).as("clamped to its range").isEqualTo(1.0));
+    }
+
+    private void releaseTheOpenProject(PluginRegistry registry) {
+        try {
+            fixture.project.get().disposeInsertsWhenQuiescent().join();
+        } finally {
+            registry.disposeAll();
+        }
     }
 
     private void assertAnnouncedOnce(String message) throws Exception {
