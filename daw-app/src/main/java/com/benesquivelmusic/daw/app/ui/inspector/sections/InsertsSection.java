@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui.inspector.sections;
 
+import com.benesquivelmusic.daw.app.ui.OfflineInsertMark;
 import com.benesquivelmusic.daw.app.ui.OfflineInsertText;
 import com.benesquivelmusic.daw.app.ui.inspector.InspectorSection;
 
@@ -94,16 +95,18 @@ public final class InsertsSection extends InspectorSection {
         name.setMaxWidth(Double.MAX_VALUE);
 
         if (r.offline()) {
-            // Story 334, rulings E22 and E3: an offline insert opens no editor,
-            // so its row offers no pencil; the tooltip says why it is offline.
+            // Story 334, rulings E22, E3 and R-N1: an offline insert opens no editor, so
+            // its row offers no pencil; the word Offline is the row's one keyboard stop,
+            // where the pencil stands on a working row: Enter or Space shows why the
+            // insert is offline and what to do, which is also its accessible help.
             dot.getStyleClass().add("insert-dot-offline");
-            Label word = new Label(OfflineInsertText.word());
-            word.getStyleClass().add("inspector-row-offline");
+            Button word = OfflineInsertMark.create(r.name(), r.tooltip(),
+                    "inspector-row-offline", "inspector-row-offline-info");
+            word.setText(OfflineInsertText.word());
             HBox row = new HBox(4, dot, name, word);
             row.setAlignment(Pos.CENTER_LEFT);
             row.getStyleClass().add("inspector-insert-row");
             Tooltip.install(row, new Tooltip(r.tooltip()));
-            row.setAccessibleText(OfflineInsertText.accessible(r.name()));
             return row;
         }
         dot.getStyleClass().add(r.active() ? "insert-dot-active" : "insert-dot-inactive");

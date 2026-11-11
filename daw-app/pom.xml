@@ -73,6 +73,10 @@
     </dependencies>
 
     <properties>
+        <!-- The daw-app test fork's last-resort bound in seconds; its sizing rule is
+             at the surefire configuration below. -Dsurefire.timeout=<seconds>
+             overrides it. -->
+        <surefire.timeout>1800</surefire.timeout>
         <!-- Native library build directory (output of CMake in daw-core) -->
         <native.libs.dir>${maven.multiModuleProjectDirectory}/target/build/native</native.libs.dir>
         <!-- Default for the native-build / packaging skip flag so the
@@ -134,16 +138,22 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
-                    <!-- Hard ceiling on the reused forked JVM. JUnit's
-                         per-test timeout (junit-platform.properties) handles
-                         the common case; this guards the pathological case
-                         where the FX/Glass toolkit is wedged so badly even
-                         the JUnit timeout thread cannot make progress. Without
-                         it, a hung FX test produces an unbounded build hang on
-                         Windows (no fork timeout in the default profile).
-                         Retained as a defence-in-depth backstop even though
-                         the headless platform should prevent the wedge. -->
-                    <forkedProcessTimeoutInSeconds>900</forkedProcessTimeoutInSeconds>
+                    <!-- Last-resort bound on the reused forked JVM. Surefire kills the
+                         fork once it has run this many seconds, whether or not it is
+                         still making progress, so the bound is sized well above a
+                         healthy run; it is there for a fork that has stopped making
+                         progress where no per-test timeout reaches (a wedged FX/Glass
+                         toolkit, a class initializer or an extension that never
+                         returns). A hung test method fails on its own after the 60 s
+                         per-test timeout in junit-platform.properties. Sizing rule:
+                         size it at no less than 4 x the suite's nominal wall-clock on
+                         the slowest supported developer machine (about 450 s on the
+                         Windows reference machine on 2026-11-11, where a run under
+                         disk-sync contention took twice as long and was killed at the
+                         old 900 s), rounded up to a multiple of 300 s; re-size when
+                         the nominal wall-clock passes a third of the bound. Override
+                         with -Dsurefire.timeout=<seconds> (story 334, ruling R-T2). -->
+                    <forkedProcessTimeoutInSeconds>${surefire.timeout}</forkedProcessTimeoutInSeconds>
                     <!-- The Glass/Prism selection properties are passed as
                          real -D JVM flags (set at process launch, before any
                          class loads) rather than ONLY via

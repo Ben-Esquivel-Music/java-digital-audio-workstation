@@ -10,9 +10,14 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -279,6 +284,82 @@ class DoorDialogIsTheOnePendingSwitchTest {
                     assertThat(info.actionLabel()).contains(ProjectLifecycleController.OPEN_RESTORED_ARCHIVE_ACTION);
                 });
         assertThat(onFx(fixture.project::get)).as("Song A stays open").isSameAs(songAModel);
+    }
+
+    /**
+     * Story 433's checkpoint race, reproduced on demand (story 334, ruling
+     * R-T1). A door's switch retires Song A's lease, which ends only once the
+     * USER checkpoint it left claimed is written; the fixture's close waits
+     * for that lease too, so the {@code @TempDir} is deleted after every write
+     * the test started. Song A's checkpoint is held on its checkpoint writer,
+     * inside its publish ({@code Publishes.afterNext}: the test's own action,
+     * run after the move, so it cannot leave the checkpoint unwritten as a
+     * held move that gives up does). It builds a fixture of its own and
+     * closes it itself, so the class's {@code @AfterEach} close is not doubled.
+     */
+    @Test
+    void theFixturesCloseWaitsForACheckpointTheDoorsSwitchLeftClaimed() throws Exception {
+        SaveFlowFixture own = new SaveFlowFixture(Files.createDirectories(workspace.resolve("own")),
+                AutoSaveConfig.DEFAULT);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicReference<Path> heldCheckpoint = new AtomicReference<>();
+        CompletableFuture<Void> closed = new CompletableFuture<>();
+        AtomicBoolean closeStarted = new AtomicBoolean();
+        try {
+            Path ownSongB = own.anotherProjectOnDisk("Song B");
+            own.publishes.afterNext(target -> SaveFlowFixture.isCheckpoint(target) && target.startsWith(own.songA),
+                    published -> {
+                        heldCheckpoint.set(published);
+                        entered.countDown();
+                        try {
+                            release.await(SaveFlowFixture.GUARD.toMillis() * 3, TimeUnit.MILLISECONDS);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                        }
+                    });
+            runOnFx(() -> own.snapshots().createCheckpointWithLabel("Before the open"));
+            assertThat(entered.await(SaveFlowFixture.GUARD.toMillis(), TimeUnit.MILLISECONDS))
+                    .as("Song A's checkpoint is claimed and held inside its publish").isTrue();
+            runOnFx(() -> {
+                own.lifecycle().setOpenProjectPrompt(() -> ownSongB);
+                own.lifecycle().onOpenProject();
+            });
+            own.awaitOnFx(() -> ownSongB.equals(own.projectManager.getCurrentProject().projectPath())
+                    && !own.lifecycle().isProjectInstallationPending(), "the door's switch to Song B");
+
+            closeStarted.set(true);
+            Thread.ofVirtual().name("door-dialog-test-fixture-close").start(() -> {
+                try {
+                    own.close();
+                    closed.complete(null);
+                } catch (Throwable failure) {
+                    closed.completeExceptionally(failure);
+                }
+            });
+            assertThatThrownBy(() -> closed.get(500, TimeUnit.MILLISECONDS))
+                    .as("the fixture's close waits while Song A's claimed checkpoint is held")
+                    .isInstanceOf(TimeoutException.class);
+
+            release.countDown();
+            closed.get(SaveFlowFixture.GUARD.toMillis() * 3, TimeUnit.MILLISECONDS);
+            assertThat(heldCheckpoint.get()).as("Song A's checkpoint was published").isRegularFile();
+            assertThat(tempFilesIn(own.songA.resolve("checkpoints"))).as("no temp file left in Song A/checkpoints")
+                    .isEmpty();
+        } finally {
+            release.countDown();
+            if (closeStarted.get()) {
+                closed.exceptionally(_ -> null).get(SaveFlowFixture.GUARD.toMillis() * 3, TimeUnit.MILLISECONDS);
+            } else {
+                own.close();
+            }
+        }
+    }
+
+    private static List<Path> tempFilesIn(Path folder) throws IOException {
+        try (Stream<Path> entries = Files.list(folder)) {
+            return entries.filter(entry -> entry.getFileName().toString().endsWith(".tmp")).toList();
+        }
     }
 
     private static Path theOnlyFolderIn(Path parent) throws Exception {

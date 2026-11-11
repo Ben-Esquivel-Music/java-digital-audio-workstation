@@ -44,14 +44,14 @@ These tests are binding acceptance criteria. They run headless, and none of them
 
 - **A change of product behaviour.** Neither failure is a product bug. The exit wrote nothing, and Song A's lease waited for the claimed checkpoint as designed. A seam this story adds only exposes a wait or the fsync.
 - **The other "was not written" lines in the test logs**, such as "Before the edit" and "Before the take", which the analysis did not trace.
-- **Story 334.** It owns none of this; its build of record only met these races.
+- **Story 334's own changes.** None of them is on either path; its pull request resolved this story because its builds met these races (ruling R-T1).
 
 ## Technical Notes
 
 - **Source.** The read-only analysis of story 334's failing build of record. The fresh build of record (01:25:55) passed, and the stolen-lock test passed in 6 of 6 isolated runs. The leak in the door-dialog test shows in every full run the analysis read and in 4 of the 6 isolated runs, the deletion winning in all of them but the failing full run (00:51:42), where the publish won. In the final build of record (02:35:51), Song A's checkpoints again stopped with work claimed, and the test logged no checkpoint failure. The fsync attribution rests on NTFS timestamps (a file's mtime is its last write, before the fsync; a directory's mtime is its last entry creation), and the failure was not reproduced.
 - **Stolen-lock code locators:**
   - `StolenLockAtExitTest.java`: the test is at :159-174, with its listing at :165; the other listings are at :92, :126 and :194. `withoutThisSessionsSegment` is at :574-579, and `listing` (:581-589) is a `Files.walk`, so the `journal` directory's own entry is compared.
-  - `SaveFlowFixture.settle` (:375-379) → `SaveOutcomes.awaitIdle` (:75-76) → `ProjectManager.whenSavesIdle` (:1102). `ProjectManager.checkpointOfTheSave` (:2248-2258) waits on the checkpoint with `checkpointWait`.
+  - `SaveFlowFixture.settle` (:375-379) → `SaveOutcomes.awaitIdle` (:75-77) → `ProjectManager.whenSavesIdle` (:1102). `ProjectManager.checkpointOfTheSave` (:2248-2258) waits on the checkpoint with `checkpointWait`.
   - `CheckpointManager.write` (:1717) → `recordWritten` (:1780) → `notifyWritten` (:2109), whose listeners run synchronously. `ProjectJournalCoordinator.java:365-372` is the `Written` listener that calls `onCheckpointSucceeded`, and :338 builds the writer with the public constructor.
   - `JournalWriter`:
     - `onCheckpointSucceeded` (:546-561) queues the marker under `appendLock` and sets `rotateRequested` (:559);
@@ -71,6 +71,12 @@ These tests are binding acceptance criteria. They run headless, and none of them
   - `SaveFlowFixture.Publishes` (:701): `afterNext` :749, `holdNext` :754, `releaseAll` :780, `move` :785.
 - **Cross-refs:** story 333 (the tests, the fixtures, the exit protocol); story 334 (the build of record that met these races).
 
-## Status
+## Resolution
 
-- Deferred
+Resolved in story 334's pull request (#990) under the studio engineer's ruling R-T1, after the user's local build of 2026-11-11 failed `StolenLockAtExitTest.quitWithoutSavingWritesNothingToTheOriginalAndExits` the same way: the rotation of the `@BeforeEach` save's checkpoint marker made segment-001 within about 31 ms after the listing (about 141 ms after the marker's append), while the exit's own drain had no record to append, and an empty drain never rotates (`JournalWriter.drainUntilEmpty`). In this fixture nothing is published on the journal's bus, so a segment the exit's drain opens cannot occur, and option (a) keeps the listing as strict as before.
+
+- **Option (a).** `ProjectJournalCoordinator.flushOpenJournal()` waits through the open writer's `forceFlush()`, which takes the `drainLock` the writer holds across a batch's append, fsync and rotation. `StolenLockAtExitTest` takes the four listings this story names through `originalListing()`, which waits for it first (`ExitFixture.awaitJournalWrites()`, bounded by `GUARD`); `withoutThisSessionsSegment` still exempts only the newest segment. The listing taken while the takeover dialog asks waits on the FX thread for at most one append, fsync and rotation: the journal writer never waits for that thread.
+- **The journal race, reproduced on demand.** The coordinator takes a wrapper of its journal listener (a constructor overload taking a `UnaryOperator<JournalListener>`; production passes `UnaryOperator.identity()`). The writer reports a batch after its fsync and before the rotation that batch asked for, so a wrapper that holds that report on the writer thread holds the window the failures met — the marker written, the next segment not yet made. `StolenLockAtExitTest.theOriginalsListingWaitsForTheJournalWriteStillInFlight` shows the listing waits until the hold is released and then leaves out the new segment as the newest. This replaces the `Syncer` seam the Goals — Tests proposed, which daw-app cannot reach.
+- **The fixture's close.** `SaveFlowFixture.close()` waits, after `closeProject()`, on `ProjectManager.whenRetiredLeasesReleased()`, bounded as that wait is. `DoorDialogIsTheOnePendingSwitchTest.theFixturesCloseWaitsForACheckpointTheDoorsSwitchLeftClaimed` holds a claimed USER checkpoint with `Publishes.afterNext` and shows `close()` returns only after the hold is released, with the checkpoint published and no temp file left.
+- **Fault checks**, each run once, each turning its test red: the listing's wait (`fixture.awaitJournalWrites()`) removed from `originalListing()` → `StolenLockAtExitTest.theOriginalsListingWaitsForTheJournalWriteStillInFlight` at :217; the wait on `whenRetiredLeasesReleased()` removed from `SaveFlowFixture.close()` → `DoorDialogIsTheOnePendingSwitchTest.theFixturesCloseWaitsForACheckpointTheDoorsSwitchLeftClaimed` at :340.
+- Criterion 3 held in story 334's build of record (its Verification).

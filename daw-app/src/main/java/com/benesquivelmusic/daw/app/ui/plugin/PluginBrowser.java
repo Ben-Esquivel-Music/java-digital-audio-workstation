@@ -45,8 +45,13 @@ import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * The §6.7 categorical plugin browser (Plugin View Design Book §6.7, §6.8,
@@ -73,6 +78,23 @@ public final class PluginBrowser extends DawgDialog<PluginBrowser.Selection> {
     /** A registered external plugin chosen from the browser. */
     public record ExternalSelection(ExternalPluginEntry entry) implements Selection {}
 
+    /** A row's identity across rebuilds of the tree: its plugin, or its group's path (story 334, ruling R-N2). */
+    private sealed interface RowKey permits PluginKey, GroupKey {}
+
+    /** A plugin row by what Add would return for it. */
+    private record PluginKey(Selection plugin) implements RowKey {
+        PluginKey {
+            Objects.requireNonNull(plugin, "plugin must not be null");
+        }
+    }
+
+    /** A group row by the names of the groups from the top level down to it. */
+    private record GroupKey(List<String> path) implements RowKey {
+        GroupKey {
+            path = List.copyOf(path);
+        }
+    }
+
     static final String BUILT_IN_GROUP = "Built-in";
     static final String INSTALLED_GROUP = "Installed (third-party)";
 
@@ -91,6 +113,11 @@ public final class PluginBrowser extends DawgDialog<PluginBrowser.Selection> {
 
     private List<BrowserRow> model;
     private FxDispatcher fxDispatcher;
+
+    /** The paths of the groups the user collapsed, as the tree last showed them with the search box empty. */
+    private Set<List<String>> collapsedGroups = Set.of();
+    /** Whether the tree shows a search's matches rather than every row. */
+    private boolean showingSearch;
 
     /**
      * Creates a browser targeting an insert slot.
@@ -235,16 +262,11 @@ public final class PluginBrowser extends DawgDialog<PluginBrowser.Selection> {
 
     // ── Selection commit ──────────────────────────────────────────────────────
 
+    /** The selected plugin; {@code null}, the result converter's "no result", for no row or a group. */
     private Selection selectionFromTree() {
-        TreeItem<BrowserRow> selected = tree.getSelectionModel().getSelectedItem();
-        if (selected == null) {
-            return null;
-        }
-        return switch (selected.getValue()) {
-            case BuiltInRow builtIn -> new BuiltInSelection(builtIn.type());
-            case ExternalRow external -> new ExternalSelection(external.entry());
-            case GroupRow ignored -> null;
-        };
+        return Optional.ofNullable(tree.getSelectionModel().getSelectedItem())
+                .flatMap(selected -> pluginOf(selected.getValue()))
+                .orElse(null);
     }
 
     private void fireAddIfLeafSelected() {
@@ -257,7 +279,31 @@ public final class PluginBrowser extends DawgDialog<PluginBrowser.Selection> {
 
     // ── Tree building ─────────────────────────────────────────────────────────
 
+    /**
+     * Rebuilds the tree from the model, filtered by {@code query}, and keeps the
+     * user's place in it (story 334, ruling R-N2): the row that was selected is
+     * selected again when the new tree lists it — a built-in effect by its type, a
+     * third-party plugin by its installed entry, a group by the names on its path —
+     * with the keyboard focus on it, and the view scrolls to it only when its row
+     * moved; a row the new tree does not list leaves nothing selected, never a
+     * neighbour, so Add stays disabled. While the search box is empty, the groups
+     * the user collapsed stay collapsed, also after a search is cleared, but for a
+     * group that holds the row selected again: the reselect expands it to show the
+     * choice, and it stays expanded (a choice made during a search can lie in a
+     * group collapsed before it). A search shows every group it lists expanded.
+     * Every refresh comes through here: the first build, each search keystroke,
+     * Manage…, an install and the startup restore's re-read.
+     */
     private void rebuildTree(String query) {
+        Optional<RowKey> chosen = Optional.ofNullable(tree.getSelectionModel().getSelectedItem())
+                .map(PluginBrowser::keyOf);
+        int rowBefore = tree.getSelectionModel().getSelectedIndex();
+        if (!showingSearch && tree.getRoot() != null) {
+            collapsedGroups = rowsUnder(tree.getRoot())
+                    .filter(item -> item.getValue() instanceof GroupRow && !item.isExpanded())
+                    .map(PluginBrowser::groupPath)
+                    .collect(Collectors.toUnmodifiableSet());
+        }
         boolean searching = query != null && !query.isBlank();
         List<BrowserRow> visible = searching
                 ? filter(model, query.toLowerCase(Locale.ROOT))
@@ -267,7 +313,50 @@ public final class PluginBrowser extends DawgDialog<PluginBrowser.Selection> {
         for (BrowserRow row : visible) {
             root.getChildren().add(toTreeItem(row));
         }
-        tree.setRoot(root);
+        if (!searching) {
+            rowsUnder(root)
+                    .filter(item -> item.getValue() instanceof GroupRow && collapsedGroups.contains(groupPath(item)))
+                    .forEach(item -> item.setExpanded(false));
+        }
+        tree.setRoot(root); // JavaFX clears the selection here and moves the focus to the first row
+        chosen.flatMap(key -> rowsUnder(root).filter(item -> keyOf(item).equals(key)).findFirst())
+                .ifPresent(item -> {
+                    tree.getSelectionModel().select(item); // expands its groups; the focus follows the selection
+                    int row = tree.getSelectionModel().getSelectedIndex();
+                    if (row != rowBefore) {
+                        tree.scrollTo(row);
+                    }
+                });
+        showingSearch = searching;
+    }
+
+    /** Every row under {@code item}, depth first in tree order; {@code item} itself is not one of them. */
+    private static Stream<TreeItem<BrowserRow>> rowsUnder(TreeItem<BrowserRow> item) {
+        return item.getChildren().stream().flatMap(child -> Stream.concat(Stream.of(child), rowsUnder(child)));
+    }
+
+    /** The key of {@code item}, a row of the tree: the plugin Add would return for it, or its group's path. */
+    private static RowKey keyOf(TreeItem<BrowserRow> item) {
+        return pluginOf(item.getValue()).<RowKey>map(PluginKey::new)
+                .orElseGet(() -> new GroupKey(groupPath(item)));
+    }
+
+    /** What Add returns for {@code row}: its plugin; nothing for a group. */
+    private static Optional<Selection> pluginOf(BrowserRow row) {
+        return switch (row) {
+            case BuiltInRow builtIn -> Optional.of(new BuiltInSelection(builtIn.type()));
+            case ExternalRow external -> Optional.of(new ExternalSelection(external.entry()));
+            case GroupRow _ -> Optional.empty();
+        };
+    }
+
+    /** The names of the groups from the top level down to {@code group}; the tree's hidden root is not one of them. */
+    private static List<String> groupPath(TreeItem<BrowserRow> group) {
+        List<String> names = new ArrayList<>();
+        for (TreeItem<BrowserRow> at = group; at.getParent() != null; at = at.getParent()) {
+            names.addFirst(at.getValue().displayText());
+        }
+        return names;
     }
 
     private TreeItem<BrowserRow> toTreeItem(BrowserRow row) {

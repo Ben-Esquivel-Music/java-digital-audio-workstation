@@ -535,6 +535,9 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
     private Node insertRow(int index, InsertSlotModel slot) {
         Label name = new Label(slot.name());
         name.getStyleClass().add("mixer-channel-strip-slot-name");
+        // The row's words go on its name, which assistive technology reads; a layout
+        // row is not exposed to it (story 334, ruling R-N1).
+        name.setAccessibleText(slot.accessibleText());
         name.setMaxWidth(Double.MAX_VALUE);
         HBox.setHgrow(name, Priority.ALWAYS);
 
@@ -555,7 +558,6 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
         HBox row = new HBox(name, dot);
         row.getStyleClass().add("mixer-channel-strip-slot-row");
         row.setAlignment(Pos.CENTER_LEFT);
-        row.setAccessibleText(slot.accessibleText());
         row.setOnMouseClicked(e -> {
             if (disposed) return;
             if (e.getButton() != MouseButton.PRIMARY) return;

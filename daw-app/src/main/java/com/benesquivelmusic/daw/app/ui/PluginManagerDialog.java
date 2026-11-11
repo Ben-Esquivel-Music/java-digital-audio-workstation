@@ -32,8 +32,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.IntStream;
 
 /**
  * Dialog for managing external DAW plugins (Plugin View Design Book §6.8, §8.4;
@@ -248,8 +250,31 @@ public final class PluginManagerDialog extends DawgDialog<Void> {
         };
     }
 
+    /**
+     * Reads the registry's entries again and keeps the user's selection (story
+     * 334, ruling R-N2): the entry that was selected stays selected while it is
+     * still listed — also when it turned Missing, which is what Remove Selected is
+     * then for — and the list scrolls to it only when its row moved; an entry no
+     * longer listed, the one Remove Selected just removed among them, leaves
+     * nothing selected, never the row now at its index. Every refresh comes
+     * through here: the startup restore's re-read, an install and Remove Selected.
+     */
     private void refreshRows() {
+        MultipleSelectionModel<PluginRow> selection = listView.getSelectionModel();
+        Optional<ExternalPluginEntry> chosen = Optional.ofNullable(selection.getSelectedItem()).map(PluginRow::entry);
+        int rowBefore = selection.getSelectedIndex();
         rows.setAll(rowsOf(registry));
+        OptionalInt at = chosen.map(entry -> IntStream.range(0, rows.size())
+                .filter(index -> rows.get(index).entry().equals(entry)).findFirst())
+                .orElse(OptionalInt.empty());
+        if (at.isPresent()) {
+            selection.clearAndSelect(at.getAsInt());
+            if (at.getAsInt() != rowBefore) {
+                listView.scrollTo(at.getAsInt());
+            }
+        } else {
+            selection.clearSelection();
+        }
     }
 
     private void chooseAndInstallJar() {

@@ -424,7 +424,7 @@ public final class ChannelVM {
      * {@code offline = slot.offline().isPresent()},
      * {@code active = !bypassed && !offline} (every {@code InsertSlot} holds a
      * processor — the record's "empty slot" case cannot arise from a core
-     * chain), and the row's accessible text: the name, or
+     * chain), and the slot's accessible text: the name, or
      * {@link OfflineInsertText#accessible} for an offline slot (story 334,
      * ruling E22; the strip's skin composes no text, critique J21).
      * Lock-free: {@code getInsertSlots()} returns the published snapshot and

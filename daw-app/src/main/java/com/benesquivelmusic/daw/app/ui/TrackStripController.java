@@ -999,6 +999,9 @@ final class TrackStripController {
         for (InsertSlotModel insert : inserts) {
             Label badge = new Label(abbreviateInsertName(insert.name()));
             badge.getStyleClass().add("track-insert-indicator");
+            // Assistive technology reads the insert's name and state, not the three-letter
+            // abbreviation (story 334, ruling R-N1).
+            badge.setAccessibleText(insert.accessibleText());
             if (insert.offline()) {
                 badge.getStyleClass().add(OFFLINE_STYLE_CLASS);
                 badge.setTooltip(new Tooltip(OfflineInsertText.badgeTooltip(insert.name())));

@@ -12,16 +12,20 @@ import com.benesquivelmusic.daw.core.mixer.OfflineCause;
 import com.benesquivelmusic.daw.core.mixer.OfflineInsert;
 import com.benesquivelmusic.daw.core.mixer.SavedInsert;
 
+import javafx.geometry.Insets;
 import javafx.scene.Node;
 import javafx.scene.Parent;
 import javafx.scene.Scene;
 import javafx.scene.control.Label;
+import javafx.scene.control.Labeled;
+import javafx.scene.layout.Border;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
 import javafx.scene.paint.Paint;
 import javafx.scene.shape.Circle;
 import javafx.scene.shape.Shape;
+import javafx.stage.Stage;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -30,6 +34,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.SequencedMap;
 import java.util.stream.Stream;
 
@@ -54,6 +59,9 @@ class OfflineInsertStyleTest {
 
     /** Re-tints the two roles to values neither Palette A nor a component fallback holds. */
     private static final String RETINT = "-warn: #0011FF; -text-mute: #FFAA00;";
+
+    /** Re-tints the focus ring to a value neither Palette A nor the Inspector's fallback holds. */
+    private static final String RING_RETINT = " -focus-ring: #00CC66;";
 
     /** The paints the rack resolved, read on the FX thread. */
     record RackPaints(Paint warn, Paint mute, Paint mark, List<Paint> glyph, Paint name, String nameStyle,
@@ -92,12 +100,12 @@ class OfflineInsertStyleTest {
                 Region warnProbe = probe("-warn");
                 Region muteProbe = probe("-text-mute");
                 resolve(new HBox(rack, warnProbe, muteProbe));
-                Label mark = (Label) rack.lookup(".insert-slot-offline-mark");
+                Labeled mark = (Labeled) rack.lookup(".insert-slot-offline-mark");
                 Label name = (Label) rack.lookup(".insert-slot-offline-name");
                 List<Paint> glyph = glyphPaints(mark.getGraphic());
 
                 rack.rebuildSlots();
-                Label rebuiltMark = (Label) rack.lookup(".insert-slot-offline-mark");
+                Labeled rebuiltMark = (Labeled) rack.lookup(".insert-slot-offline-mark");
                 assertThat(rebuiltMark).as("the rebuild made a new mark").isNotSameAs(mark);
                 return new RackPaints(fill(warnProbe), fill(muteProbe), mark.getTextFill(), glyph,
                         name.getTextFill(), Objects.requireNonNullElse(name.getStyle(), ""),
@@ -141,7 +149,7 @@ class OfflineInsertStyleTest {
                 Label badge = (Label) badges.getChildren().getFirst();
                 HBox row = (HBox) drawer.getInsertsSection().getRowsContainer().getChildren().getFirst();
                 Label inspectorDot = (Label) row.getChildren().getFirst();
-                Label word = (Label) row.getChildren().getLast();
+                Labeled word = (Labeled) row.getChildren().getLast();
                 return new SurfacePaints(fill(warnProbe), fill(muteProbe), dot.getFill(), badge.getTextFill(),
                         badge.getOpacity(), inspectorDot.getTextFill(), word.getTextFill());
             } finally {
@@ -160,6 +168,85 @@ class OfflineInsertStyleTest {
                 .isEqualTo(paints.warn());
         assertThat(paints.inspectorWord()).as("the Inspector's Offline word: -insp-text-mute")
                 .isEqualTo(paints.mute());
+    }
+
+    /**
+     * Ruling R-N1: the rack's warn mark and the Inspector's word are their
+     * rows' keyboard stops, buttons that keep their surface's role and size —
+     * never the application's {@code .button}, which would repaint and resize
+     * them — and show the house focus ring only when focused, moving nothing.
+     * Mounted in a shown stage, where a node can hold the focus; the ring is
+     * re-tinted too, so the Inspector's forwarded ring cannot hide behind its
+     * fallback's equal hex.
+     */
+    @Test
+    void theOfflineMarksKeepTheirRolesAndShowTheFocusRingOnlyWhenFocused() {
+        runOnFxThread(() -> {
+            MixerChannel channel = new MixerChannel("Vox");
+            channel.addInsert(offlineSlot());
+            InsertEffectRack rack = new InsertEffectRack(channel, 2, 48_000.0, 256, null, null, () -> true);
+            FxDispatcher dispatcher = new FxDispatcher();
+            InspectorDrawer drawer = new InspectorDrawer();
+            drawer.setAnimated(false);
+            drawer.bindInserts(() -> channel, (host, slot) -> { }, host -> { }, dispatcher);
+            Stage stage = new Stage();
+            try {
+                Region warnProbe = probe("-warn");
+                Region muteProbe = probe("-text-mute");
+                Region ringProbe = new Region();
+                ringProbe.setStyle("-fx-border-color: -focus-ring; -fx-border-width: 1;");
+                HBox root = new HBox(rack, drawer, warnProbe, muteProbe, ringProbe);
+                resolve(root);
+                root.setStyle(RETINT + RING_RETINT);
+                stage.setScene(root.getScene());
+                stage.show();
+                rack.rebuildSlots();
+                root.applyCss();
+                root.layout();
+
+                Paint warn = fill(warnProbe);
+                Paint mute = fill(muteProbe);
+                assertThat(warn).as("the probe resolved the re-tinted -warn").isEqualTo(Color.web("#0011FF"));
+                assertThat(mute).as("the probe resolved the re-tinted -text-mute").isEqualTo(Color.web("#FFAA00"));
+                assertThat(topStroke(ringProbe)).as("the probe resolved the re-tinted -focus-ring")
+                        .contains(Color.web("#00CC66"));
+
+                Labeled mark = (Labeled) rack.lookup(".insert-slot-offline-mark");
+                assertThat(mark.getTextFill()).as("the rack mark's fill is the warn role").isEqualTo(warn);
+                assertThat(glyphPaints(mark.getGraphic())).as("its glyph, made by a rebuild in the scene, is tinted to it")
+                        .isNotEmpty().containsOnly(warn);
+                assertThat(mark.getWidth()).as("the width of the bypass toggle it stands for").isEqualTo(12.0);
+                assertThat(mark.getHeight()).as("and its height").isEqualTo(14.0);
+                assertThat(mark.getStyleClass()).doesNotContain("button");
+
+                HBox row = (HBox) drawer.getInsertsSection().getRowsContainer().getChildren().getFirst();
+                Labeled word = (Labeled) row.getChildren().getLast();
+                Labeled name = (Labeled) row.getChildren().get(1);
+                assertThat(word.getTextFill()).as("the Inspector's word stays on -insp-text-mute").isEqualTo(mute);
+                assertThat(word.getFont()).as("in its row's type").isEqualTo(name.getFont());
+                assertThat(word.getStyleClass()).doesNotContain("button");
+
+                drawer.requestFocus();
+                root.applyCss();
+                for (Labeled stop : List.of(mark, word)) {
+                    assertThat(stop.isFocused()).as("fixture: %s is at rest", stop).isFalse();
+                    Insets resting = stop.getInsets();
+                    assertThat(topStroke(stop)).as("at rest the border is transparent").contains(Color.TRANSPARENT);
+                    stop.requestFocus();
+                    root.applyCss();
+                    assertThat(stop.isFocused()).as("fixture: %s holds the focus in the shown stage", stop).isTrue();
+                    assertThat(topStroke(stop)).as("focused, the house focus ring")
+                            .isEqualTo(topStroke(ringProbe));
+                    assertThat(stop.getInsets()).as("the ring moves nothing").isEqualTo(resting);
+                }
+            } finally {
+                stage.hide();
+                drawer.disposeInsertBinding();
+                dispatcher.dispose();
+                rack.dispose();
+            }
+            return null;
+        });
     }
 
     /** An insert an open kept offline because the build has no effect type {@code NOT_A_TYPE}, saved bypassed. */
@@ -200,6 +287,13 @@ class OfflineInsertStyleTest {
 
     private static Paint fill(Region probe) {
         return probe.getBackground().getFills().getFirst().getFill();
+    }
+
+    /** The paint of {@code region}'s top border stroke, or empty when it has no border. */
+    private static Optional<Paint> topStroke(Region region) {
+        Border border = region.getBorder();
+        return border == null || border.getStrokes().isEmpty()
+                ? Optional.empty() : Optional.of(border.getStrokes().getFirst().getTopStroke());
     }
 
     /** Every paint the glyph's shapes show: each stroke, and each fill that is not transparent. */

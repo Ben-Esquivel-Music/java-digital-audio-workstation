@@ -29,6 +29,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -82,6 +83,7 @@ public final class ProjectJournalCoordinator {
     private final CheckpointManager checkpointManager;
     private final SessionManager sessionManager;
     private final InstantSource clock;
+    private final UnaryOperator<JournalListener> listenerWrap;
 
     // ── live state (the currently open journal, if any) ────────────────────────
     // writer/recorder are volatile so isOpen() and detachFromBus() can read them
@@ -142,6 +144,31 @@ public final class ProjectJournalCoordinator {
                                      CheckpointManager checkpointManager,
                                      SessionManager sessionManager,
                                      InstantSource clock) {
+        this(progress, notifications, dispatcher, journaledPersistenceEnabled, busSupplier, checkpointManager,
+                sessionManager, clock, UnaryOperator.identity());
+    }
+
+    /**
+     * Creates a coordinator whose journals report through
+     * {@code listenerWrap.apply(listener)} instead of the coordinator's own
+     * listener. A test seam (story 433; story 334, ruling R-T1): the journal
+     * writer reports a batch on its own thread after the batch's fsync and before
+     * the segment rotation a checkpoint marker in it asked for, so a test's
+     * wrapper can hold that report to hold a write in flight. Production uses the
+     * constructor without it, which passes {@link UnaryOperator#identity()}.
+     *
+     * @param listenerWrap wraps the listener each journal this coordinator opens
+     *                     reports to; must not be {@code null}, nor return {@code null}
+     */
+    public ProjectJournalCoordinator(ProjectOperationProgress progress,
+                                     NotificationBar notifications,
+                                     FxDispatcher dispatcher,
+                                     Supplier<Boolean> journaledPersistenceEnabled,
+                                     Supplier<EventBus> busSupplier,
+                                     CheckpointManager checkpointManager,
+                                     SessionManager sessionManager,
+                                     InstantSource clock,
+                                     UnaryOperator<JournalListener> listenerWrap) {
         this.progress = Objects.requireNonNull(progress, "progress must not be null");
         this.notifications = Objects.requireNonNull(notifications, "notifications must not be null");
         this.dispatcher = dispatcher;
@@ -151,6 +178,7 @@ public final class ProjectJournalCoordinator {
         this.checkpointManager = Objects.requireNonNull(checkpointManager, "checkpointManager must not be null");
         this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        this.listenerWrap = Objects.requireNonNull(listenerWrap, "listenerWrap must not be null");
     }
 
     /**
@@ -192,6 +220,23 @@ public final class ProjectJournalCoordinator {
     public boolean hasRecordsOutsideACapture() {
         JournalWriter w = writer;
         return w != null && w.offeredMutationsAfterCheckpointBoundary();
+    }
+
+    /**
+     * Waits until the open journal has appended and fsynced every record offered
+     * before the call, and opened the next segment where a checkpoint marker among
+     * them asked for one ({@link JournalWriter#forceFlush()}, which takes the lock
+     * the writer holds across a batch's append, fsync and rotation); returns at
+     * once when no journal is open. It takes no lock of this coordinator's, so an
+     * open or close in progress never makes it wait. Blocking: call it off the FX
+     * thread. The exit tests take it before they list a project's folder (story
+     * 433; story 334, ruling R-T1).
+     */
+    public void flushOpenJournal() {
+        JournalWriter open = writer;
+        if (open != null) {
+            open.forceFlush();
+        }
     }
 
     /**
@@ -335,7 +380,8 @@ public final class ProjectJournalCoordinator {
             return Optional.of(new IllegalStateException("no event bus is available"));
         }
         ProjectContext ctx = ProjectContext.forProject(projectDir, clock);
-        JournalWriter newWriter = new JournalWriter(ctx, JournalConfig.DEFAULT, true, newListener());
+        JournalWriter newWriter = new JournalWriter(ctx, JournalConfig.DEFAULT, true,
+                Objects.requireNonNull(listenerWrap.apply(newListener()), "listenerWrap must not return null"));
         try {
             newWriter.start();
         } catch (IOException | RuntimeException failure) {

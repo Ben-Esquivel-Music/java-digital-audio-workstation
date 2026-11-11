@@ -7,10 +7,11 @@ import com.benesquivelmusic.daw.core.plugin.PluginSourceKind;
  * The words every insert surface shows for an offline insert — one a project
  * open kept at its chain position, passing audio through, because it could not
  * load what the file saved (story 334; studio-engineer ruling E22, with G7,
- * G16 and R1): the state word, the accessible text of a rack or Inspector row,
- * a track-header badge's tooltip and a row's tooltip, which names the cause and
- * what to do about it. Read from the application's resource bundle (UI Skill
- * §14).
+ * G16 and R1): the state word, what assistive technology reads for the insert
+ * (on the rack's and the Inspector's state mark, the mixer strip's name and
+ * the track header's badge; ruling R-N1), a track-header badge's tooltip and a
+ * row's tooltip, which names the cause and what to do about it. Read from the
+ * application's resource bundle (UI Skill §14).
  *
  * <p>The word is story 329's offline clips' word ({@code clipPlaceholder.offline}):
  * one concept across the session (E22; critique J25). Every key is read
@@ -30,7 +31,9 @@ public final class OfflineInsertText {
 
     /**
      * @param name the insert's name
-     * @return what an assistive technology reads for the insert's row: {@code <name>, offline}
+     * @return what an assistive technology reads for the insert on the rack's
+     *         and the Inspector's state mark, the mixer strip's name and the
+     *         track header's badge: {@code <name>, offline}
      */
     public static String accessible(String name) {
         return text("insertOffline.accessible", name);

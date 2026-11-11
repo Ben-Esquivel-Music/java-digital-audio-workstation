@@ -929,6 +929,21 @@
     -fx-text-fill: -text-mute;
 }
 
+/* Story 334 (ruling R-N1) — an offline rack row's warn mark is the row's one
+ * keyboard stop, where a working row's bypass toggle stands: a button with no
+ * button chrome, its warn fill and 12 × 14 size kept. The resting border is
+ * transparent and of the ring's width, so the ring moves nothing. */
+.insert-slot-offline-info {
+    -fx-background-color: transparent;
+    -fx-padding: 0;
+    -fx-border-color: transparent;
+    -fx-border-width: 1;
+}
+
+.insert-slot-offline-info:focused {
+    -fx-border-color: -focus-ring;
+}
+
 .track-insert-placeholder {
     -fx-text-fill: -text-mute;
     -fx-font-size: 9px;
@@ -2494,7 +2509,7 @@
  * user-agent stylesheet (inspector/inspector.css), which declares the
  * control's internal styleable properties (-insp-surface-1/2/3,
  * -insp-text, -insp-text-mute, -insp-line-soft, -insp-accent and, for an
- * offline insert's row (story 334), -insp-warn) with hard hex Palette A
+ * offline insert's row (story 334), -insp-warn and -insp-focus-ring) with hard hex Palette A
  * defaults so the control renders correctly out-of-the-box even with no
  * app stylesheet loaded (plugin-GUI window case).
  *
@@ -2514,6 +2529,7 @@
     -insp-line-soft: -line-soft;
     -insp-accent:    -accent;
     -insp-warn:      -warn;
+    -insp-focus-ring: -focus-ring;
 }
 
 /* ── Session Manager dock (Project Manager Design Book §4.3) ──────────────── */

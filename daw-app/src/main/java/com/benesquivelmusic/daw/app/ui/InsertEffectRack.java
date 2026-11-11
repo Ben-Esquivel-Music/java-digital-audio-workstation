@@ -76,6 +76,8 @@ public final class InsertEffectRack extends VBox {
     static final String OFFLINE_STYLE_CLASS = "insert-slot-offline";
     /** Style class of the warn mark standing in an offline row for the bypass toggle. */
     static final String OFFLINE_MARK_STYLE_CLASS = "insert-slot-offline-mark";
+    /** Style class of that mark as the row's keyboard stop: a button with no button chrome (ruling R-N1). */
+    private static final String OFFLINE_INFO_STYLE_CLASS = "insert-slot-offline-info";
     /** Style class of an offline row's muted name. */
     static final String OFFLINE_NAME_STYLE_CLASS = "insert-slot-offline-name";
 
@@ -459,19 +461,22 @@ public final class InsertEffectRack extends VBox {
      * Fills {@code row} for an offline insert — one a project open kept at its
      * place, passing audio through, because it could not load what the file
      * saved (story 334; studio-engineer rulings E22 and E3). The row keeps
-     * {@code insert-slot-populated} and adds {@code insert-slot-offline}: a
-     * warn-tinted {@link DawIcon#WARNING} mark stands where the bypass toggle
-     * would be (a toggle with no audible effect is a dead control; the stored
-     * bypass decision is kept as saved), the name is muted and opens no editor,
-     * the row's tooltip says why the insert is offline and what to do, and its
-     * context menu holds Remove only. It moves like any row and shows no
-     * sidechain selector (its saved key is kept, ruling E1).
+     * {@code insert-slot-populated} and adds {@code insert-slot-offline}:
+     * a warn-tinted {@link DawIcon#WARNING} mark stands where the bypass toggle
+     * would be and is the row's one keyboard stop ({@link OfflineInsertMark},
+     * ruling R-N1): Enter or Space shows why the insert is offline and what to do,
+     * which is also its accessible help, and Shift+F10 or the Menu key on it opens
+     * the row's menu, as on a working row's toggle. There is no toggle: one with no
+     * audible effect is a dead control, and the stored bypass decision is kept as
+     * saved. The name is muted and opens no editor, the row's tooltip says why the
+     * insert is offline and what to do, and its context menu holds Remove only.
+     * It moves like any row and shows no sidechain selector (its saved key is
+     * kept, ruling E1).
      */
     private void buildOfflineSlot(HBox row, int slotIndex, InsertSlot slot, OfflineInsert offline) {
         row.getStyleClass().add(OFFLINE_STYLE_CLASS);
         String tooltip = OfflineInsertText.tooltip(slot.getName(), offline.cause());
         Tooltip.install(row, new Tooltip(tooltip));
-        row.setAccessibleText(OfflineInsertText.accessible(slot.getName()));
 
         Label nameLabel = new Label(truncate(slot.getName(), 8));
         nameLabel.getStyleClass().add(OFFLINE_NAME_STYLE_CLASS);
@@ -487,18 +492,18 @@ public final class InsertEffectRack extends VBox {
 
         installReorderDrag(row, nameLabel, slotIndex);
 
-        row.getChildren().addAll(offlineMark(), nameLabel);
+        row.getChildren().addAll(offlineMark(slot.getName(), tooltip), nameLabel);
     }
 
     /**
-     * The offline state mark: a {@link DawIcon#WARNING} glyph the size of the
-     * bypass toggle it replaces, tinted to the label's CSS-resolved text fill
-     * (the {@code -warn} role) whenever that fill resolves or changes — an SVG
-     * glyph's paint has no CSS hook of its own.
+     * The offline state mark: the row's keyboard stop ({@link OfflineInsertMark})
+     * with a {@link DawIcon#WARNING} glyph the size of the bypass toggle it
+     * replaces, tinted to the button's CSS-resolved text fill (the {@code -warn}
+     * role) whenever that fill resolves or changes — an SVG glyph's paint has no
+     * CSS hook of its own.
      */
-    private static Label offlineMark() {
-        Label mark = new Label();
-        mark.getStyleClass().add(OFFLINE_MARK_STYLE_CLASS);
+    private static Button offlineMark(String insertName, String tooltip) {
+        Button mark = OfflineInsertMark.create(insertName, tooltip, OFFLINE_MARK_STYLE_CLASS, OFFLINE_INFO_STYLE_CLASS);
         mark.setMaxSize(12, 14);
         mark.setMinSize(12, 14);
         Node glyph = IconNode.of(DawIcon.WARNING, 10);
@@ -521,7 +526,7 @@ public final class InsertEffectRack extends VBox {
         }
         applyCss();
         for (Node node : lookupAll("." + OFFLINE_MARK_STYLE_CLASS)) {
-            if (node instanceof Label mark) {
+            if (node instanceof Labeled mark) {
                 IconNode.tint(mark.getGraphic(), mark.getTextFill());
             }
         }

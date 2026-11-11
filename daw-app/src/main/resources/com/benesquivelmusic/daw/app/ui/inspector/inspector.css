@@ -29,6 +29,7 @@
     -insp-line-soft:   #2A2D36;
     -insp-accent:      #7C8CFF;
     -insp-warn:        #E6B450;
+    -insp-focus-ring:  #5C8CFF;
 
     -fx-background-color: -insp-surface-2;
     -fx-border-color: -insp-line-soft;
@@ -110,6 +111,20 @@
 
 .inspector-drawer .inspector-row-offline {
     -fx-text-fill: -insp-text-mute;
+}
+
+/* Story 334 (ruling R-N1) — the offline word is the row's one keyboard stop:
+ * a button with no button chrome, its muted fill kept. The resting border is
+ * transparent and of the ring's width, so the ring moves nothing. */
+.inspector-drawer .inspector-row-offline-info {
+    -fx-background-color: transparent;
+    -fx-padding: 0;
+    -fx-border-color: transparent;
+    -fx-border-width: 1;
+}
+
+.inspector-drawer .inspector-row-offline-info:focused {
+    -fx-border-color: -insp-focus-ring;
 }
 
 .inspector-drawer .inspector-prepost-toggle {

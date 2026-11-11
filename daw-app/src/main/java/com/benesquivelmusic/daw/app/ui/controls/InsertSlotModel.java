@@ -32,8 +32,9 @@ import java.util.Objects;
  *       never {@code active}; its status dot renders {@code -mcs-warn}
  *       (studio-engineer ruling E22).</li>
  *   <li>{@code accessibleText} — what an assistive technology reads for the
- *       slot's row: the name, or {@code <name>, offline} for an offline slot.
- *       The consumer words it, so the skin shows text it never composes.</li>
+ *       slot's name on the strip and the track header: the name, or
+ *       {@code <name>, offline} for an offline slot. The consumer words it, so
+ *       the skin shows text it never composes.</li>
  * </ul>
  *
  * @param name           the slot display name (e.g. {@code "Compressor"}); must
@@ -41,7 +42,9 @@ import java.util.Objects;
  * @param active         whether the slot holds an engaged processor
  * @param bypassed       whether the slot is bypassed
  * @param offline        whether the slot is offline
- * @param accessibleText the row's accessible text; must not be {@code null}
+ * @param accessibleText the slot's accessible text, which the strip row's name
+ *                       and the track header's badge carry; must not be
+ *                       {@code null}
  */
 public record InsertSlotModel(String name, boolean active, boolean bypassed, boolean offline,
                               String accessibleText) {
