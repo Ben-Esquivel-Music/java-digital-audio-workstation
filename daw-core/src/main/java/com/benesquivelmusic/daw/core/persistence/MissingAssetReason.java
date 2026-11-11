@@ -26,7 +26,7 @@ public enum MissingAssetReason {
      * The file decoded but holds less audio than a clip spans ("Shorter than
      * the clip"); the clips were loaded as they are. Nothing persisted tells a
      * file that changed from a tempo slowed after the clip was cut, so the
-     * row claims only the shortfall. The only reason whose clips play.
+     * row claims only the shortfall. The only reason whose rows never silence a clip.
      */
     CHANGED_ON_DISK,
 
@@ -45,9 +45,11 @@ public enum MissingAssetReason {
      * Whether a row with this reason silences clips: every reason but
      * {@link #CHANGED_ON_DISK}, whose clips were loaded as they are. Which of
      * a row's holders are silent is the row's own
-     * {@link MissingAsset#silentHolders()} — for an
-     * {@link #ADM_OBJECT_UNKNOWN} row, possibly only some of them. The
-     * report counts the assets of these rows as missing
+     * {@link MissingAsset#silentHolders()}: main-lane clips without audio
+     * only, since a take-lane clip does not play and is never a silent clip
+     * (story 334, studio ruling E16), and for an {@link #ADM_OBJECT_UNKNOWN}
+     * row only those whose names select nothing — so possibly only some of
+     * them, or none. The report counts the assets of these rows as missing
      * ({@link MissingAssetsReport#missingAssetCount()}).
      *
      * @return {@code true} if a row with this reason may hold clips without audio

@@ -19,11 +19,13 @@ import java.util.Set;
  *
  * <p>A row names <em>every</em> clip that holds the asset, because a relink
  * re-points every one of them; which of them are silent is a separate,
- * possibly smaller list. A clip is silent only when it has no audio: a
+ * possibly smaller list. A clip is silent only when it plays and has no
+ * audio — a take-lane clip does not play, so it is never silent (story 334,
+ * studio ruling E16), though it is a holder: a
  * {@link MissingAssetReason#CHANGED_ON_DISK} row silences none of its
  * holders, an {@link MissingAssetReason#ADM_OBJECT_UNKNOWN} row may silence
- * only the clips whose names select nothing, and a row for a file that is
- * not there silences every holder that has no audio.</p>
+ * only the main-lane clips whose names select nothing, and a row for a file
+ * that is not there silences every main-lane holder that has no audio.</p>
  *
  * @param reference     the asset, as its clips hold it
  * @param reason        why the row exists
@@ -33,9 +35,9 @@ import java.util.Set;
  *                      empty, never {@code null}
  * @param holders       every clip that holds the asset, in project order;
  *                      copied, not empty, distinct by clip id
- * @param silentHolders the holders that have no audio because of this row;
- *                      copied, distinct by clip id, each one of
- *                      {@code holders}; empty for a
+ * @param silentHolders the holders that play — main-lane clips — and have
+ *                      no audio because of this row; copied, distinct by
+ *                      clip id, each one of {@code holders}; empty for a
  *                      {@link MissingAssetReason#CHANGED_ON_DISK} row
  */
 public record MissingAsset(AssetReference reference, MissingAssetReason reason, String detail,
@@ -65,12 +67,17 @@ public record MissingAsset(AssetReference reference, MissingAssetReason reason, 
      * Creates a row whose holders are all silent when its reason
      * {@linkplain MissingAssetReason#silencesClips() silences clips}, and
      * none of them otherwise — the row of a file that is not there, or of a
-     * file shorter than its clips.
+     * file shorter than its clips. A {@link Holder} does not say whether its
+     * clip plays, so a row that silences clips and is held by a take-lane
+     * clip, which is never a silent clip (story 334, studio ruling E16), is
+     * made with the canonical constructor, its silent holders the main-lane
+     * ones.
      *
      * @param reference the asset, as its clips hold it
      * @param reason    why the row exists
      * @param detail    the human-readable detail in English; never {@code null}
-     * @param holders   every clip that holds the asset; not empty
+     * @param holders   every clip that holds the asset; not empty; each a
+     *                  main-lane clip when {@code reason} silences clips
      */
     public MissingAsset(AssetReference reference, MissingAssetReason reason, String detail, List<Holder> holders) {
         this(reference, reason, detail, holders, everyHolderIfSilencing(reason, holders));
@@ -86,8 +93,8 @@ public record MissingAsset(AssetReference reference, MissingAssetReason reason, 
     }
 
     /**
-     * Returns how many of the holders are silent because of this row — have
-     * no audio.
+     * Returns how many of the holders are silent because of this row —
+     * main-lane clips with no audio.
      *
      * @return the number of silent holders; 0 for a
      *         {@link MissingAssetReason#CHANGED_ON_DISK} row

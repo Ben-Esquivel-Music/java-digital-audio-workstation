@@ -257,9 +257,12 @@ final class MissingAssetsDialog extends DawgDialog<Void> implements OpenProjectA
      * one asset can have two rows, such as a shorter file whose ADM clips
      * partly select nothing — so the text counts over all of them: the
      * clips are the union of their holders, the silent clips the union of
-     * their silent holders. None silent: the clips keep playing as loaded;
-     * all silent: they stay silent; otherwise it says how many stay silent
-     * and that the others keep playing as loaded.
+     * their silent holders. None silent: the clips that play keep playing
+     * as loaded; all silent: they stay silent; otherwise it says how many
+     * stay silent and that the others that play keep playing as loaded. It
+     * speaks only of the clips that play: a take-lane clip is a holder but
+     * never a silent clip (story 334, studio ruling E16), and a row does not
+     * say whether a holder that is not silent plays.
      *
      * @param row   the row
      * @param where the asset's location text

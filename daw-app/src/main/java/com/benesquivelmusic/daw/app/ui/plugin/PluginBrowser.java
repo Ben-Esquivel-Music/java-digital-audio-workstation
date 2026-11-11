@@ -8,7 +8,6 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectType;
 import com.benesquivelmusic.daw.core.plugin.ExternalPluginEntry;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
-import com.benesquivelmusic.daw.core.plugin.RestoreReport;
 import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
@@ -47,7 +46,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
-import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 
 /**
@@ -199,16 +197,16 @@ public final class PluginBrowser extends DawgDialog<PluginBrowser.Selection> {
         // Story 334 — as the Manage Plugins list does (critique J27): a browser
         // opened while the startup restore still checks the installed plugins
         // lists only those loaded so far, so its third-party group is read again
-        // once the restore has published what became of each entry. The restore
-        // holds the browser only weakly: one closed while a restore that never
-        // completes still runs (a hung plugin constructor, ruling-3 Q6) is not
-        // kept for the session (finding FX2-6).
+        // once the restore has published what became of each entry. The callback
+        // is registered whatever the restore's state: the restore may have
+        // finished after the list above was read, and a restore already over
+        // runs it at once, which posts the re-read to a later FX turn. The
+        // restore holds the browser only weakly: one closed while a restore that
+        // never completes still runs (a hung plugin constructor, ruling-3 Q6) is
+        // not kept for the session (finding FX2-6).
         if (registry != null) {
-            CompletableFuture<RestoreReport> restoring = registry.restore();
-            if (!restoring.isDone()) {
-                WeakReference<PluginBrowser> browser = new WeakReference<>(this);
-                restoring.thenAccept(_ -> refreshWhileReachable(browser));
-            }
+            WeakReference<PluginBrowser> browser = new WeakReference<>(this);
+            registry.restore().thenAccept(_ -> refreshWhileReachable(browser));
         }
     }
 

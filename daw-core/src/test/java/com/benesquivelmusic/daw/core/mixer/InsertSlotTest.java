@@ -62,6 +62,30 @@ class InsertSlotTest {
     }
 
     @Test
+    void anOfflineSlotPassesTheDoubleBusThroughUnrounded() {
+        AudioProcessor processor = offlineSlot().getProcessor();
+        double[][] input = {{0.1, -1.0 / 3.0, Math.PI / 4}};
+        double[][] wide = {{9, 9, 9}, {9, 9, 9}};
+
+        processor.processDouble(input, wide, 3);
+
+        assertThat(processor.supportsDouble()).as("a native 64-bit path").isTrue();
+        assertThat(wide[0]).as("not rounded to float").containsExactly(input[0]);
+        assertThat(wide[1]).as("an output channel beyond the input is silent").containsOnly(0.0);
+    }
+
+    @Test
+    void anOfflineSlotLeavesOutAnInputChannelBeyondItsOutputOnTheDoubleBus() {
+        AudioProcessor processor = offlineSlot().getProcessor();
+        double[][] input = {{0.1, -1.0 / 3.0}, {Math.PI / 4, Math.E / 3}};
+        double[][] narrow = new double[1][2];
+
+        processor.processDouble(input, narrow, 2);
+
+        assertThat(narrow[0]).as("the first input channel, not rounded to float").containsExactly(input[0]);
+    }
+
+    @Test
     void shouldRejectNullName() {
         assertThatThrownBy(() -> new InsertSlot(null, new StubProcessor()))
                 .isInstanceOf(NullPointerException.class);
@@ -121,6 +145,14 @@ class InsertSlotTest {
         assertThat(slot.isExpensive()).isTrue();
         slot.setExpensive(false);
         assertThat(slot.isExpensive()).isFalse();
+    }
+
+    private static InsertSlot offlineSlot() {
+        SequencedMap<String, String> attributes = new LinkedHashMap<>();
+        attributes.put("effect-type", "NOT_A_TYPE");
+        attributes.put("name", "Old FX");
+        return InsertSlot.ofOffline("Old FX", 2, new OfflineInsert(
+                new OfflineCause.UnknownEffectType("NOT_A_TYPE"), new SavedInsert(attributes, List.of()), false));
     }
 
     // --- Stub processor ---

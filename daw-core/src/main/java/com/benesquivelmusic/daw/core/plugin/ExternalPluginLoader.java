@@ -128,13 +128,18 @@ public final class ExternalPluginLoader {
      * Loads a {@link DawPlugin} instance from the given JAR path and class name,
      * returning both the plugin and the classloader that loaded it.
      *
-     * <p>Whatever loading throws, the class loader is closed first. What the
-     * plugin's constructor throws arrives wrapped in an
-     * {@link InvocationTargetException} and is the plugin failing to load —
+     * <p>Whatever loading throws, the class loader is closed before this
+     * method throws. What the plugin's constructor throws arrives wrapped in
+     * an {@link InvocationTargetException} and is the plugin failing to load —
      * a {@link StackOverflowError} included — except the virtual machine's
      * own error, which propagates as thrown
      * ({@link PluginResolution.FailedToLoad#rethrowIfFatal}; story 334,
-     * decision H7 and the final review's NIT-3).</p>
+     * decision H7 and the final review's NIT-3). The {@link PluginLoadException}
+     * for a constructor that threw names what it threw
+     * ({@link PluginResolution.FailedToLoad#messageOrName}), before the class
+     * loader is closed, since that exception's message or simple name may
+     * need the plugin's JAR: the wrapper's own message is always
+     * {@code null}.</p>
      *
      * @param jarPath   the filesystem path to the plugin JAR file
      * @param className the fully qualified class name of the DawPlugin implementation
@@ -184,13 +189,24 @@ public final class ExternalPluginLoader {
             throw new PluginLoadException(
                     "Plugin class has no public no-arg constructor: " + className, e);
         } catch (ReflectiveOperationException | IOException e) {
-            closeQuietly(classLoader);
+            Throwable failure = e;
             if (e instanceof InvocationTargetException constructorFailed
                     && constructorFailed.getTargetException() != null) {
-                PluginResolution.FailedToLoad.rethrowIfFatal(constructorFailed.getTargetException());
+                failure = constructorFailed.getTargetException();
             }
-            throw new PluginLoadException(
-                    "Failed to load plugin from " + jarPath + ": " + e.getMessage(), e);
+            // Named before the class loader closes: what the constructor threw may need the
+            // plugin's JAR to give its message or its simple name. When the constructor threw,
+            // the error names what it threw: the wrapper's own message is always null.
+            String named = null;
+            try {
+                if (!PluginResolution.FailedToLoad.isFatal(failure)) {
+                    named = PluginResolution.FailedToLoad.messageOrName(failure);
+                }
+            } finally {
+                closeQuietly(classLoader);
+            }
+            PluginResolution.FailedToLoad.rethrowIfFatal(failure);
+            throw new PluginLoadException("Failed to load plugin from " + jarPath + ": " + named, e);
         } catch (RuntimeException | Error failure) {
             closeQuietly(classLoader);
             throw failure;

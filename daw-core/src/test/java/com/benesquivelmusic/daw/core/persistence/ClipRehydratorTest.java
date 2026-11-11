@@ -307,6 +307,103 @@ class ClipRehydratorTest {
     }
 
     @Test
+    void anAdmTakeLaneClipWhoseNameSelectsNothingIsCountedButNeverSilent() throws Exception {
+        Path adm = exportAdm("scene.wav", 44_100);
+        DawProject project = anAdmImportWithoutAudio(adm);
+        AudioClip bed = onlyClipOf(project, "Bed (Stereo)");
+        AudioClip objectOne = onlyClipOf(project, "Object 1");
+        AudioClip objectTwo = onlyClipOf(project, "Object 2");
+        AudioClip lap = onANewTakeLane(trackNamed(project, "Object 2"), objectTwo, "Object 3");
+        CollectingRehydrationListener listener = new CollectingRehydrationListener();
+
+        RehydrationSession session = new ClipRehydrator()
+                .start(project, MissingAssetsReport.EMPTY, 0.0, listener);
+        listener.awaitFinished();
+        RehydrationSession.AttachResult result = listener.applyAll(session);
+
+        assertThat(result.attached()).containsExactlyInAnyOrder(bed, objectOne, objectTwo);
+        assertThat(lap.getAudioData()).as("its name selects nothing of the file").isNull();
+        assertThat(result.rows()).singleElement().satisfies(row -> {
+            assertThat(row.reason()).isEqualTo(MissingAssetReason.ADM_OBJECT_UNKNOWN);
+            assertThat(row.holders()).extracting(MissingAsset.Holder::clipId)
+                    .containsExactly(bed.getId(), objectOne.getId(), objectTwo.getId(), lap.getId());
+            assertThat(row.silentHolders()).as("a take-lane clip does not play, so it is never silent").isEmpty();
+            assertThat(row.detail()).isEqualTo("1 of them selects no bed or object of the file (it has:"
+                    + " Bed (Stereo), Object 1, Object 2)");
+        });
+        MissingAssetsReport report = MissingAssetsReport.EMPTY.withAll(result.rows());
+        assertThat(report.missingAssetCount()).as("the lane clip without audio keeps its row").isEqualTo(1);
+        assertThat(report.silentClipCount()).isZero();
+    }
+
+    @Test
+    void admClipsOnMainAndTakeLanesWhoseNamesSelectNothingSilenceOnlyTheMainLaneOne() throws Exception {
+        Path adm = exportAdm("scene.wav", 44_100);
+        DawProject project = anAdmImportWithoutAudio(adm);
+        AudioClip objectOne = onlyClipOf(project, "Object 1");
+        AudioClip objectTwo = onlyClipOf(project, "Object 2");
+        objectOne.setName("Lead vocal");
+        AudioClip lap = onANewTakeLane(trackNamed(project, "Object 2"), objectTwo, "Object 3");
+        CollectingRehydrationListener listener = new CollectingRehydrationListener();
+
+        RehydrationSession session = new ClipRehydrator()
+                .start(project, MissingAssetsReport.EMPTY, 0.0, listener);
+        listener.awaitFinished();
+        RehydrationSession.AttachResult result = listener.applyAll(session);
+
+        assertThat(objectOne.getAudioData()).isNull();
+        assertThat(lap.getAudioData()).isNull();
+        assertThat(result.rows()).singleElement().satisfies(row -> {
+            assertThat(row.reason()).isEqualTo(MissingAssetReason.ADM_OBJECT_UNKNOWN);
+            assertThat(row.silentHolders()).as("the renamed main-lane clip, not the lane clip")
+                    .extracting(MissingAsset.Holder::clipId).containsExactly(objectOne.getId());
+            assertThat(row.detail()).as("every holder whose name selects nothing, the lane clip included")
+                    .isEqualTo("2 of them select no bed or object of the file (it has:"
+                            + " Bed (Stereo), Object 1, Object 2)");
+        });
+        assertThat(MissingAssetsReport.EMPTY.withAll(result.rows()).silentClipCount()).isEqualTo(1);
+    }
+
+    @Test
+    void aMissingSourceSilencesOnlyItsMainLaneClipsAndOneOnlyATakeLaneHoldsStillGetsItsRow() throws Exception {
+        Path gone = tempDir.resolve("gone.wav");
+        Path laneOnly = tempDir.resolve("lane-only.wav");
+        DawProject project = new DawProject("Lanes", FORMAT);
+        Track track = project.createAudioTrack("Vox");
+        AudioClip slice = clip(track, "comp", 0.0, 1.0, gone);
+        TakeLane lane = new TakeLane("Take 1");
+        AudioClip lap = new AudioClip("lap", 0.0, 2.0, gone.toString());
+        AudioClip otherLap = new AudioClip("other lap", 2.0, 2.0, laneOnly.toString());
+        lane.addClip(lap);
+        lane.addClip(otherLap);
+        track.getTakeComping().addTakeLane(lane);
+        CollectingRehydrationListener listener = new CollectingRehydrationListener();
+
+        RehydrationSession session = new ClipRehydrator()
+                .start(project, MissingAssetsReport.EMPTY, 0.0, listener);
+        listener.awaitFinished();
+        RehydrationSession.AttachResult result = listener.applyAll(session);
+
+        assertThat(result.rows()).hasSize(2).allSatisfy(row ->
+                assertThat(row.reason()).isEqualTo(MissingAssetReason.NOT_FOUND));
+        assertThat(rowOf(result, gone)).satisfies(row -> {
+            assertThat(row.holders()).extracting(MissingAsset.Holder::clipId)
+                    .containsExactly(slice.getId(), lap.getId());
+            assertThat(row.silentHolders()).as("the comp slice plays; its lap does not")
+                    .extracting(MissingAsset.Holder::clipId).containsExactly(slice.getId());
+        });
+        assertThat(rowOf(result, laneOnly)).as("a file only a take lane holds is still a missing asset")
+                .satisfies(row -> {
+                    assertThat(row.holders()).extracting(MissingAsset.Holder::clipId)
+                            .containsExactly(otherLap.getId());
+                    assertThat(row.silentHolders()).isEmpty();
+                });
+        MissingAssetsReport report = MissingAssetsReport.EMPTY.withAll(result.rows());
+        assertThat(report.missingAssetCount()).isEqualTo(2);
+        assertThat(report.silentClipCount()).isEqualTo(1);
+    }
+
+    @Test
     void anAdmImportsClipsOnAFileWithoutAdmMetadataGetNoAudioAndAreAllReported() throws Exception {
         Path plain = wav("scene.wav", RATE, RATE / 2, 2); // the ADM master, its axml chunk stripped
         DawProject project = new DawProject("Stripped", FORMAT);
@@ -875,6 +972,33 @@ class ClipRehydratorTest {
         List<AudioClip> clips = trackNamed(project, trackName).getClips();
         assertThat(clips).hasSize(1);
         return clips.getFirst();
+    }
+
+    /** The bed and object clips of {@code admFile}'s import, without audio, as a reopened project holds them. */
+    private static DawProject anAdmImportWithoutAudio(Path admFile) throws IOException {
+        DawProject project = new DawProject("Atmos", FORMAT);
+        new AudioFileImporter(project).importFile(admFile, 0.0);
+        for (Track track : project.getTracks()) {
+            for (AudioClip clip : track.getClips()) {
+                clip.setAudioData(null);
+            }
+        }
+        return project;
+    }
+
+    /** A clip named {@code name} on a new take lane of {@code track}, holding what {@code alongside} holds. */
+    private static AudioClip onANewTakeLane(Track track, AudioClip alongside, String name) {
+        AudioClip clip = new AudioClip(name, alongside.getStartBeat(), alongside.getDurationBeats(),
+                alongside.getSourceFilePath());
+        TakeLane lane = new TakeLane("Take 1");
+        lane.addClip(clip);
+        track.getTakeComping().addTakeLane(lane);
+        return clip;
+    }
+
+    private static MissingAsset rowOf(RehydrationSession.AttachResult result, Path file) {
+        AssetReference reference = new AssetReference.SingleFile(file.toString());
+        return result.rows().stream().filter(row -> row.reference().equals(reference)).findFirst().orElseThrow();
     }
 
     private static void awaitUninterruptibly(CountDownLatch latch) {

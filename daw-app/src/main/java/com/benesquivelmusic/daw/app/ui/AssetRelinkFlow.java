@@ -61,8 +61,9 @@ import java.util.logging.Logger;
  * ({@link com.benesquivelmusic.daw.core.persistence.MissingAssetsReport#without})
  * for this session: the asset's clips keep their references and stay as
  * they are — a clip without audio stays silent, a clip that loaded (of a
- * "Shorter than the clip" row, say) keeps playing as loaded — and the
- * project is not dirtied.</p>
+ * "Shorter than the clip" row, say) keeps its audio as loaded and, on a
+ * main lane, keeps playing it (a take-lane clip does not play; story 334,
+ * studio ruling E16) — and the project is not dirtied.</p>
  *
  * <p>A row's buttons are disabled while its work is in flight (its status is
  * {@link RowStatus.Working}). Every effect is fenced: a result of an open
@@ -261,7 +262,9 @@ final class AssetRelinkFlow {
      * ({@link com.benesquivelmusic.daw.core.persistence.MissingAssetsReport#without})
      * for this session (decision D16). The asset's clips keep their
      * references and stay as they are: a clip without audio stays silent, a
-     * clip that loaded keeps playing as loaded. The project is not dirtied.
+     * clip that loaded keeps its audio as loaded and, on a main lane, keeps
+     * playing it (a take-lane clip does not play; story 334, studio ruling
+     * E16). The project is not dirtied.
      *
      * @param generation the open the row belongs to
      * @param row        the row

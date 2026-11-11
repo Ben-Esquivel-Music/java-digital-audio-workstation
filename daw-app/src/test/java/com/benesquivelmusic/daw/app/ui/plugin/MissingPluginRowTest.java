@@ -3,9 +3,11 @@ package com.benesquivelmusic.daw.app.ui.plugin;
 import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
 import com.benesquivelmusic.daw.app.ui.PluginManagerDialog;
 import com.benesquivelmusic.daw.app.ui.plugin.fixtures.BlockingInstallFixture;
+import com.benesquivelmusic.daw.app.ui.plugin.fixtures.DescriptorReadHookFixture;
 import com.benesquivelmusic.daw.app.ui.plugin.fixtures.InstallFixturePluginA;
 import com.benesquivelmusic.daw.app.ui.plugin.fixtures.InstallFixturePluginC;
 import com.benesquivelmusic.daw.core.persistence.InstalledPluginStore;
+import com.benesquivelmusic.daw.core.plugin.ExternalPluginEntry;
 import com.benesquivelmusic.daw.core.plugin.InstalledPlugin;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.plugin.RestoreReport;
@@ -15,6 +17,7 @@ import javafx.scene.Parent;
 import javafx.scene.Scene;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
+import javafx.scene.control.TreeItem;
 import javafx.scene.layout.StackPane;
 
 import org.junit.jupiter.api.Test;
@@ -29,7 +32,10 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static com.benesquivelmusic.daw.app.ui.snapshot.FxSnapshotTest.runOnFxThread;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -169,6 +175,71 @@ class MissingPluginRowTest {
     }
 
     /**
+     * Story 334 (PR #990 review, ruling R-C2.1): a restore that completes while the browser is
+     * being built — after the browser read which plugins are loaded, before its construction
+     * returns — is not missed. The browser registers its re-read whatever the restore's state, so
+     * after one FX turn its third-party group lists exactly the plugins the restore loaded.
+     */
+    @Test
+    void aBrowserWhoseRestoreFinishesWhileItIsBuiltReadsTheInstalledPluginsAgain() throws Exception {
+        Path list = folder.resolve("config").resolve(InstalledPluginStore.FILE_NAME);
+        BlockingInstallFixture.block = false;
+        // The restore loads the hook's entry, then is held in the blocking entry's constructor.
+        installAndQuit(list, DescriptorReadHookFixture.class, "hook.jar", BlockingInstallFixture.class,
+                "blocking.jar");
+
+        BlockingInstallFixture.started = new CountDownLatch(1);
+        BlockingInstallFixture.release = new CountDownLatch(1);
+        BlockingInstallFixture.block = true;
+        PluginRegistry restarted = new PluginRegistry(new InstalledPluginStore(list));
+        try {
+            CompletableFuture<RestoreReport> restoring = restarted.restore();
+            assertThat(BlockingInstallFixture.started.await(10, TimeUnit.SECONDS))
+                    .as("the restore loaded the hook's entry and is held in the blocking one's constructor")
+                    .isTrue();
+            // The browser reads the hook's descriptor on FX while it is built, right after it read
+            // which plugins are loaded: the restore is let go there and waited for, bounded well
+            // inside runOnFxThread's 15 s guard.
+            DescriptorReadHookFixture.onDescriptorReadOnFx = () -> {
+                BlockingInstallFixture.release.countDown();
+                try {
+                    restoring.get(10, TimeUnit.SECONDS);
+                } catch (InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(failure);
+                } catch (ExecutionException | TimeoutException failure) {
+                    throw new IllegalStateException(failure);
+                }
+            };
+            AtomicReference<List<String>> vendorsWhenBuilt = new AtomicReference<>();
+            PluginBrowser browser = runOnFxThread(() -> {
+                PluginBrowser built = new PluginBrowser(restarted, true, "Vox / Insert 1");
+                vendorsWhenBuilt.set(installedVendors(built));
+                return built;
+            });
+
+            assertThat(DescriptorReadHookFixture.onDescriptorReadOnFx).as("the hook ran while the browser was built")
+                    .isNull();
+            assertThat(restoring).as("the restore finished while the browser was being built")
+                    .isCompletedWithValueMatching(report -> report.missing().isEmpty());
+            assertThat(vendorsWhenBuilt.get()).as("the browser had read the loaded plugins before it finished")
+                    .containsExactly(DescriptorReadHookFixture.VENDOR);
+
+            runOnFxThread(() -> Boolean.TRUE); // one FIFO turn: the re-read the browser posted runs first
+            assertThat(installedVendors(browser)).as("the browser read the installed plugins again")
+                    .containsExactly(DescriptorReadHookFixture.VENDOR, "Test");
+            assertThat(installedEntries(browser)).as("exactly the plugins the restore loaded")
+                    .containsExactlyInAnyOrderElementsOf(restarted.getLoadedPlugins().keySet())
+                    .hasSize(2);
+        } finally {
+            DescriptorReadHookFixture.onDescriptorReadOnFx = null;
+            BlockingInstallFixture.block = false;
+            BlockingInstallFixture.release.countDown();
+            restarted.disposeAll();
+        }
+    }
+
+    /**
      * Finding FX2-6: the restore holds a browser or a Manage Plugins dialog
      * opened while it runs only weakly, so one that is closed and dropped is
      * not kept for as long as the restore runs — which is the session, when a
@@ -258,6 +329,19 @@ class MissingPluginRowTest {
                 .filter(item -> item.getValue().displayText().equals(PluginBrowser.INSTALLED_GROUP))
                 .flatMap(item -> item.getChildren().stream())
                 .map(item -> item.getValue().displayText())
+                .toList());
+    }
+
+    /** The entries of the plugins listed under the browser tree's third-party group. */
+    private static List<ExternalPluginEntry> installedEntries(PluginBrowser browser) {
+        return runOnFxThread(() -> browser.treeForTest().getRoot().getChildren().stream()
+                .filter(item -> item.getValue().displayText().equals(PluginBrowser.INSTALLED_GROUP))
+                .flatMap(item -> item.getChildren().stream())
+                .flatMap(vendor -> vendor.getChildren().stream())
+                .map(TreeItem::getValue)
+                .filter(PluginBrowser.ExternalRow.class::isInstance)
+                .map(PluginBrowser.ExternalRow.class::cast)
+                .map(PluginBrowser.ExternalRow::entry)
                 .toList());
     }
 

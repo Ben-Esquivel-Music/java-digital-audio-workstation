@@ -171,14 +171,15 @@ public final class RehydrationSession {
      *       file, of one bed or object). A recorded take's
      *       {@link SourceRateMetadata} is set before the array, which
      *       publishes both. An ADM clip whose name selects no bed or object
-     *       gets nothing and is a silent clip of an
-     *       {@link MissingAssetReason#ADM_OBJECT_UNKNOWN} row. When the
-     *       clips are an ADM import's ({@link DecodedAudio#isAdmImport}) but
-     *       the file decoded without ADM metadata, no clip gets anything —
-     *       each would play the same channels — and they are all silent clips
-     *       of such a row (D30). When a clip spans more audio than the
-     *       source holds ({@link SourceShortfall}: judged at the transport's
-     *       tempo, which the render pipeline plays every audio clip at — a
+     *       gets nothing and is counted in an
+     *       {@link MissingAssetReason#ADM_OBJECT_UNKNOWN} row, as one of its
+     *       silent clips when it is on a main lane. When the clips are an ADM
+     *       import's ({@link DecodedAudio#isAdmImport}) but the file decoded
+     *       without ADM metadata, no clip gets anything — each would play
+     *       the same channels — and they are all counted in such a row, the
+     *       main-lane ones as its silent clips (D30). When a clip spans more
+     *       audio than the source holds ({@link SourceShortfall}: judged at
+     *       the transport's tempo, which the render pipeline plays every audio clip at — a
      *       renderer that follows the tempo map must replace this with one
      *       beat-to-source-frame function both call (D37) — and which cannot
      *       tell a shorter file from a tempo slowed after the clip was cut),
@@ -194,6 +195,8 @@ public final class RehydrationSession {
      * A row names every clip that holds the source as a holder (a relink
      * re-points them all); its detail says which of them the reason
      * concerns when that is not all of them (D26).
+     * A take-lane clip does not play, so it is never a silent clip of any
+     * row (story 334, studio ruling E16).
      * Does nothing — returns {@link AttachResult#NONE} — once cancelled, for
      * another session's outcome, and for an outcome already applied. Never
      * marks the project dirty.
@@ -273,6 +276,7 @@ public final class RehydrationSession {
         List<AudioClip> attached = new ArrayList<>();
         int shortClips = 0;
         List<MissingAsset.Holder> unknown = new ArrayList<>();
+        List<MissingAsset.Holder> silent = new ArrayList<>();
         double heldSeconds = 0.0;
         double longestSpanSeconds = 0.0;
         for (HeldClip held : holding) {
@@ -283,6 +287,9 @@ public final class RehydrationSession {
             Optional<DecodedAudio.ClipAudio> selected = decoded.forClip(clip.getName());
             if (selected.isEmpty()) {
                 unknown.add(held.holder());
+                if (held.plays()) {
+                    silent.add(held.holder());
+                }
                 continue;
             }
             selected.get().attachTo(clip);
@@ -304,7 +311,7 @@ public final class RehydrationSession {
         }
         if (!unknown.isEmpty() && decoded instanceof DecodedAudio.AdmAudio adm) {
             rows.add(new MissingAsset(source, MissingAssetReason.ADM_OBJECT_UNKNOWN,
-                    adm.unknownNamesDetail(unknown.size(), holders.size()), holders, unknown));
+                    adm.unknownNamesDetail(unknown.size(), holders.size()), holders, silent));
         }
         return new AttachResult(attached, rows);
     }

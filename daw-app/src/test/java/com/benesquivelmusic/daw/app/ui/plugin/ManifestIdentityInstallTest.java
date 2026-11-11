@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui.plugin;
 
 import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
 import com.benesquivelmusic.daw.app.ui.plugin.PluginJarScanner.JarInspection;
+import com.benesquivelmusic.daw.app.ui.plugin.fixtures.UndeclaredThrowFixture;
 import com.benesquivelmusic.daw.core.plugin.ExternalPluginEntry;
 import com.benesquivelmusic.daw.core.plugin.ExternalPluginLoader;
 import com.benesquivelmusic.daw.core.plugin.InstalledPlugin;
@@ -16,6 +17,7 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 import javafx.application.Platform;
 import javafx.collections.ListChangeListener;
 import javafx.scene.Node;
+import javafx.scene.control.Button;
 import javafx.scene.control.DialogPane;
 import javafx.scene.control.Label;
 import javafx.stage.Stage;
@@ -30,13 +32,22 @@ import java.io.IOException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Path;
+import java.security.GeneralSecurityException;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
+import java.util.logging.SimpleFormatter;
 
 import static com.benesquivelmusic.daw.app.ui.snapshot.FxSnapshotTest.runOnFxThread;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -140,11 +151,11 @@ class ManifestIdentityInstallTest {
      * release loop): refused plugins whose {@code dispose()} all throw one
      * shared exception instance — as a library's stackless exception is —
      * are every one released with its loader closed, and the installation
-     * completes with that exception. {@link Throwable} refuses to suppress an
-     * exception into itself, so collecting the second throw into the first
-     * would throw out of the loop: the third plugin would stay unreleased and
-     * the installation would never complete, so the panel could not install
-     * again.
+     * completes with that exception, logged once at WARNING. {@link Throwable}
+     * refuses to suppress an exception into itself, so collecting the second
+     * throw into the first would throw out of the loop: the third plugin would
+     * stay unreleased and the installation would never complete, so the panel
+     * could not install again.
      */
     @Test
     void refusedPluginsThatThrowOneSharedExceptionAsTheyAreReleasedAreAllReleased() throws Exception {
@@ -158,29 +169,479 @@ class ManifestIdentityInstallTest {
                 "com.example.Gate", refusedThrowing(shared, "com.example.gate2"),
                 "com.example.Limiter", refusedThrowing(shared, "com.example.limiter2"));
         List<TrackingClassLoader> loaders = new CopyOnWriteArrayList<>();
+        List<LogRecord> warnings = new CopyOnWriteArrayList<>();
+        Handler capture = capturingWarnings(warnings);
+        Logger panelLog = Logger.getLogger(PluginInstallPanel.class.getName());
+        panelLog.addHandler(capture);
+        try {
+            PluginInstallPanel panel = runOnFxThread(() -> new PluginInstallPanel(inspection, registry, () -> { },
+                    entry -> {
+                        TrackingClassLoader loader = new TrackingClassLoader();
+                        loaders.add(loader);
+                        return new ExternalPluginLoader.LoadResult(refused.get(entry.className()), loader);
+                    }));
+            runOnFxThread(() -> {
+                panel.primaryButtonForTest().fire();
+                return null;
+            });
+            Throwable completion = catchThrowable(() -> panel.installationForTest().get(10, TimeUnit.SECONDS));
 
-        PluginInstallPanel panel = runOnFxThread(() -> new PluginInstallPanel(inspection, registry, () -> { },
-                entry -> {
-                    TrackingClassLoader loader = new TrackingClassLoader();
-                    loaders.add(loader);
-                    return new ExternalPluginLoader.LoadResult(refused.get(entry.className()), loader);
-                }));
-        runOnFxThread(() -> {
-            panel.primaryButtonForTest().fire();
+            assertThat(refused.values()).as("every refused plugin is released once")
+                    .allSatisfy(plugin -> assertThat(plugin.disposals).hasValue(1));
+            assertThat(loaders).as("then every loader closes").hasSize(3)
+                    .allSatisfy(loader -> assertThat(loader.closes).hasValue(1));
+            assertThat(completion).as("the installation completes with the plugins' exception")
+                    .isInstanceOf(ExecutionException.class)
+                    .hasCauseReference(shared);
+            assertThat(shared.getSuppressed()).as("never suppressed into itself").isEmpty();
+            assertThat(warnings).as("logged once for the installation, not once per plugin").singleElement()
+                    .extracting(LogRecord::getThrown).isSameAs(shared);
+            assertThat(dialogFailure).hasNullValue();
+            assertThat(errorMessages).as("the one refusal dialog").hasSize(1);
+        } finally {
+            panelLog.removeHandler(capture);
+        }
+    }
+
+    /**
+     * Story 334 (PR #990 review, ruling R-C3.8): refused plugins whose
+     * {@code dispose()} throw two different exceptions are logged once at
+     * WARNING, with the first to fail, the second suppressed into it, and the
+     * installation completes with the first.
+     */
+    @Test
+    void refusedPluginsThatThrowDifferentExceptionsAsTheyAreReleasedAreLoggedOnce() throws Exception {
+        JarInspection inspection = inspection("comp-x.jar",
+                new PluginManifest("com.example.CompX", descriptor("com.example.comp", "Comp X", "1.2.0")),
+                new PluginManifest("com.example.Gate", descriptor("com.example.gate", "Gate", "1.0")));
+        IllegalStateException first = new IllegalStateException("the comp's temp folder could not be deleted");
+        IllegalStateException second = new IllegalStateException("the gate's native library is already unloaded");
+        Map<String, TrackingPlugin> refused = Map.of(
+                "com.example.CompX", refusedThrowing(first, "com.example.comp2"),
+                "com.example.Gate", refusedThrowing(second, "com.example.gate2"));
+        List<LogRecord> warnings = new CopyOnWriteArrayList<>();
+        Handler capture = capturingWarnings(warnings);
+        Logger panelLog = Logger.getLogger(PluginInstallPanel.class.getName());
+        panelLog.addHandler(capture);
+        try {
+            PluginInstallPanel panel = runOnFxThread(() -> new PluginInstallPanel(inspection, registry, () -> { },
+                    entry -> new ExternalPluginLoader.LoadResult(refused.get(entry.className()),
+                            new TrackingClassLoader())));
+            runOnFxThread(() -> {
+                panel.primaryButtonForTest().fire();
+                return null;
+            });
+            Throwable completion = catchThrowable(() -> panel.installationForTest().get(10, TimeUnit.SECONDS));
+
+            assertThat(refused.values()).as("every refused plugin is released once")
+                    .allSatisfy(plugin -> assertThat(plugin.disposals).hasValue(1));
+            assertThat(warnings).as("logged once for the installation, not once per plugin").singleElement()
+                    .satisfies(record -> {
+                        assertThat(record.getMessage())
+                                .isEqualTo("A plugin the installation did not keep failed while it was disposed");
+                        assertThat(record.getThrown()).as("the first to fail, released in manifest order")
+                                .isSameAs(first);
+                        assertThat(record.getThrown().getSuppressed()).as("the second suppressed into it")
+                                .containsExactly(second);
+                    });
+            assertThat(completion).as("the installation completes with the first")
+                    .isInstanceOf(ExecutionException.class)
+                    .hasCauseReference(first);
+            assertThat(dialogFailure).hasNullValue();
+        } finally {
+            panelLog.removeHandler(capture);
+        }
+    }
+
+    /**
+     * Story 334 (PR #990 review, rulings R-C3.7 and R2-2): a plugin whose descriptor check throws a
+     * checked exception it does not declare, with no message, is refused with one failure line
+     * naming the exception's class, logged once at WARNING with that exception, and released with
+     * the attempt's other leftovers, while the JAR's plugin that agrees with its manifest is
+     * installed; the installation completes and the install button can be pressed again.
+     */
+    @Test
+    void aPluginWhoseDescriptorCheckThrowsAnUndeclaredCheckedExceptionIsRefusedAndTheRestInstall()
+            throws Exception {
+        JarInspection inspection = inspection("comp-x.jar",
+                new PluginManifest("com.example.CompX", descriptor("com.example.comp", "Comp X", "1.2.0")),
+                new PluginManifest("com.example.Gate", descriptor("com.example.gate", "Gate", "1.0")));
+        IOException descriptorFailure = new IOException();
+        TrackingPlugin thrower = new TrackingPlugin(() -> {
+            UndeclaredThrowFixture.throwUndeclared(descriptorFailure);
             return null;
-        });
-        Throwable completion = catchThrowable(() -> panel.installationForTest().get(10, TimeUnit.SECONDS));
+        }, () -> { });
+        TrackingPlugin gate = new TrackingPlugin(descriptor("com.example.gate", "Gate", "1.0"));
+        TrackingClassLoader throwerLoader = new TrackingClassLoader();
+        TrackingClassLoader gateLoader = new TrackingClassLoader();
+        List<LogRecord> warnings = new CopyOnWriteArrayList<>();
+        Handler capture = capturingWarnings(warnings);
+        Logger panelLog = Logger.getLogger(PluginInstallPanel.class.getName());
+        panelLog.addHandler(capture);
+        try {
+            PluginInstallPanel panel = runOnFxThread(() -> new PluginInstallPanel(inspection, registry, () -> { },
+                    entry -> entry.className().equals("com.example.Gate")
+                            ? new ExternalPluginLoader.LoadResult(gate, gateLoader)
+                            : new ExternalPluginLoader.LoadResult(thrower, throwerLoader)));
+            runOnFxThread(() -> {
+                panel.primaryButtonForTest().fire();
+                return null;
+            });
+            panel.installationForTest().get(10, TimeUnit.SECONDS);
 
-        assertThat(refused.values()).as("every refused plugin is released once")
-                .allSatisfy(plugin -> assertThat(plugin.disposals).hasValue(1));
-        assertThat(loaders).as("then every loader closes").hasSize(3)
-                .allSatisfy(loader -> assertThat(loader.closes).hasValue(1));
-        assertThat(completion).as("the installation completes with the plugins' exception")
-                .isInstanceOf(ExecutionException.class)
-                .hasCauseReference(shared);
-        assertThat(shared.getSuppressed()).as("never suppressed into itself").isEmpty();
-        assertThat(dialogFailure).hasNullValue();
-        assertThat(errorMessages).as("the one refusal dialog").hasSize(1);
+            assertThat(dialogFailure).hasNullValue();
+            assertThat(errorMessages).as("one failure line, naming the exception's class: it has no message")
+                    .singleElement().isEqualTo("Some plugins could not be installed:\ncom.example.CompX — IOException");
+            assertThat(warnings).as("logged once, with what was thrown").singleElement().satisfies(record -> {
+                assertThat(record.getMessage()).isEqualTo("Could not install plugin com.example.CompX");
+                assertThat(record.getThrown()).isSameAs(descriptorFailure);
+            });
+            assertThat(runOnFxThread(() -> registry.getEntries())).as("the plugin that agrees is installed")
+                    .singleElement().satisfies(entry -> assertThat(entry.className()).isEqualTo("com.example.Gate"));
+            assertThat(thrower.disposals).as("the refused plugin is released once").hasValue(1);
+            assertThat(throwerLoader.closes).as("then its loader closes once").hasValue(1);
+            assertThat(gate.disposals).as("the installed one is kept").hasValue(0);
+            assertThat(gateLoader.closes).hasValue(0);
+            assertThat(runOnFxThread(() -> panel.primaryButtonForTest().isDisabled()))
+                    .as("the engineer can install again").isFalse();
+        } finally {
+            panelLog.removeHandler(capture);
+        }
+    }
+
+    /**
+     * Story 334 (PR #990 review, rulings R-C3.4 and R2-2): the failure line of a plugin that could
+     * not be loaded names an exception with no message by its class, and the failure is logged once
+     * at WARNING with that exception.
+     */
+    @Test
+    void aLoadFailureWithNoMessageIsNamedByItsExceptionsClass() throws Exception {
+        JarInspection inspection = inspection("comp-x.jar",
+                new PluginManifest("com.example.CompX", descriptor("com.example.comp", "Comp X", "1.2.0")));
+        IllegalStateException loadFailure = new IllegalStateException();
+        List<LogRecord> warnings = new CopyOnWriteArrayList<>();
+        Handler capture = capturingWarnings(warnings);
+        Logger panelLog = Logger.getLogger(PluginInstallPanel.class.getName());
+        panelLog.addHandler(capture);
+        try {
+            PluginInstallPanel panel = runOnFxThread(() -> new PluginInstallPanel(inspection, registry, () -> { },
+                    entry -> {
+                        throw loadFailure;
+                    }));
+            runOnFxThread(() -> {
+                panel.primaryButtonForTest().fire();
+                return null;
+            });
+            panel.installationForTest().get(10, TimeUnit.SECONDS);
+
+            assertThat(dialogFailure).hasNullValue();
+            assertThat(errorMessages).singleElement()
+                    .isEqualTo("Some plugins could not be installed:\ncom.example.CompX — IllegalStateException");
+            assertThat(warnings).as("logged once, with what was thrown").singleElement().satisfies(record -> {
+                assertThat(record.getMessage()).isEqualTo("Could not install plugin com.example.CompX");
+                assertThat(record.getThrown()).isSameAs(loadFailure);
+            });
+        } finally {
+            panelLog.removeHandler(capture);
+        }
+    }
+
+    /**
+     * Story 334 (PR #990 review, ruling R4-1): a plugin whose loading throws a checked exception it
+     * does not declare gets one failure line naming it and one WARNING record, and the installation
+     * completes with the install button enabled again.
+     */
+    @Test
+    void aLoadThatThrowsAnUndeclaredCheckedExceptionIsAFailureLineAndTheInstallationCompletes()
+            throws Exception {
+        JarInspection inspection = inspection("comp-x.jar",
+                new PluginManifest("com.example.CompX", descriptor("com.example.comp", "Comp X", "1.2.0")));
+        GeneralSecurityException loadFailure =
+                new GeneralSecurityException("the plugin's licence could not be verified");
+        List<LogRecord> warnings = new CopyOnWriteArrayList<>();
+        Handler capture = capturingWarnings(warnings);
+        Logger panelLog = Logger.getLogger(PluginInstallPanel.class.getName());
+        panelLog.addHandler(capture);
+        try {
+            PluginInstallPanel panel = runOnFxThread(() -> new PluginInstallPanel(inspection, registry, () -> { },
+                    entry -> {
+                        UndeclaredThrowFixture.throwUndeclared(loadFailure);
+                        throw new AssertionError();
+                    }));
+            runOnFxThread(() -> {
+                panel.primaryButtonForTest().fire();
+                return null;
+            });
+            panel.installationForTest().get(10, TimeUnit.SECONDS);
+
+            assertThat(dialogFailure).hasNullValue();
+            assertThat(errorMessages).as("one failure line, naming the exception by its message").singleElement()
+                    .isEqualTo("Some plugins could not be installed:\n"
+                            + "com.example.CompX — the plugin's licence could not be verified");
+            assertThat(warnings).as("logged once, with what was thrown").singleElement().satisfies(record -> {
+                assertThat(record.getMessage()).isEqualTo("Could not install plugin com.example.CompX");
+                assertThat(record.getThrown()).isSameAs(loadFailure);
+            });
+            assertThat(runOnFxThread(() -> panel.primaryButtonForTest().isDisabled()))
+                    .as("the engineer can install again").isFalse();
+        } finally {
+            panelLog.removeHandler(capture);
+        }
+    }
+
+    /**
+     * PR #990 review, ruling R5-3: plugins whose failures a log handler cannot format — reading
+     * their exceptions' messages throws, as a plugin's that needs its closed JAR does — each get a
+     * failure line naming the exception by its class: one whose loading throws, and one whose
+     * descriptor check throws, which is refused and released. Every failure is handed to the
+     * handlers once, whatever an earlier one threw, and the installation completes with the
+     * install button enabled again.
+     */
+    @Test
+    void failuresALogHandlerCannotFormatAreFailureLinesAndTheInstallationCompletes() throws Exception {
+        JarInspection inspection = inspection("comp-x.jar",
+                new PluginManifest("com.example.CompX", descriptor("com.example.comp", "Comp X", "1.2.0")),
+                new PluginManifest("com.example.Gate", descriptor("com.example.gate", "Gate", "1.0")));
+        UndeclaredThrowFixture.UnformattableFailure loadFailure = new UndeclaredThrowFixture.UnformattableFailure();
+        UndeclaredThrowFixture.UnformattableFailure descriptorFailure =
+                new UndeclaredThrowFixture.UnformattableFailure();
+        TrackingPlugin gate = new TrackingPlugin(() -> {
+            throw descriptorFailure;
+        }, () -> { });
+        TrackingClassLoader gateLoader = new TrackingClassLoader();
+        List<LogRecord> warnings = new CopyOnWriteArrayList<>();
+        Handler capture = formattingWarnings(warnings);
+        Logger panelLog = Logger.getLogger(PluginInstallPanel.class.getName());
+        panelLog.addHandler(capture);
+        try {
+            PluginInstallPanel panel = runOnFxThread(() -> new PluginInstallPanel(inspection, registry, () -> { },
+                    entry -> {
+                        if (entry.className().equals("com.example.Gate")) {
+                            return new ExternalPluginLoader.LoadResult(gate, gateLoader);
+                        }
+                        throw loadFailure;
+                    }));
+            runOnFxThread(() -> {
+                panel.primaryButtonForTest().fire();
+                return null;
+            });
+            panel.installationForTest().get(10, TimeUnit.SECONDS);
+
+            assertThat(dialogFailure).hasNullValue();
+            assertThat(errorMessages).as("one failure line each, naming the exception by its class")
+                    .singleElement().isEqualTo("Some plugins could not be installed:\n"
+                            + "com.example.CompX — UnformattableFailure\n"
+                            + "com.example.Gate — UnformattableFailure");
+            assertThat(warnings).as("each failure handed to the handlers once, whatever an earlier one threw")
+                    .extracting(LogRecord::getThrown).containsExactly(loadFailure, descriptorFailure);
+            assertThat(gate.disposals).as("the refused plugin is released once").hasValue(1);
+            assertThat(gateLoader.closes).as("then its loader closes once").hasValue(1);
+            assertThat(runOnFxThread(() -> registry.getEntries())).as("nothing is installed").isEmpty();
+            assertThat(runOnFxThread(() -> panel.primaryButtonForTest().isDisabled()))
+                    .as("the engineer can install again").isFalse();
+        } finally {
+            panelLog.removeHandler(capture);
+        }
+    }
+
+    /**
+     * PR #990 review, ruling R6-2: an installation cancelled while one plugin loads, after another
+     * failed with an exception a log handler cannot format, still releases the plugin it loaded —
+     * disposed once, its loader closed once — and completes, whatever the logging throws; the
+     * failure is handed to the handlers once.
+     */
+    @Test
+    void aCancelledInstallationReleasesWhatItLoadedWhateverItsLoggingThrows() throws Exception {
+        JarInspection inspection = inspection("comp-x.jar",
+                new PluginManifest("com.example.CompX", descriptor("com.example.comp", "Comp X", "1.2.0")),
+                new PluginManifest("com.example.Gate", descriptor("com.example.gate", "Gate", "1.0")));
+        UndeclaredThrowFixture.UnformattableFailure loadFailure = new UndeclaredThrowFixture.UnformattableFailure();
+        TrackingPlugin gate = new TrackingPlugin(descriptor("com.example.gate", "Gate", "1.0"));
+        TrackingClassLoader gateLoader = new TrackingClassLoader();
+        CountDownLatch gateLoading = new CountDownLatch(1);
+        CountDownLatch gateLoads = new CountDownLatch(1);
+        List<LogRecord> warnings = new CopyOnWriteArrayList<>();
+        Handler capture = formattingWarnings(warnings);
+        Logger panelLog = Logger.getLogger(PluginInstallPanel.class.getName());
+        panelLog.addHandler(capture);
+        try {
+            PluginInstallPanel panel = runOnFxThread(() -> new PluginInstallPanel(inspection, registry, () -> { },
+                    entry -> {
+                        if (!entry.className().equals("com.example.Gate")) {
+                            throw loadFailure;
+                        }
+                        gateLoading.countDown();
+                        try {
+                            if (!gateLoads.await(10, TimeUnit.SECONDS)) {
+                                throw new AssertionError("the test did not let the load finish");
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(interrupted);
+                        }
+                        return new ExternalPluginLoader.LoadResult(gate, gateLoader);
+                    }));
+            CompletableFuture<Void> installation = runOnFxThread(() -> {
+                panel.primaryButtonForTest().fire();
+                return panel.installationForTest();
+            });
+            assertThat(gateLoading.await(10, TimeUnit.SECONDS)).as("the second plugin is loading").isTrue();
+            runOnFxThread(() -> {
+                if (panel.lookup("#plugin-install-cancel") instanceof Button cancel) {
+                    cancel.fire();
+                } else {
+                    throw new AssertionError("the install panel's Cancel button was not found");
+                }
+                return null;
+            });
+            gateLoads.countDown();
+            installation.get(10, TimeUnit.SECONDS);
+
+            assertThat(gate.disposals).as("the plugin it loaded is released once").hasValue(1);
+            assertThat(gateLoader.closes).as("then its loader closes once").hasValue(1);
+            assertThat(warnings).as("the failure is handed to the handlers once").singleElement()
+                    .extracting(LogRecord::getThrown).isSameAs(loadFailure);
+            assertThat(runOnFxThread(() -> registry.getEntries())).as("nothing is installed").isEmpty();
+        } finally {
+            gateLoads.countDown();
+            panelLog.removeHandler(capture);
+        }
+    }
+
+    /** A handler that adds each WARNING record it is given to {@code warnings}. */
+    private static Handler capturingWarnings(List<LogRecord> warnings) {
+        return new Handler() {
+            @Override public void publish(LogRecord record) {
+                if (record.getLevel() == Level.WARNING) warnings.add(record);
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+    }
+
+    /**
+     * A handler that adds each WARNING record it is given to {@code warnings}, then formats it as the
+     * JDK's console handler does, which runs what the record's exception runs to give its message.
+     */
+    private static Handler formattingWarnings(List<LogRecord> warnings) {
+        return new Handler() {
+            @Override public void publish(LogRecord record) {
+                if (record.getLevel() == Level.WARNING) {
+                    warnings.add(record);
+                    new SimpleFormatter().format(record);
+                }
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+    }
+
+    /**
+     * Story 334 (PR #990 review, ruling R-C3.8): a refused plugin whose {@code dispose()} throws a
+     * checked exception it does not declare does not end the release loop: the refused plugin
+     * after it is released too, every loader closes once, the failure is logged once at WARNING,
+     * and then the installation completes with it.
+     */
+    @Test
+    void aReleaseThatThrowsAnUndeclaredCheckedExceptionLetsEveryOtherReleaseRunAndIsLoggedOnce()
+            throws Exception {
+        JarInspection inspection = inspection("comp-x.jar",
+                new PluginManifest("com.example.CompX", descriptor("com.example.comp", "Comp X", "1.2.0")),
+                new PluginManifest("com.example.Gate", descriptor("com.example.gate", "Gate", "1.0")));
+        IOException disposalFailure = new IOException("the plugin's temp folder could not be deleted");
+        TrackingPlugin throwing = new TrackingPlugin(descriptor("com.example.comp2", "Mismatched", "1.0"),
+                () -> UndeclaredThrowFixture.throwUndeclared(disposalFailure));
+        TrackingPlugin after = new TrackingPlugin(descriptor("com.example.gate2", "Mismatched", "1.0"));
+        TrackingClassLoader throwingLoader = new TrackingClassLoader();
+        TrackingClassLoader afterLoader = new TrackingClassLoader();
+        List<LogRecord> warnings = new CopyOnWriteArrayList<>();
+        Handler capture = new Handler() {
+            @Override public void publish(LogRecord record) {
+                if (record.getLevel() == Level.WARNING) warnings.add(record);
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        Logger panelLog = Logger.getLogger(PluginInstallPanel.class.getName());
+        panelLog.addHandler(capture);
+        try {
+            PluginInstallPanel panel = runOnFxThread(() -> new PluginInstallPanel(inspection, registry, () -> { },
+                    entry -> entry.className().equals("com.example.Gate")
+                            ? new ExternalPluginLoader.LoadResult(after, afterLoader)
+                            : new ExternalPluginLoader.LoadResult(throwing, throwingLoader)));
+            AtomicReference<List<LogRecord>> atCompletion = new AtomicReference<>();
+            // Registered in the firing call, after fire(), so on the attempt fire() started: the panel's
+            // earlier installation is already complete. Nothing else waits on this one yet, so the
+            // thread that completes it runs this callback as it completes it.
+            CompletableFuture<Void> observed = runOnFxThread(() -> {
+                panel.primaryButtonForTest().fire();
+                return panel.installationForTest()
+                        .whenComplete((_, _) -> atCompletion.set(List.copyOf(warnings)));
+            });
+            catchThrowable(() -> observed.get(10, TimeUnit.SECONDS)); // waits, bounded, for the callback
+            Throwable completion = catchThrowable(() -> panel.installationForTest().get(10, TimeUnit.SECONDS));
+
+            assertThat(atCompletion.get()).as("logged before the installation completed: its waiters find the record")
+                    .singleElement().extracting(LogRecord::getThrown).isSameAs(disposalFailure);
+            assertThat(List.of(throwing, after)).as("every refused plugin is released once")
+                    .allSatisfy(plugin -> assertThat(plugin.disposals).hasValue(1));
+            assertThat(List.of(throwingLoader, afterLoader)).as("then every loader closes once")
+                    .allSatisfy(loader -> assertThat(loader.closes).hasValue(1));
+            assertThat(completion).as("the installation completes with the plugin's exception")
+                    .isInstanceOf(ExecutionException.class)
+                    .hasCauseReference(disposalFailure);
+            assertThat(warnings).as("logged once").singleElement().satisfies(record -> {
+                assertThat(record.getMessage())
+                        .isEqualTo("A plugin the installation did not keep failed while it was disposed");
+                assertThat(record.getThrown()).isSameAs(disposalFailure);
+            });
+            assertThat(dialogFailure).hasNullValue();
+            assertThat(errorMessages).as("the one refusal dialog").hasSize(1);
+        } finally {
+            panelLog.removeHandler(capture);
+        }
+    }
+
+    /**
+     * PR #990 review, ruling R5-4: a refused plugin whose {@code dispose()} throws an exception a
+     * log handler cannot format — reading its message throws, as a plugin's exception that needs
+     * its closed JAR does — is released once, its loader closed once, and the installation
+     * completes with that exception, whatever the logging throws.
+     */
+    @Test
+    void aReleaseFailureALogHandlerCannotFormatStillCompletesTheInstallation() throws Exception {
+        JarInspection inspection = inspection("comp-x.jar",
+                new PluginManifest("com.example.CompX", descriptor("com.example.comp", "Comp X", "1.2.0")));
+        UndeclaredThrowFixture.UnformattableFailure disposalFailure = new UndeclaredThrowFixture.UnformattableFailure();
+        TrackingPlugin throwing = new TrackingPlugin(descriptor("com.example.comp2", "Mismatched", "1.0"), () -> {
+            throw disposalFailure;
+        });
+        TrackingClassLoader throwingLoader = new TrackingClassLoader();
+        List<LogRecord> warnings = new CopyOnWriteArrayList<>();
+        Handler capture = formattingWarnings(warnings);
+        Logger panelLog = Logger.getLogger(PluginInstallPanel.class.getName());
+        panelLog.addHandler(capture);
+        try {
+            PluginInstallPanel panel = runOnFxThread(() -> new PluginInstallPanel(inspection, registry, () -> { },
+                    entry -> new ExternalPluginLoader.LoadResult(throwing, throwingLoader)));
+            runOnFxThread(() -> {
+                panel.primaryButtonForTest().fire();
+                return null;
+            });
+            Throwable completion = catchThrowable(() -> panel.installationForTest().get(10, TimeUnit.SECONDS));
+
+            assertThat(completion).as("the installation completes with the plugin's exception")
+                    .isInstanceOf(ExecutionException.class)
+                    .hasCauseReference(disposalFailure);
+            assertThat(throwing.disposals).as("the refused plugin is released once").hasValue(1);
+            assertThat(throwingLoader.closes).as("then its loader closes once").hasValue(1);
+            assertThat(warnings).as("the record is handed to the handlers once").singleElement()
+                    .extracting(LogRecord::getThrown).isSameAs(disposalFailure);
+            assertThat(dialogFailure).hasNullValue();
+            assertThat(errorMessages).as("the one refusal dialog").hasSize(1);
+        } finally {
+            panelLog.removeHandler(capture);
+        }
     }
 
     private static TrackingPlugin refusedThrowing(IllegalStateException disposalFailure, String reportedId) {
@@ -275,7 +736,7 @@ class ManifestIdentityInstallTest {
     }
 
     private static final class TrackingPlugin implements DawPlugin {
-        private final PluginDescriptor descriptor;
+        private final Supplier<PluginDescriptor> descriptor;
         private final Runnable lastStepOfDispose;
         final AtomicInteger disposals = new AtomicInteger();
         volatile boolean disposedOnFx;
@@ -286,11 +747,16 @@ class ManifestIdentityInstallTest {
 
         /** A plugin whose {@code dispose()} runs {@code lastStepOfDispose} once it has counted the disposal. */
         TrackingPlugin(PluginDescriptor descriptor, Runnable lastStepOfDispose) {
+            this(() -> descriptor, lastStepOfDispose);
+        }
+
+        /** As above, its {@code getDescriptor()} returning what {@code descriptor} gives — or throwing what it throws. */
+        TrackingPlugin(Supplier<PluginDescriptor> descriptor, Runnable lastStepOfDispose) {
             this.descriptor = descriptor;
             this.lastStepOfDispose = lastStepOfDispose;
         }
 
-        @Override public PluginDescriptor getDescriptor() { return descriptor; }
+        @Override public PluginDescriptor getDescriptor() { return descriptor.get(); }
         @Override public void initialize(PluginContext context) { }
         @Override public void activate() { }
         @Override public void deactivate() { }

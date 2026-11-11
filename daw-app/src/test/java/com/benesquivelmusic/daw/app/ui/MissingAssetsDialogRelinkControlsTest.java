@@ -23,9 +23,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Story 329, decisions D15–D17 — the report's relink controls: every row
  * has {@code Locate file…} and {@code Skip}, and the report a
  * {@code Locate folder…}, each with accessible text and each asking the
- * owner — Skip's saying whether the asset's clips stay silent, keep playing
- * as loaded, or how many of them stay silent, counted over every row of the
- * asset Skip hides (decision D43); a row whose work is in
+ * owner — Skip's saying whether the asset's clips stay silent, the ones that
+ * play keep playing as loaded, or how many of them stay silent, counted over
+ * every row of the asset Skip hides (decision D43); a row whose work is in
  * flight has both buttons disabled; a row's status line says what the last
  * attempt found; and a running search names its folder and offers
  * {@code Cancel search}.
@@ -71,7 +71,7 @@ class MissingAssetsDialogRelinkControlsTest {
     }
 
     @Test
-    void skipOnARowThatSilencesNoClipSaysItsClipsKeepPlayingAsLoaded() throws Exception {
+    void skipOnARowThatSilencesNoClipSaysItsClipsThatPlayKeepPlayingAsLoaded() throws Exception {
         // A file shorter than its clip: the clip kept its audio, so skipping the row silences nothing.
         MissingAsset shorter = new MissingAsset(PAD, MissingAssetReason.CHANGED_ON_DISK,
                 "holds 0.50 s; the clip spans 1.00 s at the current tempo; loaded as it is",
@@ -83,7 +83,7 @@ class MissingAssetsDialogRelinkControlsTest {
                     new MissingAssetsReport(List.of(shorter), List.of()), new RecordingReportActions());
             assertThat(button(dialog.rowNodes().getFirst(), "missing-assets-skip").getAccessibleText())
                     .isEqualTo("Skip " + PAD.references().getFirst()
-                            + " for this session; its clips keep playing as loaded");
+                            + " for this session; its clips that play keep playing as loaded");
         });
     }
 
@@ -100,7 +100,8 @@ class MissingAssetsDialogRelinkControlsTest {
                     new MissingAssetsReport(List.of(adm), List.of()), new RecordingReportActions());
             assertThat(button(dialog.rowNodes().getFirst(), "missing-assets-skip").getAccessibleText())
                     .isEqualTo("Skip " + PAD.references().getFirst()
-                            + " for this session; 2 of its clips stay silent, the others keep playing as loaded");
+                            + " for this session; 2 of its clips stay silent,"
+                            + " the others that play keep playing as loaded");
         });
     }
 
@@ -114,7 +115,7 @@ class MissingAssetsDialogRelinkControlsTest {
         MissingAsset adm = new MissingAsset(PAD, MissingAssetReason.ADM_OBJECT_UNKNOWN,
                 "1 of them selects no bed or object of the file (it has: …)", seven, List.of(seven.getLast()));
         String some = "Skip " + PAD.references().getFirst()
-                + " for this session; 1 of its clips stays silent, the others keep playing as loaded";
+                + " for this session; 1 of its clips stays silent, the others that play keep playing as loaded";
 
         runOnFx(() -> {
             MissingAssetsDialog dialog = new MissingAssetsDialog(null,

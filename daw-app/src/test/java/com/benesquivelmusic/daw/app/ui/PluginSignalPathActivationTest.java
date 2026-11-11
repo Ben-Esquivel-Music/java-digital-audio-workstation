@@ -1,6 +1,10 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.plugin.EditorFrame;
+import com.benesquivelmusic.daw.app.ui.plugin.PluginSlotLoader;
+import com.benesquivelmusic.daw.app.ui.plugin.PluginTestJars;
+import com.benesquivelmusic.daw.app.ui.plugin.fixtures.UndeclaredThrowFixture;
+import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.mixer.*;
 import com.benesquivelmusic.daw.core.plugin.*;
 import com.benesquivelmusic.daw.core.plugin.builtin.midi.ArpeggiatorPlugin;
@@ -14,16 +18,27 @@ import javafx.stage.Stage;
 import javafx.stage.Window;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
+import java.util.logging.SimpleFormatter;
 
 import static com.benesquivelmusic.daw.app.ui.snapshot.FxSnapshotTest.runOnFxThread;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 @ExtendWith(JavaFxToolkitExtension.class)
 final class PluginSignalPathActivationTest {
@@ -303,6 +318,239 @@ final class PluginSignalPathActivationTest {
             } finally { controller.dispose(); }
             return null;
         });
+    }
+
+    /**
+     * Story 334 (PR #990 review, rulings R-C3.2, R-C3.4, R-C3.6 and R2-2): a plugin the menu
+     * activates, loaded from its JAR as {@code MainController.prepareExternalPluginLoad} wires the
+     * load, whose {@code activate()} throws a checked exception it does not declare is disposed
+     * once, adds no insert and is notified and logged once; the pending activation is forgotten, so
+     * activating it on the strip again starts a second load, whose message-less unchecked failure
+     * is notified once, named by its class, and logged once.
+     */
+    @Test
+    void aMenuLoadWhoseActivationThrowsAnythingIsForgottenAndNotifiedOnceEachTime(@TempDir Path directory)
+            throws Exception {
+        Path jar = PluginTestJars.buildJar(directory, "undeclared-throw.jar",
+                List.of(PluginTestJars.manifest(UndeclaredThrowFixture.class)), List.of(UndeclaredThrowFixture.class));
+        ExternalPluginEntry entry = new ExternalPluginEntry(jar, UndeclaredThrowFixture.class.getName());
+        AudioFormat format = new AudioFormat(48_000, 2, 24, 512);
+        MixerChannel channel = new MixerChannel("Track");
+        List<String> notifications = new CopyOnWriteArrayList<>();
+        Queue<Runnable> queued = new ConcurrentLinkedQueue<>();
+        List<LogRecord> warnings = new CopyOnWriteArrayList<>();
+        Handler capture = capturingWarnings(warnings);
+        Logger controllerLog = Logger.getLogger(PluginViewController.class.getName());
+        controllerLog.addHandler(capture);
+        UndeclaredThrowFixture template = new UndeclaredThrowFixture();
+        UndeclaredThrowFixture.disarm();
+        UndeclaredThrowFixture.onActivate = new IOException("the licence file could not be read");
+        PluginViewController controller = runOnFxThread(() -> {
+            PluginViewController made = controller(notifications);
+            configure(made, channel);
+            made.setActivationWorker(queued::add);
+            made.setExternalSlotLoader(requested -> () -> PluginSlotLoader.load(entry, format));
+            made.onActivateExternalPlugin(template);
+            return made;
+        });
+        try {
+            assertThat(queued).as("one load queued").hasSize(1);
+            runOffFxThenOneFxTurn(queued.remove());
+
+            assertThat(notifications).as("one notification, naming the plugin and its failure")
+                    .containsExactly("Failed to activate " + UndeclaredThrowFixture.NAME
+                            + ": the licence file could not be read");
+            long loadThread = Thread.currentThread().threadId();
+            assertThat(warnings).as("logged once").singleElement().satisfies(record -> {
+                assertThat(record.getMessage()).isEqualTo("Failed to activate " + UndeclaredThrowFixture.NAME);
+                assertThat(record.getLongThreadID()).as("logged on the thread that ran the load, not the FX thread")
+                        .isEqualTo(loadThread);
+            });
+            assertThat(UndeclaredThrowFixture.disposals).as("the instance it made is disposed once").hasValue(1);
+            assertThat(channel.getInsertSlots()).as("no insert").isEmpty();
+
+            UndeclaredThrowFixture.onActivate = new IllegalStateException();
+            runOnFxThread(() -> {
+                controller.onActivateExternalPlugin(template);
+                return null;
+            });
+            assertThat(queued).as("the pending activation was forgotten: a second load starts").hasSize(1);
+            runOffFxThenOneFxTurn(queued.remove());
+
+            assertThat(notifications).hasSize(2).last()
+                    .isEqualTo("Failed to activate " + UndeclaredThrowFixture.NAME + ": IllegalStateException");
+            assertThat(warnings).as("each load's failure logged once").hasSize(2);
+            assertThat(UndeclaredThrowFixture.disposals).hasValue(2);
+            assertThat(channel.getInsertSlots()).isEmpty();
+        } finally {
+            runOnFxThread(() -> {
+                controller.dispose();
+                return null;
+            });
+            controllerLog.removeHandler(capture);
+            UndeclaredThrowFixture.disarm();
+        }
+    }
+
+    /**
+     * Story 334 (PR #990 review, ruling R2-2): a menu load that fails after its view was disposed —
+     * a load in flight while the main window closes — shows nothing, there being no view, but is
+     * still logged once at WARNING with what was thrown, on the load's worker; the instance it made
+     * is disposed once and nothing is inserted.
+     */
+    @Test
+    void aMenuLoadThatFailsAfterTheViewIsDisposedIsStillLogged(@TempDir Path directory) throws Exception {
+        Path jar = PluginTestJars.buildJar(directory, "undeclared-throw.jar",
+                List.of(PluginTestJars.manifest(UndeclaredThrowFixture.class)), List.of(UndeclaredThrowFixture.class));
+        ExternalPluginEntry entry = new ExternalPluginEntry(jar, UndeclaredThrowFixture.class.getName());
+        AudioFormat format = new AudioFormat(48_000, 2, 24, 512);
+        MixerChannel channel = new MixerChannel("Track");
+        List<String> notifications = new CopyOnWriteArrayList<>();
+        Queue<Runnable> queued = new ConcurrentLinkedQueue<>();
+        List<LogRecord> warnings = new CopyOnWriteArrayList<>();
+        Handler capture = capturingWarnings(warnings);
+        Logger controllerLog = Logger.getLogger(PluginViewController.class.getName());
+        controllerLog.addHandler(capture);
+        UndeclaredThrowFixture template = new UndeclaredThrowFixture();
+        UndeclaredThrowFixture.disarm();
+        IOException activationFailure = new IOException("the licence file could not be read");
+        UndeclaredThrowFixture.onActivate = activationFailure;
+        PluginViewController controller = runOnFxThread(() -> {
+            PluginViewController made = controller(notifications);
+            configure(made, channel);
+            made.setActivationWorker(queued::add);
+            made.setExternalSlotLoader(requested -> () -> PluginSlotLoader.load(entry, format));
+            made.onActivateExternalPlugin(template);
+            return made;
+        });
+        try {
+            assertThat(queued).as("one load queued").hasSize(1);
+            runOnFxThread(() -> {
+                controller.dispose();
+                return null;
+            });
+            runOffFxThenOneFxTurn(queued.remove());
+
+            long loadThread = Thread.currentThread().threadId();
+            assertThat(warnings).as("logged once, whatever became of the view").singleElement().satisfies(record -> {
+                assertThat(record.getMessage()).isEqualTo("Failed to activate " + UndeclaredThrowFixture.NAME);
+                assertThat(record.getThrown()).isInstanceOf(IllegalStateException.class)
+                        .hasCauseReference(activationFailure);
+                assertThat(record.getLongThreadID()).as("logged on the load's worker: the thread that ran the load")
+                        .isEqualTo(loadThread);
+            });
+            assertThat(notifications).as("no view, so nothing is shown").isEmpty();
+            assertThat(UndeclaredThrowFixture.disposals).as("the instance it made is disposed once").hasValue(1);
+            assertThat(channel.getInsertSlots()).as("no insert").isEmpty();
+        } finally {
+            runOnFxThread(() -> {
+                controller.dispose();
+                return null;
+            });
+            controllerLog.removeHandler(capture);
+            UndeclaredThrowFixture.disarm();
+        }
+    }
+
+    /**
+     * PR #990 review, ruling R5-2: a menu load whose failure a log handler cannot format — reading
+     * its message throws, as a plugin's exception that needs its closed JAR does — is still
+     * notified once, naming the exception by its class, and forgotten, so activating it again
+     * starts a second load; what the handler threw then ends the load's worker, and the instance
+     * the load made is disposed once.
+     */
+    @Test
+    void aMenuLoadWhoseFailureCannotBeFormattedForTheLogIsStillForgottenAndNotified(@TempDir Path directory)
+            throws Exception {
+        Path jar = PluginTestJars.buildJar(directory, "undeclared-throw.jar",
+                List.of(PluginTestJars.manifest(UndeclaredThrowFixture.class)), List.of(UndeclaredThrowFixture.class));
+        ExternalPluginEntry entry = new ExternalPluginEntry(jar, UndeclaredThrowFixture.class.getName());
+        AudioFormat format = new AudioFormat(48_000, 2, 24, 512);
+        MixerChannel channel = new MixerChannel("Track");
+        List<String> notifications = new CopyOnWriteArrayList<>();
+        Queue<Runnable> queued = new ConcurrentLinkedQueue<>();
+        List<LogRecord> warnings = new CopyOnWriteArrayList<>();
+        Handler capture = formattingWarnings(warnings);
+        Logger controllerLog = Logger.getLogger(PluginViewController.class.getName());
+        controllerLog.addHandler(capture);
+        UndeclaredThrowFixture template = new UndeclaredThrowFixture();
+        UndeclaredThrowFixture.disarm();
+        UndeclaredThrowFixture.UnformattableFailure activationFailure = new UndeclaredThrowFixture.UnformattableFailure();
+        UndeclaredThrowFixture.onActivate = activationFailure;
+        PluginViewController controller = runOnFxThread(() -> {
+            PluginViewController made = controller(notifications);
+            configure(made, channel);
+            made.setActivationWorker(queued::add);
+            made.setExternalSlotLoader(requested -> () -> PluginSlotLoader.load(entry, format));
+            made.onActivateExternalPlugin(template);
+            return made;
+        });
+        try {
+            assertThat(queued).as("one load queued").hasSize(1);
+            Runnable load = queued.remove();
+            Throwable escaped = catchThrowable(load::run);
+            runOnFxThread(() -> Boolean.TRUE);
+
+            assertThat(escaped).as("what the handler threw ends the load's worker")
+                    .isInstanceOf(AssertionError.class)
+                    .hasMessage(UndeclaredThrowFixture.UnformattableFailure.UNREADABLE);
+            assertThat(warnings).as("the record is handed to the handlers once").singleElement()
+                    .extracting(LogRecord::getThrown).isSameAs(activationFailure);
+            assertThat(notifications).as("one notification, naming the exception by its class")
+                    .containsExactly("Failed to activate " + UndeclaredThrowFixture.NAME + ": UnformattableFailure");
+            assertThat(UndeclaredThrowFixture.disposals).as("the instance it made is disposed once").hasValue(1);
+            assertThat(channel.getInsertSlots()).as("no insert").isEmpty();
+
+            runOnFxThread(() -> {
+                controller.onActivateExternalPlugin(template);
+                return null;
+            });
+            assertThat(queued).as("the pending activation was forgotten: a second load starts").hasSize(1);
+        } finally {
+            runOnFxThread(() -> {
+                controller.dispose();
+                return null;
+            });
+            controllerLog.removeHandler(capture);
+            UndeclaredThrowFixture.disarm();
+        }
+    }
+
+    /** A handler that adds each WARNING record it is given to {@code warnings}. */
+    private static Handler capturingWarnings(List<LogRecord> warnings) {
+        return new Handler() {
+            @Override public void publish(LogRecord record) {
+                if (record.getLevel() == Level.WARNING) warnings.add(record);
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+    }
+
+    /**
+     * A handler that adds each WARNING record it is given to {@code warnings}, then formats it as the
+     * JDK's console handler does, which runs what the record's exception runs to give its message.
+     */
+    private static Handler formattingWarnings(List<LogRecord> warnings) {
+        return new Handler() {
+            @Override public void publish(LogRecord record) {
+                if (record.getLevel() == Level.WARNING) {
+                    warnings.add(record);
+                    new SimpleFormatter().format(record);
+                }
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+    }
+
+    /**
+     * Runs a queued activation load on this thread, off FX as the {@code plugin-activate} worker
+     * does, then waits one FIFO FX turn for what it posted there.
+     */
+    private static void runOffFxThenOneFxTurn(Runnable load) {
+        assertThat(catchThrowable(load::run)).as("the load's worker ends normally").isNull();
+        runOnFxThread(() -> Boolean.TRUE);
     }
 
     @Test

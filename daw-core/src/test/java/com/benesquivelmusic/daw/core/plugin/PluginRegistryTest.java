@@ -209,9 +209,14 @@ class PluginRegistryTest {
         Files.delete(gone.entry().jarPath());
 
         ConstructionGatedPlugin.hold();
+        ConstructionGatedPlugin.forgetConstructions();
         registry = new PluginRegistry(store);
         registry.restore();
         awaitLoaded(registry, AnnotatedJarTestPlugin.ID);
+        // The restore checks its entries one at a time, the gain before the gated plugin, whose
+        // constructor records its thread and then holds it: forgetting before that record would
+        // leave it to be read as the resolver's (PR #990 review, ruling R6-T).
+        awaitConstructionOn("daw-plugin-registry-restore");
         ConstructionGatedPlugin.forgetConstructions();
         PluginResolver lookup = registry.withoutLoading();
 
@@ -269,5 +274,21 @@ class PluginRegistryTest {
             TimeUnit.MILLISECONDS.sleep(10);
         }
         throw new AssertionError("the restore did not load " + id);
+    }
+
+    /**
+     * Waits until a thread named {@code thread} has entered {@link ConstructionGatedPlugin}'s
+     * constructor since its constructions were last forgotten: the constructor records its thread
+     * before the gate holds it.
+     */
+    private static void awaitConstructionOn(String thread) throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        while (System.nanoTime() < deadline) {
+            if (ConstructionGatedPlugin.constructingThreads().contains(thread)) {
+                return;
+            }
+            TimeUnit.MILLISECONDS.sleep(10);
+        }
+        throw new AssertionError("no construction began on " + thread);
     }
 }

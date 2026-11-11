@@ -3,7 +3,9 @@ package com.benesquivelmusic.daw.core.plugin;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.mixer.ProcessorRegistry;
 import com.benesquivelmusic.daw.core.plugin.testjar.ExternalEffectPlugin;
+import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.midi.MidiEvent;
 import com.benesquivelmusic.daw.sdk.midi.SoundFontInfo;
@@ -289,6 +291,17 @@ class DawPluginAudioProcessingContractTest {
         plugin.initialize(stubContext());
 
         assertThat(InsertEffectFactory.createSlotFromPlugin(plugin)).isEmpty();
+    }
+
+    @Test
+    void aPluginWithNoProcessorHoldsItsGraphSlotTransparentlyInBothPrecisions() {
+        InsertSlot slot = new BuiltInPluginGraph(new ProcessorRegistry())
+                .createSlot(new MetronomePlugin(), stubContext(), new Metronome(SAMPLE_RATE, 2));
+        try {
+            assertTransparent(slot.getProcessor());
+        } finally {
+            slot.disposeAfterQuiescence();
+        }
     }
 
     private void assertTransparent(com.benesquivelmusic.daw.sdk.audio.AudioProcessor processor) {

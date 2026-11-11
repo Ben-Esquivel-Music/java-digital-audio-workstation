@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.metering.AnalyzerFeeds;
 import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
 import com.benesquivelmusic.daw.app.ui.plugin.PluginEditorSession;
+import com.benesquivelmusic.daw.app.ui.plugin.PluginText;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
@@ -215,10 +216,17 @@ final class PluginViewController {
                     }
                 });
             } catch (RuntimeException | Error failure) {
-                finishOnFx(() -> {
-                    pendingActivations.remove(activation);
-                    if (!disposed) activationFailed(label, failure);
-                });
+                // Logged here, whatever becomes of the view: a load that fails after the window
+                // closed is still recorded, as the insert rack records its own. The activation is
+                // forgotten whatever the log throws, as the rack recovers (PR #990 review, ruling R5-2).
+                try {
+                    LOG.log(Level.WARNING, "Failed to activate " + label, failure);
+                } finally {
+                    finishOnFx(() -> {
+                        pendingActivations.remove(activation);
+                        if (!disposed) showActivationFailure(label, failure);
+                    });
+                }
             }
         });
     }
@@ -362,9 +370,13 @@ final class PluginViewController {
 
     private void activationFailed(String label, Throwable failure) {
         LOG.log(Level.WARNING, "Failed to activate " + label, failure);
+        showActivationFailure(label, failure);
+    }
+
+    private void showActivationFailure(String label, Throwable failure) {
         deps.updateStatusBar().accept("Failed to activate " + label, null);
         deps.showNotification().accept(NotificationLevel.ERROR,
-                "Failed to activate " + label + ": " + failure.getMessage());
+                "Failed to activate " + label + ": " + PluginText.failureName(failure));
     }
 
     private static void addSegmentIfPresent(List<String> segments, String value) {

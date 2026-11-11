@@ -1,25 +1,37 @@
 package com.benesquivelmusic.daw.core.mixer;
 
+import com.benesquivelmusic.daw.core.audio.EffectsChain;
 import com.benesquivelmusic.daw.core.audio.PluginDelayCompensation;
 import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshot;
+import com.benesquivelmusic.daw.core.plugin.PluginInvocationSupervisor;
 import com.benesquivelmusic.daw.core.plugin.PluginSourceKind;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.lang.management.ManagementFactory;
+import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.SequencedMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * An offline insert is a unity pass-through at its chain position, whatever
  * its bypass flag, reporting no latency and never an instrument (story 334,
- * studio ruling E1).
+ * studio ruling E1) — in both mix precisions, allocating nothing on the
+ * 64-bit bus.
  */
 class OfflineInsertAudioTest {
 
     private static final int FRAMES = 256;
+    private static final int MASTER_BLOCKS = 16;
+    private static final int BATCH_BLOCKS = 10_000;
+    private static final int QUIET_BATCH_ATTEMPTS = 5;
 
     @Test
     void anOfflineInsertPassesAudioThroughBitForBit() {
@@ -48,6 +60,60 @@ class OfflineInsertAudioTest {
             assertThat(withOffline.getInsertSlots().get(1).isBypassed()).as("fixture: the recall cleared the bypass")
                     .isFalse();
             assertThat(render(withOffline)).as("after a snapshot recall").isDeepEqualTo(expected);
+        }
+    }
+
+    @Test
+    void anOfflineInsertOnTheMasterLeavesTheDoubleMixBusBitForBit() {
+        float[][] expected = renderThroughTheMaster(List.of());
+
+        assertThat(renderThroughTheMaster(List.of(offline(false)))).as("saved bypassed=\"false\"")
+                .isDeepEqualTo(expected);
+        assertThat(renderThroughTheMaster(List.of(offline(true)))).as("saved bypassed=\"true\"")
+                .isDeepEqualTo(expected);
+    }
+
+    @Test
+    void anOfflineInsertAllocatesNothingOnTheDoubleMixBus(@TempDir Path directory) {
+        com.sun.management.ThreadMXBean bean = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
+        assumeTrue(bean.isThreadAllocatedMemorySupported());
+        bean.setThreadAllocatedMemoryEnabled(true);
+        PluginInvocationSupervisor supervisor = new PluginInvocationSupervisor(directory.resolve("faults.log"));
+        try {
+            MixerChannel master = new MixerChannel("Master");
+            master.setPluginSupervisor(supervisor);
+            master.addInsert(offline(false));
+            master.prepareEffectsChain(2, FRAMES);
+            EffectsChain chain = master.getEffectsChain();
+            assertThat(chain.isEmpty()).as("fixture: the unbypassed slot runs, supervised").isFalse();
+            double[][] bus = new double[2][FRAMES];
+            for (int frame = 0; frame < FRAMES; frame++) {
+                bus[0][frame] = Math.sin(frame * 0.1) / 3.0;
+                bus[1][frame] = (frame - FRAMES / 2) / (FRAMES * Math.PI);
+            }
+            // Warm the counter calls and the exact measured loop.
+            for (int batch = 0; batch < 5; batch++) {
+                allocatedByABatch(bean, chain, bus);
+            }
+            // The slot must allocate nothing per block, so a steady allocation fails every batch (the
+            // SDK's narrowing adapter allocates about 4 KB per block here), while a one-off JVM event
+            // lands in one batch, not every batch: this thread can see one even with the slot
+            // bypassed, when no slot code runs. The exact-zero bound is kept, not widened.
+            long[] deltas = new long[QUIET_BATCH_ATTEMPTS];
+            Arrays.fill(deltas, -1L);
+            for (int attempt = 0; attempt < QUIET_BATCH_ATTEMPTS; attempt++) {
+                deltas[attempt] = allocatedByABatch(bean, chain, bus);
+                if (deltas[attempt] == 0L) {
+                    break;
+                }
+            }
+
+            assertThat(deltas)
+                    .as("bytes allocated per %,d-block batch of the 64-bit bus after warm-up (-1 = not measured)",
+                            BATCH_BLOCKS)
+                    .contains(0L);
+        } finally {
+            supervisor.close();
         }
     }
 
@@ -96,6 +162,65 @@ class OfflineInsertAudioTest {
         float[][] output = new float[2][FRAMES];
         channel.getEffectsChain().process(input, output, FRAMES);
         return output;
+    }
+
+    /**
+     * Renders {@value #MASTER_BLOCKS} blocks of two strips — a distinct
+     * program on each audio channel of each, panned off centre at a
+     * non-unity fader, so their sum is not a {@code float} — through
+     * {@link Mixer#mixDown} on the default 64-bit bus, with
+     * {@code masterInserts} on a master whose fader is 0.8: a bus rounded
+     * to {@code float} before the fader would narrow differently.
+     */
+    private static float[][] renderThroughTheMaster(List<InsertSlot> masterInserts) {
+        Mixer mixer = new Mixer();
+        try (PluginDelayCompensation ignored = mixer.getDelayCompensation()) {
+            assertThat(mixer.getMixPrecision()).as("fixture: the default mix bus").isEqualTo(MixPrecision.DOUBLE_64);
+            MixerChannel first = new MixerChannel("First");
+            first.setVolume(0.9);
+            first.setPan(-0.3);
+            MixerChannel second = new MixerChannel("Second");
+            second.setVolume(0.7);
+            second.setPan(0.45);
+            mixer.addChannel(first);
+            mixer.addChannel(second);
+            mixer.getMasterChannel().setVolume(0.8);
+            for (InsertSlot insert : masterInserts) {
+                mixer.getMasterChannel().addInsert(insert);
+            }
+            mixer.prepareForPlayback(2, FRAMES);
+            long running = masterInserts.stream().filter(insert -> !insert.isBypassed()).count();
+            assertThat(mixer.getMasterChannel().getEffectsChain().getProcessors())
+                    .as("fixture: every unbypassed master insert runs").hasSize((int) running);
+            float[][] rendered = new float[2][MASTER_BLOCKS * FRAMES];
+            float[][] output = new float[2][FRAMES];
+            for (int block = 0; block < MASTER_BLOCKS; block++) {
+                float[][][] strips = {new float[2][FRAMES], new float[2][FRAMES]};
+                for (int frame = 0; frame < FRAMES; frame++) {
+                    int n = block * FRAMES + frame;
+                    strips[0][0][frame] = ((n % 512) - 256) / 512f;
+                    strips[0][1][frame] = (float) Math.sin(n * 0.1);
+                    strips[1][0][frame] = (float) (0.6 * Math.sin(n * 0.037 + 1.0));
+                    strips[1][1][frame] = (float) (0.5 * Math.cos(n * 0.013));
+                }
+                mixer.mixDown(strips, output, FRAMES);
+                for (int channel = 0; channel < 2; channel++) {
+                    System.arraycopy(output[channel], 0, rendered[channel], block * FRAMES, FRAMES);
+                }
+            }
+            return rendered;
+        }
+    }
+
+    /** The bytes this thread allocates while {@code chain} renders {@value #BATCH_BLOCKS} blocks of {@code bus}. */
+    private static long allocatedByABatch(com.sun.management.ThreadMXBean bean, EffectsChain chain,
+                                          double[][] bus) {
+        long thread = Thread.currentThread().threadId();
+        long before = bean.getThreadAllocatedBytes(thread);
+        for (int block = 0; block < BATCH_BLOCKS; block++) {
+            chain.processDouble(bus, bus, FRAMES);
+        }
+        return bean.getThreadAllocatedBytes(thread) - before;
     }
 
     private static InsertSlot gain() {

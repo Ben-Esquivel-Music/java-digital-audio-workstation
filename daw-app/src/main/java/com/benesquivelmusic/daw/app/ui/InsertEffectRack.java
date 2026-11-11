@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.plugin.PluginBrowser;
+import com.benesquivelmusic.daw.app.ui.plugin.PluginText;
 import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.mixer.*;
@@ -31,6 +32,7 @@ import javafx.stage.Stage;
 import java.util.*;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
@@ -639,10 +641,20 @@ public final class InsertEffectRack extends VBox {
                 InsertSlot slot = com.benesquivelmusic.daw.app.ui.plugin.PluginSlotLoader.load(entry, format);
                 postFx(() -> completeExternalInsert(slotIndex, slot));
             } catch (RuntimeException | Error failure) {
-                postFx(() -> {
-                    setDisable(false);
-                    if (!disposed) showPickerError("Could not load plugin: " + failure.getMessage());
-                });
+                // The load throws nothing checked, and has released what it made of the plugin first.
+                // The rack recovers whatever the log throws: a handler formats the failure by running
+                // the plugin's own code, and the JDK's handlers let an Error from that out of
+                // Logger.log, which then ends this worker (PR #990 review, ruling R5-1).
+                try {
+                    LOG.log(Level.WARNING, "Could not load plugin " + entry.className(), failure);
+                } finally {
+                    postFx(() -> {
+                        setDisable(false);
+                        if (!disposed) {
+                            showPickerError("Could not load plugin: " + PluginText.failureName(failure));
+                        }
+                    });
+                }
             }
         });
     }
@@ -670,10 +682,16 @@ public final class InsertEffectRack extends VBox {
             addEffect(slotIndex, slot);
             openParameterEditor(slot);
         } catch (RuntimeException | Error failure) {
-            if (!channel.getInsertSlots().contains(slot)) {
+            // Says whether the slot went in: a step after the insert, such as opening its editor,
+            // can fail with the slot already inserted.
+            boolean inserted = channel.getInsertSlots().contains(slot);
+            LOG.log(Level.WARNING, inserted
+                    ? "Inserted plugin " + slot.getName() + ", but a step after the insert failed"
+                    : "Could not insert plugin " + slot.getName(), failure);
+            if (!inserted) {
                 Thread.ofVirtual().name("failed-plugin-dispose").start(slot::disposeAfterQuiescence);
             }
-            showPickerError("Could not insert plugin: " + failure.getMessage());
+            showPickerError("Could not insert plugin: " + PluginText.failureName(failure));
         }
     }
 

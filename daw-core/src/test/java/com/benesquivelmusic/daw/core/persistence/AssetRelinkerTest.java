@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.GlueClipsAction;
 import com.benesquivelmusic.daw.core.audioimport.AudioFileImporter;
+import com.benesquivelmusic.daw.core.comping.TakeLane;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.SegmentFile;
 import com.benesquivelmusic.daw.core.recording.TakeDirectories;
@@ -376,6 +377,62 @@ class AssetRelinkerTest {
     }
 
     @Test
+    void anAdmRelinkCountsATakeLaneClipWhoseNameSelectsNothingButNeverMakesItSilent() throws Exception {
+        Path original = admScene(tempDir.resolve("old").resolve("scene.wav"), 44_100);
+        DawProject project = anAdmImportWithoutAudio(original);
+        AudioClip bed = onlyClipOn(project, "Bed (Stereo)");
+        AudioClip objectOne = onlyClipOn(project, "Object 1");
+        AudioClip objectTwo = onlyClipOn(project, "Object 2");
+        AudioClip lap = onANewTakeLane(trackNamed(project, "Object 2"), objectTwo, "Object 3");
+        Path moved = Files.createDirectories(tempDir.resolve("new")).resolve("scene.wav");
+        Files.move(original, moved);
+
+        AssetRelinker.Applied applied = relink(project, original, moved);
+
+        assertThat(applied.relinked()).contains(lap);
+        assertThat(lap.getSourceFilePath()).as("the lane clip follows its asset").isEqualTo(moved.toString());
+        assertThat(lap.getAudioData()).as("its name selects nothing of the file").isNull();
+        assertThat(applied.rows()).singleElement().satisfies(row -> {
+            assertThat(row.reason()).isEqualTo(MissingAssetReason.ADM_OBJECT_UNKNOWN);
+            assertThat(row.holders()).extracting(MissingAsset.Holder::clipId)
+                    .containsExactly(bed.getId(), objectOne.getId(), objectTwo.getId(), lap.getId());
+            assertThat(row.silentHolders()).as("a take-lane clip does not play, so it is never silent").isEmpty();
+            assertThat(row.detail()).isEqualTo("1 of them selects no bed or object of the file (it has:"
+                    + " Bed (Stereo), Object 1, Object 2)");
+        });
+        MissingAssetsReport report = MissingAssetsReport.EMPTY.withAll(applied.rows());
+        assertThat(report.missingAssetCount()).as("the lane clip, re-pointed without audio, keeps its row")
+                .isEqualTo(1);
+        assertThat(report.silentClipCount()).isZero();
+    }
+
+    @Test
+    void anAdmRelinkSilencesOnlyTheMainLaneClipsWhoseNamesSelectNothing() throws Exception {
+        Path original = admScene(tempDir.resolve("old").resolve("scene.wav"), 44_100);
+        DawProject project = anAdmImportWithoutAudio(original);
+        AudioClip objectOne = onlyClipOn(project, "Object 1");
+        AudioClip objectTwo = onlyClipOn(project, "Object 2");
+        objectOne.setName("Lead vocal");
+        AudioClip lap = onANewTakeLane(trackNamed(project, "Object 2"), objectTwo, "Object 3");
+        Path moved = Files.createDirectories(tempDir.resolve("new")).resolve("scene.wav");
+        Files.move(original, moved);
+
+        AssetRelinker.Applied applied = relink(project, original, moved);
+
+        assertThat(lap.getAudioData()).isNull();
+        assertThat(objectOne.getAudioData()).isNull();
+        assertThat(applied.rows()).singleElement().satisfies(row -> {
+            assertThat(row.reason()).isEqualTo(MissingAssetReason.ADM_OBJECT_UNKNOWN);
+            assertThat(row.silentHolders()).as("the renamed main-lane clip, not the lane clip")
+                    .extracting(MissingAsset.Holder::clipId).containsExactly(objectOne.getId());
+            assertThat(row.detail()).as("every holder whose name selects nothing, the lane clip included")
+                    .isEqualTo("2 of them select no bed or object of the file (it has:"
+                            + " Bed (Stereo), Object 1, Object 2)");
+        });
+        assertThat(MissingAssetsReport.EMPTY.withAll(applied.rows()).silentClipCount()).isEqualTo(1);
+    }
+
+    @Test
     void aTakeLocatedInAnotherTracksFolderOfTheSameTakeIsACandidateThatNamesBothFolders() throws Exception {
         Path takes = TakeDirectories.allocate(tempDir.resolve("moved").resolve("audio"),
                 Instant.parse("2026-10-20T10:00:00Z"));
@@ -644,9 +701,45 @@ class AssetRelinkerTest {
     }
 
     private static AudioClip onlyClipOn(DawProject project, String trackName) {
-        Track track = project.getTracks().stream().filter(t -> t.getName().equals(trackName)).findFirst()
-                .orElseThrow();
+        Track track = trackNamed(project, trackName);
         assertThat(track.getClips()).hasSize(1);
         return track.getClips().getFirst();
+    }
+
+    private static Track trackNamed(DawProject project, String trackName) {
+        return project.getTracks().stream().filter(t -> t.getName().equals(trackName)).findFirst()
+                .orElseThrow();
+    }
+
+    /** The bed and object clips of {@code admFile}'s import, without audio, as a reopen holds them. */
+    private static DawProject anAdmImportWithoutAudio(Path admFile) throws IOException {
+        DawProject project = new DawProject("Atmos", FORMAT);
+        new AudioFileImporter(project).importFile(admFile, 0.0);
+        for (Track track : project.getTracks()) {
+            for (AudioClip clip : track.getClips()) {
+                clip.setAudioData(null);
+            }
+        }
+        return project;
+    }
+
+    /** A clip named {@code name} on a new take lane of {@code track}, holding what {@code alongside} holds. */
+    private static AudioClip onANewTakeLane(Track track, AudioClip alongside, String name) {
+        AudioClip clip = new AudioClip(name, alongside.getStartBeat(), alongside.getDurationBeats(),
+                alongside.getSourceFilePath());
+        TakeLane lane = new TakeLane("Take 1");
+        lane.addClip(clip);
+        track.getTakeComping().addTakeLane(lane);
+        return clip;
+    }
+
+    /** Prepares {@code located} for the clips that hold {@code original} and applies it. */
+    private static AssetRelinker.Applied relink(DawProject project, Path original, Path located)
+            throws InterruptedException {
+        AssetRelinker.Request request = AssetRelinker.request(project,
+                new AssetReference.SingleFile(original.toString()));
+        RelinkPreparation prepared = new AssetRelinker().prepare(request, located);
+        assertThat(prepared).isInstanceOf(RelinkPreparation.Candidate.class);
+        return AssetRelinker.apply((RelinkPreparation.Candidate) prepared, id -> { });
     }
 }

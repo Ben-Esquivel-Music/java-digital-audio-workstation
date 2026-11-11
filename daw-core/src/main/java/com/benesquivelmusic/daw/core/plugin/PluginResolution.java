@@ -52,7 +52,7 @@ public sealed interface PluginResolution permits PluginResolution.Resolved, Plug
     /**
      * The plugin did not load.
      *
-     * @param failure the simple class name of what loading it threw
+     * @param failure the class name of what loading it threw
      *                ({@link #of(Throwable)})
      */
     record FailedToLoad(String failure) implements PluginResolution {
@@ -61,11 +61,12 @@ public sealed interface PluginResolution permits PluginResolution.Resolved, Plug
         }
 
         /**
-         * The failure {@code thrown} names: its simple class name; for a
-         * {@link PluginLoadException} with a cause, the cause's; for an
-         * {@link InvocationTargetException} — a plugin constructor that threw
-         * — the name of what the constructor threw. Never a message, which
-         * would carry the plugin's own text into a log line.
+         * The failure {@code thrown} names: its simple class name (its full
+         * name for an anonymous class, or when the simple name cannot be
+         * read); for a {@link PluginLoadException} with a cause, the cause's;
+         * for an {@link InvocationTargetException} — a plugin constructor that
+         * threw — the name of what the constructor threw. Never a message,
+         * which would carry the plugin's own text into a log line.
          *
          * @param thrown what loading the plugin threw
          * @return the failure
@@ -79,8 +80,7 @@ public sealed interface PluginResolution permits PluginResolution.Resolved, Plug
             if (named instanceof InvocationTargetException invocation && invocation.getTargetException() != null) {
                 named = invocation.getTargetException();
             }
-            String simpleName = named.getClass().getSimpleName();
-            return new FailedToLoad(simpleName.isEmpty() ? named.getClass().getName() : simpleName);
+            return new FailedToLoad(className(named));
         }
 
         /**
@@ -111,6 +111,58 @@ public sealed interface PluginResolution permits PluginResolution.Resolved, Plug
             if (isFatal(thrown)) {
                 throw (VirtualMachineError) thrown;
             }
+        }
+
+        /**
+         * Names {@code thrown} in an error the engineer reads: its message when
+         * it has one that is not blank, else its class's simple name, else — an
+         * anonymous class, or one whose simple name cannot be read — its full
+         * class name, so a missing message never shows as {@code null} (story
+         * 334, PR #990 review, ruling R-C3.4). The plugin loader names what a
+         * plugin's constructor threw by it, and the application names a
+         * plugin's failure by it in the errors it shows. Unlike {@link #of},
+         * which never gives a message, it does.
+         *
+         * <p>Reading the message can run the plugin's own code, and reading a
+         * nested class's simple name loads the class that encloses it, so
+         * either can throw, once the plugin's class loader is closed for one
+         * (ruling R4-1). A message that cannot be read names the class
+         * instead, and a simple name that cannot be read the full class name;
+         * the virtual machine's own failure ({@link #isFatal}) from either read
+         * propagates as thrown.</p>
+         *
+         * @param thrown what a plugin's code, or loading it, threw
+         * @return its message, or its class's name when it has none
+         */
+        public static String messageOrName(Throwable thrown) {
+            Objects.requireNonNull(thrown, "thrown must not be null");
+            String message;
+            try {
+                message = thrown.getMessage();
+            } catch (Throwable unreadable) {
+                rethrowIfFatal(unreadable);
+                return className(thrown);
+            }
+            if (message != null && !message.isBlank()) {
+                return message;
+            }
+            return className(thrown);
+        }
+
+        /**
+         * {@code thrown}'s class's simple name, or its full name for an
+         * anonymous class or when the simple name cannot be read; the full
+         * name loads no class.
+         */
+        private static String className(Throwable thrown) {
+            String simpleName;
+            try {
+                simpleName = thrown.getClass().getSimpleName();
+            } catch (Throwable unreadable) {
+                rethrowIfFatal(unreadable);
+                return thrown.getClass().getName();
+            }
+            return simpleName.isEmpty() ? thrown.getClass().getName() : simpleName;
         }
     }
 }

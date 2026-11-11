@@ -63,7 +63,7 @@ public final class ConstructionGatedPlugin implements DawPlugin {
         gate.countDown();
     }
 
-    /** The names of the threads that constructed the plugin since {@link #forgetConstructions()}. */
+    /** The names of the threads that entered the constructor since {@link #forgetConstructions()}. */
     public static List<String> constructingThreads() {
         return List.copyOf(CONSTRUCTING_THREADS);
     }

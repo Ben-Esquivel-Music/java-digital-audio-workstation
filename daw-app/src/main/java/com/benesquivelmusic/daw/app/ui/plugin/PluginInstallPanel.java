@@ -23,15 +23,17 @@ import javafx.scene.control.Label;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 
-import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * The §6.8 inspect-and-install content for a single dropped / picked JAR (Plugin
@@ -64,6 +66,7 @@ import java.util.concurrent.CompletableFuture;
  */
 public final class PluginInstallPanel extends VBox {
 
+    private static final Logger LOG = Logger.getLogger(PluginInstallPanel.class.getName());
     private static final double CONTENT_SPACING = 12;
     private static final double CONTENT_PADDING = 16;
     private static final double ROW_SPACING = 8;
@@ -290,17 +293,26 @@ public final class PluginInstallPanel extends VBox {
             List<PreparedInstall> prepared = new ArrayList<>();
             List<PreparedInstall> refused = new ArrayList<>();
             List<String> failures = new ArrayList<>();
-            for (PluginManifest manifest : manifests) {
-                if (attempt.cancelled) break;
-                prepare(jar, jarName, manifest, registry, prepared, refused, failures);
-            }
-            if (attempt.cancelled) {
-                List<Runnable> releases = releasesOf(prepared);
-                releases.addAll(releasesOf(refused));
-                runReleases(releases, attempt.completion);
-            } else {
-                FxDispatcher.runOnFx(() -> completeInstallation(attempt, prepared, refused, failures, registry,
-                        onInstalled));
+            List<Map.Entry<String, Throwable>> thrown = new ArrayList<>();
+            // The JAR's plugins are tried before what threw is logged, and the installation
+            // completes whatever the logging throws: a handler formats a plugin's exception by
+            // running the plugin's own code, and the JDK's handlers let an Error from that out of
+            // Logger.log, which then ends this worker (PR #990 review, ruling R5-3).
+            try {
+                for (PluginManifest manifest : manifests) {
+                    if (attempt.cancelled) break;
+                    prepare(jar, jarName, manifest, registry, prepared, refused, failures, thrown);
+                }
+                logFrom(thrown, 0);
+            } finally {
+                if (attempt.cancelled) {
+                    List<Runnable> releases = releasesOf(prepared);
+                    releases.addAll(releasesOf(refused));
+                    runReleases(releases, attempt.completion);
+                } else {
+                    FxDispatcher.runOnFx(() -> completeInstallation(attempt, prepared, refused, failures, registry,
+                            onInstalled));
+                }
             }
         });
     }
@@ -310,18 +322,26 @@ public final class PluginInstallPanel extends VBox {
      * of {@code jar} (story 334, E20: the engineer's original is never
      * referenced again) and checks that its descriptor agrees with the
      * manifest: a plugin that agrees joins {@code prepared}; one that does not
-     * — or whose descriptor throws — joins {@code refused}, released with the
-     * installation's other leftovers, and its refusal joins {@code failures}.
+     * — or whose descriptor check throws anything, a checked exception its
+     * plugin does not declare included — joins {@code refused}, released with
+     * the installation's other leftovers, and its refusal joins {@code failures}.
+     * One that cannot be staged or loaded, whatever that throws, joins only
+     * {@code failures}. What each failure that throws threw joins
+     * {@code thrown}, with its record's message, for the worker to log once
+     * at WARNING after the JAR's plugins are tried (Failure Surfacing book
+     * §2.1).
      */
     private void prepare(Path jar, String jarName, PluginManifest manifest, PluginRegistry registry,
-                         List<PreparedInstall> prepared, List<PreparedInstall> refused, List<String> failures) {
+                         List<PreparedInstall> prepared, List<PreparedInstall> refused, List<String> failures,
+                         List<Map.Entry<String, Throwable>> thrown) {
         ExternalPluginEntry entry;
         ExternalPluginLoader.LoadResult loaded;
         try {
             entry = new ExternalPluginEntry(registry.stageJar(jar, manifest), manifest.pluginClass());
             loaded = pluginLoader.load(entry);
-        } catch (IOException | PluginLoadException | RuntimeException | Error failure) {
-            failures.add(manifest.pluginClass() + " — " + failure.getMessage());
+        } catch (Throwable failure) {
+            failures.add(manifest.pluginClass() + " — " + PluginText.failureName(failure));
+            thrown.add(Map.entry("Could not install plugin " + manifest.pluginClass(), failure));
             return;
         }
         PreparedInstall candidate = new PreparedInstall(new InstalledPlugin(entry, manifest, jarName), loaded);
@@ -332,10 +352,26 @@ public final class PluginInstallPanel extends VBox {
                 return;
             }
             failures.add(refusalText(refusal.get()));
-        } catch (RuntimeException | Error failure) {
-            failures.add(manifest.pluginClass() + " — " + failure.getMessage());
+        } catch (Throwable failure) {
+            failures.add(manifest.pluginClass() + " — " + PluginText.failureName(failure));
+            thrown.add(Map.entry("Could not install plugin " + manifest.pluginClass(), failure));
         }
         refused.add(candidate);
+    }
+
+    /**
+     * Logs each failure in {@code failed} from {@code next} on once at WARNING, with what was
+     * thrown, whatever logging one throws: the failures after one that throws are logged all the
+     * same, and then what the last one to throw threw propagates.
+     */
+    private static void logFrom(List<Map.Entry<String, Throwable>> failed, int next) {
+        if (next < failed.size()) {
+            try {
+                LOG.log(Level.WARNING, failed.get(next).getKey(), failed.get(next).getValue());
+            } finally {
+                logFrom(failed, next + 1);
+            }
+        }
     }
 
     private void completeInstallation(InstallationAttempt attempt, List<PreparedInstall> prepared,
@@ -407,25 +443,37 @@ public final class PluginInstallPanel extends VBox {
     }
 
     /**
-     * Runs every release, whatever unchecked exception one throws, then completes
-     * {@code completion} with the first failure, the others suppressed into
-     * it. One exception instance two plugins throw is kept once: an exception
-     * cannot suppress itself, and trying would end the loop with later
-     * plugins unreleased and {@code completion} never complete (story 334,
-     * the final review's NIT-1).
+     * Runs every release, whatever one throws — a checked exception its plugin
+     * does not declare included — then logs the first failure once at WARNING,
+     * the others suppressed into it, and completes {@code completion} with it,
+     * whatever the logging throws. One exception instance two plugins throw is
+     * kept once: an exception cannot suppress itself, and trying would end the
+     * loop with later plugins unreleased and {@code completion} never complete
+     * (story 334, the final review's NIT-1).
      */
     private static void runReleases(List<Runnable> releases, CompletableFuture<Void> completion) {
         Throwable firstFailure = null;
         for (Runnable release : releases) {
             try {
                 release.run();
-            } catch (RuntimeException | Error failure) {
+            } catch (Throwable failure) {
                 if (firstFailure == null) firstFailure = failure;
                 else if (firstFailure != failure) firstFailure.addSuppressed(failure);
             }
         }
-        if (firstFailure == null) completion.complete(null);
-        else completion.completeExceptionally(firstFailure);
+        if (firstFailure == null) {
+            completion.complete(null);
+            return;
+        }
+        // Logged before this completes the installation (unless that already failed), so a
+        // waiter this releases finds the record; completed whatever the log throws, as the
+        // install worker completes it (PR #990 review, ruling R5-4).
+        try {
+            LOG.log(Level.WARNING, "A plugin the installation did not keep failed while it was disposed",
+                    firstFailure);
+        } finally {
+            completion.completeExceptionally(firstFailure);
+        }
     }
 
     // ── Rejection copy (no / invalid manifest, unreadable JAR) ────────────────

@@ -33,7 +33,8 @@ import java.util.Set;
  * missing} ones (a row that silences clips) and the
  * {@linkplain #shorterAssetCount() shorter} ones (a file that holds less than
  * its clips span, loaded as it is); {@link #silentClipCount()} counts the
- * distinct clips that have no audio because of a row.</p>
+ * distinct main-lane clips that have no audio because of a row (a take-lane
+ * clip does not play, so it is never silent).</p>
  *
  * <p>Reference tracks are not rows: nothing loads their audio yet (future
  * story 359), so a relink would restore nothing. Their missing paths are
@@ -261,8 +262,9 @@ public record MissingAssetsReport(List<MissingAsset> assets, List<String> missin
     }
 
     /**
-     * Returns the number of distinct clips that have no audio because of a
-     * row — every row's {@link MissingAsset#silentHolders()} together. A
+     * Returns the number of distinct main-lane clips that have no audio
+     * because of a row — every row's {@link MissingAsset#silentHolders()}
+     * together; a take-lane clip is never one. A
      * {@link MissingAssetReason#CHANGED_ON_DISK} row adds none; an
      * {@link MissingAssetReason#ADM_OBJECT_UNKNOWN} row adds only the clips
      * it silences.

@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -238,9 +239,33 @@ class ExternalPluginLoaderTest {
     }
 
     /**
+     * PR #990 review, ruling R5-10: the virtual machine's own error while the loader names what a
+     * plugin's constructor threw — here that exception's {@code getMessage()} throws an
+     * {@link OutOfMemoryError} — propagates as thrown, the plugin's class loader closed all the
+     * same: the plugin's class is in the JAR alone, and Windows refuses to delete a JAR an open
+     * loader holds.
+     */
+    @Test
+    void aVirtualMachineErrorWhileWhatTheConstructorThrewIsNamedPropagatesAfterItsLoaderIsClosed() throws Exception {
+        Path jar = UndeclaredThrowPlugins.buildMessagelessConstructorFailingJar(tempDir, "broken-message.jar",
+                UndeclaredThrowPlugins.OutOfMemoryMessage.class);
+
+        assertThatThrownBy(() -> ExternalPluginLoader.loadWithClassLoader(jar,
+                UndeclaredThrowPlugins.CONSTRUCTOR_FAILING_CLASS_NAME))
+                .as("the virtual machine's own error, as thrown")
+                .isExactlyInstanceOf(OutOfMemoryError.class)
+                .hasMessage(UndeclaredThrowPlugins.OUT_OF_MEMORY_MESSAGE);
+
+        Files.delete(jar);
+        assertThat(jar).as("its class loader is closed").doesNotExist();
+    }
+
+    /**
      * Story 334 (decision H7): a {@link StackOverflowError} from a plugin's
      * constructor is the plugin failing to load, named for what the
-     * constructor threw, its class loader closed.
+     * constructor threw, its class loader closed. Its error gives what the
+     * constructor threw, never the reflective wrapper's own message, which
+     * is always {@code null} (PR #990 review, ruling R2-1).
      */
     @Test
     void aStackOverflowInThePluginsConstructorIsThePluginFailingToLoad() throws Exception {
@@ -251,8 +276,90 @@ class ExternalPluginLoaderTest {
                 UndeclaredThrowPlugins.CONSTRUCTOR_FAILING_CLASS_NAME));
 
         assertThat(thrown).as("the plugin failing to load").isExactlyInstanceOf(PluginLoadException.class);
+        assertThat(thrown).as("its error gives what the constructor threw")
+                .hasMessage("Failed to load plugin from " + jar + ": " + UndeclaredThrowPlugins.CONSTRUCTION_MESSAGE);
         assertThat(PluginResolution.FailedToLoad.of(thrown).failure()).as("named for what the constructor threw")
                 .isEqualTo("StackOverflowError");
+        Files.delete(jar);
+        assertThat(jar).as("its class loader is closed").doesNotExist();
+    }
+
+    /**
+     * Story 334 (PR #990 review, ruling R2-1): a plugin whose constructor
+     * throws an exception with no message fails to load with an error that
+     * names that exception's class — never {@code null}, the reflective
+     * wrapper's own message — the wrapper still its cause, its class loader
+     * closed.
+     */
+    @Test
+    void aPluginWhoseConstructorThrowsAnExceptionWithNoMessageIsNamedByItsClass() throws Exception {
+        Path jar = UndeclaredThrowPlugins.buildMessagelessConstructorFailingJar(tempDir, "broken-messageless.jar",
+                IllegalStateException.class);
+
+        Throwable thrown = catchThrowable(() -> ExternalPluginLoader.loadWithClassLoader(jar,
+                UndeclaredThrowPlugins.CONSTRUCTOR_FAILING_CLASS_NAME));
+
+        assertThat(thrown).as("the plugin failing to load, named by what its constructor threw")
+                .isExactlyInstanceOf(PluginLoadException.class)
+                .hasMessage("Failed to load plugin from " + jar + ": IllegalStateException");
+        assertThat(thrown.getCause()).as("its cause is the reflective wrapper of what the constructor threw")
+                .isInstanceOfSatisfying(InvocationTargetException.class, wrapper ->
+                        assertThat(wrapper.getTargetException()).isExactlyInstanceOf(IllegalStateException.class));
+        Files.delete(jar);
+        assertThat(jar).as("its class loader is closed").doesNotExist();
+    }
+
+    /**
+     * Story 334 (PR #990 review, ruling R4-1): what a plugin's constructor
+     * threw is named before its class loader closes, so an exception whose
+     * {@code getMessage()} reads a class only the plugin's JAR holds is named
+     * by that message, never by the host's failure to read the closed JAR;
+     * the error is still a {@link PluginLoadException}, a failed load still
+     * names the exception's class, and the class loader is closed.
+     */
+    @Test
+    void aConstructorsExceptionWhoseMessageNeedsItsJarIsNamedByThatMessage() throws Exception {
+        Path jar = UndeclaredThrowPlugins.buildConstructorFailingJarWhoseMessageNeedsTheJar(tempDir,
+                "broken-licence.jar");
+
+        Throwable thrown = catchThrowable(() -> ExternalPluginLoader.loadWithClassLoader(jar,
+                UndeclaredThrowPlugins.CONSTRUCTOR_FAILING_CLASS_NAME));
+
+        assertThat(thrown).as("the plugin failing to load").isExactlyInstanceOf(PluginLoadException.class);
+        // Compared as a string: a failing hasMessage prints the cause chain, which runs the plugin's
+        // getMessage() again, after its class loader is closed.
+        assertThat(thrown.getMessage()).as("named by what its constructor threw")
+                .isEqualTo("Failed to load plugin from " + jar + ": " + UndeclaredThrowPlugins.LICENCE_MESSAGE);
+        assertThat(thrown.getCause()).as("its cause is the reflective wrapper of what the constructor threw")
+                .isInstanceOfSatisfying(InvocationTargetException.class, wrapper ->
+                        assertThat(wrapper.getTargetException().getClass().getName())
+                                .isEqualTo(UndeclaredThrowPlugins.LICENCE_EXCEPTION_CLASS_NAME));
+        assertThat(PluginResolution.FailedToLoad.of(thrown).failure()).as("a failed load names the exception's class")
+                .isEqualTo("LicenceException");
+        Files.delete(jar);
+        assertThat(jar).as("its class loader is closed").doesNotExist();
+    }
+
+    /**
+     * Story 334 (PR #990 review, ruling R4-1): a message-less exception
+     * nested in a class only the plugin's JAR holds is named by its simple
+     * name, which is read before the class loader closes because reading it
+     * needs that enclosing class; the class loader is then closed.
+     */
+    @Test
+    void aConstructorsNestedExceptionWithNoMessageIsNamedByItsSimpleName() throws Exception {
+        Path jar = UndeclaredThrowPlugins.buildNestedMessagelessConstructorFailingJar(tempDir, "broken-nested.jar");
+
+        Throwable thrown = catchThrowable(() -> ExternalPluginLoader.loadWithClassLoader(jar,
+                UndeclaredThrowPlugins.CONSTRUCTOR_FAILING_CLASS_NAME));
+
+        assertThat(thrown).as("the plugin failing to load, named by what its constructor threw")
+                .isExactlyInstanceOf(PluginLoadException.class)
+                .hasMessage("Failed to load plugin from " + jar + ": Blank");
+        assertThat(thrown.getCause()).as("its cause is the reflective wrapper of what the constructor threw")
+                .isInstanceOfSatisfying(InvocationTargetException.class, wrapper ->
+                        assertThat(wrapper.getTargetException().getClass().getName())
+                                .isEqualTo(UndeclaredThrowPlugins.BLANK_CLASS_NAME));
         Files.delete(jar);
         assertThat(jar).as("its class loader is closed").doesNotExist();
     }
