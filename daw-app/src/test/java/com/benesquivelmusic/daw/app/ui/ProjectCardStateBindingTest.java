@@ -159,7 +159,7 @@ class ProjectCardStateBindingTest {
             card.setSelected(true);
 
             Instant opened = Instant.parse("2026-05-01T09:00:00Z");
-            ProjectDiskUsage usage = new ProjectDiskUsage(100L, 200L, 700L); // 1000 bytes total
+            ProjectDiskUsage usage = new ProjectDiskUsage(100L, 3, 200L, 300L, 400L); // 1000 bytes total
             ProjectScanResult scan = new ProjectScanResult(
                     Path.of("ignored"), "Scanned Project", opened, usage,
                     7, HealthBadge.MIGRATED, 2, 5, 4,

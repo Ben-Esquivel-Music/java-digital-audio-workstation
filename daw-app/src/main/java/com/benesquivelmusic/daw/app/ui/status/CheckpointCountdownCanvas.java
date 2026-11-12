@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.app.ui.status;
 
 import com.benesquivelmusic.daw.app.ui.marshal.FxAnimationTimerAllowed;
 import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import com.benesquivelmusic.daw.app.ui.theme.UiScale;
 
 import javafx.animation.AnimationTimer;
 import javafx.beans.property.BooleanProperty;
@@ -21,6 +23,7 @@ import javafx.scene.paint.Color;
 import javafx.geometry.VPos;
 import javafx.scene.text.Font;
 import javafx.scene.text.TextAlignment;
+import javafx.util.Subscription;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -109,6 +112,24 @@ public final class CheckpointCountdownCanvas extends Region {
 
     private final Canvas canvas = new Canvas();
 
+    /**
+     * Story 335 (studio ruling R6, amendments A15 and A20) — the UI-scale
+     * factor the cell's size, text and bar are multiplied by, observed only
+     * while the cell is in a scene.
+     */
+    private double uiScale = 1.0;
+    /** The countdown font at the current scale, rebuilt only on a scale change (never per draw). */
+    private Font font = Font.font(FONT_PX);
+
+    /**
+     * The scale observation, held for the cell's lifetime and cancelled by
+     * {@link #dispose()} (review 2b-java B2): while the cell has no scene its
+     * conditional binding is not subscribed to the scale property, so nothing
+     * else holds it, and a discarded subscription is collected — the cell
+     * would then stop following the scale once it re-enters a scene.
+     */
+    private final Subscription uiScaleSubscription;
+
     private long lastTickNanos = Long.MIN_VALUE;
     private boolean running;
     private int timerStartCount;
@@ -175,6 +196,15 @@ public final class CheckpointCountdownCanvas extends Region {
         javafx.beans.value.ChangeListener<Scene> sceneListener =
                 (obs, oldScene, newScene) -> updateTimerState();
         sceneProperty().addListener(sceneListener);
+        ThemeManager appearance = ThemeManager.getDefault();
+        applyUiScale(appearance.getUiScale());
+        uiScaleSubscription = appearance.uiScaleProperty()
+                .when(sceneProperty().isNotNull())
+                .subscribe((_, now) -> {
+                    applyUiScale(now);
+                    requestLayout();
+                    requestRedraw();
+                });
         // Handle the case where the view is already attached at construction.
         updateTimerState();
     }
@@ -249,6 +279,14 @@ public final class CheckpointCountdownCanvas extends Region {
         return timerStartCount;
     }
 
+    /**
+     * Stops observing the UI scale. Called by the owning skin's
+     * {@code dispose()}; the cell keeps its last size and font.
+     */
+    public void dispose() {
+        uiScaleSubscription.unsubscribe();
+    }
+
     // ── Timer lifecycle (scene-gated, mirrors LevelMeterSkin) ─────────────
 
     private void updateTimerState() {
@@ -283,6 +321,11 @@ public final class CheckpointCountdownCanvas extends Region {
         draw();
     }
 
+    private void applyUiScale(UiScale step) {
+        uiScale = step.factor();
+        font = Font.font(FONT_PX * uiScale);
+    }
+
     // ── Layout / sizing ───────────────────────────────────────────────────
 
     @Override
@@ -302,22 +345,22 @@ public final class CheckpointCountdownCanvas extends Region {
 
     @Override
     protected double computePrefWidth(double height) {
-        return PREF_WIDTH + snappedLeftInset() + snappedRightInset();
+        return PREF_WIDTH * uiScale + snappedLeftInset() + snappedRightInset();
     }
 
     @Override
     protected double computePrefHeight(double width) {
-        return PREF_HEIGHT + snappedTopInset() + snappedBottomInset();
+        return PREF_HEIGHT * uiScale + snappedTopInset() + snappedBottomInset();
     }
 
     @Override
     protected double computeMinWidth(double height) {
-        return MIN_WIDTH + snappedLeftInset() + snappedRightInset();
+        return MIN_WIDTH * uiScale + snappedLeftInset() + snappedRightInset();
     }
 
     @Override
     protected double computeMinHeight(double width) {
-        return PREF_HEIGHT + snappedTopInset() + snappedBottomInset();
+        return PREF_HEIGHT * uiScale + snappedTopInset() + snappedBottomInset();
     }
 
     @Override
@@ -346,9 +389,10 @@ public final class CheckpointCountdownCanvas extends Region {
         Duration remaining = (next == null) ? null : Duration.between(now, next);
 
         // Text row: left-aligned, vertically centred above the bar.
-        double barReserve = (remaining != null) ? (BAR_HEIGHT + BAR_GAP) : 0.0;
+        double barHeight = BAR_HEIGHT * uiScale;
+        double barReserve = (remaining != null) ? barHeight + BAR_GAP * uiScale : 0.0;
         double textHeight = Math.max(0, h - barReserve);
-        gc.setFont(Font.font(FONT_PX));
+        gc.setFont(font);
         gc.setTextAlign(TextAlignment.LEFT);
         gc.setTextBaseline(VPos.CENTER);
         gc.setFill(getTextColor());
@@ -361,15 +405,15 @@ public final class CheckpointCountdownCanvas extends Region {
         // Progress track + remaining-fraction fill, beneath the text. In
         // Reduce Motion the bar is still drawn (statically): it only
         // repaints on model/colour change, never per frame.
-        double barY = Math.max(0, h - BAR_HEIGHT);
+        double barY = Math.max(0, h - barHeight);
         gc.setFill(getTrackColor());
-        gc.fillRect(0, barY, w, BAR_HEIGHT);
+        gc.fillRect(0, barY, w, barHeight);
 
         double fraction = barFraction(now, next, getInterval());
         double fillWidth = fraction * w;
         if (fillWidth > 0) {
             gc.setFill(getFillColor());
-            gc.fillRect(0, barY, fillWidth, BAR_HEIGHT);
+            gc.fillRect(0, barY, fillWidth, barHeight);
         }
     }
 

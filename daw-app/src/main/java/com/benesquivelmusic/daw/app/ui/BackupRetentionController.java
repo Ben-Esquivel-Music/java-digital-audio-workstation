@@ -1,212 +1,259 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.settings.BackupSettingsAccess;
+import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
+import com.benesquivelmusic.daw.core.persistence.PendingWrites;
 import com.benesquivelmusic.daw.core.persistence.backup.BackupRetentionPolicyStore;
-import com.benesquivelmusic.daw.core.persistence.backup.BackupRetentionService;
 import com.benesquivelmusic.daw.sdk.persistence.BackupRetentionPolicy;
 
 import java.io.IOException;
-import java.nio.file.Files;
+import java.io.UncheckedIOException;
 import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.Objects;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Story 191 — runs the persisted {@link BackupRetentionPolicy} against the
- * global autosaves directory ({@code ~/.daw/autosaves/}) on startup and
- * schedules a periodic prune so backups created during long sessions are
- * rotated without manual intervention.
+ * Story 191 / 308 / 335 — delivers the checkpoint retention policy to the
+ * one {@link CheckpointManager} and keeps it in
+ * {@code ~/.daw/backup-retention.json} (Persistence Integrity book §4.8,
+ * studio ruling R1).
  *
- * <p>Lifecycle:</p>
- * <ol>
- *   <li>{@link #applyNow()} — runs the policy against {@link #autosavesDirectory()}
- *       once. Called on startup and by the periodic task.</li>
- *   <li>{@link #start()} — registers a hourly periodic task on a single
- *       daemon scheduled thread (per the daw-app conventions for
- *       infrequent I/O-bound work).</li>
- *   <li>{@link #shutdown()} — stops the scheduler. Must be called from the
- *       host on window-hidden so the JVM can exit cleanly.</li>
- * </ol>
+ * <p>The policy governs the open project's {@code checkpoints/} folder: the
+ * manager applies it after every checkpoint write, inside that write's
+ * claim, and with a policy set it replaces the fixed checkpoint cap. This
+ * controller deletes nothing and prunes nothing; no code creates, prunes or
+ * deletes {@code ~/.daw/autosaves}, and there is no background prune.</p>
  *
- * <p>Since story 308 the retention policy is edited in the Settings
- * surface's Backups category (the standalone {@code BackupSettingsDialog}
- * was absorbed); the surface applies edits through
- * {@link #saveAndApplyAsync(BackupRetentionPolicy)}, which persists the
- * policy and prunes immediately on the scheduler's daemon thread so the
- * FX thread is never blocked by filesystem I/O.</p>
+ * <ul>
+ *   <li>{@link #deliverStored()} — at startup, reads the stored policy (or
+ *       {@link BackupRetentionPolicy#DEFAULT} when no file exists) and
+ *       delivers it before any checkpoint generation starts, so the first
+ *       write of the first project already prunes by it. A file that exists
+ *       but cannot be read never becomes a policy the user did not choose:
+ *       a policy that keeps every checkpoint is delivered instead, so
+ *       nothing is deleted until a policy is applied in Settings, and the
+ *       caller warns the user. It reads a file of under 1&nbsp;KB on
+ *       the FX thread in {@code MainController.initialize()}, before the
+ *       stage shows: a deliberate, bounded exception to the off-FX I/O rule
+ *       (javafx-application-design §11), because the delivery must precede
+ *       the first checkpoint.</li>
+ *   <li>{@link #deliverAndSave(BackupRetentionPolicy)} — the Settings
+ *       ▸ Backups Apply: delivers the policy now (a volatile write on the FX
+ *       thread) and saves it off the FX thread through the store's
+ *       {@code AtomicFileWriter}; saves are chained, so the last Apply's
+ *       policy is the one on disk.</li>
+ *   <li>As {@link PendingWrites}, the application's exit waits for a save
+ *       still running, so a retention change survives an immediate quit.</li>
+ * </ul>
  */
-public final class BackupRetentionController {
+public final class BackupRetentionController implements PendingWrites {
 
     private static final Logger LOG = Logger.getLogger(BackupRetentionController.class.getName());
 
-    /** Default cadence for the background prune task. */
-    static final long DEFAULT_PERIOD_MINUTES = 60L;
+    /** Starts each save on a virtual thread of its own; {@link #deliverAndSave} chains them in order. */
+    private static final Executor SAVE_THREAD =
+            command -> Thread.ofVirtual().name("daw-retention-policy-write").start(command);
+
+    /**
+     * Delivered while the stored policy cannot be read: every checkpoint is
+     * recent (no byte cap, no age cap), so a prune deletes nothing.
+     */
+    static final BackupRetentionPolicy KEEP_EVERY_CHECKPOINT =
+            new BackupRetentionPolicy(Integer.MAX_VALUE, 0, 0, 0, Duration.ZERO, 0L);
 
     private final BackupRetentionPolicyStore store;
-    private final Path autosavesDirectory;
-    private final ScheduledExecutorService scheduler;
-    private final long periodMinutes;
+    private final CheckpointManager checkpoints;
+    private final Executor saveExecutor;
 
-    private ScheduledFuture<?> periodicTask;
+    /**
+     * Whether the stored policy could not be read and no policy was applied
+     * since: {@link #KEEP_EVERY_CHECKPOINT} is delivered, and the rows show
+     * {@link BackupRetentionPolicy#DEFAULT}. Written and read on the FX thread.
+     */
+    private volatile boolean storedPolicyUnreadable;
 
-    /** Creates a controller with the default global autosaves directory. */
-    public BackupRetentionController() {
-        this(new BackupRetentionPolicyStore(),
-                defaultAutosavesDirectory(),
-                Executors.newScheduledThreadPool(1, r -> {
-                    Thread t = new Thread(r, "backup-retention-scheduler");
-                    t.setDaemon(true);
-                    return t;
-                }),
-                DEFAULT_PERIOD_MINUTES);
+    /** Guards {@link #lastSave}. */
+    private final Object saves = new Object();
+    /** The last save {@link #deliverAndSave} started; it may complete exceptionally. */
+    private CompletableFuture<Void> lastSave = CompletableFuture.completedFuture(null);
+
+    /**
+     * Creates the controller over the policy store and the one checkpoint
+     * manager; each save runs on a virtual thread of its own.
+     *
+     * @param store       the policy store
+     * @param checkpoints the checkpoint manager the policy is delivered to
+     */
+    public BackupRetentionController(BackupRetentionPolicyStore store, CheckpointManager checkpoints) {
+        this(store, checkpoints, SAVE_THREAD);
     }
 
     /**
-     * Test / advanced constructor that injects collaborators.
-     *
-     * @param store              policy persistence
-     * @param autosavesDirectory the directory whose snapshots are pruned
-     * @param scheduler          single-thread scheduled executor (the
-     *                           controller takes ownership and shuts it
-     *                           down in {@link #shutdown()})
-     * @param periodMinutes      period for the recurring prune task; must be {@code > 0}
+     * Test seam: as {@link #BackupRetentionController(BackupRetentionPolicyStore, CheckpointManager)},
+     * with the executor the saves run on.
      */
-    public BackupRetentionController(BackupRetentionPolicyStore store,
-                                     Path autosavesDirectory,
-                                     ScheduledExecutorService scheduler,
-                                     long periodMinutes) {
+    BackupRetentionController(BackupRetentionPolicyStore store, CheckpointManager checkpoints,
+                              Executor saveExecutor) {
         this.store = Objects.requireNonNull(store, "store must not be null");
-        this.autosavesDirectory = Objects.requireNonNull(autosavesDirectory,
-                "autosavesDirectory must not be null");
-        this.scheduler = Objects.requireNonNull(scheduler, "scheduler must not be null");
-        if (periodMinutes <= 0L) {
-            throw new IllegalArgumentException("periodMinutes must be > 0: " + periodMinutes);
+        this.checkpoints = Objects.requireNonNull(checkpoints, "checkpoints must not be null");
+        this.saveExecutor = Objects.requireNonNull(saveExecutor, "saveExecutor must not be null");
+    }
+
+    /**
+     * Startup: loads the stored policy ({@link BackupRetentionPolicy#DEFAULT}
+     * when no file exists) and delivers it to the checkpoint manager. Call
+     * before any checkpoint generation starts.
+     *
+     * <p>A file that exists but cannot be read, parsed or validated
+     * ({@link BackupRetentionPolicyStore#loadGlobal()}) is never replaced by
+     * the default, which would delete checkpoints the stored policy keeps:
+     * {@link #KEEP_EVERY_CHECKPOINT} is delivered, so policy pruning deletes
+     * nothing until a policy is applied ({@link #deliverAndSave}); the rows
+     * meanwhile show {@link BackupRetentionPolicy#DEFAULT}. The caller tells
+     * the user (studio-engineer ruling on an unreadable retention file).</p>
+     *
+     * @return the delivered policy, or empty when the stored one could not be
+     *         read and nothing is deleted until a policy is applied
+     */
+    public Optional<BackupRetentionPolicy> deliverStored() {
+        Optional<BackupRetentionPolicy> stored;
+        try {
+            stored = store.loadGlobal();
+        } catch (IOException unreadable) {
+            LOG.log(Level.WARNING, "Checkpoint retention could not be read from " + store.globalPath()
+                    + "; no checkpoint is deleted until a policy is applied in Settings", unreadable);
+            storedPolicyUnreadable = true;
+            checkpoints.setRetentionPolicy(KEEP_EVERY_CHECKPOINT);
+            return Optional.empty();
         }
-        this.periodMinutes = periodMinutes;
+        BackupRetentionPolicy policy = stored.orElse(BackupRetentionPolicy.DEFAULT);
+        storedPolicyUnreadable = false;
+        checkpoints.setRetentionPolicy(policy);
+        return Optional.of(policy);
     }
 
-    /** Returns {@code <user.home>/.daw/autosaves}. */
-    public static Path defaultAutosavesDirectory() {
-        return Paths.get(System.getProperty("user.home", "."), ".daw", "autosaves");
-    }
-
-    /** Returns the directory that this controller prunes. */
-    public Path autosavesDirectory() {
-        return autosavesDirectory;
-    }
-
-    /** Returns the policy currently persisted in the store. */
+    /**
+     * The policy the Backups rows show: the one the checkpoint manager
+     * enforces — the delivered one, never re-read from disk — or
+     * {@link BackupRetentionPolicy#DEFAULT} before any delivery and while the
+     * stored policy could not be read (when nothing is deleted).
+     *
+     * @return the policy the rows show
+     */
     public BackupRetentionPolicy currentPolicy() {
-        return store.loadGlobalOrDefault();
+        if (storedPolicyUnreadable) {
+            return BackupRetentionPolicy.DEFAULT;
+        }
+        return checkpoints.getRetentionPolicy().orElse(BackupRetentionPolicy.DEFAULT);
     }
 
     /**
-     * Applies the currently-persisted policy to {@link #autosavesDirectory()}
-     * once. Errors are logged but never propagated — pruning is best-effort
-     * and must never break the surrounding workflow.
+     * Apply: delivers {@code policy} to the checkpoint manager now — it
+     * applies after the open project's next checkpoint; delivering it deletes
+     * nothing — and saves it off the FX thread, after every save started
+     * before. A failed save completes the returned future exceptionally (an
+     * {@link UncheckedIOException}) and is logged at {@code WARNING}; the
+     * delivered policy still applies until the application quits. It ends
+     * the keep-every-checkpoint delivery of a stored policy that could not be
+     * read, and its save replaces that file.
      *
-     * @return the number of snapshots marked for deletion (best-effort;
-     *         individual file deletions may fail silently)
+     * @param policy the edited policy
+     * @return the save's completion
      */
-    public int applyNow() {
-        BackupRetentionPolicy policy = currentPolicy();
-        return applyPolicy(policy);
-    }
-
-    /**
-     * Applies the given policy to {@link #autosavesDirectory()} once.
-     *
-     * @return the number of snapshots marked for deletion (best-effort;
-     *         individual file deletions may fail silently)
-     */
-    public int applyPolicy(BackupRetentionPolicy policy) {
+    public CompletableFuture<Void> deliverAndSave(BackupRetentionPolicy policy) {
         Objects.requireNonNull(policy, "policy must not be null");
-        if (!Files.isDirectory(autosavesDirectory)) {
-            return 0;
+        checkpoints.setRetentionPolicy(policy);
+        storedPolicyUnreadable = false;
+        synchronized (saves) {
+            CompletableFuture<Void> save = lastSave.handle((_, _) -> null)
+                    .thenRunAsync(() -> saveNow(policy), saveExecutor);
+            lastSave = save;
+            return save;
+        }
+    }
+
+    private void saveNow(BackupRetentionPolicy policy) {
+        try {
+            store.saveGlobal(policy);
+        } catch (IOException failure) {
+            LOG.log(Level.WARNING, "Checkpoint retention could not be saved to " + store.globalPath()
+                    + "; it applies until the application quits", failure);
+            throw new UncheckedIOException(failure);
+        }
+    }
+
+    /**
+     * The Settings ▸ Backups access seam over this controller: the rows read
+     * {@link #currentPolicy()}, the hold on an unreadable stored policy is
+     * reported as it stands now (until {@link #deliverAndSave} ends it), Apply
+     * runs {@link #deliverAndSave}, and the open project's folder feeds the
+     * disk-usage readout.
+     *
+     * @param projectDirectory the open project's folder, or empty when none is saved
+     * @param onSaveFailed     what runs, on the saving thread, when a save fails
+     * @return the access seam
+     */
+    public BackupSettingsAccess settingsAccess(Supplier<Optional<Path>> projectDirectory,
+                                               Runnable onSaveFailed) {
+        Objects.requireNonNull(projectDirectory, "projectDirectory must not be null");
+        Objects.requireNonNull(onSaveFailed, "onSaveFailed must not be null");
+        return new BackupSettingsAccess() {
+            @Override
+            public BackupRetentionPolicy currentPolicy() {
+                return BackupRetentionController.this.currentPolicy();
+            }
+
+            @Override
+            public boolean storedPolicyUnreadable() {
+                return storedPolicyUnreadable;
+            }
+
+            @Override
+            public Optional<Path> projectDirectory() {
+                return projectDirectory.get();
+            }
+
+            @Override
+            public void applyPolicy(BackupRetentionPolicy policy) {
+                deliverAndSave(policy).whenComplete((_, failure) -> {
+                    if (failure != null) {
+                        onSaveFailed.run();
+                    }
+                });
+            }
+        };
+    }
+
+    @Override
+    public boolean pending() {
+        synchronized (saves) {
+            return !lastSave.isDone();
+        }
+    }
+
+    @Override
+    public boolean awaitUntil(long deadlineNanos) throws InterruptedException {
+        CompletableFuture<Void> awaited;
+        synchronized (saves) {
+            awaited = lastSave;
         }
         try {
-            BackupRetentionService.Plan plan =
-                    new BackupRetentionService(policy).prune(autosavesDirectory);
-            int candidates = plan.discarded().size();
-            if (candidates > 0) {
-                LOG.log(Level.INFO,
-                        "Backup retention attempted to delete {0} snapshot(s) under {1}",
-                        new Object[]{candidates, autosavesDirectory});
-            }
-            return candidates;
-        } catch (IOException e) {
-            LOG.log(Level.WARNING, "Failed to apply backup retention policy", e);
-            return 0;
+            awaited.get(Math.max(0L, deadlineNanos - System.nanoTime()), TimeUnit.NANOSECONDS);
+            return true;
+        } catch (TimeoutException stillSaving) {
+            return false;
+        } catch (ExecutionException failed) {
+            // The save is over; its failure was logged and reported to the caller of deliverAndSave.
+            return true;
         }
-    }
-
-    /**
-     * Schedules the periodic prune task. The first execution runs
-     * immediately (initial delay = 0) so backups left over from a
-     * previous session are pruned at startup on the scheduler thread
-     * (not the calling thread). Subsequent calls are no-ops.
-     */
-    public void start() {
-        if (periodicTask != null) {
-            return;
-        }
-        periodicTask = scheduler.scheduleAtFixedRate(
-                this::applyNowQuietly,
-                0, periodMinutes, TimeUnit.MINUTES);
-    }
-
-    private void applyNowQuietly() {
-        try {
-            applyNow();
-        } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "Periodic backup retention task failed", e);
-        }
-    }
-
-    /** Stops the scheduler. Idempotent. */
-    public void shutdown() {
-        if (periodicTask != null) {
-            periodicTask.cancel(false);
-            periodicTask = null;
-        }
-        scheduler.shutdownNow();
-    }
-
-    /**
-     * Saves a new policy through the store and immediately applies it to
-     * {@link #autosavesDirectory()} so the change takes effect without a
-     * restart.
-     *
-     * @return the number of snapshots deleted by the immediate application
-     * @throws IOException if writing the policy file fails
-     */
-    public int saveAndApply(BackupRetentionPolicy policy) throws IOException {
-        Objects.requireNonNull(policy, "policy must not be null");
-        store.saveGlobal(policy);
-        return applyPolicy(policy);
-    }
-
-    /**
-     * Story 308 — the Settings surface's Backups apply path: offloads
-     * {@link #saveAndApply(BackupRetentionPolicy)} to the scheduler's
-     * daemon thread so the FX application thread is never blocked by
-     * filesystem I/O (exactly the absorbed dialog's Apply semantics).
-     *
-     * @param policy the edited policy; must not be {@code null}
-     */
-    public void saveAndApplyAsync(BackupRetentionPolicy policy) {
-        Objects.requireNonNull(policy, "policy must not be null");
-        scheduler.execute(() -> {
-            try {
-                saveAndApply(policy);
-            } catch (IOException e) {
-                LOG.log(Level.WARNING, "Failed to save backup retention policy", e);
-            }
-        });
     }
 }

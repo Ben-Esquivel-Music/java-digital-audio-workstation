@@ -17,6 +17,7 @@ import com.benesquivelmusic.daw.app.ui.settings.SettingsCatalogue;
 import com.benesquivelmusic.daw.app.ui.settings.SettingsProfileSheet;
 import com.benesquivelmusic.daw.app.ui.settings.SettingsShell;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import com.benesquivelmusic.daw.app.ui.theme.UiScale;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.mixer.CueBus;
 import com.benesquivelmusic.daw.core.persistence.backup.ProjectDiskUsage;
@@ -52,6 +53,9 @@ import javafx.scene.layout.VBox;
 import javafx.util.Duration;
 import javafx.util.StringConverter;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.text.MessageFormat;
 import java.time.Instant;
@@ -64,6 +68,7 @@ import java.util.Map;
 import java.util.MissingResourceException;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalDouble;
 import java.util.ResourceBundle;
 import java.util.Set;
 import java.util.UUID;
@@ -76,6 +81,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -141,6 +147,9 @@ public final class SettingsDialog extends DawgDialog<Void> {
     // SettingsModel; see the catalogue Javadoc).
     private static final String METRONOME_PREFIX = "metronome.";
     private static final String BACKUPS_PREFIX = "backups.";
+    private static final String BACKUPS_CATEGORY = "backups";
+    /** The default-tempo row: validated, rejected visibly and handed on by the Apply itself (story 335). */
+    private static final String TEMPO_SETTING_ID = "project.defaultTempo";
     private static final List<String> RECORDING_SETTING_IDS = List.of(
             "metronome.enabled", "metronome.countIn", "metronome.clickChannel",
             "metronome.clickGain", "metronome.clickSideOutput",
@@ -202,6 +211,19 @@ public final class SettingsDialog extends DawgDialog<Void> {
     private BackupSettingsAccess backupSettingsAccess;
     private DiskUsageTask diskUsageTask;
     private final PieChart diskUsagePie = new PieChart();
+    /**
+     * Story 335 (studio ruling R2) — the readout under the pie: the
+     * checkpoints' bytes and count, or why there is none. Its text is also
+     * its accessible text.
+     */
+    private final Label diskUsageSummary = new Label();
+    /** Story 335 (engineer S8) — where and when the retention rows act. */
+    private final Label diskUsageNote = new Label(msg("settings.backups.diskUsage.whenApplied"));
+    /**
+     * Story 335 — hears an Apply's edited default tempo; {@code null} until
+     * {@code MainController} attaches it.
+     */
+    private Consumer<DefaultTempoEdit> defaultTempoEditListener;
     /** UUID-string → "label  (Out A/B)" display for the cue-bus CHOICE row. */
     private final Map<String, String> cueBusDisplayById = new HashMap<>();
     private final AtomicReference<CapabilityEventSubscriber> deviceEventSubscriber =
@@ -294,8 +316,8 @@ public final class SettingsDialog extends DawgDialog<Void> {
 
     /**
      * Story 308 — the same lastApplied-overlay rule for the absorbed
-     * categories: the retention write runs asynchronously on the
-     * controller's scheduler and the metronome JSON-store save is
+     * categories: the retention store save runs asynchronously off the
+     * FX thread and the metronome JSON-store save is
      * fire-and-forget, so the post-apply {@code refreshFromPersisted()}
      * must read what this dialog just applied, not a possibly-stale
      * re-read of the stores. The access seams remain the fallback
@@ -349,6 +371,14 @@ public final class SettingsDialog extends DawgDialog<Void> {
         shell.settingRow("audio.sampleRate").orElseThrow().valueProperty()
                 .addListener((_, _, _) -> refreshLatencyReadout());
         wireAudioUtilityControls();
+
+        // Story 335 (studio ruling-3 Q1) — the Backups pane shown, by any
+        // route, during the retention hold arms its rows.
+        shell.displayedCategoryProperty().addListener((_, _, category) -> {
+            if (BACKUPS_CATEGORY.equals(category)) {
+                holdBackupRowsWhileRetentionIsUnread();
+            }
+        });
 
         shell.setOnApply(this::applySettings);
         shell.setOnOk(this::applyAndCloseWhenReady);
@@ -459,7 +489,14 @@ public final class SettingsDialog extends DawgDialog<Void> {
         diskUsagePie.setLegendVisible(true);
         diskUsagePie.setLabelsVisible(false);
         diskUsagePie.setPrefSize(260, 200);
-        return diskUsagePie;
+        // Story 335 (studio ruling R2, engineer S8) — the testable and
+        // accessible readout under the pie, then where retention acts.
+        diskUsageSummary.getStyleClass().add("settings-disk-summary");
+        diskUsageSummary.setWrapText(true);
+        diskUsageSummary.accessibleTextProperty().bind(diskUsageSummary.textProperty());
+        diskUsageNote.getStyleClass().add("settings-disk-note");
+        diskUsageNote.setWrapText(true);
+        return new VBox(diskUsagePie, diskUsageSummary, diskUsageNote);
     }
 
     /**
@@ -516,7 +553,13 @@ public final class SettingsDialog extends DawgDialog<Void> {
             return;
         }
         shell.resetAll();
-        applySettings();
+        // Story 335 (studio ruling-3 Q1) — the user chose every default,
+        // retention included: during the retention hold the Backups rows
+        // are armed, so the Apply delivers the default policy.
+        holdBackupRowsWhileRetentionIsUnread();
+        // Story 335 (studio ruling-2 Q1) — it stages and commits in one
+        // action: a bulk Apply.
+        applySettingsWithCompletion(true);
     }
 
     /** The production tier-4 confirm — a real {@link DawgDialog#confirm} modal. */
@@ -564,7 +607,9 @@ public final class SettingsDialog extends DawgDialog<Void> {
                     applied -> {
                         applied.forEach((id, value) -> shell.settingRow(id)
                                 .ifPresent(row -> row.setValue(value)));
-                        applySettings();
+                        // Story 335 (studio ruling-2) — an import stages
+                        // and commits in one action: a bulk Apply.
+                        applySettingsWithCompletion(true);
                     },
                     this::hideProfileSheet);
         }
@@ -874,7 +919,9 @@ public final class SettingsDialog extends DawgDialog<Void> {
     /**
      * Attaches the Backups (retention + disk usage) authorities — story
      * 308. The six {@code backups.*} rows re-seed from the persisted
-     * policy and the §5.8 disk-usage scan starts on a virtual thread
+     * policy (re-armed if the Backups pane is displayed during the
+     * retention hold, {@link #holdBackupRowsWhileRetentionIsUnread()}) and
+     * the §5.8 disk-usage scan starts on a virtual thread
      * (busy affordance on the "Disk usage" group header). {@code null}
      * detaches and cancels any in-flight scan.
      */
@@ -889,32 +936,93 @@ public final class SettingsDialog extends DawgDialog<Void> {
         for (String id : BACKUP_SETTING_IDS) {
             shell.refreshSettingFromPersisted(id);
         }
+        if (BACKUPS_CATEGORY.equals(shell.displayedCategoryProperty().get())) {
+            holdBackupRowsWhileRetentionIsUnread();
+        }
         if (access == null || backgroundWorkClosed) {
             return;
         }
-        Path projectDirectory = access.projectDirectory().orElse(null);
+        Optional<Path> projectDirectory = access.projectDirectory();
+        if (projectDirectory.isEmpty()) {
+            // Story 335 (studio ruling R2) — an unsaved project has no
+            // checkpoints/ folder: no pie, and the readout says why.
+            diskUsagePie.setData(FXCollections.observableArrayList());
+            diskUsageSummary.setText(msg("settings.backups.diskUsage.unsaved"));
+            return;
+        }
+        Path folder = projectDirectory.get();
         diskUsageTask = new DiskUsageTask(
-                () -> projectDirectory == null
-                        ? new ProjectDiskUsage(0, 0, 0)
-                        : ProjectDiskUsage.compute(projectDirectory),
+                () -> scanProjectFolder(folder),
                 this::applyDiskUsageToPie,
                 busy -> shell.setGroupBusy("backups", "diskUsage", busy),
                 failure -> {
-                    // Mirror the absorbed dialog: a failed scan renders
-                    // three zero slices rather than a stale/empty chart.
+                    // Story 335 (studio ruling R2) — a failed scan shows an
+                    // empty pie and says so; it never reports zeros.
                     LOG.log(Level.WARNING, "Project disk-usage scan failed", failure);
-                    applyDiskUsageToPie(new ProjectDiskUsage(0, 0, 0));
+                    diskUsagePie.setData(FXCollections.observableArrayList());
+                    diskUsageSummary.setText(msg("settings.backups.diskUsage.failed"));
                 });
         diskUsageTask.start();
+    }
+
+    /**
+     * The readout's scan of the open project's folder, on the scan's virtual
+     * thread (story 335, studio ruling R2: a scan failure is never zeros). A
+     * folder that is gone or no directory — a project on a drive that went
+     * offline — fails the scan: {@link ProjectDiskUsage#compute}'s zeros for
+     * a missing folder serve the project hub, not this readout.
+     */
+    private static ProjectDiskUsage scanProjectFolder(Path folder) throws IOException {
+        if (!Files.isDirectory(folder)) {
+            throw new NoSuchFileException(folder.toString(), null, "the project folder is missing");
+        }
+        return ProjectDiskUsage.compute(folder);
+    }
+
+    /**
+     * Story 335 (studio ruling-3 Q1) — arms the Backups rows while the
+     * stored retention policy cannot be read
+     * ({@link BackupSettingsAccess#storedPolicyUnreadable()}, "the hold"):
+     * the six rows are held pending with the values they show, so the
+     * dialog is dirty and an Apply or OK delivers and saves those values,
+     * which ends the hold; the footer notice says why rows the user never
+     * edited are dirty. Called when the Backups pane is displayed and by a
+     * confirmed Restore All Defaults, never on open: an Apply or OK of other
+     * rows in a dialog that never showed Backups leaves retention alone. A
+     * no-op outside the hold and when the rows are armed already.
+     */
+    private void holdBackupRowsWhileRetentionIsUnread() {
+        BackupSettingsAccess access = backupSettingsAccess;
+        if (access == null || !access.storedPolicyUnreadable()
+                || BACKUP_SETTING_IDS.stream().allMatch(shell::isHeldPending)) {
+            return;
+        }
+        shell.holdPending(BACKUP_SETTING_IDS);
+        shell.showOperationNotice(msg("settings.backups.retentionNotRead"));
+    }
+
+    /**
+     * Removes the hold notice ({@link #holdBackupRowsWhileRetentionIsUnread()})
+     * once the rows it describes are no longer armed: a Discard re-seeds
+     * them, and the dialog can stay open after it until an outstanding audio
+     * reconfigure ends. Any other notice, such as an audio failure, stays.
+     */
+    private void clearBackupHoldNotice() {
+        if (shell.isOperationNoticeVisible()
+                && msg("settings.backups.retentionNotRead").equals(shell.operationNoticeText())) {
+            shell.clearOperationNotice();
+        }
     }
 
     /** FX-thread only — the task marshals results through FxDispatcher. */
     private void applyDiskUsageToPie(ProjectDiskUsage usage) {
         ObservableList<PieChart.Data> data = FXCollections.observableArrayList();
-        for (DiskUsageTask.Slice slice : DiskUsageTask.slices(usage)) {
+        for (DiskUsageTask.Slice slice : DiskUsageTask.slices(usage, SettingsDialog::msg)) {
             data.add(new PieChart.Data(slice.label(), slice.bytes()));
         }
         diskUsagePie.setData(data);
+        diskUsageSummary.setText(MessageFormat.format(msg("settings.backups.diskUsage.summary"),
+                DiskUsageTask.formatBytes(usage.checkpointBytes()), usage.checkpointCount()));
     }
 
     /**
@@ -1174,13 +1282,10 @@ public final class SettingsDialog extends DawgDialog<Void> {
 
     /**
      * The persisted value per descriptor id: {@link SettingsModel}
-     * getters for the 17 model-backed ids, the three live managers for
+     * getters for the model-backed ids, the three live managers for
      * theme/density/motion (overlaid by {@link #lastAppliedTheme} &amp; co.
      * once an Apply has published — the managers only catch up on a later
      * FX pulse), and {@code KeyBindingManager} for the key-binding ids.
-     * The CPU-budget policy reads as its persisted short-name String via
-     * the package-private {@link SettingsModel#policyName} mapper (same
-     * package by design).
      */
     private Object currentPersistedValue(String id) {
         Object asynchronousValue = asynchronousPersistedValues.get(id);
@@ -1208,8 +1313,6 @@ public final class SettingsDialog extends DawgDialog<Void> {
             case "audio.applyLatencyCompensation" -> model.isApplyLatencyCompensation();
             case "audio.workerPoolSize" -> model.getWorkerPoolSize();
             case "audio.masterCpuBudgetFraction" -> model.getMasterCpuBudgetFraction();
-            case "audio.masterCpuBudgetPolicy" ->
-                    SettingsModel.policyName(model.getMasterCpuBudgetPolicy());
             case "project.autoSaveIntervalSeconds" -> model.getAutoSaveIntervalSeconds();
             case "project.defaultTempo" -> model.getDefaultTempo();
             case "project.useJournaledPersistence" -> model.isUseJournaledPersistence();
@@ -1343,8 +1446,9 @@ public final class SettingsDialog extends DawgDialog<Void> {
             case "audio.srcQuality" -> List.of(QualityTier.values());
             // The current value is appended by the row when missing.
             case "audio.workerPoolSize" -> List.of(1, 2, 4, 6, 8, 12, 16);
-            case "audio.masterCpuBudgetPolicy" -> policyOptions();
             case "project.autoSaveIntervalSeconds" -> List.of(30, 60, 120, 300, 600);
+            // Story 335 (studio ruling R6) — the one canonical step list.
+            case "appearance.uiScale" -> UiScale.factors();
             case ThemeManager.PREF_KEY -> List.of(ThemeManager.Theme.values());
             case DensityManager.PREF_KEY -> List.of(DensityMode.values());
             case "metronome.countIn" -> List.of(CountInMode.values());
@@ -1356,17 +1460,7 @@ public final class SettingsDialog extends DawgDialog<Void> {
     }
 
     /**
-     * Policy options are the persisted short-name Strings: current +
-     * catalogue default (no full enumeration surface until a later story).
-     */
-    private List<String> policyOptions() {
-        return List.of("DoNothing", "BypassExpensive", "ReduceOversampling",
-                "SubstituteSimpleKernel");
-    }
-
-    /**
-     * Slider lower bounds: uiScale mirrors the old {@code Slider(0.5, 3.0)}
-     * / the {@code setUiScale} guard; the CPU-budget fraction mirrors the
+     * Slider lower bounds: the CPU-budget fraction mirrors the
      * former audio surface's 0.01 floor — the closest
      * expressible bound to {@code setMasterCpuBudgetFraction}'s exclusive
      * {@code (0.0, 1.0]} guard (a 0.0 slider stop would be rejected on
@@ -1374,7 +1468,6 @@ public final class SettingsDialog extends DawgDialog<Void> {
      */
     private static double sliderMinFor(String id) {
         return switch (id) {
-            case "appearance.uiScale" -> 0.5;
             case "audio.masterCpuBudgetFraction" -> 0.01;
             default -> 0;
         };
@@ -1388,7 +1481,6 @@ public final class SettingsDialog extends DawgDialog<Void> {
      */
     private static double sliderMaxFor(String id) {
         return switch (id) {
-            case "appearance.uiScale" -> 3.0;
             case "audio.masterCpuBudgetFraction" -> 1.0;
             case "metronome.clickChannel" -> 63;
             case "backups.keepRecent" -> 100;
@@ -1426,6 +1518,10 @@ public final class SettingsDialog extends DawgDialog<Void> {
             case DensityManager.PREF_KEY -> displayConverter(value ->
                     value instanceof DensityMode mode
                             ? DensityManager.displayName(mode)
+                            : String.valueOf(value));
+            case "appearance.uiScale" -> displayConverter(value ->
+                    value instanceof Double factor
+                            ? UiScale.nearest(factor).label()
                             : String.valueOf(value));
             case "metronome.countIn" -> displayConverter(value ->
                     value instanceof CountInMode mode
@@ -1495,8 +1591,14 @@ public final class SettingsDialog extends DawgDialog<Void> {
             }
             case DISCARD -> {
                 // Re-seeding from the untouched authorities IS the
-                // discard — nothing is written to model or managers.
+                // discard — nothing is written to model or managers. It
+                // also disarms held Backups rows and never re-arms them
+                // (story 335, studio ruling-3 Q1), so the close request
+                // this close re-fires finds a clean shell. The hold notice
+                // goes with the armed rows it describes: the dialog stays
+                // open while an audio reconfigure is outstanding.
                 shell.refreshFromPersisted();
+                clearBackupHoldNotice();
                 yield allowCloseOrWaitForAudio();
             }
             case CANCEL -> false;
@@ -1571,7 +1673,7 @@ public final class SettingsDialog extends DawgDialog<Void> {
      * persisted authorities.
      */
     void applySettings() {
-        applySettingsWithCompletion();
+        applySettingsWithCompletion(false);
     }
 
     /**
@@ -1589,15 +1691,59 @@ public final class SettingsDialog extends DawgDialog<Void> {
      */
     CompletionStage<Void> applySettingsAsync() {
         try {
-            return applySettingsWithCompletion();
+            return applySettingsWithCompletion(false);
         } catch (RuntimeException failure) {
             return CompletableFuture.failedFuture(failure);
         }
     }
 
-    private CompletionStage<Void> applySettingsWithCompletion() {
+    /**
+     * As {@link #applySettingsAsync()}, for an Apply that staged and committed
+     * its rows in one action — the first-run wizard's Finish (story 335,
+     * studio ruling-2): its edited default tempo reaches the
+     * {@linkplain #setDefaultTempoEditListener listener} as a bulk edit.
+     *
+     * @return per-apply completion; never {@code null}
+     */
+    CompletionStage<Void> applyBulkSettingsAsync() {
+        try {
+            return applySettingsWithCompletion(true);
+        } catch (RuntimeException failure) {
+            return CompletableFuture.failedFuture(failure);
+        }
+    }
+
+    /**
+     * Story 335 — an Apply that carried an edited default tempo, and whether
+     * it was a bulk Apply: one that staged and committed its rows in one
+     * action (Restore All Defaults, a profile import, the first-run wizard's
+     * Finish), never the Settings dialog's own Apply or OK (studio ruling-2).
+     *
+     * @param bpm  the edited default tempo, validated and persisted
+     * @param bulk whether the Apply was a bulk one
+     */
+    public record DefaultTempoEdit(double bpm, boolean bulk) {}
+
+    /**
+     * Story 335 (studio ruling R4) — sets what hears an Apply's edited
+     * default tempo, after the model write and before the Apply's
+     * {@link UiEvent.SettingsApplied} publish. An Apply in which the
+     * default-tempo row is not pending, or whose value was rejected, never
+     * calls it: an Apply of unrelated rows never reaches the open project's
+     * tempo.
+     *
+     * @param listener the listener, or {@code null} to detach
+     */
+    public void setDefaultTempoEditListener(Consumer<DefaultTempoEdit> listener) {
+        this.defaultTempoEditListener = listener;
+    }
+
+    private CompletionStage<Void> applySettingsWithCompletion(boolean bulk) {
         CompletableFuture<Void> completion = new CompletableFuture<>();
         shell.clearOperationNotice();
+        // Story 335 (studio ruling R5) — every rejection is re-decided by
+        // this Apply: a row still invalid is rejected again below.
+        shell.clearRejections();
         Map<String, Object> pendingEdits = shell.pendingEdits();
         // A clean Apply/OK after an error is an explicit retry of the close
         // path. It can race the worker's final outstanding-count decrement;
@@ -1620,8 +1766,11 @@ public final class SettingsDialog extends DawgDialog<Void> {
                 : Map.of();
         asynchronousPersistedValues.putAll(deferredAudioEdits);
 
+        OptionalDouble editedDefaultTempo = OptionalDouble.empty();
         for (Map.Entry<String, Object> edit : pendingEdits.entrySet()) {
-            if (!deferredAudioEdits.containsKey(edit.getKey())) {
+            if (TEMPO_SETTING_ID.equals(edit.getKey())) {
+                editedDefaultTempo = applyDefaultTempo(edit.getValue());
+            } else if (!deferredAudioEdits.containsKey(edit.getKey())) {
                 applyModelSetting(edit.getKey(), edit.getValue());
             }
         }
@@ -1629,6 +1778,14 @@ public final class SettingsDialog extends DawgDialog<Void> {
         applyKeyBindings(pendingEdits);
         applyRecordingSettings(pendingEdits);
         applyBackupSettings(pendingEdits);
+
+        // Story 335 (studio ruling R4) — only an Apply that carried a valid
+        // edited default tempo reaches the open project's tempo, through
+        // MainController's decision, which reads this Apply's origin.
+        Consumer<DefaultTempoEdit> tempoListener = defaultTempoEditListener;
+        if (tempoListener != null && editedDefaultTempo.isPresent()) {
+            tempoListener.accept(new DefaultTempoEdit(editedDefaultTempo.getAsDouble(), bulk));
+        }
 
         // Story 294 — appearance changes propagate through the shared
         // EventBus instead of this dialog poking the three managers
@@ -1754,13 +1911,24 @@ public final class SettingsDialog extends DawgDialog<Void> {
             completion.complete(null);
         }
 
-        shell.refreshFromPersisted();
+        // Story 335 (studio ruling R5) — a rejected row keeps its typed text
+        // and stays pending and dirty; every other row re-seeds. The first
+        // rejected row is then revealed and its editor focused.
+        shell.refreshFromPersistedKeepingRejected();
+        shell.firstRejectedSetting().ifPresent(shell::revealSetting);
         return completion;
     }
 
-    /** Applies and delays OK-close until asynchronous audio work succeeds. */
+    /**
+     * Applies and delays OK-close until asynchronous audio work succeeds. A
+     * rejected row keeps the dialog open (story 335, studio ruling R5):
+     * closing would drop its text by another route.
+     */
     void applyAndCloseWhenReady() {
         applySettings();
+        if (shell.firstRejectedSetting().isPresent()) {
+            return;
+        }
         if (outstandingAudioReconfigures.get() == 0) {
             FxDispatcher.runOnFx(() -> {
                 if (!audioQueueFailed.get()) {
@@ -2348,11 +2516,8 @@ public final class SettingsDialog extends DawgDialog<Void> {
             case "audio.workerPoolSize" -> model.setWorkerPoolSize(((Number) value).intValue());
             case "audio.masterCpuBudgetFraction" ->
                     model.setMasterCpuBudgetFraction(((Number) value).doubleValue());
-            case "audio.masterCpuBudgetPolicy" ->
-                    model.setMasterCpuBudgetPolicy(SettingsModel.parsePolicy((String) value));
             case "project.autoSaveIntervalSeconds" ->
                     model.setAutoSaveIntervalSeconds(((Number) value).intValue());
-            case "project.defaultTempo" -> applyDefaultTempo(value);
             case "project.useJournaledPersistence" ->
                     model.setUseJournaledPersistence((Boolean) value);
             case "transport.returnToStartOnStop" ->
@@ -2365,39 +2530,54 @@ public final class SettingsDialog extends DawgDialog<Void> {
             }
             default -> {
                 // Theme/density/motion (SettingsApplied publish),
-                // keybinding.* (applyKeyBindings) and the story-308
+                // keybinding.* (applyKeyBindings), the story-308
                 // metronome.*/backups.* ids (applyRecordingSettings /
-                // applyBackupSettings) are handled elsewhere.
+                // applyBackupSettings) and the default tempo (the Apply's
+                // own applyDefaultTempo) are handled elsewhere.
             }
         }
     }
 
     /**
-     * The default-tempo write keeps the pre-306 semantics: the TEXT row
-     * delivers a raw String; blank and unparseable text are silently
-     * dropped, and the parsed value passes the explicit NaN check plus
-     * the descriptor's setter-delegating validator before the write.
-     * (Story 305 — the validator's range comparisons cannot express NaN
-     * rejection, both being false for NaN, so the call site keeps the
-     * explicit check.)
+     * Story 335 (studio ruling R5) — validates and writes the edited default
+     * tempo, parsed exactly as the transport bar parses it. A rejected value
+     * — blank, unparseable or NaN, or outside 20 to 999 BPM, the infinities
+     * included — writes nothing and rejects the row with its message (the
+     * text as typed, stripped); the row keeps the text and stays dirty, and
+     * the rest of the Apply goes on.
+     *
+     * @param value the row's pending value: the TEXT editor's String, or a Number
+     * @return the written tempo, or empty when the value was rejected
      */
-    private void applyDefaultTempo(Object value) {
+    private OptionalDouble applyDefaultTempo(Object value) {
+        String text = value instanceof Number number ? String.valueOf(number) : String.valueOf(value).strip();
+        if (value == null || text.isEmpty()) {
+            shell.rejectSetting(TEMPO_SETTING_ID, msg("settings.reject.tempo.blank"));
+            return OptionalDouble.empty();
+        }
         double tempo;
         if (value instanceof Number number) {
             tempo = number.doubleValue();
-        } else if (value instanceof String text && !text.isBlank()) {
+        } else {
             try {
                 tempo = Double.parseDouble(text);
             } catch (NumberFormatException unparseable) {
-                return; // silent drop — invalid text never reaches the model
+                tempo = Double.NaN;
             }
-        } else {
-            return;
         }
-        if (!Double.isNaN(tempo)
-                && catalogue.byId("project.defaultTempo").orElseThrow().accepts(tempo)) {
-            model.setDefaultTempo(tempo);
+        if (Double.isNaN(tempo)) {
+            shell.rejectSetting(TEMPO_SETTING_ID,
+                    MessageFormat.format(msg("settings.reject.tempo.unparseable"), text));
+            return OptionalDouble.empty();
         }
+        if (!(tempo >= 20.0 && tempo <= 999.0)
+                || !catalogue.byId(TEMPO_SETTING_ID).orElseThrow().accepts(tempo)) {
+            shell.rejectSetting(TEMPO_SETTING_ID,
+                    MessageFormat.format(msg("settings.reject.tempo.outOfRange"), text));
+            return OptionalDouble.empty();
+        }
+        model.setDefaultTempo(tempo);
+        return OptionalDouble.of(tempo);
     }
 
     /**
@@ -2464,8 +2644,11 @@ public final class SettingsDialog extends DawgDialog<Void> {
      * Story 308 — routes every pending {@code backups.*} edit into ONE
      * {@link BackupRetentionPolicy} (days → whole-day Duration, GiB →
      * bytes; unedited fields keep their current values) and hands it to
-     * the asynchronous controller apply. Write-on-dirty, seam-tolerant —
-     * same contract as {@link #applyRecordingSettings(Map)}.
+     * the access seam, which delivers it to the checkpoint manager and saves
+     * it asynchronously; it deletes nothing. Write-on-dirty, seam-tolerant —
+     * same contract as {@link #applyRecordingSettings(Map)}. During the
+     * retention hold armed rows are all pending, so the policy is exactly
+     * the six values they show ({@link #holdBackupRowsWhileRetentionIsUnread()}).
      */
     private void applyBackupSettings(Map<String, Object> pendingEdits) {
         boolean touched = pendingEdits.keySet().stream()
@@ -2495,9 +2678,8 @@ public final class SettingsDialog extends DawgDialog<Void> {
             policy = policy.withMaxBytes(
                     Math.max(0L, Math.round(maxDiskGib.doubleValue())) * BYTES_PER_GIB);
         }
-        // Overlay BEFORE the write: the retention save+prune runs on the
-        // controller's scheduler thread; the synchronous post-apply
-        // re-seed must not re-read the not-yet-written store.
+        // Overlay BEFORE the write: the store save is asynchronous; re-seed
+        // reads the overlay.
         lastAppliedBackupPolicy = policy;
         access.applyPolicy(policy);
     }

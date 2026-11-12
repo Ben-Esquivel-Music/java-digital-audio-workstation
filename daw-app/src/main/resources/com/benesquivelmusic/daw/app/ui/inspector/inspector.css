@@ -99,7 +99,10 @@
 .inspector-drawer .inspector-add-button {
     -fx-background-color: -insp-surface-3;
     -fx-text-fill: -insp-text;
-    -fx-padding: 4 8 4 8;
+    /* No padding here: the application .button rule (4 12) sizes it, at 100%
+       and, scaled, at every UI scale (story 335 review: a padding here lost
+       to .button by origin at 100% but would win by specificity once the
+       scale sheet re-states it). */
 }
 
 /* Story 334 (studio-engineer ruling E22) — an offline insert's row in the
@@ -204,7 +207,7 @@
     -fx-background-color: transparent;
     -fx-text-fill: -ntf-accent;
     -fx-border-color: transparent;
-    -fx-padding: 4 8;
+    /* Padding: the application .button rule, as for .inspector-add-button. */
 }
 
 .inspector-drawer .notification-action:hover {
@@ -227,7 +230,7 @@
        raw -accent does not resolve in the standalone user-agent scene. */
     -fx-text-fill: -insp-accent;
     -fx-border-color: transparent;
-    -fx-padding: 4 8;
+    /* Padding: the application .button rule, as for .inspector-add-button. */
     -fx-cursor: hand;
 }
 

@@ -14,6 +14,7 @@ import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
 import com.benesquivelmusic.daw.app.ui.metering.MeterSinks;
 import com.benesquivelmusic.daw.app.ui.metering.VisibleMeterBinding;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import com.benesquivelmusic.daw.app.ui.theme.UiScale;
 import com.benesquivelmusic.daw.app.ui.vm.ChannelControlBinder;
 import com.benesquivelmusic.daw.app.ui.vm.ChannelVM;
 import com.benesquivelmusic.daw.app.ui.vm.TrackChannelRegistry;
@@ -182,6 +183,19 @@ public final class MixerView extends VBox implements Dockable {
     private final HBox returnBusStrips;
     private final HBox cueBusStrips;
     private final HBox vcaStrips;
+    /**
+     * Story 335 (studio ruling R6, amendments A15 and A19) — the UI-scale
+     * factor the strips' Java-set widths are multiplied by. Captured once from
+     * the theme manager; a change while this view is in a scene rebuilds the
+     * strips ({@link #refresh()}) and re-sizes the master strip, which is built
+     * once. The subscription is cancelled by {@link #dispose()}.
+     */
+    private final ThemeManager appearance = ThemeManager.getDefault();
+    private double uiScale = appearance.getUiScale().factor();
+    private javafx.util.Subscription uiScaleSubscription;
+    /** Re-applies the master strip's scaled widths (it is not rebuilt by refresh). */
+    private Runnable masterStripWidths = () -> { };
+
     private final VBox masterStrip;
     private final List<InsertEffectRack> activeInsertRacks = new ArrayList<>();
     private InsertEffectRack masterInsertRack;
@@ -727,10 +741,19 @@ public final class MixerView extends VBox implements Dockable {
                 vcaStrips);
         HBox.setHgrow(channelStrips, Priority.ALWAYS);
 
+        // Story 335 review (engineer B1; ruling R6 "content that does not fit
+        // scrolls") — the strips fill the height while they fit; when their
+        // minimum height exceeds the viewport, a vertical bar appears instead
+        // of the M/S/R row, the readout and the name being cut off. A strip's
+        // minimum height follows its content — the larger of 240 px times the
+        // UI scale and its column's own minimum — so this holds at 100% too:
+        // there a strip needs about 311-343 px, depending on the height its
+        // insert and send rows take; the strip area scrolls once it is shorter
+        // than a whole track column (that strip plus routing, rack and sends).
         ScrollPane scrollPane = new ScrollPane(allStrips);
         scrollPane.setFitToHeight(true);
         scrollPane.setHbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
-        scrollPane.setVbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        scrollPane.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
         scrollPane.setStyle("-fx-background: transparent; -fx-background-color: transparent;");
 
         // mainArea wraps the strip area and the (optional) snapshots side panel
@@ -760,7 +783,25 @@ public final class MixerView extends VBox implements Dockable {
             });
         }
 
+        uiScaleSubscription = appearance.uiScaleProperty()
+                .when(sceneProperty().isNotNull())
+                .subscribe((_, now) -> onUiScaleChanged(now));
         refresh();
+    }
+
+    /**
+     * Story 335 — a UI-scale change re-sizes every strip: the track, return
+     * and cue strips are rebuilt, the master strip is re-sized in place.
+     */
+    private void onUiScaleChanged(UiScale scale) {
+        uiScale = scale.factor();
+        masterStripWidths.run();
+        refresh();
+    }
+
+    /** @return {@code px} (a width at 100%) times the UI-scale factor */
+    private double scaled(double px) {
+        return px * uiScale;
     }
 
     /**
@@ -1141,6 +1182,9 @@ public final class MixerView extends VBox implements Dockable {
     public void dispose() {
         if (disposed) return;
         disposed = true;
+        if (uiScaleSubscription != null) {
+            uiScaleSubscription.unsubscribe();
+        }
         releaseModelListeners();
         disposeAllMeterSubscriptions();
         activeInsertRacks.forEach(InsertEffectRack::dispose);
@@ -1638,8 +1682,10 @@ public final class MixerView extends VBox implements Dockable {
         VBox strip = new VBox(4);
         strip.getStyleClass().add(TRACK_STRIP_HOST_STYLE_CLASS);
         strip.setAlignment(Pos.TOP_CENTER);
-        strip.setPrefWidth(CHANNEL_WIDTH);
-        strip.setMinWidth(CHANNEL_WIDTH);
+        // Story 335 (amendment A19) — no fixed column width: the column
+        // is as wide as its widest row and never narrower than its
+        // MixerChannelStrip (the density width times the UI scale); a fixed
+        // 80 px column was narrower than the 88 px strip and the cue-send rows.
 
         // The channel-id used by VCA membership and drag/drop is the track's
         // own UUID (its id is a UUID-formatted string per Track.java). Parse
@@ -1677,7 +1723,7 @@ public final class MixerView extends VBox implements Dockable {
                     badge.setStyle("-fx-background-color: " + hex + ";"
                             + " -fx-text-fill: #ffffff; -fx-padding: 1 4 1 4;"
                             + " -fx-font-size: 9px; -fx-background-radius: 3;");
-                    badge.setMaxWidth(CHANNEL_WIDTH - 12);
+                    badge.setMaxWidth(scaled(CHANNEL_WIDTH - 12));
                     badges.getChildren().add(badge);
                 }
                 strip.getChildren().add(badges);
@@ -1870,9 +1916,9 @@ public final class MixerView extends VBox implements Dockable {
         if (track.isArmed() && inputLevelMonitorRegistry != null) {
             InputLevelMonitor monitor = inputLevelMonitorRegistry.getOrCreate(track);
             InputMeterStrip inputStrip = new InputMeterStrip(monitor, inputLevelMonitorRegistry);
-            inputStrip.setPrefWidth(INPUT_METER_WIDTH);
-            inputStrip.setMinWidth(INPUT_METER_WIDTH);
-            inputStrip.setMaxWidth(INPUT_METER_WIDTH);
+            inputStrip.setPrefWidth(scaled(INPUT_METER_WIDTH));
+            inputStrip.setMinWidth(scaled(INPUT_METER_WIDTH));
+            inputStrip.setMaxWidth(scaled(INPUT_METER_WIDTH));
             inputStrip.setPrefHeight(METER_HEIGHT);
             inputStrip.setMinHeight(METER_HEIGHT);
             activeInputMeterStrips.add(inputStrip);
@@ -1908,11 +1954,11 @@ public final class MixerView extends VBox implements Dockable {
 
             Label sendLabel = new Label("→ " + returnBus.getName());
             sendLabel.getStyleClass().add("mixer-channel-name");
-            sendLabel.setMaxWidth(CHANNEL_WIDTH - 12);
+            sendLabel.setMaxWidth(scaled(CHANNEL_WIDTH - 12));
             sendLabel.setGraphic(sendIndicator);
 
             Slider sendSlider = new Slider(0.0, 1.0, initialLevel);
-            sendSlider.setPrefWidth(SEND_SLIDER_WIDTH);
+            sendSlider.setPrefWidth(scaled(SEND_SLIDER_WIDTH));
             sendSlider.getStyleClass().add("mixer-fader");
             sendSlider.setTooltip(new Tooltip("Send to " + returnBus.getName()));
 
@@ -2160,7 +2206,7 @@ public final class MixerView extends VBox implements Dockable {
         // below would fight .numeric-caption's 11 px (inline wins on size
         // but the size mismatch is misleading).
         latencyLabel.getStyleClass().add("numeric-mono");
-        latencyLabel.setMaxWidth(CHANNEL_WIDTH - 12);
+        latencyLabel.setMaxWidth(scaled(CHANNEL_WIDTH - 12));
         latencyLabel.setStyle("-fx-font-size: 9px; -fx-text-fill: #888888;");
         updateLatencyLabel(latencyLabel, mixerChannel, sr);
 
@@ -2276,12 +2322,12 @@ public final class MixerView extends VBox implements Dockable {
                                 ? "Cue " + displayIndex : cueBus.label())));
 
         Slider gainSlider = new Slider(0.0, 1.0, initialGain);
-        gainSlider.setPrefWidth(SEND_SLIDER_WIDTH);
+        gainSlider.setPrefWidth(scaled(SEND_SLIDER_WIDTH));
         gainSlider.getStyleClass().add("mixer-fader");
         gainSlider.setTooltip(new Tooltip("Cue send gain"));
 
         Slider panSlider = new Slider(-1.0, 1.0, initialPan);
-        panSlider.setPrefWidth(SEND_SLIDER_WIDTH / 2.0);
+        panSlider.setPrefWidth(scaled(SEND_SLIDER_WIDTH / 2.0));
         panSlider.getStyleClass().add("mixer-fader");
         panSlider.setTooltip(new Tooltip("Cue send pan"));
 
@@ -2354,20 +2400,20 @@ public final class MixerView extends VBox implements Dockable {
         });
         strip.getStyleClass().add("mixer-channel");
         strip.setAlignment(Pos.TOP_CENTER);
-        strip.setPrefWidth(CHANNEL_WIDTH);
-        strip.setMinWidth(CHANNEL_WIDTH);
+        strip.setPrefWidth(scaled(CHANNEL_WIDTH));
+        strip.setMinWidth(scaled(CHANNEL_WIDTH));
         strip.setStyle("-fx-border-color: #00bcd4;");
 
         Label nameLabel = new Label(returnBus.getName());
         nameLabel.getStyleClass().add("mixer-channel-name");
-        nameLabel.setMaxWidth(CHANNEL_WIDTH - 12);
+        nameLabel.setMaxWidth(scaled(CHANNEL_WIDTH - 12));
         nameLabel.setStyle("-fx-text-fill: #00e5ff; -fx-font-weight: bold;");
 
         // Story 318 — the post-fader RETURN_POST tap of this bus.
         LevelMeterDisplay levelMeter = new LevelMeterDisplay(true);
-        levelMeter.setPrefWidth(METER_WIDTH);
-        levelMeter.setMinWidth(METER_WIDTH);
-        levelMeter.setMaxWidth(METER_WIDTH);
+        levelMeter.setPrefWidth(scaled(METER_WIDTH));
+        levelMeter.setMinWidth(scaled(METER_WIDTH));
+        levelMeter.setMaxWidth(scaled(METER_WIDTH));
         levelMeter.setPrefHeight(METER_HEIGHT);
         levelMeter.setMinHeight(METER_HEIGHT);
         registerStripMeter(levelMeter, new MeterTapPoint.ReturnPost(returnBus.getId()));
@@ -2382,7 +2428,7 @@ public final class MixerView extends VBox implements Dockable {
         volumeFader.setTooltip(new Tooltip("Return Bus Volume"));
 
         Slider panSlider = new Slider(-1.0, 1.0, returnBus.getPan());
-        panSlider.setPrefWidth(CHANNEL_WIDTH - 12);
+        panSlider.setPrefWidth(scaled(CHANNEL_WIDTH - 12));
         panSlider.getStyleClass().add("mixer-fader");
         panSlider.setTooltip(new Tooltip("Return Bus Pan"));
         Label panLabel = new Label("PAN");
@@ -2469,7 +2515,7 @@ public final class MixerView extends VBox implements Dockable {
         // Story 266 / §3.2 — tabular figures via family-only .numeric-mono;
         // the 9 px inline size below would fight .numeric-caption's 11 px.
         latencyLabel.getStyleClass().add("numeric-mono");
-        latencyLabel.setMaxWidth(CHANNEL_WIDTH - 12);
+        latencyLabel.setMaxWidth(scaled(CHANNEL_WIDTH - 12));
         latencyLabel.setStyle("-fx-font-size: 9px; -fx-text-fill: #888888;");
         updateLatencyLabel(latencyLabel, returnBus, sr);
 
@@ -2499,8 +2545,8 @@ public final class MixerView extends VBox implements Dockable {
         VBox strip = new VBox(4);
         strip.getStyleClass().add("mixer-channel");
         strip.setAlignment(Pos.TOP_CENTER);
-        strip.setPrefWidth(CHANNEL_WIDTH);
-        strip.setMinWidth(CHANNEL_WIDTH);
+        strip.setPrefWidth(scaled(CHANNEL_WIDTH));
+        strip.setMinWidth(scaled(CHANNEL_WIDTH));
         strip.setStyle("-fx-border-color: #ffd54f;");
 
         // Story 215 — strips for buses whose hardware output pair is no
@@ -2525,7 +2571,7 @@ public final class MixerView extends VBox implements Dockable {
                 ? "Cue " + displayIndex : bus.label();
         Label nameLabel = new Label(labelText);
         nameLabel.getStyleClass().add("mixer-channel-name");
-        nameLabel.setMaxWidth(CHANNEL_WIDTH - 12);
+        nameLabel.setMaxWidth(scaled(CHANNEL_WIDTH - 12));
 
         // Hardware-output label — story 135 routes a stereo pair to physical
         // outputs (2N / 2N+1). Display 1-based numbers because that is what
@@ -3018,8 +3064,6 @@ public final class MixerView extends VBox implements Dockable {
         VBox strip = new VBox(4);
         strip.getStyleClass().add("mixer-channel");
         strip.setAlignment(Pos.TOP_CENTER);
-        strip.setPrefWidth(CHANNEL_WIDTH);
-        strip.setMinWidth(CHANNEL_WIDTH);
         strip.setStyle("-fx-border-color: #7c4dff;");
 
         Label nameLabel = new Label("Master");
@@ -3031,9 +3075,6 @@ public final class MixerView extends VBox implements Dockable {
         // never rebuilt, so its subscription is created in setMeterFeed(...)
         // rather than here.
         LevelMeterDisplay levelMeter = new LevelMeterDisplay(true);
-        levelMeter.setPrefWidth(METER_WIDTH);
-        levelMeter.setMinWidth(METER_WIDTH);
-        levelMeter.setMaxWidth(METER_WIDTH);
         levelMeter.setPrefHeight(METER_HEIGHT);
         levelMeter.setMinHeight(METER_HEIGHT);
         this.masterMeterDisplay = levelMeter;
@@ -3049,9 +3090,19 @@ public final class MixerView extends VBox implements Dockable {
         volumeFader.setTooltip(new Tooltip("Master Volume"));
 
         Slider panSlider = new Slider(-1.0, 1.0, master.getPan());
-        panSlider.setPrefWidth(CHANNEL_WIDTH - 12);
         panSlider.getStyleClass().add("mixer-fader");
         panSlider.setTooltip(new Tooltip("Master Pan"));
+        // Story 335 — the master strip is built once, so its widths are
+        // re-applied in place on a UI-scale change.
+        masterStripWidths = () -> {
+            strip.setPrefWidth(scaled(CHANNEL_WIDTH));
+            strip.setMinWidth(scaled(CHANNEL_WIDTH));
+            levelMeter.setPrefWidth(scaled(METER_WIDTH));
+            levelMeter.setMinWidth(scaled(METER_WIDTH));
+            levelMeter.setMaxWidth(scaled(METER_WIDTH));
+            panSlider.setPrefWidth(scaled(CHANNEL_WIDTH - 12));
+        };
+        masterStripWidths.run();
         Label panLabel = new Label("PAN");
         panLabel.getStyleClass().add("mixer-channel-name");
 
@@ -3133,7 +3184,7 @@ public final class MixerView extends VBox implements Dockable {
 
     private ComboBox<IoOption> buildInputRoutingSelector(Track track) {
         ComboBox<IoOption> combo = new ComboBox<>();
-        combo.setMaxWidth(CHANNEL_WIDTH - 8);
+        combo.setMaxWidth(scaled(CHANNEL_WIDTH - 8));
         combo.setMaxHeight(18);
         combo.setStyle("-fx-font-size: 8px;");
         combo.setTooltip(new Tooltip("Input routing"));
@@ -3200,7 +3251,7 @@ public final class MixerView extends VBox implements Dockable {
 
     private ComboBox<IoOption> buildOutputRoutingSelector(MixerChannel channel) {
         ComboBox<IoOption> combo = new ComboBox<>();
-        combo.setMaxWidth(CHANNEL_WIDTH - 8);
+        combo.setMaxWidth(scaled(CHANNEL_WIDTH - 8));
         combo.setMaxHeight(18);
         combo.setStyle("-fx-font-size: 8px;");
         combo.setTooltip(new Tooltip("Output routing"));

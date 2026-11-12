@@ -2,19 +2,27 @@ package com.benesquivelmusic.daw.app.ui.dialogs;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawgIcon;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import com.benesquivelmusic.daw.app.ui.theme.UiScale;
 
 import javafx.beans.InvalidationListener;
+import javafx.beans.value.ObservableValue;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
+import javafx.geometry.Rectangle2D;
 import javafx.scene.Node;
+import javafx.scene.Scene;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonBar;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.Dialog;
+import javafx.scene.control.DialogEvent;
 import javafx.scene.control.DialogPane;
 import javafx.scene.control.Label;
 import javafx.scene.layout.VBox;
+import javafx.stage.Screen;
+import javafx.stage.Window;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.MissingResourceException;
 import java.util.Objects;
@@ -79,6 +87,11 @@ public class DawgDialog<R> extends Dialog<R> {
     private static final double BODY_SPACING = 12;
     /** §5.9 — the header close glyph is a 16 px secondary icon. */
     private static final DawgIcon.Size CLOSE_GLYPH_SIZE = DawgIcon.Size.SIZE_16;
+    /**
+     * Story 335 (amendment A22) — the gap kept between a capped dialog window
+     * and the edge of its screen's visual bounds.
+     */
+    static final double SCREEN_MARGIN = 16;
 
     /** Centred-modal widths from UI Design Book §5.9. */
     public enum Size {
@@ -117,6 +130,31 @@ public class DawgDialog<R> extends Dialog<R> {
      */
     private DawgIcon closeGlyph;
 
+    /** The theme manager that styles this dialog, captured once. */
+    private final ThemeManager themeManager = ThemeManager.getDefault();
+    /** The §5.9 width band from {@link #sized}, or {@code null} for none. */
+    private Size band;
+    /** Test seam: the screen bounds to cap against instead of the owner's screen. */
+    private Rectangle2D capBoundsOverride;
+    /**
+     * The pane's preferred width / height before the screen cap replaced it,
+     * or {@code NaN} while uncapped; restored before every re-fit unless
+     * someone else changed the size since the cap set it.
+     */
+    private double uncappedPrefWidth = Double.NaN;
+    private double uncappedPrefHeight = Double.NaN;
+    /** The preferred width / height the cap set (meaningful only while capped). */
+    private double cappedPrefWidth = Double.NaN;
+    private double cappedPrefHeight = Double.NaN;
+    /** The shown window's size minus its scene's (title bar, frame), last measured. */
+    private double decorationWidth;
+    private double decorationHeight;
+    /**
+     * The UI scale, observed only while this dialog shows, so a hidden
+     * dialog is never held by the process-lifetime theme manager.
+     */
+    private final ObservableValue<UiScale> uiScaleWhileShowing;
+
     /**
      * Creates an empty {@code DawgDialog} with the §5.9 chrome applied.
      * Subclasses set the title via {@link #setTitle(String)} /
@@ -135,20 +173,202 @@ public class DawgDialog<R> extends Dialog<R> {
         // added later still retracts the (now redundant) header glyph.
         getDialogPane().getButtonTypes().addListener(
                 (InvalidationListener) o -> installCloseGlyphIfAppropriate());
+        // Story 335 (studio ruling R6, amendment A22) — the window never
+        // extends past its screen (see capPreferredSize): capped before it
+        // sizes itself, checked once its window shows, re-fitted when the UI
+        // scale changes while it is open. The check keys on the window's
+        // showing state, not DIALOG_SHOWN: showAndWait() fires DIALOG_SHOWN
+        // before its window exists (review 2b-java S1).
+        addEventHandler(DialogEvent.DIALOG_SHOWING, _ -> capPreferredSize());
+        showingProperty().subscribe(showing -> {
+            if (showing) {
+                fitToScreen(false);
+            }
+        });
+        uiScaleWhileShowing = themeManager.uiScaleProperty().when(showingProperty());
+        uiScaleWhileShowing.subscribe((_, _) -> {
+            capPreferredSize();
+            fitToScreen(true);
+        });
     }
 
     // ── Fluent API ───────────────────────────────────────────────────────────
 
     /**
-     * Sets the modal width to one of the §5.9 sizes (480 / 640 / 800).
+     * Sets the modal width to one of the §5.9 sizes (480 / 640 / 800), times
+     * the UI-scale factor (story 335).
      *
      * @param size the modal width band; must not be {@code null}
      * @return this dialog, for chaining
      */
     public DawgDialog<R> sized(Size size) {
-        Objects.requireNonNull(size, "size must not be null");
-        getDialogPane().setPrefWidth(size.pixels());
+        band = Objects.requireNonNull(size, "size must not be null");
+        applyBandWidth();
         return this;
+    }
+
+    // ── Screen cap (story 335) ───────────────────────────────────────────────
+
+    /**
+     * Test seam: caps against {@code bounds} instead of the owner's screen
+     * (headless screens can be unrealistic). {@code null} restores the real
+     * screen.
+     *
+     * @param bounds the visual bounds to cap against, or {@code null}
+     */
+    void capBounds(Rectangle2D bounds) {
+        capBoundsOverride = bounds;
+    }
+
+    /**
+     * Story 335 (studio ruling R6, amendment A22) — keeps the window inside
+     * its screen's visual bounds minus {@link #SCREEN_MARGIN}. The cap works
+     * through the {@link DialogPane}'s preferred size, set before the window
+     * sizes itself to its scene, so the window is never larger than the screen
+     * (not even for one frame) and is never shrunk from an oversized size:
+     * <ul>
+     *   <li>on {@code DIALOG_SHOWING} (before the stage sizes to the scene) the
+     *       pane's preferred width and height are capped;</li>
+     *   <li>when the window has shown — for {@code show()} and
+     *       {@code showAndWait()} alike — the window decorations are measured;
+     *       if they push the window past the bounds the cap is redone without
+     *       them, and X/Y are clamped into the bounds;</li>
+     *   <li>on a UI-scale change while open the cap is redone and the window is
+     *       sized to its scene again (a step back down shrinks it).</li>
+     * </ul>
+     * The content gets the capped size — a scrolling content pane scrolls — and
+     * the pane keeps its button bar at the bottom.
+     */
+    private void capPreferredSize() {
+        DialogPane pane = getDialogPane();
+        restoreUncappedSize(pane);
+        applyBandWidth();
+        Rectangle2D screen = screenBounds();
+        double maxWidth = Math.max(0, screen.getWidth() - 2 * SCREEN_MARGIN - decorationWidth);
+        double maxHeight = Math.max(0, screen.getHeight() - 2 * SCREEN_MARGIN - decorationHeight);
+        pane.applyCss();
+        double width = pane.prefWidth(-1);
+        if (width > maxWidth) {
+            uncappedPrefWidth = pane.getPrefWidth();
+            cappedPrefWidth = maxWidth;
+            pane.setPrefWidth(maxWidth);
+            width = maxWidth;
+        }
+        if (pane.prefHeight(width) > maxHeight) {
+            uncappedPrefHeight = pane.getPrefHeight();
+            cappedPrefHeight = maxHeight;
+            pane.setPrefHeight(maxHeight);
+        }
+    }
+
+    /**
+     * Measures the window decorations of the shown dialog, redoes the cap when
+     * they changed, sizes the window to its scene when asked or when the cap
+     * changed, and clamps X/Y into the bounds.
+     *
+     * @param resize whether to size the window to its scene (a UI-scale change)
+     */
+    private void fitToScreen(boolean resize) {
+        Scene scene = getDialogPane().getScene();
+        Window window = scene == null ? null : scene.getWindow();
+        if (window == null || !window.isShowing()) {
+            return;
+        }
+        if (resize) {
+            window.sizeToScene();
+        }
+        double measuredWidth = Math.max(0, window.getWidth() - scene.getWidth());
+        double measuredHeight = Math.max(0, window.getHeight() - scene.getHeight());
+        if (measuredWidth != decorationWidth || measuredHeight != decorationHeight) {
+            decorationWidth = measuredWidth;
+            decorationHeight = measuredHeight;
+            capPreferredSize();
+            window.sizeToScene();
+        }
+        Rectangle2D screen = screenBounds();
+        double minX = screen.getMinX() + SCREEN_MARGIN;
+        double minY = screen.getMinY() + SCREEN_MARGIN;
+        double maxX = screen.getMaxX() - SCREEN_MARGIN - window.getWidth();
+        double maxY = screen.getMaxY() - SCREEN_MARGIN - window.getHeight();
+        window.setX(clamp(window.getX(), minX, maxX));
+        window.setY(clamp(window.getY(), minY, maxY));
+    }
+
+    /**
+     * Undoes a previous cap: the pane gets back the preferred size it had
+     * before the cap — unless its size was changed since the cap set it, in
+     * which case that newer size stays (review 2b-java N3: never restore a
+     * stale size over a caller's).
+     */
+    private void restoreUncappedSize(DialogPane pane) {
+        if (!Double.isNaN(uncappedPrefWidth) && pane.getPrefWidth() == cappedPrefWidth) {
+            pane.setPrefWidth(uncappedPrefWidth);
+        }
+        if (!Double.isNaN(uncappedPrefHeight) && pane.getPrefHeight() == cappedPrefHeight) {
+            pane.setPrefHeight(uncappedPrefHeight);
+        }
+        uncappedPrefWidth = Double.NaN;
+        uncappedPrefHeight = Double.NaN;
+        cappedPrefWidth = Double.NaN;
+        cappedPrefHeight = Double.NaN;
+    }
+
+    /** Sets the pane's preferred width to the §5.9 band times the UI scale, when a band is set. */
+    private void applyBandWidth() {
+        if (band == null) {
+            return;
+        }
+        double width = themeManager.getUiScale().scale(band.pixels());
+        if (getDialogPane().getPrefWidth() != width) {
+            getDialogPane().setPrefWidth(width);
+        }
+    }
+
+    /**
+     * The test bounds, else the visual bounds of the screen holding the
+     * owner's centre (review 2b-java N2: an owner straddling two monitors
+     * caps against the one it is mostly on), else of the screen it overlaps
+     * most, else of the primary screen.
+     */
+    private Rectangle2D screenBounds() {
+        if (capBoundsOverride != null) {
+            return capBoundsOverride;
+        }
+        Window owner = getOwner();
+        if (owner != null && owner.isShowing()) {
+            Rectangle2D ownerBounds = new Rectangle2D(owner.getX(), owner.getY(),
+                    Math.max(1, owner.getWidth()), Math.max(1, owner.getHeight()));
+            double centreX = ownerBounds.getMinX() + ownerBounds.getWidth() / 2;
+            double centreY = ownerBounds.getMinY() + ownerBounds.getHeight() / 2;
+            List<Screen> screens = Screen.getScreensForRectangle(ownerBounds);
+            Screen best = null;
+            double bestArea = -1;
+            for (Screen screen : screens) {
+                Rectangle2D bounds = screen.getBounds();
+                if (bounds.contains(centreX, centreY)) {
+                    return screen.getVisualBounds();
+                }
+                double area = intersectionArea(bounds, ownerBounds);
+                if (area > bestArea) {
+                    best = screen;
+                    bestArea = area;
+                }
+            }
+            if (best != null) {
+                return best.getVisualBounds();
+            }
+        }
+        return Screen.getPrimary().getVisualBounds();
+    }
+
+    private static double intersectionArea(Rectangle2D a, Rectangle2D b) {
+        double width = Math.min(a.getMaxX(), b.getMaxX()) - Math.max(a.getMinX(), b.getMinX());
+        double height = Math.min(a.getMaxY(), b.getMaxY()) - Math.max(a.getMinY(), b.getMinY());
+        return width > 0 && height > 0 ? width * height : 0;
+    }
+
+    private static double clamp(double value, double min, double max) {
+        return Math.max(min, Math.min(value, Math.max(min, max)));
     }
 
     /**
@@ -221,7 +441,7 @@ public class DawgDialog<R> extends Dialog<R> {
      * secondary button is added). Idempotent.
      */
     private void applyChrome() {
-        ThemeManager.getDefault().applyTo(getDialogPane());
+        themeManager.applyTo(getDialogPane());
         DialogPane pane = getDialogPane();
         addStyleClassOnce(pane, "dawg-dialog");
         installCloseGlyphIfAppropriate();

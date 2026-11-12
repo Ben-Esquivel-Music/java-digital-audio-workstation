@@ -58,9 +58,11 @@ import java.util.Objects;
  * production caller: the transport bar's tempo edit is
  * {@code TempoEditController}'s {@code UndoableAction}, executed through the
  * {@code UndoManager}, and {@code UndoHistoryDirtyBinder} marks the project
- * dirty for it. (Settings Apply also writes the open project's tempo, in
- * {@code LiveSettingsApplier.apply}, with no undo entry and no dirty mark — a
- * defect story 335 owns.)</p>
+ * dirty for it. An edited default tempo in Settings writes the open project's
+ * tempo through the same one undoable step ({@code TempoEditController.setTempo},
+ * from {@code MainController.applyEditedDefaultTempo}); a pristine Untitled
+ * project and a new empty project take it as their template instead, with no
+ * undo entry, still clean (story 335).</p>
  */
 public final class CoreTransportIntentHandler implements TransportIntentHandler {
 

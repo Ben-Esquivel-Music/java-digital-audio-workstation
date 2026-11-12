@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui.hub;
 
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.status.SessionStatusDiskScanner;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.persistence.backup.ProjectDiskUsage;
 
@@ -138,6 +139,9 @@ public final class WelcomeView extends BorderPane {
         getStylesheets().add(Objects.requireNonNull(
                 WelcomeView.class.getResource("welcome-view.css"),
                 "welcome-view.css not on classpath").toExternalForm());
+        // Story 335 — this view's own sheet beats the scene's sheets, so the
+        // UI-scale sheet must also sit at the tail of this view's list.
+        ThemeManager.getDefault().registerScaledParent(this);
 
         buildRecoverSection(onRecoverProject, onDiscardRecovery);
         buildContinueSection(onOpenProject);

@@ -226,10 +226,8 @@ final class MenuConstructionService {
                 DawAction.OPEN_SETTINGS, host::onOpenSettings);
         MenuItem audioSettings = menuItem("Audio Settings\u2026", DawIcon.HEADPHONES,
                 null, host::onOpenAudioSettings);
-        // Story 191 / 308 — Auto-Backup Rotation. "Backup Retention…"
-        // deep-links into Settings ▸ Backups; on Apply the new policy is
-        // persisted and applied immediately to ~/.daw/autosaves.
-        MenuItem backupSettings = menuItem("Backup Retention\u2026", DawIcon.FOLDER,
+        // Story 191 / 308 / 335 — "Checkpoint Retention…" deep-links into Settings ▸ Backups; on Apply the policy is saved to ~/.daw/backup-retention.json and delivered to the CheckpointManager, which applies it to the open project's checkpoints/ after its next checkpoint.
+        MenuItem backupSettings = menuItem("Checkpoint Retention\u2026", DawIcon.FOLDER,
                 null, host::onOpenBackupSettings);
 
         editMenu.getItems().addAll(

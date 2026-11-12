@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui.controls.skin;
 
 import com.benesquivelmusic.daw.app.ui.controls.Knob;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 
 import javafx.animation.Animation;
 import javafx.animation.KeyFrame;
@@ -9,6 +10,7 @@ import javafx.animation.Timeline;
 import javafx.beans.property.SimpleDoubleProperty;
 import javafx.beans.value.ChangeListener;
 import javafx.beans.value.ObservableValue;
+import javafx.collections.ObservableList;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.SkinBase;
@@ -22,6 +24,7 @@ import javafx.scene.shape.StrokeLineCap;
 import javafx.scene.text.Font;
 import javafx.scene.text.TextAlignment;
 import javafx.util.Duration;
+import javafx.util.Subscription;
 
 import java.util.Locale;
 
@@ -94,6 +97,18 @@ public final class KnobSkin extends SkinBase<Knob> {
     private static final Duration DETENT_DURATION = Duration.millis(60);
 
     private final Canvas canvas;
+
+    /**
+     * Story 335 (studio ruling R6, amendments A15 and A20) — the UI-scale
+     * factor the size variants are multiplied by. The unit glyph derives its
+     * size from the dial, so it is not multiplied again; only its floor is.
+     * The subscription observes the scale only while the knob is in a scene
+     * and is cancelled in {@link #dispose()}.
+     */
+    private double uiScale = 1.0;
+    private final Subscription uiScaleSubscription;
+    /** The unit glyph font, rebuilt only when its size changes (never per paint). */
+    private Font unitFont;
 
     private final ChangeListener<Object> repaintListener;
     private final ChangeListener<Boolean> focusListener;
@@ -174,6 +189,15 @@ public final class KnobSkin extends SkinBase<Knob> {
         keyHandler = this::onKeyPressed;
         control.addEventHandler(KeyEvent.KEY_PRESSED, keyHandler);
         registeredListenerCount++;
+
+        ThemeManager appearance = ThemeManager.getDefault();
+        uiScale = appearance.getUiScale().factor();
+        uiScaleSubscription = appearance.uiScaleProperty()
+                .when(control.sceneProperty().isNotNull())
+                .subscribe((_, now) -> {
+                    uiScale = now.factor();
+                    control.requestLayout();
+                });
     }
 
     private void addRepaint(ObservableValue<?> v) {
@@ -530,10 +554,13 @@ public final class KnobSkin extends SkinBase<Knob> {
 
         // Optional unit / value glyph beneath the dial when there is room.
         String unit = c.getUnit();
-        if (unit != null && !unit.isEmpty() && size >= 36) {
+        if (unit != null && !unit.isEmpty() && size >= 36 * uiScale) {
             gc.setFill(c.getKnobIndicatorColor());
-            double fontPx = Math.max(8.0, size * 0.18);
-            gc.setFont(Font.font(fontPx));
+            double fontPx = Math.max(8.0 * uiScale, size * 0.18);
+            if (unitFont == null || unitFont.getSize() != fontPx) {
+                unitFont = Font.font(fontPx);
+            }
+            gc.setFont(unitFont);
             gc.setTextAlign(TextAlignment.CENTER);
             gc.fillText(unit, cx, cy + size / 2.0 - 1);
         }
@@ -550,11 +577,11 @@ public final class KnobSkin extends SkinBase<Knob> {
      * @return the active size variant px (28 / 36 / 48), defaulting to 28
      *         when no size style class is present.
      */
-    private int sizeVariantPx() {
-        var classes = getSkinnable().getStyleClass();
-        if (classes.contains("size-48")) return 48;
-        if (classes.contains("size-36")) return 36;
-        return 28;
+    private double sizeVariantPx() {
+        ObservableList<String> classes = getSkinnable().getStyleClass();
+        if (classes.contains("size-48")) return 48 * uiScale;
+        if (classes.contains("size-36")) return 36 * uiScale;
+        return 28 * uiScale;
     }
 
     @Override
@@ -572,25 +599,25 @@ public final class KnobSkin extends SkinBase<Knob> {
     @Override
     protected double computeMinWidth(double height,
             double topInset, double rightInset, double bottomInset, double leftInset) {
-        return 16;
+        return 16 * uiScale;
     }
 
     @Override
     protected double computeMinHeight(double width,
             double topInset, double rightInset, double bottomInset, double leftInset) {
-        return 16;
+        return 16 * uiScale;
     }
 
     @Override
     protected double computeMaxWidth(double height,
             double topInset, double rightInset, double bottomInset, double leftInset) {
-        return 64;
+        return 64 * uiScale;
     }
 
     @Override
     protected double computeMaxHeight(double width,
             double topInset, double rightInset, double bottomInset, double leftInset) {
-        return 64;
+        return 64 * uiScale;
     }
 
     // ── Dispose ───────────────────────────────────────────────────────────
@@ -601,6 +628,7 @@ public final class KnobSkin extends SkinBase<Knob> {
             return;
         }
         disposed = true;
+        uiScaleSubscription.unsubscribe();
         if (detentTimeline != null) {
             detentTimeline.stop();
             detentTimeline = null;

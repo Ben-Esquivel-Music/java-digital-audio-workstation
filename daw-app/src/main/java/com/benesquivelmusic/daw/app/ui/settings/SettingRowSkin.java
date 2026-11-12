@@ -1,5 +1,8 @@
 package com.benesquivelmusic.daw.app.ui.settings;
 
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import com.benesquivelmusic.daw.app.ui.theme.UiScale;
+
 import javafx.beans.value.ChangeListener;
 import javafx.css.PseudoClass;
 import javafx.event.EventHandler;
@@ -28,6 +31,7 @@ import javafx.scene.layout.Priority;
 import javafx.scene.text.Text;
 import javafx.scene.text.TextFlow;
 import javafx.stage.DirectoryChooser;
+import javafx.util.Subscription;
 
 import java.io.File;
 import java.text.Normalizer;
@@ -79,8 +83,10 @@ import java.util.function.Supplier;
 public final class SettingRowSkin extends SkinBase<SettingRow> {
 
     /**
-     * Label-column width (§5.4: fixed-width, right-aligned to the control
-     * gutter). A layout constant, not a style literal.
+     * Label-column width at 100% (§5.4: fixed-width, right-aligned to the
+     * control gutter). A layout constant, not a style literal; the column is
+     * this times the UI-scale factor (story 335, amendment A21), so a label
+     * that fits at 100% fits at every step.
      */
     static final double LABEL_COLUMN_WIDTH = 180;
 
@@ -113,9 +119,14 @@ public final class SettingRowSkin extends SkinBase<SettingRow> {
 
         grid.getStyleClass().add("setting-row-grid");
         ColumnConstraints labelColumn = new ColumnConstraints();
-        labelColumn.setMinWidth(LABEL_COLUMN_WIDTH);
-        labelColumn.setPrefWidth(LABEL_COLUMN_WIDTH);
-        labelColumn.setMaxWidth(LABEL_COLUMN_WIDTH);
+        // Story 335 (amendment A21) — re-measured on a UI-scale change; the
+        // subscription observes the scale only while the row is in a scene.
+        ThemeManager appearance = ThemeManager.getDefault();
+        sizeLabelColumn(labelColumn, appearance.getUiScale());
+        Subscription uiScaleSubscription = appearance.uiScaleProperty()
+                .when(row.sceneProperty().isNotNull())
+                .subscribe((_, now) -> sizeLabelColumn(labelColumn, now));
+        detachers.add(uiScaleSubscription::unsubscribe);
         ColumnConstraints editorColumn = new ColumnConstraints();
         editorColumn.setHgrow(Priority.ALWAYS);
         grid.getColumnConstraints().addAll(labelColumn, editorColumn);
@@ -130,7 +141,8 @@ public final class SettingRowSkin extends SkinBase<SettingRow> {
         detachers.add(() -> row.highlightQueryProperty().removeListener(highlightListener));
 
         grid.add(label, 0, 0);
-        grid.add(buildEditor(row), 1, 0);
+        Node editor = buildEditor(row);
+        grid.add(editor, 1, 0);
 
         // Story 309 §5.3/§5.4 — the trailing column pairs the per-row
         // scope-override chip (when the shell set one) with the §6.4
@@ -154,12 +166,21 @@ public final class SettingRowSkin extends SkinBase<SettingRow> {
         grid.add(resetButton, 3, 0);
 
         String description = row.descriptor().description();
-        if (description != null && !description.isBlank()) {
-            Label descriptionLabel = new Label(description);
-            descriptionLabel.getStyleClass().add("setting-row-description");
-            descriptionLabel.setWrapText(true);
+        boolean hasDescription = description != null && !description.isBlank();
+        Label descriptionLabel = new Label(hasDescription ? description : "");
+        descriptionLabel.getStyleClass().add("setting-row-description");
+        descriptionLabel.setWrapText(true);
+        if (hasDescription) {
             grid.add(descriptionLabel, 1, 1, 3, 1);
         }
+        // Story 335 (studio ruling R5) — a rejection replaces the muted
+        // description (error style through the row's :rejected pseudo-class)
+        // and is the editor's accessible help; it clears with the rejection.
+        ChangeListener<String> rejectionListener = (_, _, message) ->
+                showRejection(descriptionLabel, editor, hasDescription ? description : "", message);
+        row.rejectionProperty().addListener(rejectionListener);
+        detachers.add(() -> row.rejectionProperty().removeListener(rejectionListener));
+        showRejection(descriptionLabel, editor, hasDescription ? description : "", row.rejectionProperty().get());
 
         // Story 309 §3.2 — the muted "applies to…" cue under the
         // description (pre-localized by the shell, keyed off Scope only).
@@ -172,6 +193,13 @@ public final class SettingRowSkin extends SkinBase<SettingRow> {
         }
 
         getChildren().add(grid);
+    }
+
+    private static void sizeLabelColumn(ColumnConstraints labelColumn, UiScale scale) {
+        double width = scale.scale(LABEL_COLUMN_WIDTH);
+        labelColumn.setMinWidth(width);
+        labelColumn.setPrefWidth(width);
+        labelColumn.setMaxWidth(width);
     }
 
     // ── Two-way sync plumbing ─────────────────────────────────────────────────
@@ -544,6 +572,24 @@ public final class SettingRowSkin extends SkinBase<SettingRow> {
         badge.getStyleClass().addAll("setting-row-badge",
                 applyClass == ApplyClass.RESTART_REQUIRED ? "badge-restart" : "badge-engine");
         return badge;
+    }
+
+    /**
+     * Story 335 (studio ruling R5) — shows {@code message} in the description
+     * line and as the editor's accessible help while the row is rejected, and
+     * puts the description back when it is not. A row without a description
+     * mounts the line only while rejected.
+     */
+    private void showRejection(Label descriptionLabel, Node editor, String description, String message) {
+        boolean rejected = message != null && !message.isEmpty();
+        descriptionLabel.setText(rejected ? message : description);
+        editor.setAccessibleHelp(rejected ? message : null);
+        boolean mounted = grid.getChildren().contains(descriptionLabel);
+        if (rejected && !mounted) {
+            grid.add(descriptionLabel, 1, 1, 3, 1);
+        } else if (!rejected && mounted && description.isEmpty()) {
+            grid.getChildren().remove(descriptionLabel);
+        }
     }
 
     /**

@@ -55,7 +55,13 @@ public class InspectorSection extends VBox {
 
     private final Label chevron = new Label(GLYPH_EXPANDED);
     private final Label titleLabel = new Label();
-    private final HBox header = new HBox(4, chevron, titleLabel);
+    /**
+     * Spaced by its {@code .inspector-section-header} rule (4 px, times the
+     * UI scale), not from Java: a spacing set here would win at 100&nbsp;% and
+     * lose to the scale sheet's copy of the rule at every other step (story
+     * 335 review, 2b-java S2(b)).
+     */
+    private final HBox header = new HBox(chevron, titleLabel);
     private final VBox bodyHolder = new VBox();
 
     /** Empty section with no title and no body. */

@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import com.benesquivelmusic.daw.app.ui.theme.UiScale;
 import com.benesquivelmusic.daw.app.ui.vm.command.CoreTransportIntentHandler;
 import com.benesquivelmusic.daw.core.transport.TimeDisplayMode;
 import com.benesquivelmusic.daw.core.transport.TimelineRulerModel;
@@ -15,7 +17,9 @@ import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.Pane;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
+import javafx.scene.text.Text;
 import javafx.scene.text.TextAlignment;
+import javafx.util.Subscription;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -87,9 +91,15 @@ public final class TimelineRuler extends Pane {
     /** Story 134 — post-roll shading band trailing out of the punch-out / playhead. */
     static final Color POST_ROLL_REGION_COLOR = Color.web("#4dd0e1", 0.18);
 
-    private static final Font LABEL_FONT = Font.font("Monospaced", 10);
-    private static final Font TEMPO_FONT = Font.font("Monospaced", 9);
-    private static final Font PUNCH_LABEL_FONT = Font.font("Monospaced", 8);
+    // Font sizes and vertical geometry at 100% (story 335: the drawing
+    // multiplies each by the UI-scale factor).
+    private static final String FONT_FAMILY = "Monospaced";
+    private static final double LABEL_FONT_PX = 10.0;
+    private static final double TEMPO_FONT_PX = 9.0;
+    private static final double PUNCH_LABEL_FONT_PX = 8.0;
+    /** Gap between text and the tick it labels, and the text's left margin. */
+    private static final double TEXT_GAP = 2.0;
+    private static final double TEMPO_TEXT_MARGIN = 4.0;
     private static final double TICK_MAJOR_HEIGHT = 12.0;
     private static final double TICK_MINOR_HEIGHT = 6.0;
     private static final double PLAYHEAD_WIDTH = 2.0;
@@ -98,6 +108,8 @@ public final class TimelineRuler extends Pane {
     private static final double PUNCH_HANDLE_WIDTH = 6.0;
     /** Story 328 — horizontal hit tolerance around a drawn punch handle (lower half of the ruler). */
     static final double PUNCH_HANDLE_HIT_ZONE = 8.0;
+    /** The widest bar-label stride (bars); far beyond any zoom the model offers. */
+    private static final int MAX_BAR_LABEL_STRIDE = 1 << 16;
 
     /**
      * The backing model — replaced wholesale by {@link #rebind(Transport)} on
@@ -164,6 +176,44 @@ public final class TimelineRuler extends Pane {
     private final Tooltip loopTooltip = new Tooltip();
 
     /**
+     * Story 335 (studio ruling R6, amendments A15 and A20) — the UI-scale
+     * factor the ruler's height, tick heights, text offsets and fonts are
+     * multiplied by (the time axis is not: it must line up with the
+     * arrangement). Observed only while the ruler is in a scene; the fonts
+     * are rebuilt only on a scale change, never per draw.
+     */
+    private double uiScale = 1.0;
+    private Font labelFont;
+    private Font tempoFont;
+    private Font punchLabelFont;
+    /** The bar-label font's character advance (the font is monospaced), measured on each scale change. */
+    private double labelAdvance;
+
+    /**
+     * The scale observation, held for the ruler's lifetime (review 2b-java
+     * B2): while the ruler has no scene its conditional binding is not
+     * subscribed to the scale property, so nothing else holds it, and a
+     * discarded subscription is collected — the ruler then stops following
+     * the scale once it joins its scene.
+     */
+    private final Subscription uiScaleSubscription;
+
+    /**
+     * Draw-truth seam (story 335 review, engineer S2): the bar labels drawn by
+     * the last {@link #redraw()}, in drawing order. Reused, never shared.
+     */
+    private final List<DrawnBarLabel> lastDrawnBarLabels = new ArrayList<>();
+
+    /**
+     * A bar label as drawn: its text and the x at which the text starts.
+     *
+     * @param x    the text's left edge in ruler coordinates
+     * @param text the label
+     */
+    record DrawnBarLabel(double x, String text) {
+    }
+
+    /**
      * Creates a timeline ruler backed by the given transport.
      *
      * @param transport the transport providing tempo, position and time-signature data
@@ -174,9 +224,14 @@ public final class TimelineRuler extends Pane {
         this.canvas = new Canvas();
 
         getChildren().add(canvas);
-        setPrefHeight(DEFAULT_HEIGHT);
-        setMinHeight(DEFAULT_HEIGHT);
-        setMaxHeight(DEFAULT_HEIGHT);
+        ThemeManager appearance = ThemeManager.getDefault();
+        applyUiScale(appearance.getUiScale());
+        uiScaleSubscription = appearance.uiScaleProperty()
+                .when(sceneProperty().isNotNull())
+                .subscribe((_, now) -> {
+                    applyUiScale(now);
+                    redraw();
+                });
 
         canvas.widthProperty().bind(widthProperty());
         canvas.heightProperty().bind(heightProperty());
@@ -189,6 +244,24 @@ public final class TimelineRuler extends Pane {
         canvas.setOnMouseReleased(this::handleMouseReleased);
         canvas.setOnMouseMoved(this::handleMouseMoved);
         canvas.setOnMouseExited(event -> Tooltip.uninstall(canvas, loopTooltip));
+    }
+
+    /**
+     * Re-derives the scaled height and fonts. The height is fixed (pref = min
+     * = max) at {@link #DEFAULT_HEIGHT} times the factor.
+     */
+    private void applyUiScale(UiScale step) {
+        uiScale = step.factor();
+        labelFont = Font.font(FONT_FAMILY, LABEL_FONT_PX * uiScale);
+        tempoFont = Font.font(FONT_FAMILY, TEMPO_FONT_PX * uiScale);
+        punchLabelFont = Font.font(FONT_FAMILY, PUNCH_LABEL_FONT_PX * uiScale);
+        Text advanceProbe = new Text("0");
+        advanceProbe.setFont(labelFont);
+        labelAdvance = advanceProbe.getLayoutBounds().getWidth();
+        double height = DEFAULT_HEIGHT * uiScale;
+        setPrefHeight(height);
+        setMinHeight(height);
+        setMaxHeight(height);
     }
 
     /** Returns the underlying ruler model. */
@@ -413,6 +486,32 @@ public final class TimelineRuler extends Pane {
         drawPlayhead(gc, h);
     }
 
+    /**
+     * @param h the ruler height
+     * @return the baseline of the bar labels: above the major tick, by the text gap
+     */
+    double barLabelBaseline(double h) {
+        return h - (TICK_MAJOR_HEIGHT + TEXT_GAP) * uiScale;
+    }
+
+    /**
+     * @param h the ruler height
+     * @return the baseline of the tempo / time-signature text, one margin above the bottom
+     */
+    double tempoBaseline(double h) {
+        return h - TEMPO_TEXT_MARGIN * uiScale;
+    }
+
+    /** @return the tempo text font at the current UI scale */
+    Font tempoFont() {
+        return tempoFont;
+    }
+
+    /** @return the bar-label font at the current UI scale */
+    Font labelFont() {
+        return labelFont;
+    }
+
     // ── private rendering methods ───────────────────────────────────────────
 
     private void drawTempoAndTimeSignature(GraphicsContext gc, double h) {
@@ -421,10 +520,10 @@ public final class TimelineRuler extends Pane {
                 transport.getTempo(),
                 transport.getTimeSignatureNumerator(),
                 transport.getTimeSignatureDenominator());
-        gc.setFont(TEMPO_FONT);
+        gc.setFont(tempoFont);
         gc.setFill(TEMPO_TEXT_COLOR);
         gc.setTextAlign(TextAlignment.LEFT);
-        gc.fillText(tempoText, 4, h - 4);
+        gc.fillText(tempoText, TEMPO_TEXT_MARGIN * uiScale, tempoBaseline(h));
     }
 
     private void drawSubdivisions(GraphicsContext gc, double w, double h) {
@@ -434,8 +533,13 @@ public final class TimelineRuler extends Pane {
         double startBeat = Math.floor(scrollOffsetBeats / subdivision) * subdivision;
         double endBeat = scrollOffsetBeats + w / pixelsPerBeat;
 
-        gc.setFont(LABEL_FONT);
+        gc.setFont(labelFont);
         gc.setTextAlign(TextAlignment.LEFT);
+        double majorTick = TICK_MAJOR_HEIGHT * uiScale;
+        double minorTick = TICK_MINOR_HEIGHT * uiScale;
+        double gap = TEXT_GAP * uiScale;
+        int labelStride = barLabelStride(subdivision, beatsPerBar, Math.max(0, startBeat), endBeat, gap);
+        lastDrawnBarLabels.clear();
 
         for (double beat = startBeat; beat <= endBeat; beat += subdivision) {
             if (beat < 0) {
@@ -447,17 +551,61 @@ public final class TimelineRuler extends Pane {
             if (isBarLine) {
                 gc.setStroke(BAR_LINE_COLOR);
                 gc.setLineWidth(1.0);
-                gc.strokeLine(x, h - TICK_MAJOR_HEIGHT, x, h);
+                gc.strokeLine(x, h - majorTick, x, h);
 
-                gc.setFill(RULER_TEXT_COLOR);
-                String label = model.formatPosition(beat);
-                gc.fillText(label, x + 2, h - TICK_MAJOR_HEIGHT - 2);
+                if (Math.round(beat / beatsPerBar) % labelStride == 0) {
+                    gc.setFill(RULER_TEXT_COLOR);
+                    String label = model.formatPosition(beat);
+                    gc.fillText(label, x + gap, barLabelBaseline(h));
+                    lastDrawnBarLabels.add(new DrawnBarLabel(x + gap, label));
+                }
             } else {
                 gc.setStroke(BEAT_LINE_COLOR);
                 gc.setLineWidth(0.5);
-                gc.strokeLine(x, h - TICK_MINOR_HEIGHT, x, h);
+                gc.strokeLine(x, h - minorTick, x, h);
             }
         }
+    }
+
+    /**
+     * Story 335 review (engineer S2) — how many bars apart the bar labels are
+     * drawn: 1, or the smallest power of two, counted from bar 1, at which
+     * consecutive labels no longer run into one another. The time axis keeps
+     * its 100&nbsp;% pixels (it lines up with the arrangement) while the label
+     * font follows the UI scale, so at a large scale a zoom that labels every
+     * bar at 100&nbsp;% would draw the numbers over each other. Ticks are
+     * unaffected. The font is monospaced, so a label is its length times the
+     * font's advance wide; the widest visible label is the first or the last.
+     *
+     * @param subdivision the beats between drawn marks
+     * @param beatsPerBar the time signature's numerator
+     * @param firstBeat   the first visible beat (not negative)
+     * @param lastBeat    the last visible beat
+     * @param gap         the scaled gap before a label
+     * @return the label stride in bars, a power of two
+     */
+    private int barLabelStride(double subdivision, int beatsPerBar, double firstBeat, double lastBeat, double gap) {
+        double barWidth = beatsPerBar * pixelsPerBeat;
+        int stride = (int) Math.max(1, Math.round(subdivision / beatsPerBar));
+        if (!(barWidth > 0) || beatsPerBar <= 0) {
+            return stride;
+        }
+        double firstBar = Math.floor(firstBeat / beatsPerBar) * beatsPerBar;
+        double lastBar = Math.floor(Math.max(firstBeat, lastBeat) / beatsPerBar) * beatsPerBar;
+        int longest = Math.max(model.formatPosition(firstBar).length(), model.formatPosition(lastBar).length());
+        double needed = longest * labelAdvance + gap;
+        while (stride * barWidth < needed && stride < MAX_BAR_LABEL_STRIDE) {
+            stride *= 2;
+        }
+        return stride;
+    }
+
+    /**
+     * @return the bar labels the last {@link #redraw()} drew, in drawing order
+     *         (draw-truth seam: lets a test check the labels without reading pixels)
+     */
+    List<DrawnBarLabel> lastDrawnBarLabels() {
+        return List.copyOf(lastDrawnBarLabels);
     }
 
     private void drawPlayhead(GraphicsContext gc, double h) {
@@ -559,10 +707,10 @@ public final class TimelineRuler extends Pane {
             gc.strokeLine(startX, 0, startX, h);
             gc.setFill(PUNCH_HANDLE_COLOR);
             gc.fillRect(startX - PUNCH_HANDLE_WIDTH / 2.0, h * 0.5, PUNCH_HANDLE_WIDTH, h * 0.5);
-            gc.setFont(PUNCH_LABEL_FONT);
+            gc.setFont(punchLabelFont);
             gc.setFill(PUNCH_HANDLE_COLOR);
             gc.setTextAlign(TextAlignment.LEFT);
-            gc.fillText("I", startX + 2, h * 0.5 - 2);
+            gc.fillText("I", startX + TEXT_GAP * uiScale, h * 0.5 - TEXT_GAP * uiScale);
         }
 
         double endX = (punchEndBeats - scrollOffsetBeats) * pixelsPerBeat;
@@ -573,10 +721,10 @@ public final class TimelineRuler extends Pane {
             gc.strokeLine(endX, 0, endX, h);
             gc.setFill(PUNCH_HANDLE_COLOR);
             gc.fillRect(endX - PUNCH_HANDLE_WIDTH / 2.0, h * 0.5, PUNCH_HANDLE_WIDTH, h * 0.5);
-            gc.setFont(PUNCH_LABEL_FONT);
+            gc.setFont(punchLabelFont);
             gc.setFill(PUNCH_HANDLE_COLOR);
             gc.setTextAlign(TextAlignment.RIGHT);
-            gc.fillText("O", endX - 2, h * 0.5 - 2);
+            gc.fillText("O", endX - TEXT_GAP * uiScale, h * 0.5 - TEXT_GAP * uiScale);
         }
     }
 

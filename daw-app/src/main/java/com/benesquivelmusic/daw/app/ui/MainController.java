@@ -41,6 +41,7 @@ import com.benesquivelmusic.daw.app.ui.vm.command.ToggleRecordCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.TransportCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.UndoCommand;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import com.benesquivelmusic.daw.app.ui.theme.UiScale;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.audio.AudioDeviceManager;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
@@ -54,6 +55,7 @@ import com.benesquivelmusic.daw.core.persistence.InstalledPluginStore;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
 import com.benesquivelmusic.daw.core.persistence.archive.ProjectArchiver;
+import com.benesquivelmusic.daw.core.persistence.backup.BackupRetentionPolicyStore;
 import com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin;
 import com.benesquivelmusic.daw.core.plugin.BuiltInPluginGraph;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
@@ -86,7 +88,6 @@ import com.benesquivelmusic.daw.app.ui.settings.BackupSettingsAccess;
 import com.benesquivelmusic.daw.app.ui.settings.FirstRunWizard;
 import com.benesquivelmusic.daw.app.ui.settings.FirstRunWizardHost;
 import com.benesquivelmusic.daw.app.ui.settings.SettingsCatalogue;
-import com.benesquivelmusic.daw.sdk.persistence.BackupRetentionPolicy;
 
 import javafx.animation.FadeTransition;
 import javafx.animation.KeyFrame;
@@ -95,7 +96,9 @@ import javafx.fxml.FXML;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Tooltip;
+import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.*;
 import javafx.stage.Screen;
 import javafx.stage.Stage;
@@ -111,6 +114,8 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.ResourceBundle;
 import java.util.concurrent.CompletionStage;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.prefs.Preferences;
@@ -179,6 +184,9 @@ public final class MainController {
      *  status bar, and (mounted by {@link #createSessionStatusStrip()}) the
      *  Session Status Strip. */
     @FXML private VBox bottomBar;
+    /** Story 335 — the transport bar scrolls horizontally when it does not fit (studio ruling R6). */
+    @FXML private ScrollPane transportBarScroller;
+    @FXML private HBox transportBar;
     @FXML private HBox transportGroup;
     @FXML private HBox trackGroup;
     @FXML private HBox undoRedoGroup;
@@ -402,10 +410,12 @@ public final class MainController {
      */
     private TrackFreezeController trackFreezeController;
     /**
-     * Story 191 — Auto-Backup Rotation. Owns the persisted retention
-     * policy and runs a periodic prune of {@code ~/.daw/autosaves/}.
-     * Since story 308 the policy is edited in the Settings surface's
-     * Backups category (the Edit-menu entry deep-links there).
+     * Story 191 / 308 / 335 — Checkpoint retention. Delivers the persisted
+     * retention policy to the CheckpointManager at startup and on the
+     * Settings ▸ Backups Apply (applied to the open project's checkpoints/
+     * after its next checkpoint) and saves it to
+     * {@code ~/.daw/backup-retention.json}. The Edit-menu entry deep-links
+     * into Settings ▸ Backups.
      */
     private BackupRetentionController backupRetentionController;
     /**
@@ -1270,6 +1280,15 @@ public final class MainController {
         SettingsModel startupSettings = new SettingsModel(
                 Preferences.userNodeForPackage(SettingsModel.class));
         this.settingsModel = startupSettings;
+        // Story 335 (studio ruling R6) — the persisted UI scale applies at
+        // launch, next to Theme/Density: DawApplication applies the theme
+        // manager's ordered list (which then ends with the scale sheet) to
+        // the primary scene before show().
+        applyStartupUiScale(startupSettings, ThemeManager.getDefault());
+        // Story 335 (studio ruling R4.1) — the startup Untitled project takes
+        // the persisted default tempo as its beat-0 BPM: no history exists yet
+        // and the transport's write marks nothing dirty, so it stays clean.
+        project.getTransport().setTempo(startupSettings.getDefaultTempo());
         audioEngine = new AudioEngine(project.getFormat());
         engineBinder = new EngineBinder(audioEngine);
         // Story 318 — the FX-pulse drain of the engine's metering tap bus
@@ -1359,7 +1378,21 @@ public final class MainController {
         // Story 331 — the checkpoints capture the live project on the FX thread
         // and write on their own writer; the capture source and the strip's
         // status listener are wired in createSessionStatusStrip() (wireAutosave).
-        CheckpointManager checkpointManager = new CheckpointManager(AutoSaveConfig.DEFAULT);
+        // Story 335 — constructed from the persisted interval, so the cadence
+        // and the strip's countdown follow it from the first generation.
+        CheckpointManager checkpointManager = new CheckpointManager(startupAutoSaveConfig(startupSettings));
+        // Story 335 (studio ruling R1.4) — the stored retention policy is
+        // delivered before any generation starts, so the first write of the
+        // first project already prunes by it. A stored policy that cannot be
+        // read deletes nothing until one is applied, and the user is warned:
+        // the warning is posted, so it shows once initialize() has built the
+        // notification bar (as for engineNotifications above).
+        backupRetentionController = new BackupRetentionController(new BackupRetentionPolicyStore(), checkpointManager);
+        deliverStoredRetention(backupRetentionController, message -> postFx(() -> {
+            if (notificationBar != null) {
+                notificationBar.show(NotificationLevel.WARNING, message);
+            }
+        }));
         Preferences prefs = Preferences.userNodeForPackage(MainController.class);
         RecentProjectsStore recentProjectsStore = new RecentProjectsStore(prefs);
         projectManager = new ProjectManager(checkpointManager, recentProjectsStore);
@@ -1374,6 +1407,9 @@ public final class MainController {
         // startup restore.
         projectManager.alsoAwaitBeforeExit(installedPluginStore);
         projectManager.setPluginResolver(pluginRegistry);
+        // Story 335 — a retention change saved on Apply survives an immediate
+        // quit: its save joins the same wait, within its deadline.
+        projectManager.alsoAwaitBeforeExit(backupRetentionController);
         // Story 187 — install the JavaFX lock-conflict dialog so opening a
         // project that is already locked by another session prompts the
         // user with Open Read-Only / Take Over / Cancel rather than
@@ -1415,6 +1451,7 @@ public final class MainController {
 
         createToolbarAppearanceController();
         toolbarAppearanceController.apply();
+        installTransportBarScroll(transportBarScroller, transportBar);
         // Story 287 — construct the analyzer displays directly (the fixed
         // vizTileRow + VisualizationTileBuilder/VisualizationPanelController
         // are retired). They are wrapped + registered in installDockManager().
@@ -1578,17 +1615,6 @@ public final class MainController {
             }
         });
         LOG.info("DAW initialized with studio quality format");
-        // Story 191 — Auto-Backup Rotation. Initialize the global retention
-        // store and schedule the hourly periodic prune. The initial
-        // applyNow() runs on the controller's daemon scheduler thread
-        // (not the FX thread) to avoid blocking startup on directory
-        // scanning and filesystem I/O.
-        backupRetentionController = new BackupRetentionController();
-        try {
-            backupRetentionController.start();
-        } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "Failed to start backup retention controller", e);
-        }
 
         // Story 272 — wire source-side typed selection events
         // (TrackSelectionEvent / InsertSelectedEvent / SendSelectedEvent)
@@ -1820,7 +1846,7 @@ public final class MainController {
         } finally {
             renderQueue = null;
             windowLifetimeDisposal = ExitCoordinator.onTheEngineShutdownThread(new EngineShutdown(audioEngine,
-                    queueToPersist, pluginSupervisor, backupRetentionController, diskScanner));
+                    queueToPersist, pluginSupervisor, diskScanner));
         }
         return windowLifetimeDisposal;
     }
@@ -1834,12 +1860,10 @@ public final class MainController {
      * @param audioEngine               the audio engine
      * @param renderQueue               the render queue, or {@code null} when none was ever used
      * @param pluginSupervisor          the plug-in invocation supervisor
-     * @param backupRetentionController the backup retention scheduler
      * @param diskScanner               the strip's disk-space scanner
      */
     private record EngineShutdown(AudioEngine audioEngine, RenderQueue renderQueue,
                                   PluginInvocationSupervisor pluginSupervisor,
-                                  BackupRetentionController backupRetentionController,
                                   com.benesquivelmusic.daw.app.ui.status.SessionStatusDiskScanner diskScanner)
             implements Runnable {
 
@@ -1874,10 +1898,6 @@ public final class MainController {
             }, () -> {
                 if (pluginSupervisor != null) {
                     pluginSupervisor.close();
-                }
-            }, () -> {
-                if (backupRetentionController != null) {
-                    backupRetentionController.shutdown();
                 }
             }, () -> {
                 // Story 295 — release the disk-scan scheduler thread.
@@ -1985,6 +2005,93 @@ public final class MainController {
                   Runnable action);
     }
 
+    /**
+     * Story 335 — the checkpoint configuration the window's one
+     * {@link CheckpointManager} is constructed with: the persisted autosave
+     * interval, with {@link AutoSaveConfig#DEFAULT}'s cap and enablement. The
+     * Settings Apply reconfigures the interval later
+     * ({@link LiveSettingsApplier}).
+     *
+     * @param settings the persisted settings
+     * @return the startup checkpoint configuration
+     */
+    static AutoSaveConfig startupAutoSaveConfig(SettingsModel settings) {
+        return new AutoSaveConfig(java.time.Duration.ofSeconds(settings.getAutoSaveIntervalSeconds()),
+                AutoSaveConfig.DEFAULT.maxCheckpoints(), AutoSaveConfig.DEFAULT.enabled());
+    }
+
+    /**
+     * Story 335 (studio ruling R6) — applies the persisted UI scale at launch.
+     * The model has already snapped an off-step value to the nearest step, so
+     * the theme manager receives an exact step; {@code DawApplication} then
+     * applies the manager's ordered list (ending with the scale sheet) to the
+     * primary scene before {@code show()}.
+     *
+     * @param settings   the persisted settings
+     * @param appearance the theme manager that styles every window
+     */
+    static void applyStartupUiScale(SettingsModel settings, ThemeManager appearance) {
+        appearance.setUiScale(UiScale.ofFactor(settings.getUiScale()));
+    }
+
+    /**
+     * Story 335 (studio ruling R6) — "content that does not fit scrolls": the
+     * transport bar sits in a horizontal {@link ScrollPane}.
+     * Its minimum width follows the viewport, so when it fits it fills the
+     * window exactly as before (the spacer pushes the status label right), and
+     * when it does not it scrolls from x&nbsp;=&nbsp;0 — Play, Stop and Record,
+     * the first group, are visible at the scroll origin. While it overflows,
+     * the scroller reserves its scroll bar's height so the bar never covers
+     * the buttons.
+     *
+     * <p>The scroller never takes the keyboard focus (review 2b-java B1).
+     * {@code ScrollPaneBehavior} requests focus for its {@code ScrollPane} on
+     * every press that reaches it and, while the pane is focused, consumes
+     * Space, Home, End, the arrows and Page Up/Down, so the window's
+     * Play/Pause and Skip to Start/End accelerators (which run only for an
+     * unconsumed key) would stop firing. A press that the bar's children
+     * leave unconsumed (a label, the spacer, the bar's own background) ends
+     * at the bar, so the focus stays where it was, as when the bar was a
+     * plain {@code HBox}. A press on the scroller's own scroll bar does not
+     * focus the scroller either, for two reasons in JavaFX itself: the scroll
+     * bar's skin keeps {@code SkinBase}'s default of consuming every mouse
+     * event that reaches its control, so no press on the thumb, the track or
+     * an arrow bubbles up to {@code ScrollPaneBehavior}; and
+     * {@code ScrollPaneSkin}'s own press filter on its scroll bars requests
+     * focus only for a focus-traversable {@code ScrollPane}, which the FXML's
+     * {@code focusTraversable="false"} rules out. Making the scroller
+     * focus-traversable, or giving its scroll bars a skin that lets presses
+     * through, would let a press there take the focus again.
+     * {@code UiScaleLayoutTest} pins both presses.</p>
+     *
+     * <p>Package-private so the layout test drives the production wiring on
+     * the loaded FXML.</p>
+     *
+     * @param scroller     the {@code transport-bar-scroller}
+     * @param transportBar the {@code transport-bar} it scrolls
+     */
+    static void installTransportBarScroll(ScrollPane scroller, Region transportBar) {
+        if (scroller == null || transportBar == null) {
+            return;
+        }
+        transportBar.addEventHandler(MouseEvent.MOUSE_PRESSED, MouseEvent::consume);
+        transportBar.minWidthProperty().bind(javafx.beans.binding.Bindings.createDoubleBinding(
+                () -> scroller.getViewportBounds().getWidth(), scroller.viewportBoundsProperty()));
+        javafx.beans.InvalidationListener reserveScrollBar = _ -> {
+            boolean overflows = transportBar.getWidth() > scroller.getViewportBounds().getWidth() + 0.5;
+            // A positive minimum viewport height makes an AS_NEEDED scroller
+            // count its horizontal bar in its preferred height
+            // (ScrollPaneSkin.computeHsbSizeHint); at zero, the bar's height is
+            // not reserved, exactly as before the bar could scroll.
+            double minViewportHeight = overflows ? 1 : 0;
+            if (scroller.getMinViewportHeight() != minViewportHeight) {
+                scroller.setMinViewportHeight(minViewportHeight);
+            }
+        };
+        transportBar.widthProperty().addListener(reserveScrollBar);
+        scroller.viewportBoundsProperty().addListener(reserveScrollBar);
+    }
+
     /** Applies restart-scoped persisted audio preferences away from the FX thread. */
     static Thread applyStartupAudioSettings(
             SettingsModel settings, AudioEngineController controller) {
@@ -2074,7 +2181,7 @@ public final class MainController {
                         ioRoutingLabel, recIndicator),
                 new ToolbarAppearanceController.OverflowGroups(
                         utilityGroup, undoRedoGroup),
-                rootPane, keyBindingManager);
+                rootPane, keyBindingManager, ThemeManager.getDefault().uiScaleProperty());
     }
 
     /**
@@ -2347,6 +2454,9 @@ public final class MainController {
         // PR #989 review 5711460812 — the missing-assets relink edits the
         // project, so it reads the window's edit gate.
         projectLifecycleController.setProjectActionsAllowed(this::projectActionsAllowed);
+        // Story 335 (studio ruling R4.1) — a new empty project takes the
+        // persisted default tempo, read when the project is built.
+        projectLifecycleController.setNewProjectTempo(settingsModel::getDefaultTempo);
         // Story 333 — New creates its project's folder off the FX thread, after the UI was rebuilt for the
         // new project: the folder-dependent part of that rebuild follows once the folder exists.
         projectLifecycleController.setProjectFolderChangedHook(this::projectFolderChanged);
@@ -2535,7 +2645,9 @@ public final class MainController {
                     shell.settingRow(id).ifPresent(row -> row.setValue(value)));
             Optional<String> restartNotice = shell.isRestartBannerVisible()
                     ? Optional.of(shell.restartBannerText()) : Optional.empty();
-            return dialog.applySettingsAsync()
+            // Story 335 (studio ruling-2) — Finish stages and commits in one
+            // action: a bulk Apply, which never writes a non-pristine project's tempo.
+            return dialog.applyBulkSettingsAsync()
                     .thenApply(_ -> restartNotice)
                     .whenComplete((_, _) -> detachWizardSettingsDialog(dialog));
         } catch (RuntimeException | Error failure) {
@@ -5446,58 +5558,157 @@ public final class MainController {
             dialog.setBackupSettingsAccess(backupAccess);
         }
         dialog.setSettingsChangeListener(model -> applyLiveSettings(model, previousPluginPaths));
+        // Story 335 (studio rulings R4, ruling-2) — an Apply that carried an
+        // edited default tempo hands it here, with the Apply's origin.
+        dialog.setDefaultTempoEditListener(this::onDefaultTempoEdited);
         // Story 309 §4.D — General ▸ Startup's "Run setup wizard…" re-opens
         // the first-run wizard on demand.
         dialog.setOnRunSetupWizard(this::showSetupWizard);
         return dialog;
     }
 
+    /** Story 335 — what an Apply that carried an edited default tempo did to the open project. */
+    enum DefaultTempoOutcome {
+        /** The window's edit gate said no: nothing was written. */
+        GATE_CLOSED,
+        /** A pristine Untitled project took the tempo as its template: no history entry, still clean. */
+        TEMPLATE,
+        /** A bulk Apply (wizard, profile import, Restore All Defaults): the open project was not written. */
+        BULK_NOT_WRITTEN,
+        /** The open project has tempo changes: it was not written. */
+        TEMPO_CHANGES,
+        /** The open project's tempo already was the edited one: nothing was written. */
+        UNCHANGED,
+        /** One undoable "Set Tempo" step was written. */
+        WRITTEN
+    }
+
     /**
-     * Story 308 — the Backups access seam over the story-191 retention
-     * controller: policy reads/writes stay with the controller (JSON
-     * store + immediate async prune); the project directory feeds the
-     * §5.8 disk-usage pie. {@code null} when no controller exists yet.
+     * Story 335 (studio rulings R4 and ruling-2, engineer critique S1) — what
+     * an edited default tempo does to the open project, in this order: the
+     * window's edit gate; a pristine Untitled project takes it as its template
+     * (no history entry, still clean), whatever the Apply's origin; a bulk
+     * Apply writes nothing; a project with tempo changes is not written; an
+     * equal tempo writes nothing; otherwise one undoable "Set Tempo" step
+     * ({@link TempoEditController#setTempo}).
+     *
+     * @param project               the open project
+     * @param history               the open project's undo history
+     * @param projectActionsAllowed the window's edit gate
+     * @param pristine              whether the open project is an untouched Untitled one
+     * @param bulk                  whether the Apply was a bulk one
+     * @param bpm                   the edited default tempo
+     * @return what was done
+     */
+    static DefaultTempoOutcome applyEditedDefaultTempo(DawProject project, UndoManager history,
+                                                       BooleanSupplier projectActionsAllowed,
+                                                       boolean pristine, boolean bulk, double bpm) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return DefaultTempoOutcome.GATE_CLOSED;
+        }
+        boolean constantTempo = project.getTransport().getTempoMap().getTempoChangeCount() == 1;
+        if (pristine && constantTempo) {
+            project.getTransport().setTempo(bpm);
+            return DefaultTempoOutcome.TEMPLATE;
+        }
+        if (bulk) {
+            return DefaultTempoOutcome.BULK_NOT_WRITTEN;
+        }
+        if (!constantTempo) {
+            return DefaultTempoOutcome.TEMPO_CHANGES;
+        }
+        return TempoEditController.setTempo(project, history, projectActionsAllowed, bpm)
+                ? DefaultTempoOutcome.WRITTEN : DefaultTempoOutcome.UNCHANGED;
+    }
+
+    /**
+     * Story 335 — the Settings dialog's edited default tempo, applied to the
+     * open project by {@link #applyEditedDefaultTempo} and reported: an INFO
+     * notice when the project was not written for the gate, a bulk Apply or
+     * its tempo changes (studio ruling R4.4, verbatim), the status line when
+     * the undoable step was written. FX thread.
+     */
+    private void onDefaultTempoEdited(SettingsDialog.DefaultTempoEdit edit) {
+        UndoManager history = undoManager;
+        boolean pristine = (projectManager == null || projectManager.getCurrentProject() == null)
+                && !project.isDirty() && history.undoSize() == 0 && history.redoSize() == 0;
+        double bpm = edit.bpm();
+        switch (applyEditedDefaultTempo(project, history, this::projectActionsAllowed, pristine, edit.bulk(), bpm)) {
+            case GATE_CLOSED, BULK_NOT_WRITTEN -> notificationBar.show(NotificationLevel.INFO,
+                    "Default tempo saved for new projects. The open project's tempo was not changed.");
+            case TEMPO_CHANGES -> notificationBar.show(NotificationLevel.INFO,
+                    "Default tempo saved for new projects. The open project has tempo changes,"
+                            + " so its tempo was not changed.");
+            case WRITTEN -> {
+                syncMenuStateIfPresent();
+                status(String.format("Tempo set to %.1f BPM", bpm), DawIcon.METRONOME);
+            }
+            case TEMPLATE, UNCHANGED -> {
+                // Nothing to report: a template is no edit, an equal tempo writes nothing.
+            }
+        }
+    }
+
+    /**
+     * Story 308 / 335 — the Backups access seam over the retention
+     * controller: the rows read the policy the CheckpointManager enforces,
+     * Apply delivers it now and saves it off the FX thread (a failed save
+     * shows a WARNING), and the open project's folder feeds the §5.8
+     * disk-usage readout. {@code null} when no controller exists (a
+     * controller never initialized).
      */
     private BackupSettingsAccess buildBackupSettingsAccess() {
         BackupRetentionController controller = backupRetentionController;
         if (controller == null) {
             return null;
         }
-        return new BackupSettingsAccess() {
-            @Override
-            public BackupRetentionPolicy currentPolicy() {
-                return controller.currentPolicy();
-            }
+        return controller.settingsAccess(this::currentProjectDirectory,
+                () -> postFx(() -> notificationBar.show(NotificationLevel.WARNING, RETENTION_NOT_SAVED)));
+    }
 
-            @Override
-            public Optional<Path> projectDirectory() {
-                if (projectManager == null || projectManager.getCurrentProject() == null) {
-                    return Optional.empty();
-                }
-                return Optional.ofNullable(
-                        projectManager.getCurrentProject().projectPath());
-            }
+    /** Story 335 (studio ruling R1.4) — the WARNING a failed retention save shows, verbatim. */
+    static final String RETENTION_NOT_SAVED = "Checkpoint retention could not be saved; it applies until you quit.";
 
-            @Override
-            public void applyPolicy(BackupRetentionPolicy policy) {
-                controller.saveAndApplyAsync(policy);
-            }
-        };
+    /**
+     * Story 335 (studio-engineer ruling on an unreadable retention file) — the
+     * WARNING shown when the stored retention policy exists but cannot be
+     * read, verbatim.
+     */
+    static final String RETENTION_NOT_READ =
+            "Checkpoint retention could not be read, so no checkpoints are deleted. Apply it again in Settings ▸ Backups.";
+
+    /**
+     * Story 335 — startup's retention delivery ({@code initialize()}):
+     * delivers the stored policy, or the default when none is stored; a
+     * stored policy that cannot be read is never replaced by the default —
+     * nothing is deleted until a policy is applied in Settings — and
+     * {@code warning} receives {@link #RETENTION_NOT_READ}.
+     *
+     * @param controller the window's retention controller
+     * @param warning    shows a WARNING notification
+     */
+    static void deliverStoredRetention(BackupRetentionController controller, Consumer<String> warning) {
+        if (controller.deliverStored().isEmpty()) {
+            warning.accept(RETENTION_NOT_READ);
+        }
+    }
+
+    /** The open project's folder, or empty when no saved project is open. */
+    private Optional<Path> currentProjectDirectory() {
+        if (projectManager == null || projectManager.getCurrentProject() == null) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(projectManager.getCurrentProject().projectPath());
     }
 
     /**
-     * Story 191 / 308 — "Backup Retention…" deep-links into the Settings
-     * surface focused on the Backups category (§7 Stage 4; the standalone
-     * dialog is absorbed). Applying edits still persists through
-     * {@link com.benesquivelmusic.daw.core.persistence.backup.BackupRetentionPolicyStore}
-     * and prunes {@code ~/.daw/autosaves/} immediately.
+     * Story 191 / 308 / 335 — "Checkpoint Retention…" deep-links into
+     * Settings ▸ Backups; Apply delivers the policy to the CheckpointManager
+     * (applied to the open project's checkpoints/ after its next checkpoint)
+     * and saves it to {@code ~/.daw/backup-retention.json}.
      */
     void onOpenBackupSettings() {
         status("Opening backup settings...", DawIcon.FOLDER);
-        if (backupRetentionController == null) {
-            // Defensive: should always be created during initialize().
-            backupRetentionController = new BackupRetentionController();
-        }
         SettingsDialog dialog = createSettingsDialog();
         dialog.selectCategory("backups");
         dialog.showAndWait();
@@ -6186,7 +6397,7 @@ public final class MainController {
     }
 
     private void applyLiveSettings(SettingsModel model, String previousPluginPaths) {
-        LiveSettingsApplier.apply(model, previousPluginPaths, rootPane.getScene(),
-                projectManager, project, pluginRegistry, projectActionsAllowed());
+        LiveSettingsApplier.apply(model, previousPluginPaths, ThemeManager.getDefault(),
+                projectManager, project, pluginRegistry);
     }
 }

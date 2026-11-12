@@ -116,29 +116,55 @@ import java.util.logging.Logger;
  * <h2>Retention</h2>
  * <p>{@link #start} seeds the index from the directory (ruling F5, book
  * §4.8): every name the grammar accepts counts, across sessions, and nothing
- * is pruned at open. After each write checkpoints are deleted until at most
- * {@link AutoSaveConfig#maxCheckpoints()} remain (ruling H4): first the
- * seeded ones, oldest first by {@link CheckpointFileName#ORDER}; only when
- * none is left, this generation's own writes, oldest written first — every
- * seeded file predates every file this generation wrote, which needs no
- * clock, zone or daylight-saving rule to know. The checkpoint just written,
- * and the one holding the last checkpointed revision, are never deleted. A
- * name the grammar rejects is never counted or deleted. Seeding also deletes
- * the stray temps a hard kill can leave — exactly the
- * {@link AtomicFileWriter}'s temps of checkpoint names (ruling G6) — while
- * the write guard passes.</p>
+ * is pruned at open. The index keeps the checkpoints in the order they were
+ * written in, as far as the folder records it ({@link CheckpointOrder},
+ * story 332): first the names the folder's ordering fact does not cover, by
+ * {@link CheckpointFileName#ORDER} — the stamps in their names, the order
+ * that is right for folders whose indices restarted at every launch before
+ * story 331 — then the names it covers, by index. After each write, inside
+ * the write's claim, the prune runs in one of two modes:</p>
+ * <ul>
+ *   <li><strong>The cap</strong>, while no
+ *       {@linkplain #setRetentionPolicy retention policy} is set:
+ *       checkpoints are deleted until at most
+ *       {@link AutoSaveConfig#maxCheckpoints()} remain (ruling H4): first the
+ *       seeded ones, in the index's order; only when none is left, this
+ *       generation's own writes, oldest written first — every seeded file
+ *       predates every file this generation wrote, which needs no clock,
+ *       zone or daylight-saving rule to know.</li>
+ *   <li><strong>The policy</strong> (story 335): a
+ *       {@link BackupRetentionPolicy} replaces the cap. It ranks the
+ *       checkpoints by the prune's order — the seeded ones in the index's
+ *       order, then this generation's own writes by index — never by a file
+ *       time and never by a stamp alone; the stamps, read in the system zone
+ *       the names are written in, only key its hourly, daily and weekly
+ *       slots and its age cap ({@link BackupRetentionService}). What it
+ *       discards is deleted in the prune's order, the seeded ones first. A
+ *       checkpoint whose size cannot be read counts as 0 bytes, or, when it
+ *       is gone, as deleted; the pass goes on.</li>
+ * </ul>
+ * <p>In either mode the checkpoint just written, and the one holding the
+ * last checkpointed revision, are never deleted, and a name the grammar
+ * rejects — the ordering fact, a writer's temp, a stray file — is never
+ * counted or deleted. Seeding also deletes the stray temps a hard kill can
+ * leave — exactly the {@link AtomicFileWriter}'s temps of checkpoint names
+ * (ruling G6) — while the write guard passes.</p>
  * <p>A checkpoint that refuses deletion — held open by an antivirus scanner,
  * the search indexer or a sync client, or denied by its ACL — is skipped and
  * the prune goes on in the same order (ruling J1). It stays on disk and in
  * the index but no longer counts toward the cap, so {@code checkpoints/}
  * holds the cap plus each checkpoint that refuses. Each later prune retries
- * at most one of them, the one tried least recently, at its place in the
- * order; never in the prune that refused it, and without waiting. A prune
- * that starts at or below the cap, or stops before the retry's place,
- * retries none. Anything the delete of one file throws is a refusal; a file
- * already gone counts as deleted. A generation logs its first refusal at
- * {@code WARNING}, and every later refusal and a refused file's eventual
- * deletion at {@code FINE}; no listener hears of a refusal.</p>
+ * at most one of them, the one tried least recently — under a policy, the
+ * one tried least recently among those that prune's plan discards, so one
+ * the plan now keeps never holds the retry from the others — at its place in
+ * the order; never in the prune that refused it, and without waiting. A
+ * prune that starts at or below the cap, stops before the retry's place, or
+ * — under a policy — discards none of them, retries none. Anything the
+ * delete of one file throws is a refusal; a file already gone counts as
+ * deleted. A
+ * generation logs its first refusal at {@code WARNING}, and every later
+ * refusal and a refused file's eventual deletion at {@code FINE}; no
+ * listener hears of a refusal.</p>
  *
  * <h2>Autosave disabled</h2>
  * <p>{@link AutoSaveConfig#enabled()} turns off the automatic checkpoints —
@@ -239,6 +265,14 @@ public final class CheckpointManager {
         void delete(Path file) throws IOException;
     }
 
+    /** Reads a checkpoint's size for a policy prune; a test fails it to pin an unreadable size. */
+    @FunctionalInterface
+    interface FileSizer {
+
+        /** @throws IOException if the size of {@code file} cannot be read ({@link NoSuchFileException} when it is gone) */
+        long size(Path file) throws IOException;
+    }
+
     private static final Logger LOG = Logger.getLogger(CheckpointManager.class.getName());
 
     private static final String CHECKPOINT_DIR_NAME = "checkpoints";
@@ -277,6 +311,12 @@ public final class CheckpointManager {
     /** Test seam: how a generation's seeding reads its folder's fingerprint (story 333). */
     void setFolderFingerprints(Function<Path, FolderFingerprint> fingerprints) {
         folderFingerprints = Objects.requireNonNull(fingerprints, "fingerprints must not be null");
+    }
+    private volatile FileSizer fileSizes = Files::size;
+
+    /** Test seam: how a policy prune reads the size of each checkpoint (story 335). */
+    void setFileSizes(FileSizer sizes) {
+        fileSizes = Objects.requireNonNull(sizes, "sizes must not be null");
     }
     private final AtomicReference<java.util.function.LongSupplier> journalSequenceSource = new AtomicReference<>();
 
@@ -813,9 +853,11 @@ public final class CheckpointManager {
 
     /**
      * Returns the checkpoint files of the current (or last) project's
-     * directory the index holds — seeded and written, oldest first by
-     * {@link CheckpointFileName#ORDER}: the stamps in their names, which a
-     * clock or zone change can set apart from the order they were written in.
+     * directory the index holds — seeded and written, oldest first in the
+     * index's order ({@link CheckpointOrder}): the names the folder's
+     * ordering fact does not cover by {@link CheckpointFileName#ORDER}, the
+     * stamps in their names, which a clock or zone change can set apart from
+     * the order they were written in; then the names it covers, by index.
      *
      * @return an unmodifiable list
      */
@@ -834,24 +876,30 @@ public final class CheckpointManager {
     }
 
     /**
-     * Sets a {@link BackupRetentionPolicy} to apply on every autosave in
-     * addition to the simple {@code maxCheckpoints} cap. When non-{@code null}
-     * the grandfather-father-son rotation from
-     * {@link BackupRetentionService} is run on the checkpoint directory after
-     * each successful checkpoint, so older snapshots are kept as
-     * hourly / daily / weekly milestones.
+     * Sets the {@link BackupRetentionPolicy} that governs the open project's
+     * {@code checkpoints/} (story 335, ruling R1). With a policy set, the
+     * policy replaces {@link AutoSaveConfig#maxCheckpoints()}; it runs after
+     * every checkpoint write, of whatever origin, inside the write's claim
+     * (see the class note, "Retention"); setting it prunes nothing. The next
+     * write's prune is the first to use it; a prune already running keeps the
+     * policy it read. A manager never given a policy prunes by the cap.
      *
-     * @param policy the policy to apply, or {@code null} to disable
-     *               retention-based pruning (legacy {@code maxCheckpoints}
-     *               behaviour only)
+     * <p>Callable from any thread: a volatile write, with no lock and no
+     * I/O.</p>
+     *
+     * @param policy the policy to apply from the next prune on
      */
     public void setRetentionPolicy(BackupRetentionPolicy policy) {
-        this.retentionPolicy = policy;
+        this.retentionPolicy = Objects.requireNonNull(policy, "policy must not be null");
     }
 
-    /** Returns the active retention policy, or {@code null} if not set. */
-    public BackupRetentionPolicy getRetentionPolicy() {
-        return retentionPolicy;
+    /**
+     * Returns the retention policy the prunes apply.
+     *
+     * @return the policy, or empty while none was set and the prunes apply the cap
+     */
+    public Optional<BackupRetentionPolicy> getRetentionPolicy() {
+        return Optional.ofNullable(retentionPolicy);
     }
 
     // ── The cadence (scheduler thread) ──────────────────────────────────────
@@ -1892,18 +1940,21 @@ public final class CheckpointManager {
     }
 
     /**
-     * Deletes checkpoints until the cap holds (rulings F5, H4, J1): the
-     * seeded ones first, oldest first by {@link CheckpointFileName#ORDER};
-     * then this generation's own writes, oldest written first.
-     * {@code written} — the checkpoint just written — and the file holding
-     * the greatest captured journal boundary are never deleted. An older
-     * capture completing late may therefore retain one extra checkpoint
+     * Deletes checkpoints after a write (rulings F5, H4, J1): by the cap
+     * while no retention policy is set, by the policy once one is
+     * ({@link #prunePolicy}, story 335), in the prune's order — the seeded
+     * ones first, in the index's order ({@link CheckpointOrder}); then this
+     * generation's own writes, oldest written first. The policy is read once
+     * per pass. {@code written} — the checkpoint just written — and the file
+     * holding the greatest captured journal boundary are never deleted. An
+     * older capture completing late may therefore retain one extra checkpoint
      * until a newer capture supersedes both protected files. A file whose delete
      * throws — any {@link Throwable}, an {@link Error} too — is skipped and
      * marked refused, and the pass goes on: a refused file stays in the index
      * and on disk, and the cap counts the index less its refused files. Each
      * pass retries at most one file refused in an earlier pass — the one
-     * tried least recently, at its place in the order — and never one it
+     * tried least recently, under a policy the one tried least recently among
+     * those its plan discards, at its place in the order — and never one it
      * refused itself; a pass that starts at or below the cap, or stops before
      * the retry's place, retries none, and none waits. A file already gone
      * ({@link NoSuchFileException}) counts as deleted. A failure outside the
@@ -1918,7 +1969,6 @@ public final class CheckpointManager {
      */
     private void prune(Session pruning, Path written) {
         try {
-            int cap = config.maxCheckpoints();
             Set<Path> spared = new HashSet<>();
             spared.add(written);
             Checkpointed done = pruning.checkpointed;
@@ -1926,28 +1976,12 @@ public final class CheckpointManager {
                 spared.add(done.file());
             }
             pruning.refusedDeletes.removeIf(refused -> !pruning.index.containsKey(refused));
-            Optional<CheckpointFileName> retry = pruning.refusedDeletes.isEmpty()
-                    ? Optional.empty()
-                    : Optional.of(pruning.refusedDeletes.getFirst());
-            Set<CheckpointFileName> attempted = new HashSet<>();
-            for (Map.Entry<CheckpointFileName, Path> candidate : pruneOrder(pruning)) {
-                if (pruning.index.size() - pruning.refusedDeletes.size() <= cap || !mayStillPrune(pruning)) {
-                    break;
-                }
-                CheckpointFileName name = candidate.getKey();
-                boolean retried = pruning.refusedDeletes.contains(name);
-                // A file refused in an earlier pass is tried only as this pass's one retry.
-                if (spared.contains(candidate.getValue()) || (retried && !retry.equals(Optional.of(name)))) {
-                    continue;
-                }
-                attempted.add(name);
-                if (deleteOrRefuse(pruning, candidate.getValue(), name, cap, retried)) {
-                    pruning.index.remove(name);
-                    pruning.refusedDeletes.remove(name);
-                    pruning.deletedCertifications.add(name.fileName());
-                }
+            BackupRetentionPolicy policy = this.retentionPolicy;
+            if (policy == null) {
+                pruneToTheCap(pruning, spared);
+            } else {
+                prunePolicy(pruning, policy, spared);
             }
-            applyRetentionPolicy(pruning, spared, attempted);
             if (mayStillPrune(pruning)) compactCertifications(pruning);
         } catch (Throwable failure) {
             LOG.log(Level.WARNING, failure, () -> "Pruning the checkpoints of " + pruning.projectDirectory
@@ -1958,14 +1992,47 @@ public final class CheckpointManager {
     }
 
     /**
+     * The cap mode of {@link #prune}, while no retention policy is set:
+     * deletes in the prune's order, skipping {@code spared}, until the index
+     * less its refused files is at the cap (ruling H4); a file refused in an
+     * earlier pass is tried only as the pass's one retry, the one tried least
+     * recently (ruling J1).
+     */
+    private void pruneToTheCap(Session pruning, Set<Path> spared) {
+        Optional<CheckpointFileName> retry = pruning.refusedDeletes.isEmpty()
+                ? Optional.empty()
+                : Optional.of(pruning.refusedDeletes.getFirst());
+        int cap = config.maxCheckpoints();
+        String limit = "more than " + cap + " checkpoints";
+        for (Map.Entry<CheckpointFileName, Path> candidate : pruneOrder(pruning)) {
+            if (pruning.index.size() - pruning.refusedDeletes.size() <= cap || !mayStillPrune(pruning)) {
+                break;
+            }
+            CheckpointFileName name = candidate.getKey();
+            boolean retried = pruning.refusedDeletes.contains(name);
+            // A file refused in an earlier pass is tried only as this pass's one retry.
+            if (spared.contains(candidate.getValue()) || (retried && !retry.equals(Optional.of(name)))) {
+                continue;
+            }
+            if (deleteOrRefuse(pruning, candidate.getValue(), name, limit, retried)) {
+                pruning.index.remove(name);
+                pruning.refusedDeletes.remove(name);
+                pruning.deletedCertifications.add(name.fileName());
+            }
+        }
+    }
+
+    /**
      * Deletes one checkpoint the prune chose and returns whether it is gone
      * ({@link NoSuchFileException} counts as gone). A delete that throws
      * anything else — any {@link Throwable}, an {@link Error} too (ruling J1:
      * a delete that throws skips that file) — marks it refused, now the most
      * recently tried, and logs it: the generation's first refusal at
-     * {@code WARNING}, every later one at {@code FINE}.
+     * {@code WARNING}, naming the {@code limit} the folder then exceeds,
+     * every later one at {@code FINE}.
      */
-    private boolean deleteOrRefuse(Session pruning, Path file, CheckpointFileName name, int cap, boolean retried) {
+    private boolean deleteOrRefuse(Session pruning, Path file, CheckpointFileName name, String limit,
+                                   boolean retried) {
         try {
             deleter.delete(file);
         } catch (NoSuchFileException gone) {
@@ -1978,7 +2045,7 @@ public final class CheckpointManager {
             } else {
                 pruning.refusalReported = true;
                 LOG.log(Level.WARNING, refused, () -> "Could not delete the checkpoint " + file + ": " + refused
-                        + ". checkpoints/ holds more than " + cap + " checkpoints until it can be deleted; it is"
+                        + ". checkpoints/ holds " + limit + " until it can be deleted; it is"
                         + " retried after later checkpoints, and further refusals this session are logged at FINE");
             }
             return false;
@@ -1990,11 +2057,14 @@ public final class CheckpointManager {
     }
 
     /**
-     * The index in the order the prune deletes it (ruling H4): the seeded
-     * files by {@link CheckpointFileName#ORDER} — the stamp order that is
-     * right for folders whose indices restarted at every launch before story
-     * 331 — then this generation's own writes by ascending index, which is
-     * the order they were written in. The display order is not this one.
+     * The index in the order the prune deletes it, oldest first (ruling H4):
+     * the seeded files in the index's order ({@link CheckpointOrder}) — those
+     * the folder's ordering fact does not cover by
+     * {@link CheckpointFileName#ORDER}, the stamp order that is right for
+     * folders whose indices restarted at every launch before story 331, then
+     * those it covers by index — then this generation's own writes by
+     * ascending index, which is the order they were written in. Reversed, it
+     * is a policy prune's recency. The display order is not this one.
      */
     private static List<Map.Entry<CheckpointFileName, Path>> pruneOrder(Session pruning) {
         List<Map.Entry<CheckpointFileName, Path>> order = new ArrayList<>();
@@ -2013,33 +2083,86 @@ public final class CheckpointManager {
     }
 
     /**
-     * Applies the optional {@link BackupRetentionPolicy} grandfather-father-son
-     * rotation to the checkpoint directory, then drops what it deleted from
-     * the index. Best effort, as before story 331 (story 335 delivers the
-     * policy to this directory).
+     * The policy mode of {@link #prune} (story 335, ruling R1.5): plans the
+     * index with {@link BackupRetentionService} and deletes what the plan
+     * discards; {@link AutoSaveConfig#maxCheckpoints()} is not applied.
+     *
+     * <p>Only the index is planned — names {@link CheckpointFileName#parse}
+     * accepted — so the ordering fact, a writer's temp and a stray file are
+     * never counted or deleted. Recency is {@link #pruneOrder} reversed, never
+     * a file time and never a stamp alone; each name's stamp, read in the
+     * system zone names are written in, keys only its milestone slot and its
+     * age against the clock. {@code spared} is always kept and counts toward
+     * the byte cap. A checkpoint whose size cannot be read counts as 0 bytes
+     * and is planned like any other, logged at {@code FINE}; one already gone
+     * ({@link NoSuchFileException}), unless spared, is booked exactly as a
+     * delete that found it gone and is not planned.</p>
+     *
+     * <p>What the plan discards is deleted in the prune's order, the seeded
+     * checkpoints first (ruling H4); a file refused in an earlier pass is
+     * tried only as the pass's one retry (ruling J1): the one tried least
+     * recently among those <em>this</em> pass's plan discards, chosen after
+     * planning, so a refused file the plan now keeps — it took a milestone
+     * slot, or the policy was raised — never holds the retry from the refused
+     * files still owed a delete. The pass is never abandoned for one file.
+     * Like the cap, it prunes the write of a generation that {@link #stop()}
+     * ended while the write was claimed, until {@code stop()}'s bound has
+     * passed.</p>
      */
-    private void applyRetentionPolicy(Session pruning, Set<Path> spared, Set<CheckpointFileName> attempted) {
-        BackupRetentionPolicy policy = this.retentionPolicy;
-        if (policy == null || pruning.ended) {
-            return;
-        }
-        BackupRetentionService.Plan plan;
-        try {
-            List<BackupRetentionService.Snapshot> snapshots = new ArrayList<>();
-            for (Path file : pruning.index.values()) {
-                if (Files.isRegularFile(file)) snapshots.add(new BackupRetentionService.Snapshot(file,
-                        Files.getLastModifiedTime(file).toInstant(), Files.size(file)));
+    private void prunePolicy(Session pruning, BackupRetentionPolicy policy, Set<Path> spared) {
+        List<Map.Entry<CheckpointFileName, Path>> order = pruneOrder(pruning);
+        ZoneId zone = ZoneId.systemDefault();
+        List<BackupRetentionService.Snapshot> newestFirst = new ArrayList<>(order.size());
+        for (Map.Entry<CheckpointFileName, Path> entry : order.reversed()) {
+            CheckpointFileName name = entry.getKey();
+            Path file = entry.getValue();
+            long size;
+            try {
+                size = fileSizes.size(file);
+            } catch (NoSuchFileException gone) {
+                if (!spared.contains(file)) {
+                    LOG.fine(() -> "The checkpoint " + file + " is gone; it leaves the index");
+                    pruning.index.remove(name);
+                    pruning.refusedDeletes.remove(name);
+                    pruning.deletedCertifications.add(name.fileName());
+                    continue;
+                }
+                LOG.log(Level.FINE, gone, () -> "Could not read the size of the checkpoint " + file
+                        + ", which is kept; it counts as 0 bytes");
+                size = 0L;
+            } catch (IOException unreadable) {
+                LOG.log(Level.FINE, unreadable, () -> "Could not read the size of the checkpoint " + file
+                        + "; it counts as 0 bytes");
+                size = 0L;
             }
-            plan = BackupRetentionService.plan(snapshots, policy, clock.instant());
-        } catch (IOException ignored) {
-            // best-effort cleanup
-            return;
+            newestFirst.add(new BackupRetentionService.Snapshot(file, name.instantIn(zone), size));
         }
-        for (BackupRetentionService.Snapshot snapshot : plan.discarded()) {
-            if (!mayStillPrune(pruning)) break;
-            CheckpointFileName name = CheckpointFileName.parse(snapshot.path().getFileName().toString()).orElseThrow();
-            if (spared.contains(snapshot.path()) || attempted.contains(name)) continue;
-            if (deleteOrRefuse(pruning, snapshot.path(), name, config.maxCheckpoints(), pruning.refusedDeletes.contains(name))) {
+        BackupRetentionService.Plan plan =
+                BackupRetentionService.plan(newestFirst, spared, policy, clock.instant(), zone);
+        Set<Path> discarded = new HashSet<>();
+        plan.discarded().forEach(snapshot -> discarded.add(snapshot.path()));
+        Optional<CheckpointFileName> retry = pruning.refusedDeletes.stream()
+                .filter(refused -> {
+                    Path file = pruning.index.get(refused);
+                    return file != null && discarded.contains(file) && !spared.contains(file);
+                })
+                .findFirst();
+        String limit = "more checkpoints than the retention policy keeps";
+        for (Map.Entry<CheckpointFileName, Path> candidate : order) {
+            Path file = candidate.getValue();
+            if (!discarded.contains(file) || spared.contains(file)) {
+                continue;
+            }
+            if (!mayStillPrune(pruning)) {
+                break;
+            }
+            CheckpointFileName name = candidate.getKey();
+            boolean retried = pruning.refusedDeletes.contains(name);
+            // A file refused in an earlier pass is tried only as this pass's one retry.
+            if (retried && !retry.equals(Optional.of(name))) {
+                continue;
+            }
+            if (deleteOrRefuse(pruning, file, name, limit, retried)) {
                 pruning.index.remove(name);
                 pruning.refusedDeletes.remove(name);
                 pruning.deletedCertifications.add(name.fileName());
@@ -2207,10 +2330,16 @@ public final class CheckpointManager {
         /** Written on the writer thread, read by the getters. */
         volatile IndexView view = IndexView.EMPTY;
 
-        /** Writer-confined: the checkpoint files of the directory by {@link CheckpointFileName#ORDER}. */
+        /** Writer-confined: the names the folder's ordering fact covers ({@link CheckpointOrder}). */
         final Set<String> certified = new HashSet<>();
         final Set<String> deletedCertifications = new HashSet<>();
         boolean certificationEligible;
+
+        /**
+         * Writer-confined: the checkpoint files of the directory, oldest first by
+         * {@link CheckpointOrder#comparator}: the names {@link #certified} does not
+         * cover by {@link CheckpointFileName#ORDER}, then those it covers by index.
+         */
         final TreeMap<CheckpointFileName, Path> index = new TreeMap<>(CheckpointOrder.comparator(certified));
 
         /** Writer-confined: the highest index seeded or written. */

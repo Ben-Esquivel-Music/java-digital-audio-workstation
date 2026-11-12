@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.app.ui.icons.DawgIcon;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import com.benesquivelmusic.daw.app.ui.theme.UiScale;
 
 import javafx.application.Platform;
 import javafx.beans.property.ReadOnlyIntegerProperty;
@@ -244,10 +245,12 @@ public final class FirstRunWizard extends BorderPane implements AutoCloseable {
             case ThemeManager.PREF_KEY -> List.of(ThemeManager.Theme.values());
             case DensityManager.PREF_KEY -> List.of(DensityMode.values());
             case "project.autoSaveIntervalSeconds" -> List.of(30, 60, 120, 300, 600);
+            // Story 335 (studio ruling R6) — the one canonical step list.
+            case "appearance.uiScale" -> UiScale.factors();
             default -> null; // device combos wait for asynchronous discovery
         };
-        double sliderMin = "appearance.uiScale".equals(descriptor.id()) ? 0.5 : 0;
-        double sliderMax = "appearance.uiScale".equals(descriptor.id()) ? 3.0 : 1;
+        double sliderMin = 0;
+        double sliderMax = 1;
         StringConverter<Object> converter = switch (descriptor.id()) {
             case "audio.backend", "audio.inputDevice", "audio.outputDevice" ->
                     displayConverter(value -> value instanceof String name && name.isBlank()
@@ -258,6 +261,9 @@ public final class FirstRunWizard extends BorderPane implements AutoCloseable {
             case DensityManager.PREF_KEY ->
                     displayConverter(value -> value instanceof DensityMode mode
                             ? DensityManager.displayName(mode) : String.valueOf(value));
+            case "appearance.uiScale" ->
+                    displayConverter(value -> value instanceof Double factor
+                            ? UiScale.nearest(factor).label() : String.valueOf(value));
             default -> null;
         };
         return new SettingRow.ControlHints(options, sliderMin, sliderMax, converter,

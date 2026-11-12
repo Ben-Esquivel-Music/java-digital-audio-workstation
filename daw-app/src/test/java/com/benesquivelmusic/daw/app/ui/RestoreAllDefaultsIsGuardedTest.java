@@ -13,6 +13,8 @@ import javafx.scene.input.KeyCombination;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -97,6 +99,9 @@ class RestoreAllDefaultsIsGuardedTest {
                     nullDefaultAction, customOnNullDefault);
 
             SettingsDialog dialog = new SettingsDialog(model);
+            // Story 335 (studio ruling-2 Q1) — Restore All is a BULK Apply.
+            List<SettingsDialog.DefaultTempoEdit> tempoEdits = new ArrayList<>();
+            dialog.setDefaultTempoEditListener(tempoEdits::add);
             AtomicInteger prompts = new AtomicInteger();
             dialog.setRestoreAllConfirm(() -> {
                 prompts.incrementAndGet();
@@ -131,6 +136,7 @@ class RestoreAllDefaultsIsGuardedTest {
             assertThat(shell.pendingEdits())
                     .as("cancel leaves not even pending state behind")
                     .isEmpty();
+            assertThat(tempoEdits).as("cancel hands on no default tempo").isEmpty();
 
             // ── Confirm: every descriptor resets AND persists. ──
             dialog.setRestoreAllConfirm(() -> {
@@ -139,6 +145,8 @@ class RestoreAllDefaultsIsGuardedTest {
             });
             restoreAll.fire();
             assertThat(prompts.get()).isEqualTo(2);
+            assertThat(tempoEdits).as("one bulk edit of the restored default tempo")
+                    .containsExactly(new SettingsDialog.DefaultTempoEdit(SettingsModel.DEFAULT_TEMPO, true));
 
             SettingsModel defaults = newModel();
             assertThat(model.getDefaultTempo())

@@ -1,5 +1,8 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.settings.BackupSettingsAccess;
+import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
+import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.backup.BackupRetentionPolicyStore;
 import com.benesquivelmusic.daw.sdk.persistence.BackupRetentionPolicy;
 
@@ -7,197 +10,148 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.FileTime;
 import java.time.Duration;
-import java.time.Instant;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
+import java.util.ArrayDeque;
+import java.util.Optional;
+import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Story 191 — verifies that {@link BackupRetentionController} applies the
- * persisted policy to an autosaves directory, schedules a periodic prune,
- * and that the policy survives a "restart" via
- * {@link BackupRetentionPolicyStore}.
+ * Story 335 (studio ruling R1) — {@link BackupRetentionController} delivers
+ * the checkpoint retention policy to the {@link CheckpointManager} and keeps
+ * it in the policy store; it targets no directory and prunes nothing itself.
+ * Startup delivers the stored policy, Apply delivers now and saves off the
+ * caller's thread with saves chained so the last Apply wins, a failed save is
+ * reported through the Settings adapter, and the application's exit waits for
+ * a save still running ({@code PendingWrites}).
  *
- * <p>None of these assertions require a JavaFX toolkit — the controller's
- * applyPolicy/saveAndApply pathways are purely IO + the
- * {@code BackupRetentionService} engine, so the headless unit test can run
- * without a display.</p>
+ * <p>No JavaFX toolkit is needed: the saves run on an injected executor.</p>
  */
 class BackupRetentionControllerTest {
 
+    private static final BackupRetentionPolicy CUSTOM = new BackupRetentionPolicy(
+            3, 5, 7, 2, Duration.ofDays(42), 123L * 1024L * 1024L);
+
     @Test
-    void applyPolicyWithNoBucketsDiscardsAllSnapshots(@TempDir Path tempDir) throws IOException {
-        Path autosaves = Files.createDirectories(tempDir.resolve("autosaves"));
-        Path globalPolicy = tempDir.resolve("backup-retention.json");
+    void startupDeliversTheDefaultWhenNothingIsStored(@TempDir Path tempDir) {
+        CheckpointManager checkpoints = new CheckpointManager(AutoSaveConfig.DEFAULT);
+        BackupRetentionController controller = new BackupRetentionController(
+                new BackupRetentionPolicyStore(tempDir.resolve("backup-retention.json")), checkpoints, Runnable::run);
 
-        // One "fresh" snapshot (now) and one "old" (2 days ago).
-        Path fresh = Files.writeString(autosaves.resolve("fresh.daw"), "x");
-        Path old = Files.writeString(autosaves.resolve("old.daw"), "x");
-        Files.setLastModifiedTime(old,
-                FileTime.from(Instant.now().minus(Duration.ofDays(2))));
-
-        BackupRetentionPolicyStore store = new BackupRetentionPolicyStore(globalPolicy);
-        ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
-        BackupRetentionController controller =
-                new BackupRetentionController(store, autosaves, scheduler, 60L);
-        try {
-            // All bucket counts are zero, so no snapshot qualifies for any
-            // retention bucket — both are discarded regardless of age.
-            BackupRetentionPolicy policy = new BackupRetentionPolicy(
-                    0, 0, 0, 0,
-                    Duration.ofDays(1),
-                    0L);
-            int candidates = controller.saveAndApply(policy);
-
-            assertThat(candidates).isEqualTo(2);
-            assertThat(Files.exists(old)).isFalse();
-            assertThat(Files.exists(fresh)).isFalse();
-        } finally {
-            controller.shutdown();
-        }
+        assertThat(checkpoints.getRetentionPolicy()).as("a manager never given a policy uses the cap").isEmpty();
+        assertThat(controller.deliverStored()).contains(BackupRetentionPolicy.DEFAULT);
+        assertThat(checkpoints.getRetentionPolicy()).contains(BackupRetentionPolicy.DEFAULT);
+        assertThat(controller.currentPolicy()).isEqualTo(BackupRetentionPolicy.DEFAULT);
     }
 
     @Test
-    void applyPolicyKeepsRecentAndDropsOnlyOldFiles(@TempDir Path tempDir) throws IOException {
-        Path autosaves = Files.createDirectories(tempDir.resolve("autosaves"));
-        Path globalPolicy = tempDir.resolve("backup-retention.json");
+    void startupDeliversTheStoredPolicyAcrossARestart(@TempDir Path tempDir) {
+        Path file = tempDir.resolve("backup-retention.json");
+        BackupRetentionController first = new BackupRetentionController(
+                new BackupRetentionPolicyStore(file), new CheckpointManager(AutoSaveConfig.DEFAULT), Runnable::run);
+        first.deliverAndSave(CUSTOM).join();
 
-        Path fresh = Files.writeString(autosaves.resolve("fresh.daw"), "x");
-        Path old = Files.writeString(autosaves.resolve("old.daw"), "x");
-        Files.setLastModifiedTime(old,
-                FileTime.from(Instant.now().minus(Duration.ofDays(2))));
+        CheckpointManager restarted = new CheckpointManager(AutoSaveConfig.DEFAULT);
+        BackupRetentionController second = new BackupRetentionController(
+                new BackupRetentionPolicyStore(file), restarted, Runnable::run);
 
-        BackupRetentionPolicyStore store = new BackupRetentionPolicyStore(globalPolicy);
-        ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
-        BackupRetentionController controller =
-                new BackupRetentionController(store, autosaves, scheduler, 60L);
-        try {
-            // keepRecent=10 means any age-eligible file is kept, the
-            // 2-day-old file is dropped because of maxAge.
-            BackupRetentionPolicy policy = new BackupRetentionPolicy(
-                    10, 0, 0, 0,
-                    Duration.ofDays(1),
-                    0L);
-            controller.saveAndApply(policy);
-
-            assertThat(Files.exists(fresh)).isTrue();
-            assertThat(Files.exists(old)).isFalse();
-        } finally {
-            controller.shutdown();
-        }
+        assertThat(second.deliverStored()).contains(CUSTOM);
+        assertThat(restarted.getRetentionPolicy()).contains(CUSTOM);
     }
 
     @Test
-    void startSchedulesPeriodicTaskOnExecutor(@TempDir Path tempDir) throws Exception {
-        Path autosaves = Files.createDirectories(tempDir.resolve("autosaves"));
-        Path globalPolicy = tempDir.resolve("backup-retention.json");
-        BackupRetentionPolicyStore store = new BackupRetentionPolicyStore(globalPolicy);
+    void applyDeliversNowAndSavesOnTheSaveExecutorWithTheLastApplyWinning(@TempDir Path tempDir) throws IOException {
+        Path file = tempDir.resolve("backup-retention.json");
+        CheckpointManager checkpoints = new CheckpointManager(AutoSaveConfig.DEFAULT);
+        Queue<Runnable> saves = new ArrayDeque<>();
+        Executor queued = saves::add;
+        BackupRetentionController controller = new BackupRetentionController(
+                new BackupRetentionPolicyStore(file), checkpoints, queued);
+        BackupRetentionPolicy second = CUSTOM.withKeepRecent(9);
 
-        // Recording scheduler: captures scheduleAtFixedRate parameters and
-        // never actually runs the task. This proves the controller wires
-        // the periodic prune through ScheduledExecutorService correctly,
-        // without making the test sleep for 60 seconds.
-        AtomicInteger scheduleCalls = new AtomicInteger();
-        AtomicLong recordedInitialDelay = new AtomicLong(-1);
-        AtomicLong recordedPeriod = new AtomicLong();
-        AtomicReference<TimeUnit> recordedUnit = new AtomicReference<>();
-        AtomicReference<Runnable> recordedTask = new AtomicReference<>();
+        CompletableFuture<Void> firstSave = controller.deliverAndSave(CUSTOM);
+        assertThat(checkpoints.getRetentionPolicy()).as("delivered at once, before any save ran").contains(CUSTOM);
+        CompletableFuture<Void> secondSave = controller.deliverAndSave(second);
+        assertThat(checkpoints.getRetentionPolicy()).contains(second);
+        assertThat(file).as("nothing saved on the caller's thread").doesNotExist();
+        assertThat(saves).as("the second save waits for the first").hasSize(1);
 
-        ScheduledExecutorService delegate = Executors.newScheduledThreadPool(1);
-        ScheduledExecutorService recording = new java.util.concurrent.ScheduledThreadPoolExecutor(1) {
-            @Override
-            public java.util.concurrent.ScheduledFuture<?> scheduleAtFixedRate(
-                    Runnable command, long initialDelay, long period, TimeUnit unit) {
-                scheduleCalls.incrementAndGet();
-                recordedInitialDelay.set(initialDelay);
-                recordedPeriod.set(period);
-                recordedUnit.set(unit);
-                recordedTask.set(command);
-                // return a no-op future so the controller can cancel it.
-                return delegate.scheduleAtFixedRate(() -> { },
-                        TimeUnit.HOURS.toMillis(1), TimeUnit.HOURS.toMillis(1),
-                        TimeUnit.MILLISECONDS);
-            }
-        };
-
-        BackupRetentionController controller =
-                new BackupRetentionController(store, autosaves, recording, 1L);
-        try {
-            controller.start();
-            assertThat(scheduleCalls).hasValue(1);
-            assertThat(recordedInitialDelay).as("initial delay should be 0 for immediate startup prune")
-                    .hasValue(0L);
-            assertThat(recordedPeriod).hasValue(1L);
-            assertThat(recordedUnit.get()).isEqualTo(TimeUnit.MINUTES);
-
-            // Running the captured task should be safe and exercise the
-            // real applyNow() path.
-            recordedTask.get().run();
-
-            // start() is idempotent.
-            controller.start();
-            assertThat(scheduleCalls).hasValue(1);
-        } finally {
-            controller.shutdown();
-            delegate.shutdownNow();
-        }
+        saves.remove().run();
+        assertThat(firstSave).isCompleted();
+        assertThat(BackupRetentionPolicyStore.load(file)).contains(CUSTOM);
+        saves.remove().run();
+        assertThat(secondSave).isCompleted();
+        assertThat(BackupRetentionPolicyStore.load(file)).as("the last Apply's policy is on disk").contains(second);
+        assertThat(controller.currentPolicy()).isEqualTo(second);
     }
 
     @Test
-    void policyPersistsAcrossRestartViaStore(@TempDir Path tempDir) throws IOException {
-        Path autosaves = Files.createDirectories(tempDir.resolve("autosaves"));
-        Path globalPolicy = tempDir.resolve("backup-retention.json");
+    void aFailedSaveCompletesExceptionallyKeepsTheDeliveryAndReachesTheAdapterCallback(@TempDir Path tempDir)
+            throws IOException {
+        Path notADirectory = Files.writeString(tempDir.resolve("blocker"), "x");
+        CheckpointManager checkpoints = new CheckpointManager(AutoSaveConfig.DEFAULT);
+        BackupRetentionController controller = new BackupRetentionController(
+                new BackupRetentionPolicyStore(notADirectory.resolve("backup-retention.json")), checkpoints,
+                Runnable::run);
 
-        BackupRetentionPolicy custom = new BackupRetentionPolicy(
-                3, 5, 7, 2,
-                Duration.ofDays(42),
-                123L * 1024L * 1024L);
+        CompletableFuture<Void> save = controller.deliverAndSave(CUSTOM);
+        assertThat(save).isCompletedExceptionally();
+        assertThatThrownBy(save::join).isInstanceOf(CompletionException.class)
+                .hasCauseInstanceOf(UncheckedIOException.class);
+        assertThat(checkpoints.getRetentionPolicy()).as("it applies until the application quits").contains(CUSTOM);
 
-        // Session 1: save a custom policy through the controller.
-        BackupRetentionPolicyStore store1 = new BackupRetentionPolicyStore(globalPolicy);
-        ScheduledExecutorService scheduler1 = Executors.newScheduledThreadPool(1);
-        BackupRetentionController c1 =
-                new BackupRetentionController(store1, autosaves, scheduler1, 60L);
-        try {
-            c1.saveAndApply(custom);
-        } finally {
-            c1.shutdown();
-        }
+        AtomicInteger failures = new AtomicInteger();
+        BackupSettingsAccess access = controller.settingsAccess(Optional::empty, failures::incrementAndGet);
+        access.applyPolicy(CUSTOM.withKeepDaily(1));
+        assertThat(failures).as("the adapter reports the failed save once").hasValue(1);
+        assertThat(checkpoints.getRetentionPolicy()).contains(CUSTOM.withKeepDaily(1));
 
-        // Session 2: brand-new store + controller backed by the same file,
-        // simulating an app restart. The persisted policy must be returned.
-        BackupRetentionPolicyStore store2 = new BackupRetentionPolicyStore(globalPolicy);
-        ScheduledExecutorService scheduler2 = Executors.newScheduledThreadPool(1);
-        BackupRetentionController c2 =
-                new BackupRetentionController(store2, autosaves, scheduler2, 60L);
-        try {
-            assertThat(c2.currentPolicy()).isEqualTo(custom);
-        } finally {
-            c2.shutdown();
-        }
+        assertThat(controller.deliverAndSave(CUSTOM.withKeepDaily(2)))
+                .as("a failed save does not stop the next one from running").isCompletedExceptionally();
     }
 
     @Test
-    void applyNowOnMissingDirectoryIsNoOp(@TempDir Path tempDir) throws IOException {
-        Path missing = tempDir.resolve("does-not-exist");
-        Path globalPolicy = tempDir.resolve("backup-retention.json");
-        BackupRetentionPolicyStore store = new BackupRetentionPolicyStore(globalPolicy);
-        ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
-        BackupRetentionController controller =
-                new BackupRetentionController(store, missing, scheduler, 60L);
-        try {
-            assertThat(controller.applyNow()).isZero();
-        } finally {
-            controller.shutdown();
-        }
+    void theAdapterReadsTheEnforcedPolicyAndTheProjectFolderAndAGoodSaveReportsNothing(@TempDir Path tempDir) {
+        CheckpointManager checkpoints = new CheckpointManager(AutoSaveConfig.DEFAULT);
+        BackupRetentionController controller = new BackupRetentionController(
+                new BackupRetentionPolicyStore(tempDir.resolve("backup-retention.json")), checkpoints, Runnable::run);
+        controller.deliverStored();
+        AtomicInteger failures = new AtomicInteger();
+        BackupSettingsAccess access = controller.settingsAccess(() -> Optional.of(tempDir), failures::incrementAndGet);
+
+        assertThat(access.currentPolicy()).isEqualTo(BackupRetentionPolicy.DEFAULT);
+        assertThat(access.projectDirectory()).contains(tempDir);
+        access.applyPolicy(CUSTOM);
+        assertThat(access.currentPolicy()).as("the policy the checkpoint manager enforces").isEqualTo(CUSTOM);
+        assertThat(failures).hasValue(0);
+    }
+
+    @Test
+    void theExitWaitsForASaveStillRunning(@TempDir Path tempDir) throws InterruptedException {
+        Queue<Runnable> saves = new ArrayDeque<>();
+        BackupRetentionController controller = new BackupRetentionController(
+                new BackupRetentionPolicyStore(tempDir.resolve("backup-retention.json")),
+                new CheckpointManager(AutoSaveConfig.DEFAULT), saves::add);
+        assertThat(controller.pending()).isFalse();
+        assertThat(controller.awaitUntil(System.nanoTime())).isTrue();
+
+        controller.deliverAndSave(CUSTOM);
+        assertThat(controller.pending()).isTrue();
+        assertThat(controller.awaitUntil(System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(20)))
+                .as("a deadline that passes while the save is still queued").isFalse();
+
+        saves.remove().run();
+        assertThat(controller.pending()).isFalse();
+        assertThat(controller.awaitUntil(System.nanoTime())).isTrue();
     }
 }

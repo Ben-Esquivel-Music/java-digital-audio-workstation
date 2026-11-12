@@ -2,70 +2,81 @@ package com.benesquivelmusic.daw.core.persistence.backup;
 
 import com.benesquivelmusic.daw.sdk.persistence.BackupRetentionPolicy;
 
-import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
-import java.time.temporal.IsoFields;
+import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
-import java.util.stream.Stream;
+import java.util.Set;
 
 /**
- * Applies a {@link BackupRetentionPolicy} to a directory of snapshot files.
+ * The plan of a {@link BackupRetentionPolicy} — the "grandfather-father-son"
+ * rotation — over a project's checkpoints: which to keep and which to
+ * discard (story 335, ruling R1.5). Pure and JavaFX-free: it reads no file
+ * and deletes nothing. {@code CheckpointManager} plans its index with it
+ * after every checkpoint write, inside the write's claim, and deletes what
+ * the plan discards.
  *
- * <p>On every new autosave the host calls {@link #prune(Path)} (or the static
- * {@link #plan(List, BackupRetentionPolicy, Instant)} for previewing) and the
- * service computes which snapshots to keep using a "grandfather-father-son"
- * bucket scheme:</p>
+ * <p>The caller ranks. The input is newest first in the order the
+ * checkpoints were written in, which the caller knows and a timestamp does
+ * not: a clock set back or forward, a time-zone change or a copy that
+ * rewrites file times never makes an old checkpoint look new. A snapshot's
+ * timestamp only keys its milestone slot and its age. In list order:</p>
  *
  * <ol>
- *   <li><b>recent</b> — the {@code keepRecent} most-recent snapshots are
- *       kept verbatim;</li>
- *   <li><b>hourly</b> — for the remaining snapshots, the most-recent within
- *       each hour bucket (relative to <i>now</i>) is kept up to
- *       {@code keepHourly} buckets;</li>
- *   <li><b>daily</b> — same, one per calendar day, up to {@code keepDaily};</li>
- *   <li><b>weekly</b> — one per ISO week, up to {@code keepWeekly}.</li>
+ *   <li><b>recent</b> — the first {@code keepRecent} snapshots, whatever
+ *       their age: the age cap never applies to them;</li>
+ *   <li><b>hourly</b>, <b>daily</b>, <b>weekly</b> — every other snapshot
+ *       no older than {@link BackupRetentionPolicy#maxAge()} takes the first
+ *       free slot it fits, trying its hour (counted back from <i>now</i>),
+ *       then its calendar day, then its calendar week (Monday to Sunday),
+ *       days and weeks read in the given zone; at most {@code keepHourly},
+ *       {@code keepDaily} and {@code keepWeekly} slots, and the first
+ *       snapshot in list order to reach a slot takes it. A timestamp after
+ *       <i>now</i> takes no slot;</li>
+ *   <li><b>spared</b> — every snapshot the caller must keep
+ *       ({@code alwaysKept}) is kept, whatever its age or slot;</li>
+ *   <li><b>bytes</b> — walking the kept snapshots in list order, their
+ *       sizes add up; once the total passes
+ *       {@link BackupRetentionPolicy#maxBytes()}, every later snapshot is
+ *       discarded unless the caller must keep it. One the caller must keep
+ *       is counted where it stands and is never discarded.</li>
  * </ol>
  *
- * <p>A snapshot that qualifies for multiple buckets is counted in the most
- * specific (most-recent) bucket only. Snapshots that match no bucket — or
- * that exceed {@link BackupRetentionPolicy#maxAge()} or push the cumulative
- * total above {@link BackupRetentionPolicy#maxBytes()} — are deleted.</p>
- *
- * <p>This service is also used to compute the live "what would be kept"
- * preview for the backup-settings UI without modifying any files.</p>
+ * <p>Every other snapshot is discarded.</p>
  */
 public final class BackupRetentionService {
 
     /** Categorisation of a single snapshot under a {@link BackupRetentionPolicy}. */
     public enum Bucket {
-        /** Among the N most-recent snapshots. */
+        /** Among the {@code keepRecent} newest snapshots, by the caller's write order. */
         RECENT,
-        /** Hourly milestone (one per hour, most-recent in slot). */
+        /** Hourly milestone (one per hour counted back from now, the newest in its slot). */
         HOURLY,
-        /** Daily milestone (one per calendar day, most-recent in slot). */
+        /** Daily milestone (one per calendar day, the newest in its slot). */
         DAILY,
-        /** Weekly milestone (one per ISO week, most-recent in slot). */
+        /** Weekly milestone (one per calendar week, Monday to Sunday, the newest in its slot). */
         WEEKLY,
+        /** Kept because the caller must keep it, though no other bucket holds it. */
+        SPARED,
         /** Discarded — no bucket assigned. */
         DISCARDED
     }
 
     /**
-     * A single snapshot file with its modification timestamp and size.
+     * A single snapshot with its timestamp and size.
      *
      * @param path      the snapshot file path
-     * @param timestamp the snapshot's logical timestamp (typically last-modified)
+     * @param timestamp the snapshot's logical timestamp, which keys its
+     *                  milestone slot and its age and never ranks it
      * @param sizeBytes the snapshot's size in bytes (must be {@code >= 0})
      */
     public record Snapshot(Path path, Instant timestamp, long sizeBytes) {
@@ -88,19 +99,19 @@ public final class BackupRetentionService {
         public boolean kept() { return bucket != Bucket.DISCARDED; }
     }
 
-    /** The aggregated outcome of applying a policy. */
+    /** The aggregated outcome of applying a policy; its decisions are in input order. */
     public record Plan(List<Decision> decisions) {
         public Plan {
             Objects.requireNonNull(decisions, "decisions must not be null");
             decisions = List.copyOf(decisions);
         }
 
-        /** Returns the snapshots that would be kept (non-discarded). */
+        /** Returns the snapshots that would be kept (non-discarded), in input order. */
         public List<Snapshot> kept() {
             return decisions.stream().filter(Decision::kept).map(Decision::snapshot).toList();
         }
 
-        /** Returns the snapshots that would be discarded. */
+        /** Returns the snapshots that would be discarded, in input order. */
         public List<Snapshot> discarded() {
             return decisions.stream().filter(d -> !d.kept()).map(Decision::snapshot).toList();
         }
@@ -116,205 +127,120 @@ public final class BackupRetentionService {
         }
     }
 
-    private final BackupRetentionPolicy policy;
-    private final ZoneId zone;
-
-    /** Creates a service that uses the JVM default time zone for bucketing. */
-    public BackupRetentionService(BackupRetentionPolicy policy) {
-        this(policy, ZoneId.systemDefault());
-    }
-
-    /** Creates a service with an explicit time zone (useful for tests). */
-    public BackupRetentionService(BackupRetentionPolicy policy, ZoneId zone) {
-        this.policy = Objects.requireNonNull(policy, "policy must not be null");
-        this.zone = Objects.requireNonNull(zone, "zone must not be null");
-    }
-
-    /** Returns the active policy. */
-    public BackupRetentionPolicy policy() {
-        return policy;
+    private BackupRetentionService() {
     }
 
     /**
-     * Scans {@code snapshotDirectory} for files, applies the policy, and
-     * attempts to delete any snapshots that are not retained.
+     * Pure (no-IO) policy evaluation (see the class note).
      *
-     * <p>Deletion is best-effort: failures to delete individual discarded
-     * snapshots are ignored and do not prevent the plan from being returned.
-     * An {@code IOException} is only thrown if the directory listing or the
-     * snapshot metadata reads fail.</p>
-     *
-     * @param snapshotDirectory directory containing snapshot files (non-recursive)
-     * @return the plan that was applied
-     * @throws IOException if directory listing or snapshot metadata reads fail
-     */
-    public Plan prune(Path snapshotDirectory) throws IOException {
-        Objects.requireNonNull(snapshotDirectory, "snapshotDirectory must not be null");
-        if (!Files.isDirectory(snapshotDirectory)) {
-            return new Plan(List.of());
-        }
-        List<Snapshot> snapshots = new ArrayList<>();
-        try (Stream<Path> stream = Files.list(snapshotDirectory)) {
-            for (Path p : (Iterable<Path>) stream::iterator) {
-                if (!Files.isRegularFile(p)) continue;
-                snapshots.add(new Snapshot(p,
-                        Files.getLastModifiedTime(p).toInstant(),
-                        Files.size(p)));
-            }
-        }
-        Plan plan = plan(snapshots, policy, Instant.now(), zone);
-        for (Snapshot s : plan.discarded()) {
-            try {
-                Files.deleteIfExists(s.path());
-            } catch (IOException ignored) {
-                // best-effort cleanup, consistent with CheckpointManager
-            }
-        }
-        return plan;
-    }
-
-    /**
-     * Pure (no-IO) policy evaluation, suitable for the live UI preview.
-     *
-     * <p>Uses the JVM default time zone.</p>
-     */
-    public static Plan plan(List<Snapshot> snapshots, BackupRetentionPolicy policy, Instant now) {
-        return plan(snapshots, policy, now, ZoneId.systemDefault());
-    }
-
-    /**
-     * Pure (no-IO) policy evaluation with an explicit zone.
-     *
-     * @param snapshots input snapshots in any order
-     * @param policy    the retention policy
-     * @param now       the reference "now" for age and recency comparisons
-     * @param zone      the zone used to compute hour/day/week bucket keys
+     * @param newestFirst the snapshots, newest first in the caller's write
+     *                    order; their timestamps only key milestone slots and age
+     * @param alwaysKept  the paths the caller must keep: kept whatever their
+     *                    age, slot or size, and counted toward the byte cap
+     * @param policy      the retention policy
+     * @param now         the reference "now" for ages and hour slots
+     * @param zone        the zone of calendar days and weeks
      * @return a plan describing which snapshots would be kept and discarded
      */
-    public static Plan plan(List<Snapshot> snapshots,
-                            BackupRetentionPolicy policy,
-                            Instant now,
-                            ZoneId zone) {
-        Objects.requireNonNull(snapshots, "snapshots must not be null");
+    public static Plan plan(List<Snapshot> newestFirst, Set<Path> alwaysKept,
+                            BackupRetentionPolicy policy, Instant now, ZoneId zone) {
+        Objects.requireNonNull(newestFirst, "newestFirst must not be null");
+        Objects.requireNonNull(alwaysKept, "alwaysKept must not be null");
         Objects.requireNonNull(policy, "policy must not be null");
         Objects.requireNonNull(now, "now must not be null");
         Objects.requireNonNull(zone, "zone must not be null");
 
-        // Sort newest-first so the "most recent in slot" is encountered first.
-        List<Snapshot> sorted = new ArrayList<>(snapshots);
-        sorted.sort(Comparator.comparing(Snapshot::timestamp).reversed());
+        int count = newestFirst.size();
+        Bucket[] buckets = new Bucket[count];
+        Arrays.fill(buckets, Bucket.DISCARDED);
 
-        // Age cap pre-filter: snapshots older than maxAge are immediately discarded
-        // and never compete for a bucket slot. This keeps the bucket counts honest.
-        List<Snapshot> ageEligible = new ArrayList<>(sorted.size());
-        List<Snapshot> tooOld = new ArrayList<>();
-        for (Snapshot s : sorted) {
-            if (policy.enforcesMaxAge()) {
-                Duration age = Duration.between(s.timestamp(), now);
-                if (!age.isNegative() && age.compareTo(policy.maxAge()) > 0) {
-                    tooOld.add(s);
-                    continue;
-                }
-            }
-            ageEligible.add(s);
+        int recent = Math.min(policy.keepRecent(), count);
+        for (int i = 0; i < recent; i++) {
+            buckets[i] = Bucket.RECENT;
         }
 
-        Map<Snapshot, Bucket> assigned = new LinkedHashMap<>();
-
-        // 1) Recent — top N regardless of bucket key.
-        int recentCount = Math.min(policy.keepRecent(), ageEligible.size());
-        for (int i = 0; i < recentCount; i++) {
-            assigned.put(ageEligible.get(i), Bucket.RECENT);
+        Milestones milestones = new Milestones(policy, now, zone);
+        for (int i = recent; i < count; i++) {
+            buckets[i] = milestones.slotOf(newestFirst.get(i).timestamp());
         }
 
-        // For hourly/daily/weekly we walk the remaining snapshots newest-first
-        // and pick the first one in each unique slot key, capped by the bucket
-        // count. Slot keys are computed against `now` so "the last 24 hours,
-        // 14 days, 8 weeks" semantics from the issue are preserved.
-        List<Snapshot> tail = ageEligible.subList(recentCount, ageEligible.size());
-
-        Map<Long, Snapshot> hourlySlots = new LinkedHashMap<>();
-        Map<Long, Snapshot> dailySlots = new LinkedHashMap<>();
-        Map<Long, Snapshot> weeklySlots = new LinkedHashMap<>();
-        for (Snapshot s : tail) {
-            if (assigned.containsKey(s)) continue;
-            long hourKey = hoursBetween(s.timestamp(), now);
-            long dayKey = daysBetween(s.timestamp(), now, zone);
-            long weekKey = weeksBetween(s.timestamp(), now, zone);
-            if (policy.keepHourly() > 0
-                    && hourKey >= 0 && hourKey < policy.keepHourly()
-                    && !hourlySlots.containsKey(hourKey)) {
-                hourlySlots.put(hourKey, s);
-                assigned.put(s, Bucket.HOURLY);
-                continue;
-            }
-            if (policy.keepDaily() > 0
-                    && dayKey >= 0 && dayKey < policy.keepDaily()
-                    && !dailySlots.containsKey(dayKey)) {
-                dailySlots.put(dayKey, s);
-                assigned.put(s, Bucket.DAILY);
-                continue;
-            }
-            if (policy.keepWeekly() > 0
-                    && weekKey >= 0 && weekKey < policy.keepWeekly()
-                    && !weeklySlots.containsKey(weekKey)) {
-                weeklySlots.put(weekKey, s);
-                assigned.put(s, Bucket.WEEKLY);
-            }
-        }
-
-        // 2) Apply the cumulative-bytes cap. We keep newest-first; once the
-        // running total would exceed maxBytes, the rest of the kept snapshots
-        // are downgraded to DISCARDED.
-        List<Snapshot> ordered = new ArrayList<>(assigned.keySet());
-        ordered.sort(Comparator.comparing(Snapshot::timestamp).reversed());
         long running = 0L;
         boolean over = false;
-        Map<Snapshot, Bucket> finalAssigned = new LinkedHashMap<>(assigned);
-        for (Snapshot s : ordered) {
-            if (over) {
-                finalAssigned.remove(s);
+        for (int i = 0; i < count; i++) {
+            Snapshot snapshot = newestFirst.get(i);
+            boolean mustKeep = alwaysKept.contains(snapshot.path());
+            if (mustKeep && buckets[i] == Bucket.DISCARDED) {
+                buckets[i] = Bucket.SPARED;
+            }
+            if (buckets[i] == Bucket.DISCARDED) {
                 continue;
             }
-            long next = running + s.sizeBytes();
-            if (policy.enforcesMaxBytes() && next > policy.maxBytes()) {
-                finalAssigned.remove(s);
+            if (mustKeep) {
+                running += snapshot.sizeBytes();
+                over |= policy.enforcesMaxBytes() && running > policy.maxBytes();
+            } else if (over || (policy.enforcesMaxBytes() && running + snapshot.sizeBytes() > policy.maxBytes())) {
+                buckets[i] = Bucket.DISCARDED;
                 over = true;
             } else {
-                running = next;
+                running += snapshot.sizeBytes();
             }
         }
 
-        // Build the decision list in newest-first order across the original
-        // input so callers see a stable, predictable ordering.
-        List<Decision> decisions = new ArrayList<>(sorted.size());
-        for (Snapshot s : sorted) {
-            Bucket b = finalAssigned.getOrDefault(s, Bucket.DISCARDED);
-            decisions.add(new Decision(s, b));
-        }
-        // tooOld snapshots were excluded above — make sure they appear too.
-        for (Snapshot s : tooOld) {
-            // Already in `sorted`, so they are in `decisions` with DISCARDED.
-            // No-op; this loop documents intent.
+        List<Decision> decisions = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            decisions.add(new Decision(newestFirst.get(i), buckets[i]));
         }
         return new Plan(decisions);
     }
 
-    private static long hoursBetween(Instant earlier, Instant later) {
-        return Duration.between(earlier, later).toHours();
-    }
+    /** The hourly, daily and weekly slots of one plan, each taken by the first snapshot to reach it. */
+    private static final class Milestones {
 
-    private static long daysBetween(Instant earlier, Instant later, ZoneId zone) {
-        LocalDate a = earlier.atZone(zone).toLocalDate();
-        LocalDate b = later.atZone(zone).toLocalDate();
-        return ChronoUnit.DAYS.between(a, b);
-    }
+        private final BackupRetentionPolicy policy;
+        private final Instant now;
+        private final ZoneId zone;
+        private final LocalDate today;
+        private final Set<Long> hours = new HashSet<>();
+        private final Set<Long> days = new HashSet<>();
+        private final Set<Long> weeks = new HashSet<>();
 
-    private static long weeksBetween(Instant earlier, Instant later, ZoneId zone) {
-        LocalDate a = earlier.atZone(zone).toLocalDate();
-        LocalDate b = later.atZone(zone).toLocalDate();
-        long aWeek = a.getLong(IsoFields.WEEK_BASED_YEAR) * 53L + a.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR);
-        long bWeek = b.getLong(IsoFields.WEEK_BASED_YEAR) * 53L + b.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR);
-        return bWeek - aWeek;
+        Milestones(BackupRetentionPolicy policy, Instant now, ZoneId zone) {
+            this.policy = policy;
+            this.now = now;
+            this.zone = zone;
+            this.today = now.atZone(zone).toLocalDate();
+        }
+
+        /**
+         * The first free slot {@code timestamp} fits, or {@link Bucket#DISCARDED}: a timestamp after now, or
+         * one older than the age cap, takes none.
+         */
+        Bucket slotOf(Instant timestamp) {
+            Duration age = Duration.between(timestamp, now);
+            if (age.isNegative() || (policy.enforcesMaxAge() && age.compareTo(policy.maxAge()) > 0)) {
+                return Bucket.DISCARDED;
+            }
+            if (takes(hours, age.toHours(), policy.keepHourly())) {
+                return Bucket.HOURLY;
+            }
+            LocalDate day = timestamp.atZone(zone).toLocalDate();
+            if (takes(days, ChronoUnit.DAYS.between(day, today), policy.keepDaily())) {
+                return Bucket.DAILY;
+            }
+            if (takes(weeks, ChronoUnit.WEEKS.between(monday(day), monday(today)), policy.keepWeekly())) {
+                return Bucket.WEEKLY;
+            }
+            return Bucket.DISCARDED;
+        }
+
+        /** Takes slot {@code key} of {@code slots} when it lies in {@code [0, limit)} and is still free. */
+        private static boolean takes(Set<Long> slots, long key, int limit) {
+            return key >= 0 && key < limit && slots.add(key);
+        }
+
+        /** The Monday that starts the calendar week of {@code day}. */
+        private static LocalDate monday(LocalDate day) {
+            return day.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
+        }
     }
 }

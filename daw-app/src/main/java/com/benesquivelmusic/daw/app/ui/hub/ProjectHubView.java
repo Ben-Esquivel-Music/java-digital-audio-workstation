@@ -1,7 +1,10 @@
 package com.benesquivelmusic.daw.app.ui.hub;
 
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.persistence.backup.ProjectDiskUsage;
 
+import javafx.beans.property.ReadOnlyDoubleProperty;
+import javafx.beans.property.ReadOnlyDoubleWrapper;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
@@ -93,6 +96,17 @@ public final class ProjectHubView extends BorderPane {
 
     private static final String SORT_RECENT = "Recently opened";
     private static final String SORT_NAME = "Name";
+
+    /**
+     * A grid card's preferred width after a List → Grid switch: its computed
+     * (content) width. Bound rather than set (story 335 review, 2b-java
+     * S2(b)): a value set from Java beats the card's user-agent
+     * {@code -fx-pref-width} only at 100&nbsp;% — the UI-scale sheet re-states
+     * that rule at author origin, which overrides a set value — while CSS
+     * never sets a bound property, so the card is content-sized at every step.
+     */
+    private static final ReadOnlyDoubleProperty COMPUTED_WIDTH =
+            new ReadOnlyDoubleWrapper(Region.USE_COMPUTED_SIZE).getReadOnlyProperty();
 
     private final ProjectHealthScanner scanner;
     private final Consumer<Path> onOpen;
@@ -191,6 +205,9 @@ public final class ProjectHubView extends BorderPane {
         getStylesheets().add(Objects.requireNonNull(
                 ProjectHubView.class.getResource("project-hub.css"),
                 "project-hub.css not on classpath").toExternalForm());
+        // Story 335 — this view's own sheet beats the scene's sheets, so the
+        // UI-scale sheet must also sit at the tail of this view's list.
+        ThemeManager.getDefault().registerScaledParent(this);
     }
 
     /**
@@ -504,7 +521,7 @@ public final class ProjectHubView extends BorderPane {
         // of prefWrapLength — a single column therefore can't be expressed through
         // the wrap length. Instead the list column is forced by binding each card's
         // preferred width to the grid width (one card fills a row, the next wraps),
-        // and released back to the computed tile width for the grid.
+        // and re-bound to the computed width for the grid (COMPUTED_WIDTH).
         for (FlowPane grid : List.of(pinnedGrid, recentGrid, archivedGrid)) {
             for (Node child : grid.getChildren()) {
                 if (child instanceof ProjectCard card) {
@@ -512,7 +529,7 @@ public final class ProjectHubView extends BorderPane {
                     if (list) {
                         card.prefWidthProperty().bind(grid.widthProperty());
                     } else {
-                        card.setPrefWidth(Region.USE_COMPUTED_SIZE);
+                        card.prefWidthProperty().bind(COMPUTED_WIDTH);
                     }
                 }
             }
@@ -746,12 +763,11 @@ public final class ProjectHubView extends BorderPane {
             if (usage == null) {
                 return headline;
             }
-            // Stage 2 has no journal / snapshots — show only the categories
-            // ProjectDiskUsage actually breaks out (audio / checkpoints / archives).
             return headline
-                    + "   audio " + HubFormat.formatBytes(usage.assetsBytes())
-                    + " · checkpoints " + HubFormat.formatBytes(usage.autosavesBytes())
-                    + " · archives " + HubFormat.formatBytes(usage.archivesBytes());
+                    + "   project and audio " + HubFormat.formatBytes(usage.otherBytes())
+                    + " · checkpoints " + HubFormat.formatBytes(usage.checkpointBytes())
+                    + " · snapshots " + HubFormat.formatBytes(usage.snapshotBytes())
+                    + " · archives " + HubFormat.formatBytes(usage.archiveBytes());
         }
 
         private String formatSessions(ProjectCard card) {

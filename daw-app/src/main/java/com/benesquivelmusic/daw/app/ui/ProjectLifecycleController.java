@@ -89,6 +89,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.DoubleSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -690,6 +691,13 @@ final class ProjectLifecycleController {
      * {@link #setWelcomePresenter(Consumer)}.
      */
     private Consumer<WelcomeView> welcomePresenter = this::presentWelcome;
+
+    /**
+     * Story 335 (studio ruling R4.1) — the beat-0 BPM a new empty project
+     * takes: the persisted default tempo in the application
+     * ({@link #setNewProjectTempo}), read each time one is built.
+     */
+    private DoubleSupplier newProjectTempo = () -> SettingsModel.DEFAULT_TEMPO;
 
     /**
      * Story 298 — the crash-recovery entry point invoked from the Welcome
@@ -2409,7 +2417,7 @@ final class ProjectLifecycleController {
      * @return the Untitled project installed
      */
     private DawProject installFreshUntitledProject() {
-        DawProject untitled = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
+        DawProject untitled = newUntitledProject();
         deps.setProject().accept(untitled);
         projectReplaced(null);
         deps.setUndoManager().accept(new UndoManager());
@@ -2420,6 +2428,17 @@ final class ProjectLifecycleController {
         // previously opened project's saved layouts don't leak into the
         // next project.
         deps.applyLayoutJson().accept(null);
+        return untitled;
+    }
+
+    /**
+     * Story 335 (studio ruling R4.1) — a new in-memory Untitled project whose
+     * beat-0 BPM is the new-project tempo ({@link #setNewProjectTempo}): no
+     * history entry, and the transport's write marks nothing dirty.
+     */
+    private DawProject newUntitledProject() {
+        DawProject untitled = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
+        untitled.getTransport().setTempo(newProjectTempo.getAsDouble());
         return untitled;
     }
 
@@ -2631,7 +2650,7 @@ final class ProjectLifecycleController {
      * its answer (ruling R-1.6; PR #989 review 5711460812).
      */
     private void installImportedSessionAfterClose(Path source, SessionImportResult result) {
-        deps.setProject().accept(new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY));
+        deps.setProject().accept(newUntitledProject());
         projectReplaced(null);
         deps.setUndoManager().accept(new UndoManager());
         deps.rebuildHistoryPanel().run();
@@ -4746,7 +4765,7 @@ final class ProjectLifecycleController {
                 // memory, so abandoning is a complete rollback.
                 replaceAfterJournalClose(ROLL_BACK_MIGRATION_DOOR, attempt -> {
                     try {
-                        deps.setProject().accept(new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY));
+                        deps.setProject().accept(newUntitledProject());
                         projectReplaced(null);
                         deps.setUndoManager().accept(new UndoManager());
                         deps.rebuildHistoryPanel().run();
@@ -6169,6 +6188,19 @@ final class ProjectLifecycleController {
      */
     void setDoorWaitTimers(CloseTimers timers) {
         this.doorWaitTimers = Objects.requireNonNull(timers, "timers must not be null");
+    }
+
+    /**
+     * Story 335 (studio ruling R4.1) — sets the beat-0 BPM every new empty
+     * project takes (New, Close Project, the placeholder before an imported
+     * session, the migration roll-back's Untitled), read each time one is
+     * built; {@link SettingsModel#DEFAULT_TEMPO} until set. A project opened
+     * from disk keeps its own. FX thread.
+     *
+     * @param tempo the new-project tempo; must not be {@code null}
+     */
+    void setNewProjectTempo(DoubleSupplier tempo) {
+        this.newProjectTempo = Objects.requireNonNull(tempo, "tempo must not be null");
     }
 
     /**

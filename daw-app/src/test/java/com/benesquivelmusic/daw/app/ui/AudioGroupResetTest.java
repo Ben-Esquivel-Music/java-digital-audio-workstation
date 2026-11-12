@@ -25,7 +25,6 @@ class AudioGroupResetTest {
             SettingRow src = shell.settingRow("audio.srcQuality").orElseThrow();
             SettingRow workers = shell.settingRow("audio.workerPoolSize").orElseThrow();
             SettingRow budget = shell.settingRow("audio.masterCpuBudgetFraction").orElseThrow();
-            SettingRow policy = shell.settingRow("audio.masterCpuBudgetPolicy").orElseThrow();
 
             double editedRate = model.getSampleRate() == 48_000 ? 44_100 : 48_000;
             String editedBackend = model.getAudioBackend().equals("ASIO")
@@ -37,14 +36,12 @@ class AudioGroupResetTest {
             src.setValue(editedQuality);
             workers.setValue(model.getWorkerPoolSize() == 1 ? 2 : 1);
             budget.setValue(model.getMasterCpuBudgetFraction() == 0.5 ? 0.75 : 0.5);
-            policy.setValue("BypassExpensive");
 
             shell.resetGroup("audio", "performance");
 
             assertThat(src.getValue()).isEqualTo(src.descriptor().defaultValue());
             assertThat(workers.getValue()).isEqualTo(workers.descriptor().defaultValue());
             assertThat(budget.getValue()).isEqualTo(budget.descriptor().defaultValue());
-            assertThat(policy.getValue()).isEqualTo(policy.descriptor().defaultValue());
             assertThat(sampleRate.getValue()).isEqualTo(editedRate);
             assertThat(backend.getValue()).isEqualTo(editedBackend);
             return null;

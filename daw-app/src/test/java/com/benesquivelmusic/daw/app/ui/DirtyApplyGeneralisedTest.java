@@ -293,7 +293,8 @@ class DirtyApplyGeneralisedTest {
                     .as("the reset marker agrees — the text equals the default")
                     .isFalse();
 
-            // Unparseable text is a genuine (apply-time silently dropped) edit.
+            // Unparseable text is a genuine edit (an Apply rejects it visibly
+            // at the row, story 335).
             tempo.setValue("not a tempo");
             assertThat(shell.dirtyProperty().get())
                     .as("unparseable text stays a pending edit")

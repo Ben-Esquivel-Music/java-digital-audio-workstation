@@ -12,6 +12,8 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 
@@ -102,6 +104,48 @@ class ProfileImportDrivesApplyPathTest {
                         .contains("project.defaultTempo");
                 return null;
             });
+        } finally {
+            Story307TestSupport.onFx(() -> {
+                sheet.dispose();
+                return null;
+            });
+        }
+    }
+
+    /**
+     * Story 335 (studio ruling-2 Q3) — an import stages and commits in one
+     * action: its valid default tempo reaches the default-tempo listener as
+     * exactly one BULK edit (the project-level bulk outcome is pinned by
+     * {@code DefaultTempoApplyIsolationTest}).
+     */
+    @Test
+    void anImportedDefaultTempoIsHandedOnAsOneBulkEdit(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("tempo.dawgprofile");
+        Files.writeString(file, """
+                # dawg-settings-profile v1
+                projectDefaults|project.defaultTempo=140
+                """, StandardCharsets.UTF_8);
+        SettingsModel model = Story307TestSupport.model("profileImportBulkTempo");
+        List<SettingsDialog.DefaultTempoEdit> heard = new CopyOnWriteArrayList<>();
+
+        SettingsDialog dialog = Story307TestSupport.onFx(() -> {
+            SettingsDialog created = new SettingsDialog(model);
+            created.setDefaultTempoEditListener(heard::add);
+            created.showProfileSheet();
+            return created;
+        });
+        SettingsProfileSheet sheet = Story307TestSupport.onFx(() ->
+                (SettingsProfileSheet) dialog.getDialogPane().lookup(".settings-profile-sheet-overlay"));
+        try {
+            Story307TestSupport.onFx(() -> {
+                sheet.importFrom(file);
+                return null;
+            });
+            waitUntil(() -> model.getDefaultTempo() == 140.0);
+
+            assertThat(model.getDefaultTempo()).isEqualTo(140.0);
+            assertThat(Story307TestSupport.onFx(() -> List.copyOf(heard)))
+                    .containsExactly(new SettingsDialog.DefaultTempoEdit(140.0, true));
         } finally {
             Story307TestSupport.onFx(() -> {
                 sheet.dispose();

@@ -258,6 +258,14 @@ replaced `confirmDiscardUnsavedChanges`.*
   (`MenuConstructionService.java:199-203`) — true, and useless. Stories 191/308 built a retention
   engine and pointed it at a ghost.
 
+*As built in story 335: the Backups rows govern the open project's `checkpoints/`.
+`BackupRetentionController` delivers their policy to `CheckpointManager.setRetentionPolicy` at
+startup (`deliverStored`) and on Apply (`deliverAndSave`). While a policy is set,
+`CheckpointManager.prune` runs `prunePolicy` after each checkpoint write instead of the fixed cap
+(`pruneToTheCap`). `applyRetentionPolicy`, the controller's `~/.daw/autosaves` target and hourly
+prune, and `BackupRetentionService.prune(Path)` are deleted, and nothing targets `~/.daw/autosaves`
+(§4.8's note). The index has seeded from `checkpoints/` since story 331.*
+
 ### 1.9 Settings that lie about persistence-adjacent behaviour
 
 - **Autosave interval ignored at startup.** The `CheckpointManager` is constructed with
@@ -281,6 +289,13 @@ replaced `confirmDiscardUnsavedChanges`.*
   shrinks into the corner — and no startup path reads the persisted value at all (`DawApplication`
   applies theme and density to the new scene but never scale), so the preference silently reverts to
   1.0 every session while the Settings row displays the stored value as if active.
+
+*As built in story 335 (§5.6's note): the interval builds the `CheckpointManager` at startup
+(`MainController.startupAutoSaveConfig`). `LiveSettingsApplier` no longer writes the tempo; an
+edited default tempo reaches the open project only through
+`MainController.applyEditedDefaultTempo`. The master CPU degradation policy is removed. A rejected
+tempo stays on its row with a visible error. The UI scale applies at startup and on Apply through
+the generated scale stylesheet that `ThemeManager` appends, with no transform.*
 
 ### 1.10 What today's code gets right (keep)
 
@@ -763,6 +778,19 @@ journal coordinator's open/rotation hooks (fixing §1.6's self-erasure):
   re-pointed and re-labelled to govern what actually exists. Snapshots never rotate (Project Manager
   book §6.4).
 
+  *As built in story 335: the surface is re-pointed, and `~/.daw/autosaves` gains no writer. The
+  policy is one Application-scope setting in `~/.daw/backup-retention.json`, whose format is
+  unchanged. `BackupRetentionController` delivers it to the window's one `CheckpointManager` at
+  startup, before any generation starts, and on Apply. It acts only after a checkpoint write of
+  the open project, inside that write's claim, and never on Apply, at start, at open or on a timer.
+  While it is set it replaces `maxCheckpoints`. `CheckpointManager.prunePolicy` plans the session
+  index in `pruneOrder` (write order, never file time) through `BackupRetentionService.plan`. It
+  always keeps the checkpoint just written and the one holding the last checkpointed revision
+  (ruling H4), and it retries at most one refused delete per pass (ruling J1). A stored policy that
+  exists but cannot be read delivers `BackupRetentionController.KEEP_EVERY_CHECKPOINT` and shows a
+  WARNING. The per-project override (`BackupRetentionPolicyStore.resolveForProject`) stays unwired
+  (future story 439).*
+
 ---
 
 ## 5. The behavioural contract
@@ -931,6 +959,29 @@ each with its owner.
 | Master CPU degradation policy | the budget enforcer consumes it — or the row is deleted | yes | yes | a persisted-but-never-read policy is a §2.8 violation either way |
 | UI scale | a layout-aware scaling mechanism (root font-size / rem-token scaling — not a bare origin-pivot transform) | **yes** | yes | every advertised scale renders an unclipped, fully laid-out window |
 | Journaled persistence | journal coordinator | yes (default ON, §2.5) | yes | opt-out only |
+
+*As built in story 335, row by row:*
+
+- *__Autosave interval__: as the table says — `MainController.startupAutoSaveConfig` at startup,
+  `LiveSettingsApplier.apply` on Apply.*
+- *__Backups retention__: "read on apply" means delivered on Apply and in effect after the open
+  project's next checkpoint, which the group's note says. The disk-usage visual reads that
+  project's folder in four parts, and its checkpoints are exactly the names the policy governs.*
+- *__Default tempo__: read at startup by the startup Untitled project, and taken by every new
+  empty project as its template with no undo entry (`ProjectLifecycleController.newUntitledProject`).
+  An Apply reaches the open project only when the row was edited and validated.
+  `MainController.applyEditedDefaultTempo` writes one undoable step only for an interactive Apply
+  over a project that is not a pristine Untitled one and has one tempo event. A pristine Untitled
+  project takes the tempo as its template. A bulk Apply (the wizard's Finish, a profile import,
+  Restore All Defaults) writes no other project, and a project with tempo changes is never
+  written.*
+- *__Tempo input validation__: the authority is the Apply-time check
+  (`SettingsDialog.applyDefaultTempo` → `SettingsShell.rejectSetting`), not a live row validator.*
+- *__Master CPU degradation policy__: removed — the row, the setting and the read path. The stale
+  key is deleted on load.*
+- *__UI scale__: the persisted step (`UiScale`, 90 % to 200 %) applies at startup and on Apply
+  through the generated scale stylesheet `ThemeManager` appends (`ScaledStylesheet`). The
+  categories it does not scale are recorded in future story 440.*
 
 ---
 
@@ -1185,6 +1236,15 @@ window.
 **Unblocks.** The settings surface stops lying about persistence-adjacent behaviour — the trust
 dividend that makes users believe the rest of the guarantee. Closes out the book.
 
+*As built in story 335: the CPU-policy decision (removal) and the retention decision (re-pointing)
+are recorded in the story's Resolution. The proof is not a real launch, because `MainController` is
+never FXML-loaded in tests. The startup wiring is proven through the static seams
+`MainController.initialize` calls (`startupAutoSaveConfig`, `deliverStoredRetention`,
+`applyStartupUiScale`), with source pins on `initialize()` and the save-flow fixture's real
+checkpoint manager and strip. The Backups rows' two sessions are two `CheckpointManager` runs over
+one project folder and one policy store (`CheckpointRetentionSettingsWiringTest`). The 2.0 scale is
+checked on a headless 1280×720 stage built from the FXML main view (`UiScaleLayoutTest`).*
+
 ---
 
 ## 9. Rejection list (do not bring these back)
@@ -1241,8 +1301,8 @@ Where each construct in this book attaches to today's tree.
 | Tempo-map / take schema (§4.6) | landed in 334 (schema 3): `ProjectSerializer.buildTempoMap` writes `<tempo-change>` and `<meter-change>` after beat 0 and `ProjectDeserializer.parseTransport` reads them; `ProjectSerializer.buildTakes` writes `<takes>` (take lanes with their clips, comp regions by take id) and `buildTrackElement` marks comp output (`clip@comp-output`); `ProjectDeserializer.parseTakes` restores the lanes and regions, and `adoptSavedCompOutput` adopts the marked clips (`TakeComping.adoptCompOutput`) without recompiling | playback, metronome, capture and punch follow the tempo map (425); the ruler draws bars from the meter map (426); a tempo track authors changes (427) |
 | Recovery gate (§4.7) | Welcome-only `ProjectLifecycleController.java:1248`; staleness gate `ProjectHealthScanner.java:173-178` + `ProjectLockManager.java:65`; rotation hazard `ProjectJournalCoordinator.java:358-372`; dark default `SettingsModel.java:78`, `ProjectJournalCoordinator.java:185-191` | gate inside `loadProjectFromPath` before journal open; seal-based detection; default ON (332) |
 | Exit coordinator (§4.8) | landed in 333: `ExitCoordinator` in daw-app `ui` — the primary stage's close-request filter, File ▸ Exit, File ▸ Close Project and the close-then-continue primitive ask it, and `Application.stop()` runs its application-stop fallback (§4.8's note); the tail is `ProjectFolderCloser` and DISPOSE is `MainController.disposeWindowLifetime()`; the closing checkpoint is `CheckpointOrigin.CLOSING`; `ProjectManager.closeProject()` saves nothing and retires the lease after the owed work; Save As is `SaveAsFlow`, and the stolen-lock path is the “Project Taken Over” dialog (`ProjectClosePrompts`); `LockStolenException`'s Javadoc and `LockStatusIndicator`'s tooltip describe what is built | the maturity rule's demolition: story 387 plus an Undo Close toast (§5.4's record); the close-then-continue primitive's first caller: future story 405, project workspaces and the workspace switcher (Project Manager book §3.1); story 333's other known limits, each with its owner, in its Resolution |
-| Retention unification (§4.8) | index seeding landed in 331: `CheckpointManager.start` seeds the index from `checkpoints/` (only names `CheckpointFileName.parse` accepts), and the prune counts and deletes across sessions; still today: no-op policy (`applyRetentionPolicy`, with no policy set), orphan setter (`setRetentionPolicy`, no production caller); ghost directory `BackupRetentionController.java:94-95`, `:127-129`; rows `SettingsDialog.java:146` | policy delivered to the real directory, counting only checkpoints and keeping 331's prune exemption (335) |
-| Settings truth (§5.6) | `MainController.java:822` + `AutoSaveConfig.java:23-24` vs `SettingsModel.java:70`; `LiveSettingsApplier.java:30-33`, `:35-41`, `:42`; `SettingsDialog.java:2042`; `SettingsModel.java:492-493` + `MainController.java:2197` | per-row authority wiring at startup + apply (335) |
+| Retention unification (§4.8) | index seeding landed in 331: `CheckpointManager.start` seeds the index from `checkpoints/` (only names `CheckpointFileName.parse` accepts), and the prune counts and deletes across sessions; the policy's delivery landed in 335: `BackupRetentionController` calls `CheckpointManager.setRetentionPolicy` at startup (`deliverStored`, through `MainController.deliverStoredRetention`) and on Apply (`deliverAndSave`); while a policy is set, `CheckpointManager.prune` runs `prunePolicy` (`BackupRetentionService.plan` over the index in `pruneOrder`) instead of `pruneToTheCap`; a stored policy that cannot be read (`BackupRetentionPolicyStore.loadGlobal`) delivers `BackupRetentionController.KEEP_EVERY_CHECKPOINT`; `ProjectDiskUsage.compute` reads the same folder; nothing targets `~/.daw/autosaves` | the snapshot browser's purge (`SnapshotBrowserService.purgeExpiredAutosaves`), a checkpoint-space row finer than 1 GiB and the per-project policy (`BackupRetentionPolicyStore.resolveForProject`, unwired) (439); a Create Checkpoint exempt from the policy (381) |
+| Settings truth (§5.6) | landed in 335: the `CheckpointManager` is constructed from `MainController.startupAutoSaveConfig` and reconfigured by `LiveSettingsApplier.apply`; the Backups rows through `BackupRetentionController`; the default tempo as the new-project template (`ProjectLifecycleController.newUntitledProject`) and, when its row was edited, `MainController.applyEditedDefaultTempo`; the tempo rejected at its row (`SettingsDialog.applyDefaultTempo`, `SettingRow.reject`); the master CPU degradation policy removed; the UI scale through `UiScale`, `ThemeManager.setUiScale` and `ScaledStylesheet`, applied at startup by `MainController.applyStartupUiScale` | the UI-scale categories not yet scaled or not proven reachable (440); the first-run wizard's settings validated on its own rows and described for what Finish does (441) |
 
 ---
 

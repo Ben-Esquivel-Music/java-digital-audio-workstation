@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.app.ui.controls.skin;
 
 import com.benesquivelmusic.daw.app.ui.controls.LevelMeter;
 import com.benesquivelmusic.daw.app.ui.marshal.FxAnimationTimerAllowed;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import com.benesquivelmusic.daw.app.ui.theme.UiScale;
 
 import javafx.animation.AnimationTimer;
 import javafx.beans.value.ChangeListener;
@@ -16,6 +18,7 @@ import javafx.scene.input.MouseEvent;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.TextAlignment;
+import javafx.util.Subscription;
 
 import java.util.Locale;
 import java.util.Objects;
@@ -83,6 +86,17 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
     private static final double TICK_FONT_PX = 8.0;
 
     private final Canvas canvas;
+
+    /**
+     * Story 335 (studio ruling R6, amendments A15 and A20) — the UI-scale
+     * factor the size variants, the tick gutter and the tick labels are
+     * multiplied by. The subscription observes the scale only while the meter
+     * is in a scene and is cancelled in {@link #dispose()}.
+     */
+    private double uiScale = 1.0;
+    private final Subscription uiScaleSubscription;
+    /** The tick-label font at the current scale, rebuilt only on a scale change (never per frame). */
+    private Font tickFont = Font.font(TICK_FONT_PX);
 
     // ── Listeners (held so dispose() can remove exactly what was added) ───
     private final ChangeListener<Scene> sceneListener;
@@ -189,9 +203,24 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
         c.sceneProperty().addListener(sceneListener);
         registeredListenerCount++;
 
+        ThemeManager appearance = ThemeManager.getDefault();
+        applyUiScale(appearance.getUiScale());
+        uiScaleSubscription = appearance.uiScaleProperty()
+                .when(c.sceneProperty().isNotNull())
+                .subscribe((_, now) -> {
+                    applyUiScale(now);
+                    c.requestLayout();
+                    paint();
+                });
+
         // Handle the case where the control is already attached at skin
         // construction time.
         updateTimerState();
+    }
+
+    private void applyUiScale(UiScale step) {
+        uiScale = step.factor();
+        tickFont = Font.font(TICK_FONT_PX * uiScale);
     }
 
     private void addRepaint(ObservableValue<?> v) {
@@ -617,7 +646,7 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
 
         boolean ticks = c.isMeterTickMarks();
         double tickArea = ticks
-                ? Math.min(TICK_GUTTER_MAX_PX, (vertical ? w : h) * TICK_GUTTER_FRACTION)
+                ? Math.min(TICK_GUTTER_MAX_PX * uiScale, (vertical ? w : h) * TICK_GUTTER_FRACTION)
                 : 0.0;
 
         // Per-channel column geometry on the short axis.
@@ -691,17 +720,17 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
     private void paintTicks(GraphicsContext gc, double w, double h,
             boolean vertical, double tickArea) {
         gc.setFill(getSkinnable().getMeterLow().deriveColor(0, 1.0, 1.0, 0.6));
-        gc.setFont(Font.font(TICK_FONT_PX));
+        gc.setFont(tickFont);
         gc.setTextAlign(TextAlignment.LEFT);
         for (double db = MIN_DB; db <= MAX_DB; db += TICK_STEP_DB) {
             double pos = normalize(db);
             String label = String.format(Locale.ROOT, "%.0f", db);
             if (vertical) {
                 double ty = h - pos * h;
-                gc.fillText(label, 1, Math.min(h - 1, Math.max(TICK_FONT_PX, ty)));
+                gc.fillText(label, 1, Math.min(h - 1, Math.max(TICK_FONT_PX * uiScale, ty)));
             } else {
                 double tx = pos * w;
-                gc.fillText(label, Math.min(w - 12, tx), h - 1);
+                gc.fillText(label, Math.min(w - 12 * uiScale, tx), h - 1);
             }
         }
     }
@@ -745,28 +774,28 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
     protected double computePrefWidth(double height,
             double topInset, double rightInset, double bottomInset, double leftInset) {
         SizeVariant v = activeVariant();
-        return isVertical() ? v.prefW : v.prefH;
+        return uiScale * (isVertical() ? v.prefW : v.prefH);
     }
 
     @Override
     protected double computePrefHeight(double width,
             double topInset, double rightInset, double bottomInset, double leftInset) {
         SizeVariant v = activeVariant();
-        return isVertical() ? v.prefH : v.prefW;
+        return uiScale * (isVertical() ? v.prefH : v.prefW);
     }
 
     @Override
     protected double computeMinWidth(double height,
             double topInset, double rightInset, double bottomInset, double leftInset) {
         SizeVariant v = activeVariant();
-        return isVertical() ? v.minW : v.minH;
+        return uiScale * (isVertical() ? v.minW : v.minH);
     }
 
     @Override
     protected double computeMinHeight(double width,
             double topInset, double rightInset, double bottomInset, double leftInset) {
         SizeVariant v = activeVariant();
-        return isVertical() ? v.minH : v.minW;
+        return uiScale * (isVertical() ? v.minH : v.minW);
     }
 
     @Override
@@ -794,6 +823,7 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
             return;
         }
         disposed = true;
+        uiScaleSubscription.unsubscribe();
 
         timer.stop();
         timerRunning = false;

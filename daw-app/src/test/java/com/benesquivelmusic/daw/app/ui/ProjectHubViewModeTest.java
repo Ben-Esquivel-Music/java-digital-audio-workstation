@@ -87,15 +87,17 @@ class ProjectHubViewModeTest {
             }
         });
 
-        // Switching back to Grid releases the binding and restores the computed
-        // tile width.
+        // Switching back to Grid releases the list-column binding and holds the
+        // computed width. Story 335 review (2b-java S2(b)): the computed width is
+        // bound, not set, so the UI-scale sheet's author-origin copy of the
+        // card's user-agent -fx-pref-width cannot replace it at a scale other
+        // than 100% (UiScaleParentSheetsTest checks that at 150%).
         runOnFxThread(() -> {
             hub.gridToggle().setSelected(true);
             for (ProjectCard card : hub.recentCards()) {
-                assertThat(card.prefWidthProperty().isBound())
-                        .as("grid mode releases the list-column binding")
-                        .isFalse();
-                assertThat(card.getPrefWidth()).isEqualTo(Region.USE_COMPUTED_SIZE);
+                assertThat(card.getPrefWidth())
+                        .as("grid mode releases the list-column binding: the computed width, not the grid's")
+                        .isEqualTo(Region.USE_COMPUTED_SIZE);
             }
         });
 

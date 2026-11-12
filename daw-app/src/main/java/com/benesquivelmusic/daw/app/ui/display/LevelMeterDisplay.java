@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import com.benesquivelmusic.daw.app.ui.theme.UiScale;
 import com.benesquivelmusic.daw.fx.GpuCanvas;
 import com.benesquivelmusic.daw.fx.GpuRenderContext;
 import com.benesquivelmusic.daw.sdk.visualization.LevelData;
@@ -10,6 +12,8 @@ import javafx.scene.paint.Color;
 import javafx.scene.paint.CycleMethod;
 import javafx.scene.paint.LinearGradient;
 import javafx.scene.paint.Stop;
+import javafx.scene.text.Font;
+import javafx.util.Subscription;
 import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
@@ -61,6 +65,13 @@ public final class LevelMeterDisplay extends GpuCanvasView {
      */
     private static final long ONE_SHOT_FRAME_NANOS = 16_666_667L;
 
+    /** Cross-axis inset of the bars (px at 100%). */
+    private static final double BAR_INSET_PX = 2.0;
+    /** Length of a dB scale tick (px at 100%). */
+    private static final double TICK_LENGTH_PX = 3.0;
+    /** dB scale font size (px at 100%). */
+    private static final double SCALE_FONT_PX = 8.0;
+
     private final MeterAnimator rmsAnimator;
     private final MeterAnimator peakAnimator;
     private final boolean vertical;
@@ -69,6 +80,17 @@ public final class LevelMeterDisplay extends GpuCanvasView {
     private double pendingPeakDb = -120.0;
     /** The clip latch: set by a clipping update, cleared only by {@link #resetClip()}. */
     private boolean clipLatched;
+
+    /**
+     * Story 335 (studio ruling R6, amendments A15 and A20) — the UI-scale
+     * factor the bar geometry, the clip bar (render and hit zone) and the
+     * scale font are multiplied by; stroke widths are not. Observed only
+     * while the display is in a scene; cancelled by {@link #dispose()}.
+     */
+    private double uiScale = 1.0;
+    /** The scale font at the current UI scale, rebuilt only on a scale change (never per frame). */
+    private Font scaleFont;
+    private final Subscription uiScaleSubscription;
 
     /**
      * Creates a level meter display.
@@ -80,6 +102,15 @@ public final class LevelMeterDisplay extends GpuCanvasView {
         this.vertical = vertical;
         rmsAnimator = new MeterAnimator(0.01, 0.15, 0);
         peakAnimator = new MeterAnimator(0.001, 0.5, 1.5);
+
+        ThemeManager appearance = ThemeManager.getDefault();
+        applyUiScale(appearance.getUiScale());
+        uiScaleSubscription = appearance.uiScaleProperty()
+                .when(sceneProperty().isNotNull())
+                .subscribe((_, now) -> {
+                    applyUiScale(now);
+                    requestRender();
+                });
 
         setRenderer(this::renderFrame);
 
@@ -93,6 +124,35 @@ public final class LevelMeterDisplay extends GpuCanvasView {
             }
             resetClip();
         });
+    }
+
+    private void applyUiScale(UiScale step) {
+        uiScale = step.factor();
+        scaleFont = Font.font(SCALE_FONT_PX * uiScale);
+    }
+
+    /** @return the clip bar's thickness at the current UI scale (render size and hit zone) */
+    double clipBarPx() {
+        return CLIP_BAR_PX * uiScale;
+    }
+
+    /** @return the dB-scale tick length at the current UI scale (the length the draw code strokes) */
+    double tickLengthPx() {
+        return TICK_LENGTH_PX * uiScale;
+    }
+
+    private double inset() {
+        return BAR_INSET_PX * uiScale;
+    }
+
+    /**
+     * Stops the render loop, releases the pixel surface and the UI-scale
+     * subscription. Safe to call multiple times; FX thread.
+     */
+    @Override
+    public void dispose() {
+        uiScaleSubscription.unsubscribe();
+        super.dispose();
     }
 
     /**
@@ -186,16 +246,17 @@ public final class LevelMeterDisplay extends GpuCanvasView {
     /**
      * The click-to-reset hit test: the clip bar only, in either orientation.
      * Both axes are bounded, because the bar is painted inset by 2 px on its
-     * cross axis ({@code fillRect(2, 0, w - 4, CLIP_BAR_PX)} vertically,
-     * {@code fillRect(w - CLIP_BAR_PX, 2, CLIP_BAR_PX, h - 4)} horizontally)
-     * — the hit zone is the painted LED, nothing more, so a click just past
-     * its end cannot wipe clip state.
+     * cross axis ({@code fillRect(inset, 0, w - 2 * inset, clipBar)} vertically,
+     * {@code fillRect(w - clipBar, inset, clipBar, h - 2 * inset)} horizontally;
+     * both lengths at 100&nbsp;% times the UI scale, story 335) — the hit
+     * zone is the painted LED, nothing more, so a click just past its end
+     * cannot wipe clip state.
      */
     boolean isInClipZone(double x, double y) {
         return vertical
-                ? y >= 0 && y <= CLIP_BAR_PX && x >= 2 && x <= getWidth() - 2
-                : x <= getWidth() && x >= getWidth() - CLIP_BAR_PX
-                        && y >= 2 && y <= getHeight() - 2;
+                ? y >= 0 && y <= clipBarPx() && x >= inset() && x <= getWidth() - inset()
+                : x <= getWidth() && x >= getWidth() - clipBarPx()
+                        && y >= inset() && y <= getHeight() - inset();
     }
 
     /**
@@ -262,30 +323,32 @@ public final class LevelMeterDisplay extends GpuCanvasView {
             );
         }
 
+        double inset = inset();
+        double clipBar = clipBarPx();
         if (vertical) {
             // RMS bar
             double rmsHeight = rmsLevel * h;
             gc.setFill(meterGradient);
             gc.setGlobalAlpha(0.5);
-            gc.fillRect(2, h - rmsHeight, w - 4, rmsHeight);
+            gc.fillRect(inset, h - rmsHeight, w - 2 * inset, rmsHeight);
 
             // Peak bar
             double peakHeight = peakLevel * h;
             gc.setGlobalAlpha(1.0);
-            gc.fillRect(2, h - peakHeight, w - 4, peakHeight);
+            gc.fillRect(inset, h - peakHeight, w - 2 * inset, peakHeight);
 
             // Peak hold indicator
             if (peakHold > 0.001) {
                 double holdY = h - peakHold * h;
                 gc.setStroke(PEAK_INDICATOR_COLOR);
                 gc.setLineWidth(2.0);
-                gc.strokeLine(2, holdY, w - 2, holdY);
+                gc.strokeLine(inset, holdY, w - inset, holdY);
             }
 
             // Clip indicator (latched)
             if (clipLatched) {
                 gc.setFill(CLIP_COLOR);
-                gc.fillRect(2, 0, w - 4, CLIP_BAR_PX);
+                gc.fillRect(inset, 0, w - 2 * inset, clipBar);
             }
 
             // dB scale
@@ -293,32 +356,33 @@ public final class LevelMeterDisplay extends GpuCanvasView {
             gc.setStroke(SCALE_COLOR);
             gc.setLineWidth(0.5);
             gc.setFill(SCALE_COLOR);
-            gc.setFont(javafx.scene.text.Font.font(8));
+            gc.setFont(scaleFont);
+            double tick = tickLengthPx();
             for (double db = MIN_DB; db <= MAX_DB; db += 6) {
                 double y = h - dbToNormalized(db) * h;
-                gc.strokeLine(0, y, 3, y);
+                gc.strokeLine(0, y, tick, y);
             }
         } else {
             // Horizontal orientation
             double rmsWidth = rmsLevel * w;
             gc.setFill(meterGradient);
             gc.setGlobalAlpha(0.5);
-            gc.fillRect(0, 2, rmsWidth, h - 4);
+            gc.fillRect(0, inset, rmsWidth, h - 2 * inset);
 
             double peakWidth = peakLevel * w;
             gc.setGlobalAlpha(1.0);
-            gc.fillRect(0, 2, peakWidth, h - 4);
+            gc.fillRect(0, inset, peakWidth, h - 2 * inset);
 
             if (peakHold > 0.001) {
                 double holdX = peakHold * w;
                 gc.setStroke(PEAK_INDICATOR_COLOR);
                 gc.setLineWidth(2.0);
-                gc.strokeLine(holdX, 2, holdX, h - 2);
+                gc.strokeLine(holdX, inset, holdX, h - inset);
             }
 
             if (clipLatched) {
                 gc.setFill(CLIP_COLOR);
-                gc.fillRect(w - CLIP_BAR_PX, 2, CLIP_BAR_PX, h - 4);
+                gc.fillRect(w - clipBar, inset, clipBar, h - 2 * inset);
             }
 
             gc.setGlobalAlpha(1.0);
