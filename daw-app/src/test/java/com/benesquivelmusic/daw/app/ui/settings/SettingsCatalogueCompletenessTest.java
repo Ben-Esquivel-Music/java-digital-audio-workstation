@@ -157,10 +157,11 @@ class SettingsCatalogueCompletenessTest {
                 .map(SettingDescriptor::id)
                 .toList();
         assertThat(ids).doesNotHaveDuplicates();
-        // 18 SettingsModel-backed + 3 manager-backed + 13 story-308
-        // absorbed Recording/Backups + one per DawAction.
+        // 17 SettingsModel-backed (story 335 removed the master CPU policy)
+        // + 3 manager-backed + 13 story-308 absorbed Recording/Backups + one
+        // per DawAction.
         assertThat(catalogue.descriptors())
-                .hasSize(34 + DawAction.values().length);
+                .hasSize(33 + DawAction.values().length);
     }
 
     @Test

@@ -172,6 +172,17 @@
     -fx-border-width: 0 0 1 0;
 }
 
+/* Story 335 (studio ruling R6) — the transport bar's horizontal scroller
+ * (main-view.fxml) paints nothing of its own, so at 100% the bar looks
+ * exactly as it did before it could scroll. */
+.transport-bar-scroller,
+.transport-bar-scroller > .viewport {
+    -fx-background-color: transparent;
+    -fx-background: transparent;
+    -fx-padding: 0;
+    -fx-background-insets: 0;
+}
+
 /* ── Toolbar Button Groups ── */
 .toolbar-button-group {
     -fx-padding: 0 4;
@@ -2821,6 +2832,7 @@
     -srw-accent:      -accent;
     -srw-accent-soft: -accent-soft;
     -srw-line-soft:   -line-soft;
+    -srw-danger:      -danger;
 }
 
 /* AUTHOR-origin re-statements of the label fills/sizes the UA sheets
@@ -2871,6 +2883,10 @@
 .setting-row .setting-row-description {
     -fx-text-fill: -text-mute;
     -fx-font-size: 11px;
+}
+/* Story 335 (studio ruling R5) — a rejected value's message in the error token. */
+.setting-row:rejected .setting-row-description {
+    -fx-text-fill: -danger;
 }
 .setting-row .setting-row-badge {
     -fx-font-size: 10px;
@@ -3052,6 +3068,9 @@
 .settings-disk-pie .chart-pie.default-color0 { -fx-pie-color: -chart-series-1; }
 .settings-disk-pie .chart-pie.default-color1 { -fx-pie-color: -chart-series-2; }
 .settings-disk-pie .chart-pie.default-color2 { -fx-pie-color: -chart-series-3; }
+/* Story 335 (studio ruling R2) — the fourth slice, "Project, audio and other
+ * files", is the ungoverned rest: a neutral fill. */
+.settings-disk-pie .chart-pie.default-color3 { -fx-pie-color: -text-mute; }
 .settings-disk-pie .chart-pie {
     -fx-border-color: transparent;
 }
@@ -3062,6 +3081,19 @@
 }
 .settings-disk-pie .chart-legend .chart-legend-item {
     -fx-text-fill: -text-mute;
+}
+/* Story 335 (studio ruling R2, engineer S8) — the checkpoint readout under
+ * the pie (Caption 11, body text) and the muted note on when retention acts;
+ * restated under .dialog-pane, which the global label rule would beat. */
+.dialog-pane .settings-disk-summary,
+.settings-disk-summary {
+    -fx-text-fill: -text;
+    -fx-font-size: 11px;
+}
+.dialog-pane .settings-disk-note,
+.settings-disk-note {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 11px;
 }
 
 /* Group headers (browse groups and search "Category · Group" headers) —

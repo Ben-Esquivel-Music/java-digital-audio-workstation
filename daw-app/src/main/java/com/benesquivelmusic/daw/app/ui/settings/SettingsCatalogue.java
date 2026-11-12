@@ -41,9 +41,9 @@ import java.util.function.Predicate;
  * behaviour — and is the data source for the §6.1 search index
  * (story 306) and the §6.3 import/export profile (story 309).</p>
  *
- * <h2>Descriptor population ({@code 34 + DawAction.values().length})</h2>
+ * <h2>Descriptor population ({@code 33 + DawAction.values().length})</h2>
  * <ul>
- *   <li>18 {@code SettingsModel}-backed descriptors — id = the
+ *   <li>17 {@code SettingsModel}-backed descriptors — id = the
  *       {@code Preferences} key. Defaults are read from a scratch
  *       {@code SettingsModel} over an in-memory
  *       {@link TransientPreferences} node (an empty node makes every
@@ -216,17 +216,6 @@ public final class SettingsCatalogue {
         double defaultUiScale = scratch.getUiScale();
         String defaultScanPaths = scratch.getPluginScanPaths();
 
-        // The policy persists as a String short-name, but the mapping
-        // (SettingsModel.policyName / parsePolicy) is package-private in
-        // ..app.ui and unreachable here. Derive the canonical name without
-        // duplicating it: round-trip the default policy through the real
-        // setter — which persists policyName(...) into the scratch node —
-        // and read the persisted representation back.
-        scratch.setMasterCpuBudgetPolicy(scratch.getMasterCpuBudgetPolicy());
-        String defaultMasterCpuPolicy = Objects.requireNonNull(
-                scratchPrefs.get("audio.masterCpuBudgetPolicy", null),
-                "scratch setter did not persist the default policy name");
-
         // ── 1. Audio ─────────────────────────────────────────────────────
         Group audioFormat = new Group("format",
                 msg(messages, "settings.group.audio.format"), List.of(
@@ -282,25 +271,14 @@ public final class SettingsCatalogue {
                         List.of("threads", "cores", "multicore"),
                         ApplyClass.ENGINE_RECONFIGURE, ControlKind.CHOICE,
                         defaultWorkerPoolSize, scratch::setWorkerPoolSize),
+                // Story 335 (studio ruling R3) — the master CPU degradation
+                // policy row is removed: each shed track keeps its own CPU
+                // Budget policy, which the project file stores.
                 modelDescriptor(messages, "audio.masterCpuBudgetFraction",
                         List.of("cpu", "performance"),
                         ApplyClass.ENGINE_RECONFIGURE, ControlKind.SLIDER,
                         defaultMasterCpuFraction,
-                        scratch::setMasterCpuBudgetFraction),
-                new SettingDescriptor<>("audio.masterCpuBudgetPolicy",
-                        msg(messages, "audio.masterCpuBudgetPolicy.label"),
-                        msg(messages, "audio.masterCpuBudgetPolicy.description"),
-                        List.of("cpu", "performance"),
-                        Scope.AUDIO_DEVICE, ApplyClass.ENGINE_RECONFIGURE,
-                        ControlKind.CHOICE, defaultMasterCpuPolicy,
-                        // The value is the persisted short-name String.
-                        // SettingsModel.parsePolicy is forward-compatible —
-                        // every non-null name resolves to a policy object the
-                        // setter accepts — and setMasterCpuBudgetPolicy's only
-                        // guard is requireNonNull, so the delegated guard chain
-                        // reduces exactly to a non-null check (parsePolicy
-                        // itself is package-private and unreachable here).
-                        Objects::nonNull)));
+                        scratch::setMasterCpuBudgetFraction)));
 
         // ── 2. Appearance ────────────────────────────────────────────────
         Group appearanceTheme = new Group("theme",
@@ -327,9 +305,12 @@ public final class SettingsCatalogue {
 
         Group appearanceScale = new Group("scale",
                 msg(messages, "settings.group.appearance.scale"), List.of(
+                // Story 335 (studio ruling R6) — discrete steps: the options
+                // and the validator (the setter's guard) are the one
+                // UiScale step list.
                 modelDescriptor(messages, "appearance.uiScale",
                         List.of("zoom", "scaling", "dpi"),
-                        Scope.APPLICATION, ApplyClass.LIVE, ControlKind.SLIDER,
+                        Scope.APPLICATION, ApplyClass.LIVE, ControlKind.CHOICE,
                         defaultUiScale, scratch::setUiScale)));
 
         Group appearanceMotion = new Group("motion",
@@ -348,9 +329,11 @@ public final class SettingsCatalogue {
         // ── 3. Project ───────────────────────────────────────────────────
         Group projectDefaults = new Group("defaults",
                 msg(messages, "settings.group.project.defaults"), List.of(
-                // PROJECT_DEFAULTS dual reach (§3.2): stored as a default
-                // for future projects AND live-applied to the open project
-                // by LiveSettingsApplier — recorded in the description.
+                // PROJECT_DEFAULTS dual reach (§3.2): new-project template;
+                // an edited default also sets the open project's tempo
+                // undoably unless it has tempo changes
+                // (MainController.applyEditedDefaultTempo) — recorded in the
+                // description.
                 modelDescriptor(messages, "project.defaultTempo",
                         List.of("bpm"),
                         Scope.PROJECT_DEFAULTS, ApplyClass.LIVE, ControlKind.TEXT,
@@ -459,31 +442,31 @@ public final class SettingsCatalogue {
         Group backupsRetention = new Group("retention",
                 msg(messages, "settings.group.backups.retention"), List.of(
                 absorbedDescriptor(messages, "backups.keepRecent",
-                        List.of("autosave", "retention", "backup"),
+                        List.of("autosave", "retention", "backup", "checkpoint"),
                         Scope.APPLICATION, ControlKind.STEPPER,
                         BackupRetentionPolicy.DEFAULT.keepRecent(),
                         retentionCount(BackupRetentionPolicy.DEFAULT::withKeepRecent,
                                 MAX_KEEP_RECENT)),
                 absorbedDescriptor(messages, "backups.keepHourly",
-                        List.of("autosave", "retention", "backup"),
+                        List.of("autosave", "retention", "backup", "checkpoint"),
                         Scope.APPLICATION, ControlKind.STEPPER,
                         BackupRetentionPolicy.DEFAULT.keepHourly(),
                         retentionCount(BackupRetentionPolicy.DEFAULT::withKeepHourly,
                                 MAX_KEEP_HOURLY)),
                 absorbedDescriptor(messages, "backups.keepDaily",
-                        List.of("autosave", "retention", "backup"),
+                        List.of("autosave", "retention", "backup", "checkpoint"),
                         Scope.APPLICATION, ControlKind.STEPPER,
                         BackupRetentionPolicy.DEFAULT.keepDaily(),
                         retentionCount(BackupRetentionPolicy.DEFAULT::withKeepDaily,
                                 MAX_KEEP_DAILY)),
                 absorbedDescriptor(messages, "backups.keepWeekly",
-                        List.of("autosave", "retention", "backup"),
+                        List.of("autosave", "retention", "backup", "checkpoint"),
                         Scope.APPLICATION, ControlKind.STEPPER,
                         BackupRetentionPolicy.DEFAULT.keepWeekly(),
                         retentionCount(BackupRetentionPolicy.DEFAULT::withKeepWeekly,
                                 MAX_KEEP_WEEKLY)),
                 absorbedDescriptor(messages, "backups.maxAgeDays",
-                        List.of("autosave", "retention", "days", "age"),
+                        List.of("autosave", "retention", "days", "age", "checkpoint"),
                         Scope.APPLICATION, ControlKind.SLIDER,
                         (double) BackupRetentionPolicy.DEFAULT.maxAge().toDays(),
                         (Double value) -> {
@@ -499,7 +482,7 @@ public final class SettingsCatalogue {
                             }
                         }),
                 absorbedDescriptor(messages, "backups.maxDiskGiB",
-                        List.of("autosave", "retention", "disk", "pie"),
+                        List.of("autosave", "retention", "disk", "pie", "checkpoint"),
                         Scope.APPLICATION, ControlKind.SLIDER,
                         (double) (BackupRetentionPolicy.DEFAULT.maxBytes() / BYTES_PER_GIB),
                         (Double value) -> {

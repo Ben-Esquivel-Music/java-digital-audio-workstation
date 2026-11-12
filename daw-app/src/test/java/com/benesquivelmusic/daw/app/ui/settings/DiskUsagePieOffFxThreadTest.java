@@ -9,6 +9,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.List;
+import java.util.Locale;
+import java.util.ResourceBundle;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -43,7 +45,7 @@ class DiskUsagePieOffFxThreadTest {
             scanThread.set(Thread.currentThread());
             scannedOnFx.set(Platform.isFxApplicationThread());
             release.await();
-            return new ProjectDiskUsage(1_234, 0, 5L * 1024 * 1024);
+            return new ProjectDiskUsage(1_234, 2, 0, 0, 5L * 1024 * 1024);
         };
         DiskUsageTask task = new DiskUsageTask(scanner, result::set,
                 busyStates::add,
@@ -81,7 +83,7 @@ class DiskUsagePieOffFxThreadTest {
         assertThat(scanThread.get()).isNotNull();
         assertThat(scanThread.get().isVirtual()).isTrue();
         assertThat(scanThread.get().getName()).isEqualTo("settings-disk-usage");
-        assertThat(result.get()).isEqualTo(new ProjectDiskUsage(1_234, 0, 5L * 1024 * 1024));
+        assertThat(result.get()).isEqualTo(new ProjectDiskUsage(1_234, 2, 0, 0, 5L * 1024 * 1024));
         assertThat(busyStates).containsExactly(true, false);
     }
 
@@ -102,7 +104,7 @@ class DiskUsagePieOffFxThreadTest {
             if (restoreInterrupt) {
                 Thread.currentThread().interrupt();
             }
-            return new ProjectDiskUsage(7, 7, 7);
+            return new ProjectDiskUsage(7, 7, 7, 7, 7);
         };
         List<ProjectDiskUsage> delivered = new CopyOnWriteArrayList<>();
         List<Boolean> busyStates = new CopyOnWriteArrayList<>();
@@ -132,20 +134,32 @@ class DiskUsagePieOffFxThreadTest {
         assertThat(busyStates).containsExactly(true, false);
     }
 
+    /**
+     * Story 335 (studio ruling R2) — four slices, labelled from the
+     * Messages bundle: Checkpoints (the part the retention rows govern),
+     * Snapshots, Archives, and the rest of the project folder. The old
+     * three-slice "Autosaves / Archives / Assets" split counted every file of
+     * checkpoints/ and hid the snapshots inside "Assets".
+     */
     @Test
-    void sliceAggregationIsPureAndKeepsTheOldLabels() {
+    void sliceAggregationIsPureAndLabelsTheFourCategoriesFromTheBundle() {
+        ResourceBundle bundle = ResourceBundle.getBundle(
+                "com.benesquivelmusic.daw.app.i18n.Messages", Locale.ROOT);
         List<DiskUsageTask.Slice> slices = DiskUsageTask.slices(
-                new ProjectDiskUsage(1_234, 0, 5L * 1024 * 1024));
+                new ProjectDiskUsage(1_234, 2, 3L * 1024 * 1024, 0, 5L * 1024 * 1024),
+                bundle::getString);
         assertThat(slices).containsExactly(
-                new DiskUsageTask.Slice("Autosaves (1.2 KiB)", 1_234),
+                new DiskUsageTask.Slice("Checkpoints (1.2 KiB)", 1_234),
+                new DiskUsageTask.Slice("Snapshots (3.0 MiB)", 3L * 1024 * 1024),
                 new DiskUsageTask.Slice("Archives (0 B)", 0),
-                new DiskUsageTask.Slice("Assets (5.0 MiB)", 5L * 1024 * 1024));
+                new DiskUsageTask.Slice("Project, audio and other files (5.0 MiB)", 5L * 1024 * 1024));
 
-        assertThat(DiskUsageTask.slices(new ProjectDiskUsage(0, 0, 0)))
+        assertThat(DiskUsageTask.slices(new ProjectDiskUsage(0, 0, 0, 0, 0), bundle::getString))
                 .containsExactly(
-                        new DiskUsageTask.Slice("Autosaves (0 B)", 0),
+                        new DiskUsageTask.Slice("Checkpoints (0 B)", 0),
+                        new DiskUsageTask.Slice("Snapshots (0 B)", 0),
                         new DiskUsageTask.Slice("Archives (0 B)", 0),
-                        new DiskUsageTask.Slice("Assets (0 B)", 0));
+                        new DiskUsageTask.Slice("Project, audio and other files (0 B)", 0));
     }
 
     private static void runPostedOnFx(Runnable posted) throws Exception {

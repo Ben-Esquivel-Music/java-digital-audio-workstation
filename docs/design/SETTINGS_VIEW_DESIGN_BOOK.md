@@ -90,6 +90,10 @@ holds it. The Audio **tab** in `SettingsDialog` even contains a button
 `AudioSettingsDialog`. The settings catalogue is effectively split across
 two views with no single index of "everything you can configure".
 
+*As built in story 335: `masterCpuBudgetPolicy` is removed, because it
+was a persisted policy that nothing read (Persistence Integrity book §2.8).
+`SettingsModel` deletes the stale key on load.*
+
 ### 1.3 Tabs cap out and don't scale
 
 The general dialog is a fixed `TabPane` sized `520 × 340`
@@ -147,6 +151,9 @@ three on the same tab with no indication of how far a change reaches. A
 user changing "Default Tempo" might not realize that Apply
 (`LiveSettingsApplier.apply(...)`) pushes it into the open project's
 transport — there is no visual cue confirming the live effect.
+
+*As built in story 335: Apply no longer pushes the default tempo
+through `LiveSettingsApplier` (§3.2's note).*
 
 ### 1.9 No keyboard navigation between categories
 
@@ -209,6 +216,13 @@ reconfigure** (effect after the audio engine re‑arms, e.g. buffer size),
 or **restart required** (rare; clearly badged). No silent restarts, no
 unexplained "may require a restart" hedge.
 
+*As built in story 335: the six Backups rows and the default-tempo row
+are **live** in the sense "delivered on Apply". The Backups policy takes
+effect after the open project's next checkpoint, which the group's note
+says: `Retention changes apply after the open project's next checkpoint;
+applying them deletes nothing.` The tempo row's description states its
+conditional effect on the open project.*
+
 ### 2.5 Every setting is reversible
 
 Per‑setting reset, per‑category reset, and restore‑all‑defaults are
@@ -269,6 +283,15 @@ Scope ──▶ Category ──▶ Group ──▶ Setting
 > `LiveSettingsApplier.apply(...)` also pushes them into the open
 > project's transport and checkpoint manager on Apply. The scope tag
 > makes this dual reach explicit (§1.8) without changing the stored value.
+
+*As built in story 335: `LiveSettingsApplier` no longer writes the
+default tempo into the open project. The default tempo is the
+new-project template: the startup Untitled project and every new empty
+project take it. An Apply reaches the open project only when the row
+was edited, through `MainController.applyEditedDefaultTempo`, which
+writes one undoable step or explains with an INFO notice why it did not.
+The autosave interval still builds the checkpoint manager at startup
+and is reconfigured by `LiveSettingsApplier` on Apply.*
 
 ### 3.3 Proposed categories
 
@@ -476,6 +499,13 @@ engine‑reconfig / restart) sits in a trailing column and is omitted for
 *live*; the reset (↺) marker appears only when the value differs from
 default and resets that one setting on click.
 
+*As built in story 335: a row has a rejected state. `SettingRow.reject`
+sets `rejectionProperty()` and the `:rejected` pseudo-class. The message
+replaces the muted description in the `-danger` colour and is the
+editor's accessible help, and a row with no description shows the line
+only while it is rejected. A change of the row's value clears the
+rejection. The default-tempo row is the first to use it.*
+
 ### 5.5 Footer action bar
 
 ```
@@ -533,6 +563,18 @@ visual inside the Backups category, computed on a background thread (§2.7):
     ◖████▌ autosaves 1.2 GB   ▐██ archives 600 MB   ▌ assets 240 MB
 ```
 
+*As built in story 335: the first group is "Checkpoint retention". Its six
+rows — Keep recent, Keep hourly, Keep daily, Keep weekly, Max age and Max
+checkpoint space — govern the open project's `checkpoints/`. "Disk usage
+(this project)" shows four slices: Checkpoints, Snapshots, Archives, and
+Project, audio and other files. Under the pie are the summary line
+`Checkpoints: {0} in {1,choice,0#no files|1#1 file|1<{1,number,integer} files}.`,
+whose text is also its accessible text, and the note `Retention changes
+apply after the open project's next checkpoint; applying them deletes
+nothing.` A project never saved shows `This project has not been saved
+yet, so it has no checkpoints.`, and a failed scan shows an empty pie
+with `Disk usage could not be read.`, never zeros.*
+
 ### 5.9 Import / export sheet
 
 ```
@@ -573,6 +615,14 @@ is enabled only when something is dirty; closing with pending edits prompts
 "Apply, Discard, or Cancel". Live settings (theme/density/motion) still
 update instantly on Apply via the existing managers; nothing about the
 manager contract changes.
+
+*As built in story 335: a rejected row (§5.4's note) stays pending and
+dirty after Apply, and every Apply reveals the first rejected row and
+focuses its editor. OK, and the close prompt's Apply, leave the dialog
+open while a row is rejected. Discard clears the rejections. While a
+stored retention policy that cannot be read is held, displaying the
+Backups category makes its six rows pending with the values they show,
+so a plain Apply or OK delivers them.*
 
 ### 6.3 Import / export
 

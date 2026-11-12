@@ -4,7 +4,10 @@ import com.benesquivelmusic.daw.app.ui.icons.DawgIcon;
 
 import javafx.beans.property.ReadOnlyBooleanProperty;
 import javafx.beans.property.ReadOnlyBooleanWrapper;
+import javafx.beans.property.ReadOnlyStringProperty;
+import javafx.beans.property.ReadOnlyStringWrapper;
 import javafx.css.PseudoClass;
+import javafx.geometry.Bounds;
 import javafx.scene.Node;
 import javafx.scene.Parent;
 import javafx.scene.control.Button;
@@ -24,6 +27,7 @@ import javafx.scene.layout.VBox;
 
 import java.text.MessageFormat;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -57,7 +61,8 @@ import java.util.Set;
  * <p>Each row holds a <em>pending</em> value; the shell diffs it against
  * the persisted value from {@link ValueAccess} on every row edit. An
  * entry exists in the pending map iff the two differ
- * ({@code Objects.equals}); {@link #dirtyProperty()} and the owning
+ * ({@code Objects.equals}), or while the row is {@linkplain #holdPending
+ * held pending}; {@link #dirtyProperty()} and the owning
  * category's rail {@code •} marker derive reactively. The shell writes
  * nothing itself — {@code SettingsDialog.applySettings()} consumes
  * {@link #pendingEdits()} and then calls {@link #refreshFromPersisted()}.</p>
@@ -159,10 +164,19 @@ public final class SettingsShell extends BorderPane {
     private final Map<String, String> groupTitleByKey = new HashMap<>();
 
     // ── Pending-edit state (§6.2) ────────────────────────────────────────────
-    /** id → pending value; an entry exists iff pending != persisted. */
+    /** id → pending value; an entry exists iff pending != persisted, or the id is held. */
     private final Map<String, Object> pending = new LinkedHashMap<>();
+    /**
+     * Story 335 (studio ruling-3 Q1) — ids {@linkplain #holdPending held
+     * pending}: each keeps its pending entry whatever its value until the
+     * next re-seed.
+     */
+    private final Set<String> heldPending = new HashSet<>();
     private final ReadOnlyBooleanWrapper dirty =
             new ReadOnlyBooleanWrapper(this, "dirty", false);
+    /** The category whose pane the center shows; {@code null} while it shows search results. */
+    private final ReadOnlyStringWrapper displayedCategory =
+            new ReadOnlyStringWrapper(this, "displayedCategory");
 
     // ── Chrome ───────────────────────────────────────────────────────────────
     private final SettingsNavRail navRail = new SettingsNavRail();
@@ -605,12 +619,14 @@ public final class SettingsShell extends BorderPane {
      * numeric String parses to the persisted boxed type first, see
      * {@link SettingRow#canonicalComparisonValue} — so typing the
      * persisted tempo back reads as clean (§6.2: an entry exists iff the
-     * values actually differ). The map keeps the RAW row value: the apply
+     * values actually differ). A {@linkplain #holdPending held} row stays
+     * pending whatever its value. The map keeps the RAW row value: the apply
      * path still receives exactly what the editor produced.
      */
     private void recordPending(SettingRow row, Object value) {
         String id = row.descriptor().id();
-        if (Objects.equals(SettingRow.canonicalComparisonValue(row.descriptor(), value),
+        if (!heldPending.contains(id)
+                && Objects.equals(SettingRow.canonicalComparisonValue(row.descriptor(), value),
                 persisted.currentValue(id))) {
             pending.remove(id);
         } else {
@@ -727,6 +743,7 @@ public final class SettingsShell extends BorderPane {
         }
 
         paneHost.getChildren().setAll(results);
+        displayedCategory.set(null);
     }
 
     /**
@@ -762,8 +779,10 @@ public final class SettingsShell extends BorderPane {
         VBox pane = categoryId == null ? null : categoryPanes.get(categoryId);
         if (pane == null) {
             paneHost.getChildren().clear();
+            displayedCategory.set(null);
         } else {
             paneHost.getChildren().setAll(pane);
+            displayedCategory.set(categoryId);
         }
     }
 
@@ -775,19 +794,66 @@ public final class SettingsShell extends BorderPane {
     }
 
     /**
+     * The category whose pane the center shows, whichever way it was
+     * shown — the rail, its keys, {@link #selectCategory},
+     * {@link #revealSetting}, or leaving search back onto it — or
+     * {@code null} while the center shows search results (story 335,
+     * studio ruling-3 Q1).
+     *
+     * @return the displayed category's id, observable
+     */
+    public ReadOnlyStringProperty displayedCategoryProperty() {
+        return displayedCategory.getReadOnlyProperty();
+    }
+
+    /**
      * @return an unmodifiable snapshot of id → pending value, containing
-     *         only ids where {@code !Objects.equals(pending, persisted)};
-     *         values may be {@code null} (a cleared key binding)
+     *         only ids where {@code !Objects.equals(pending, persisted)}
+     *         and {@linkplain #holdPending held} ids; values may be
+     *         {@code null} (a cleared key binding)
      */
     public Map<String, Object> pendingEdits() {
         return Collections.unmodifiableMap(new LinkedHashMap<>(pending));
     }
 
     /**
+     * Story 335 (studio ruling-3 Q1) — holds rows pending: each gets a
+     * pending entry holding the value it shows, and keeps one whatever its
+     * value — an edit away and back does not clear it — until the next
+     * re-seed ({@link #refreshFromPersisted()},
+     * {@link #refreshFromPersistedKeepingRejected()},
+     * {@link #refreshSettingFromPersisted}). The dirty state, the rail
+     * {@code •} marker and Apply follow as for any pending edit; the row's
+     * ↺ "modified from default" marker is unaffected.
+     *
+     * @param settingIds the rows to hold
+     * @throws IllegalArgumentException for an unknown setting id
+     */
+    public void holdPending(Collection<String> settingIds) {
+        for (String id : settingIds) {
+            SettingRow row = rowsById.get(id);
+            if (row == null) {
+                throw new IllegalArgumentException("Unknown setting: " + id);
+            }
+            heldPending.add(id);
+            pending.put(id, row.getValue());
+        }
+        updateDirtyMarkers();
+    }
+
+    /**
+     * @param settingId a setting id
+     * @return whether the row is {@linkplain #holdPending held pending} (story 335)
+     */
+    public boolean isHeldPending(String settingId) {
+        return heldPending.contains(settingId);
+    }
+
+    /**
      * Re-seeds every row from {@link ValueAccess} and clears the pending
-     * state (call after Apply). Runs with the conflict guard and pending
-     * bookkeeping suspended — persisted values are authoritative — then
-     * rebuilds the dirty markers from scratch.
+     * state, holds included (call after Apply). Runs with the conflict
+     * guard and pending bookkeeping suspended — persisted values are
+     * authoritative — then rebuilds the dirty markers from scratch.
      */
     public void refreshFromPersisted() {
         refreshing = true;
@@ -798,11 +864,108 @@ public final class SettingsShell extends BorderPane {
         } finally {
             refreshing = false;
         }
+        heldPending.clear();
         pending.clear();
+        clearRejections();
         updateDirtyMarkers();
     }
 
-    /** Re-seeds one row without discarding unrelated pending edits. */
+    /**
+     * Story 335 (studio ruling R5) — the post-Apply re-seed: as
+     * {@link #refreshFromPersisted()}, except that a
+     * {@linkplain #rejectSetting rejected} row is neither re-seeded nor
+     * cleared — it keeps the text the user typed, its pending entry and the
+     * dirty state. Every other pending entry, and every other hold, is cleared.
+     */
+    public void refreshFromPersistedKeepingRejected() {
+        refreshing = true;
+        try {
+            for (SettingRow row : rowsById.values()) {
+                if (!row.isRejected()) {
+                    row.setValue(persisted.currentValue(row.descriptor().id()));
+                }
+            }
+        } finally {
+            refreshing = false;
+        }
+        heldPending.removeIf(id -> !rowsById.get(id).isRejected());
+        pending.keySet().removeIf(id -> {
+            SettingRow row = rowsById.get(id);
+            return row == null || !row.isRejected();
+        });
+        updateDirtyMarkers();
+    }
+
+    /**
+     * Story 335 (studio ruling R5) — rejects the row's pending value with
+     * {@code message}: the row shows it in place of its description, in the
+     * error style, and as its editor's accessible help; it keeps its value
+     * and its pending entry, so the dirty marker stays on. The rejection
+     * clears when the row's value changes.
+     *
+     * @param settingId the rejected setting's id
+     * @param message   the localized rejection message
+     * @throws IllegalArgumentException for an unknown setting id
+     */
+    public void rejectSetting(String settingId, String message) {
+        SettingRow row = rowsById.get(settingId);
+        if (row == null) {
+            throw new IllegalArgumentException("Unknown setting: " + settingId);
+        }
+        row.reject(message);
+    }
+
+    /** Clears every row's rejection (story 335); an Apply re-decides them. */
+    public void clearRejections() {
+        rowsById.values().forEach(SettingRow::clearRejection);
+    }
+
+    /** @return the id of the first rejected row in catalogue order, or empty (story 335) */
+    public Optional<String> firstRejectedSetting() {
+        return rowsById.values().stream()
+                .filter(SettingRow::isRejected)
+                .map(row -> row.descriptor().id())
+                .findFirst();
+    }
+
+    /**
+     * Story 335 (engineer S2, N9) — brings a row to the user: clears a search
+     * query (which could hide it), selects its category, scrolls it into view
+     * and focuses its editor. A row whose skin is not realized yet (headless
+     * construction) is selected but not focused.
+     *
+     * @param settingId the setting's id
+     * @throws IllegalArgumentException for an unknown setting id
+     */
+    public void revealSetting(String settingId) {
+        SettingRow row = rowsById.get(settingId);
+        String categoryId = categoryByRowId.get(settingId);
+        if (row == null || categoryId == null) {
+            throw new IllegalArgumentException("Unknown setting: " + settingId);
+        }
+        selectCategory(categoryId);
+        paneScroll.applyCss();
+        paneScroll.layout();
+        scrollIntoView(row);
+        Node editor = findFirstFocusTraversable(row);
+        if (editor != null) {
+            editor.requestFocus();
+        }
+    }
+
+    /** Scrolls the category pane so {@code row}'s top edge is in the viewport. */
+    private void scrollIntoView(SettingRow row) {
+        double contentHeight = paneHost.getLayoutBounds().getHeight();
+        double viewportHeight = paneScroll.getViewportBounds().getHeight();
+        if (row.getScene() == null || contentHeight <= viewportHeight || viewportHeight <= 0) {
+            return;
+        }
+        Bounds inContent = paneHost.sceneToLocal(row.localToScene(row.getLayoutBounds()));
+        double fraction = Math.clamp(inContent.getMinY() / (contentHeight - viewportHeight), 0.0, 1.0);
+        paneScroll.setVvalue(paneScroll.getVmin() + fraction * (paneScroll.getVmax() - paneScroll.getVmin()));
+    }
+
+    /** Re-seeds one row, ending its hold, without discarding unrelated pending edits. */
     public void refreshSettingFromPersisted(String settingId) {
         SettingRow row = rowsById.get(settingId);
         if (row == null) {
@@ -814,6 +977,7 @@ public final class SettingsShell extends BorderPane {
         } finally {
             refreshing = false;
         }
+        heldPending.remove(settingId);
         pending.remove(settingId);
         updateDirtyMarkers();
     }

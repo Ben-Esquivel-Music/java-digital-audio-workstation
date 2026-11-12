@@ -23,6 +23,7 @@
     -srw-accent:      #7C8CFF;  /* -accent      */
     -srw-accent-soft: rgba(124, 140, 255, 0.14);  /* -accent-soft */
     -srw-line-soft:   #22242C;  /* -line-soft   */
+    -srw-danger:      #E5484D;  /* -danger      */
 
     -fx-padding: 4 0 4 0;
 }
@@ -55,6 +56,12 @@
 .setting-row .setting-row-description {
     -fx-text-fill: -srw-text-mute;
     -fx-font-size: 11px;
+}
+
+/* Story 335 (studio ruling R5) — a rejected value's message replaces the
+   description line in the error token. */
+.setting-row:rejected .setting-row-description {
+    -fx-text-fill: -srw-danger;
 }
 
 /* Story 309 §5.3 — trailing column pairing the per-row scope-override

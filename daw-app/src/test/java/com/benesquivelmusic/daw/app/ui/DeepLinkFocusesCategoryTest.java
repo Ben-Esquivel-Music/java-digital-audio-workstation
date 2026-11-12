@@ -13,7 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Story 308 §7 Stage 4 — the former standalone entry points deep-link
  * into the one settings surface: invoking the metronome context item
- * opens Settings focused on Recording; the Edit ▸ Backup Retention entry
+ * opens Settings focused on Recording; the Edit ▸ Checkpoint Retention entry
  * focuses Backups. Behavioural half drives {@code selectCategory};
  * source-scan half pins the live wiring literals.
  */

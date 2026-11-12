@@ -192,8 +192,8 @@ final class ExitCoordinator {
     /**
      * Runs {@code work} — DISPOSE's hand-off: the render queue's
      * persistence, the audio engine's stop, the end of the render queue's
-     * workers, the plug-in supervisor, the backup retention and the disk
-     * scanner — on one platform thread, {@value #ENGINE_SHUTDOWN_THREAD},
+     * workers, the plug-in supervisor and the disk scanner — on one
+     * platform thread, {@value #ENGINE_SHUTDOWN_THREAD},
      * so a driver's slow stop never freezes the visible progress surface
      * (the studio engineer's S9). The thread is a daemon (ruling 2 OQ-3):
      * nothing calls {@code System.exit} once the launcher returns, so a

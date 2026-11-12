@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.sdk.persistence.BackupRetentionPolicy;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
@@ -81,7 +82,10 @@ public final class BackupRetentionPolicyStore {
 
     /**
      * Loads the global policy, falling back to {@link BackupRetentionPolicy#DEFAULT}
-     * if the file does not exist or cannot be parsed.
+     * if the file does not exist or cannot be parsed. Never deliver its result
+     * to a checkpoint writer: a file that exists but cannot be read must not
+     * become a policy the user did not choose — {@link #loadGlobal()} tells the
+     * two apart.
      */
     public BackupRetentionPolicy loadGlobalOrDefault() {
         try {
@@ -89,6 +93,58 @@ public final class BackupRetentionPolicyStore {
         } catch (IOException | IllegalArgumentException e) {
             return BackupRetentionPolicy.DEFAULT;
         }
+    }
+
+    /**
+     * Loads the global policy for delivery to the checkpoint writer, which
+     * deletes checkpoints by it (story 335). A missing file is no policy: the
+     * result is empty and the caller's default applies. A file that exists
+     * is either a complete, valid policy or a failure — nothing falls back
+     * field by field. The whole file must be one complete flat JSON object
+     * ({@code CompleteObjectReader}), so a file cut anywhere before its
+     * closing brace is refused — even one cut inside its last value, whose
+     * digits still parse ({@code "maxBytes": 2147} would cap the checkpoints
+     * at 2147 bytes); each of the six keys {@link #toJson} writes must be
+     * present and parse; and {@link BackupRetentionPolicy} must accept the
+     * values. A zero-byte, truncated or hand-edited file is therefore refused
+     * rather than read as a policy the user did not choose. A number's digits
+     * may be any script's decimal digits, for files written before story 332
+     * in the user's locale.
+     *
+     * @return the stored policy, or empty when the file does not exist
+     * @throws IOException if the file exists but cannot be read, or does not
+     *                     hold a complete, valid policy
+     */
+    public Optional<BackupRetentionPolicy> loadGlobal() throws IOException {
+        String json;
+        try {
+            json = Files.readString(globalPath);
+        } catch (NoSuchFileException missing) {
+            return Optional.empty();
+        }
+        try {
+            Map<String, String> values = CompleteObjectReader.read(json);
+            return Optional.of(new BackupRetentionPolicy(
+                    Integer.parseInt(required(values, "keepRecent")),
+                    Integer.parseInt(required(values, "keepHourly")),
+                    Integer.parseInt(required(values, "keepDaily")),
+                    Integer.parseInt(required(values, "keepWeekly")),
+                    Duration.ofSeconds(Long.parseLong(required(values, "maxAgeSeconds"))),
+                    Long.parseLong(required(values, "maxBytes"))));
+        } catch (IllegalArgumentException invalid) {
+            // Not one complete object, a missing key, a value that does not parse, or one the policy refuses.
+            throw new IOException(globalPath + " holds no valid checkpoint retention policy: "
+                    + invalid.getMessage(), invalid);
+        }
+    }
+
+    /** The value of {@code key}; a missing key is refused like a value that does not parse. */
+    private static String required(Map<String, String> values, String key) {
+        String value = values.get(key);
+        if (value == null) {
+            throw new IllegalArgumentException("\"" + key + "\" is missing");
+        }
+        return value;
     }
 
     /** Writes the given policy to the global path, creating parent directories. */
@@ -232,5 +288,169 @@ public final class BackupRetentionPolicyStore {
             }
         }
         return result;
+    }
+
+    /**
+     * Reads a policy file for {@link #loadGlobal()} as exactly one complete
+     * flat JSON object: optional whitespace, <code>{</code>, members separated
+     * by commas whose values are numbers or strings, <code>}</code>, and
+     * nothing after it but whitespace. Unlike {@code parseFlat}, which keeps
+     * whatever key/value pairs it finds, it refuses text that stops anywhere
+     * before the closing brace — inside a key, between members, or inside a
+     * value that still parses — and anything else that is not such an object.
+     * A key given twice is refused; unknown keys are returned and left to the
+     * caller. Values are returned as written (a string's content without its
+     * quotes). A number's digits may be any script's decimal digits, for files
+     * written before story 332 in the user's locale, as the parse that follows
+     * reads them ({@code digitValue}).
+     */
+    private static final class CompleteObjectReader {
+
+        private static final int END = -1;
+
+        private final String text;
+        private int position;
+
+        private CompleteObjectReader(String text) {
+            this.text = text;
+            // A leading byte order mark is an encoding marker, not content (RFC 8259 §8.1).
+            this.position = text.startsWith("\uFEFF") ? 1 : 0;
+        }
+
+        /**
+         * The members of the one object {@code text} holds.
+         *
+         * @throws IllegalArgumentException where {@code text} stops being one complete flat object
+         */
+        static Map<String, String> read(String text) {
+            CompleteObjectReader reader = new CompleteObjectReader(text);
+            Map<String, String> members = reader.object();
+            reader.skipWhitespace();
+            if (reader.peek() != END) {
+                throw reader.refusal("text after the closing '}'");
+            }
+            return members;
+        }
+
+        private Map<String, String> object() {
+            skipWhitespace();
+            expect('{');
+            Map<String, String> members = new HashMap<>();
+            skipWhitespace();
+            if (accept('}')) {
+                return members;
+            }
+            do {
+                skipWhitespace();
+                String key = string();
+                skipWhitespace();
+                expect(':');
+                skipWhitespace();
+                String value = peek() == '"' ? string() : number();
+                if (members.putIfAbsent(key, value) != null) {
+                    throw refusal("\"" + key + "\" given twice");
+                }
+                skipWhitespace();
+            } while (accept(','));
+            expect('}');
+            return members;
+        }
+
+        private String string() {
+            expect('"');
+            int start = position;
+            while (true) {
+                int c = peek();
+                if (c == END) {
+                    throw refusal("a string that is never closed");
+                }
+                if (c < 0x20) {
+                    throw refusal("a control character inside a string");
+                }
+                position++;
+                if (c == '"') {
+                    return text.substring(start, position - 1);
+                }
+                if (c == '\\') {
+                    if (peek() == END) {
+                        throw refusal("a string that is never closed");
+                    }
+                    position++;
+                }
+            }
+        }
+
+        private String number() {
+            int start = position;
+            accept('-');
+            // A leading zero stands alone, in whichever script's digits it is written.
+            if (digitValue(peek()) == 0) {
+                position++;
+            } else {
+                digits();
+            }
+            if (accept('.')) {
+                digits();
+            }
+            if (accept('e') || accept('E')) {
+                if (!accept('+')) {
+                    accept('-');
+                }
+                digits();
+            }
+            return text.substring(start, position);
+        }
+
+        private void digits() {
+            if (digitValue(peek()) < 0) {
+                throw refusal(peek() == END ? "the end of the text where a value belongs"
+                        : "a value that is not a number or a string");
+            }
+            while (digitValue(peek()) >= 0) {
+                position++;
+            }
+        }
+
+        /**
+         * The value of {@code c} as a decimal digit of any script, or -1: the
+         * digits {@code Integer.parseInt} and {@code Long.parseLong} read.
+         * Before story 332, {@code toJson} wrote its numbers in the default
+         * locale, so a policy saved under {@code ar-SA}, {@code fa-IR} or
+         * {@code th-TH-u-nu-thai} holds Arabic-Indic, Extended Arabic-Indic or
+         * Thai digits, and every earlier reader read them back.
+         */
+        private static int digitValue(int c) {
+            return c == END ? -1 : Character.digit(c, 10);
+        }
+
+        private void skipWhitespace() {
+            while (peek() == ' ' || peek() == '\t' || peek() == '\n' || peek() == '\r') {
+                position++;
+            }
+        }
+
+        private boolean accept(char expected) {
+            if (peek() == expected) {
+                position++;
+                return true;
+            }
+            return false;
+        }
+
+        private void expect(char expected) {
+            if (!accept(expected)) {
+                throw refusal(peek() == END ? "the end of the text where '" + expected + "' belongs"
+                        : "'" + (char) peek() + "' where '" + expected + "' belongs");
+            }
+        }
+
+        private int peek() {
+            return position < text.length() ? text.charAt(position) : END;
+        }
+
+        private IllegalArgumentException refusal(String what) {
+            return new IllegalArgumentException("not one complete JSON object: " + what
+                    + " (character " + position + ")");
+        }
     }
 }

@@ -118,7 +118,7 @@ import java.util.logging.Logger;
  * existing {@link ABComparison}, §6.5), and the §6.4 preset footer (persisted
  * via {@link ParameterPresetManager} under
  * {@code ~/.daw/plugin-presets/<sanitized-plugin-id>}, the
- * {@code BackupRetentionController}/{@code RenderQueue} home-directory
+ * {@code BackupRetentionPolicyStore}/{@code RenderQueue} home-directory
  * convention) are all session-owned.</p>
  *
  * <h2>Bypass (§6.1)</h2>
@@ -1122,7 +1122,7 @@ public final class PluginEditorSession {
 
     /**
      * Per-plugin preset home: {@code ~/.daw/plugin-presets/<sanitized-id>}
-     * (the {@code ~/.daw} convention shared with autosaves and the render
+     * (the {@code ~/.daw} convention shared with the retention policy and the render
      * queue). Sanitising replaces any character outside
      * {@code [a-zA-Z0-9._-]} with {@code _} so an arbitrary plugin id is
      * always a valid directory name.

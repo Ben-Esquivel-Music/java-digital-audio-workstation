@@ -229,7 +229,7 @@ class ExitWiringSourceTest {
         assertThat(disposal).as("the hand-off starts in a finally, so a failing FX part still stops the engine")
                 .contains("} finally { renderQueue = null; windowLifetimeDisposal ="
                         + " ExitCoordinator.onTheEngineShutdownThread(new EngineShutdown(audioEngine, queueToPersist,"
-                        + " pluginSupervisor, backupRetentionController, diskScanner)); }")
+                        + " pluginSupervisor, diskScanner)); }")
                 .contains("if (windowLifetimeDisposal != null) { return windowLifetimeDisposal; }")
                 .contains("this::hideEveryOtherWindow);")
                 .doesNotContain("audioEngine.shutdown()").doesNotContain("pluginSupervisor.close()")
@@ -328,8 +328,15 @@ class ExitWiringSourceTest {
         assertThat(body(main, "private void createTempoEditController()")).contains("this::projectActionsAllowed);");
         assertThat(body(main, "private void createTransportController()"))
                 .contains("transportController.setProjectActionsAllowed(this::projectActionsAllowed);");
+        // Story 335 — the live settings never write the tempo; an edited default tempo's decision reads the gate.
         assertThat(body(main, "private void applyLiveSettings(SettingsModel model, String previousPluginPaths)"))
-                .contains("projectManager, project, pluginRegistry, projectActionsAllowed());");
+                .contains("projectManager, project, pluginRegistry);")
+                .doesNotContain("projectActionsAllowed");
+        assertThat(body(main, "private void onDefaultTempoEdited(SettingsDialog.DefaultTempoEdit edit)"))
+                .contains("applyEditedDefaultTempo(project, history, this::projectActionsAllowed, pristine,"
+                        + " edit.bulk(), bpm)");
+        assertThat(body(main, "static DefaultTempoOutcome applyEditedDefaultTempo("))
+                .startsWith("{ if (!projectActionsAllowed.getAsBoolean()) { return DefaultTempoOutcome.GATE_CLOSED; }");
         for (String door : List.of("private void onManagePlugins()", "private void onOpenSettings()")) {
             assertThat(body(main, door)).as("%s reads the gate first", door)
                     .startsWith("{ if (!projectActionsAllowed()) return;");

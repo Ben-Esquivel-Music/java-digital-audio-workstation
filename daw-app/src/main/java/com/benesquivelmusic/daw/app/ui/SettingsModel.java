@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.theme.UiScale;
 import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.audio.SampleRateConverter.QualityTier;
 import com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy;
@@ -30,7 +31,6 @@ public final class SettingsModel {
 
     // ── Master CPU budget keys (story 129 UI) ────────────────────────────────
     private static final String KEY_MASTER_CPU_BUDGET_FRACTION = "audio.masterCpuBudgetFraction";
-    private static final String KEY_MASTER_CPU_BUDGET_POLICY = "audio.masterCpuBudgetPolicy";
 
     // ── Project keys ─────────────────────────────────────────────────────────
     private static final String KEY_AUTO_SAVE_INTERVAL_SECONDS = "project.autoSaveIntervalSeconds";
@@ -148,15 +148,6 @@ public final class SettingsModel {
      */
     static final double DEFAULT_MASTER_CPU_BUDGET_FRACTION = 1.0;
 
-    /**
-     * Default master CPU degradation policy. {@code DoNothing} so that
-     * when the master ceiling is exceeded the cascade only marks the
-     * highest-CPU tracks as shed (publishing TrackDegraded events for
-     * UI feedback) without altering audio output. Users opt in to
-     * {@code BypassExpensive} from the Audio Settings dialog.
-     */
-    static final String DEFAULT_MASTER_CPU_BUDGET_POLICY = "DoNothing";
-
     private final Preferences prefs;
 
     private double sampleRate;
@@ -177,7 +168,6 @@ public final class SettingsModel {
     private QualityTier srcQuality;
     private int workerPoolSize;
     private double masterCpuBudgetFraction;
-    private DegradationPolicy masterCpuBudgetPolicy;
     private boolean firstRunWizardCompleted;
     private KeyBindingManager keyBindingManager;
 
@@ -203,14 +193,24 @@ public final class SettingsModel {
             // Unknown value persisted by a newer build; fall back to default.
         }
         mixPrecision = resolved;
-        autoSaveIntervalSeconds = prefs.getInt(KEY_AUTO_SAVE_INTERVAL_SECONDS,
+        // Story 335 — the checkpoint manager is constructed from this value at
+        // startup, and AutoSaveConfig refuses an interval of 0 or less: a
+        // corrupted node loads the default rather than failing the launch.
+        int storedInterval = prefs.getInt(KEY_AUTO_SAVE_INTERVAL_SECONDS,
                 DEFAULT_AUTO_SAVE_INTERVAL_SECONDS);
-        defaultTempo = prefs.getDouble(KEY_DEFAULT_TEMPO, DEFAULT_TEMPO);
+        autoSaveIntervalSeconds = storedInterval > 0 ? storedInterval : DEFAULT_AUTO_SAVE_INTERVAL_SECONDS;
+        // Story 335 — new projects take this tempo at startup, and the
+        // transport refuses NaN and anything outside 20..999 BPM.
+        double storedTempo = prefs.getDouble(KEY_DEFAULT_TEMPO, DEFAULT_TEMPO);
+        defaultTempo = storedTempo >= 20.0 && storedTempo <= 999.0 ? storedTempo : DEFAULT_TEMPO;
         useJournaledPersistence = prefs.getBoolean(
                 KEY_USE_JOURNALED_PERSISTENCE, DEFAULT_USE_JOURNALED_PERSISTENCE);
         returnToStartOnStop = prefs.getBoolean(
                 KEY_RETURN_TO_START_ON_STOP, DEFAULT_RETURN_TO_START_ON_STOP);
-        uiScale = prefs.getDouble(KEY_UI_SCALE, DEFAULT_UI_SCALE);
+        // Story 335 (studio ruling R6) — an off-step value (the old slider's
+        // 0.5..3.0 range) snaps to the nearest step; the stored preference is
+        // rewritten only when the user applies the row.
+        uiScale = UiScale.nearest(prefs.getDouble(KEY_UI_SCALE, DEFAULT_UI_SCALE)).factor();
         themeId = prefs.get(KEY_THEME_ID, DEFAULT_THEME_ID);
         pluginScanPaths = prefs.get(KEY_PLUGIN_SCAN_PATHS, DEFAULT_PLUGIN_SCAN_PATHS);
         audioBackend = prefs.get(KEY_AUDIO_BACKEND, DEFAULT_AUDIO_BACKEND);
@@ -238,8 +238,10 @@ public final class SettingsModel {
             storedMasterFraction = DEFAULT_MASTER_CPU_BUDGET_FRACTION;
         }
         masterCpuBudgetFraction = storedMasterFraction;
-        masterCpuBudgetPolicy = parsePolicy(
-                prefs.get(KEY_MASTER_CPU_BUDGET_POLICY, DEFAULT_MASTER_CPU_BUDGET_POLICY));
+        // Story 335 (studio ruling R3) — story-129 preference, removed: a
+        // persisted policy nothing reads (Persistence Integrity book §2.8).
+        // Each shed track keeps its own CPU Budget policy; the stale key goes.
+        prefs.remove("audio.masterCpuBudgetPolicy");
         firstRunWizardCompleted = prefs.getBoolean(
                 KEY_FIRST_RUN_WIZARD, DEFAULT_FIRST_RUN_WIZARD_COMPLETED);
     }
@@ -492,26 +494,6 @@ public final class SettingsModel {
         prefs.putDouble(KEY_MASTER_CPU_BUDGET_FRACTION, fraction);
     }
 
-    /**
-     * Returns the configured master degradation policy applied to
-     * tracks shed by the master cascade. Story 129 UI.
-     *
-     * @return the master degradation policy (never {@code null})
-     */
-    public DegradationPolicy getMasterCpuBudgetPolicy() {
-        return masterCpuBudgetPolicy;
-    }
-
-    /**
-     * Sets the master degradation policy and persists the change.
-     *
-     * @param policy the policy (must not be {@code null})
-     */
-    public void setMasterCpuBudgetPolicy(DegradationPolicy policy) {
-        this.masterCpuBudgetPolicy = Objects.requireNonNull(policy, "policy must not be null");
-        prefs.put(KEY_MASTER_CPU_BUDGET_POLICY, policyName(policy));
-    }
-
     // ── Project ──────────────────────────────────────────────────────────────
 
     /** Returns the auto-save interval in seconds. */
@@ -544,7 +526,8 @@ public final class SettingsModel {
      * @param tempo BPM value (must be between 20 and 999)
      */
     public void setDefaultTempo(double tempo) {
-        if (tempo < 20.0 || tempo > 999.0) {
+        // Negated so NaN is refused too (both comparisons are false for it).
+        if (!(tempo >= 20.0 && tempo <= 999.0)) {
             throw new IllegalArgumentException(
                     "defaultTempo must be between 20 and 999 BPM: " + tempo);
         }
@@ -613,15 +596,15 @@ public final class SettingsModel {
     }
 
     /**
-     * Sets the UI scale factor and persists the change.
+     * Sets the UI scale factor and persists the change. The guard is the one
+     * canonical step list (story 335, studio ruling R6): 0.9, 1.0, 1.1, 1.25,
+     * 1.5, 1.75 or 2.0.
      *
-     * @param scale scale factor (must be between 0.5 and 3.0)
+     * @param scale scale factor — one of {@link UiScale#factors()}
+     * @throws IllegalArgumentException if {@code scale} is not a step
      */
     public void setUiScale(double scale) {
-        if (scale < 0.5 || scale > 3.0) {
-            throw new IllegalArgumentException(
-                    "uiScale must be between 0.5 and 3.0: " + scale);
-        }
+        UiScale.ofFactor(scale);
         this.uiScale = scale;
         prefs.putDouble(KEY_UI_SCALE, scale);
     }
@@ -736,6 +719,5 @@ public final class SettingsModel {
         setSrcQuality(DEFAULT_SRC_QUALITY);
         setWorkerPoolSize(DEFAULT_WORKER_POOL_SIZE);
         setMasterCpuBudgetFraction(DEFAULT_MASTER_CPU_BUDGET_FRACTION);
-        setMasterCpuBudgetPolicy(parsePolicy(DEFAULT_MASTER_CPU_BUDGET_POLICY));
     }
 }

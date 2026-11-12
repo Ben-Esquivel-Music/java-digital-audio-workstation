@@ -305,16 +305,50 @@ class SettingsModelTest {
         assertThat(model.getDefaultTempo()).isCloseTo(999.0, within(0.01));
     }
 
+    /**
+     * Story 335 (studio ruling R6) — the step list is the guard: 0.9 and 2.0
+     * are the floor and the cap; the old slider's 0.5 and 3.0 and any off-step
+     * value such as 1.3 are refused.
+     */
     @Test
     void shouldAcceptMinimumUiScale() {
-        model.setUiScale(0.5);
-        assertThat(model.getUiScale()).isCloseTo(0.5, within(0.01));
+        model.setUiScale(0.9);
+        assertThat(model.getUiScale()).isEqualTo(0.9);
     }
 
     @Test
     void shouldAcceptMaximumUiScale() {
-        model.setUiScale(3.0);
-        assertThat(model.getUiScale()).isCloseTo(3.0, within(0.01));
+        model.setUiScale(2.0);
+        assertThat(model.getUiScale()).isEqualTo(2.0);
+    }
+
+    @Test
+    void shouldRejectOffStepAndOldRangeUiScales() {
+        for (double refused : new double[] {0.5, 3.0, 1.3, 0.95, Double.NaN}) {
+            assertThatThrownBy(() -> model.setUiScale(refused))
+                    .as("uiScale %s is not a step", refused)
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+        assertThat(model.getUiScale()).as("nothing was written").isEqualTo(1.0);
+    }
+
+    /**
+     * Story 335 (studio ruling R6) — a persisted off-step value snaps to the
+     * nearest step at load and the stored preference is left as it was
+     * (rewritten only when the user applies the row).
+     */
+    @Test
+    void shouldSnapAnOffStepUiScaleAtLoadWithoutRewritingIt() {
+        prefs.putDouble("appearance.uiScale", 1.3);
+        assertThat(new SettingsModel(prefs).getUiScale()).isEqualTo(1.25);
+        assertThat(prefs.getDouble("appearance.uiScale", Double.NaN)).isEqualTo(1.3);
+
+        prefs.putDouble("appearance.uiScale", 3.0);
+        assertThat(new SettingsModel(prefs).getUiScale()).isEqualTo(2.0);
+        prefs.putDouble("appearance.uiScale", 0.5);
+        assertThat(new SettingsModel(prefs).getUiScale()).isEqualTo(0.9);
+        prefs.putDouble("appearance.uiScale", Double.NaN);
+        assertThat(new SettingsModel(prefs).getUiScale()).isEqualTo(1.0);
     }
 
     // ── Key Bindings ─────────────────────────────────────────────────────────
@@ -429,24 +463,18 @@ class SettingsModelTest {
         assertThat(model.getThemeId()).isEqualTo("dark-accessible");
     }
 
-    // ── Master CPU Budget (story 129 UI) ─────────────────────────────────────
+    // ── Master CPU Budget (story 129 UI; story 335 removed the policy) ───────
 
     @Test
-    void shouldDefaultMasterCpuBudgetToOneAndDoNothing() {
+    void shouldDefaultMasterCpuBudgetToOne() {
         assertThat(model.getMasterCpuBudgetFraction()).isEqualTo(1.0);
-        assertThat(model.getMasterCpuBudgetPolicy())
-                .isInstanceOf(com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.DoNothing.class);
     }
 
     @Test
     void shouldPersistMasterCpuBudgetAcrossInstances() {
         model.setMasterCpuBudgetFraction(0.75);
-        model.setMasterCpuBudgetPolicy(
-                new com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.BypassExpensive());
         SettingsModel reloaded = new SettingsModel(prefs);
         assertThat(reloaded.getMasterCpuBudgetFraction()).isEqualTo(0.75);
-        assertThat(reloaded.getMasterCpuBudgetPolicy())
-                .isInstanceOf(com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.BypassExpensive.class);
     }
 
     @Test
@@ -462,19 +490,43 @@ class SettingsModelTest {
     }
 
     @Test
-    void shouldRejectNullMasterCpuBudgetPolicy() {
-        assertThatThrownBy(() -> model.setMasterCpuBudgetPolicy(null))
-                .isInstanceOf(NullPointerException.class);
+    void resetToDefaultsShouldRestoreMasterCpuBudget() {
+        model.setMasterCpuBudgetFraction(0.5);
+        model.resetToDefaults();
+        assertThat(model.getMasterCpuBudgetFraction()).isEqualTo(1.0);
+    }
+
+    /** Story 335 (studio ruling R3) — the removed policy's stale preference key is deleted on load. */
+    @Test
+    void theRemovedMasterCpuPolicyKeyIsDeletedOnLoad() {
+        prefs.put("audio.masterCpuBudgetPolicy", "BypassExpensive");
+        new SettingsModel(prefs);
+        assertThat(prefs.get("audio.masterCpuBudgetPolicy", null)).isNull();
+    }
+
+    // ── Story 335 — load clamps the values startup builds from ──────────────
+
+    @Test
+    void aStoredIntervalOfZeroOrLessLoadsAsTheDefault() {
+        prefs.putInt("project.autoSaveIntervalSeconds", 0);
+        assertThat(new SettingsModel(prefs).getAutoSaveIntervalSeconds()).isEqualTo(120);
+        prefs.putInt("project.autoSaveIntervalSeconds", -5);
+        assertThat(new SettingsModel(prefs).getAutoSaveIntervalSeconds()).isEqualTo(120);
     }
 
     @Test
-    void resetToDefaultsShouldRestoreMasterCpuBudget() {
-        model.setMasterCpuBudgetFraction(0.5);
-        model.setMasterCpuBudgetPolicy(
-                new com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.BypassExpensive());
-        model.resetToDefaults();
-        assertThat(model.getMasterCpuBudgetFraction()).isEqualTo(1.0);
-        assertThat(model.getMasterCpuBudgetPolicy())
-                .isInstanceOf(com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.DoNothing.class);
+    void aStoredNaNOrOutOfRangeTempoLoadsAsTheDefault() {
+        prefs.putDouble("project.defaultTempo", Double.NaN);
+        assertThat(new SettingsModel(prefs).getDefaultTempo()).isEqualTo(120.0);
+        prefs.putDouble("project.defaultTempo", 5000.0);
+        assertThat(new SettingsModel(prefs).getDefaultTempo()).isEqualTo(120.0);
+        prefs.putDouble("project.defaultTempo", 97.5);
+        assertThat(new SettingsModel(prefs).getDefaultTempo()).isEqualTo(97.5);
+    }
+
+    @Test
+    void setDefaultTempoRejectsNaN() {
+        assertThatThrownBy(() -> model.setDefaultTempo(Double.NaN))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }

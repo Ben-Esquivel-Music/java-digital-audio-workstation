@@ -41,8 +41,9 @@ import static org.assertj.core.api.Assertions.within;
  * label-string tests died with the {@code TabPane}; what must NOT change
  * is the Apply write path, re-proven here over the Rail &amp; Pane shell:
  * an editless Apply round-trips the canonical model defaults, the tempo
- * TEXT row keeps the old silent-drop semantics (out-of-range and NaN
- * never reach the model, in-range text is written), and the story-294
+ * TEXT row never writes an invalid value (out-of-range and NaN never reach
+ * the model and, since story 335, are rejected visibly at the row; in-range
+ * text is written), and the story-294
  * {@link UiEvent.SettingsApplied} publish stays well-formed.
  *
  * <p>The old dialog re-wrote its seeded combo values on every Apply;
@@ -166,38 +167,49 @@ class SettingsDialogApplyBehaviorTest {
         assertThat(model.getPluginScanPaths()).isEqualTo(defaults.getPluginScanPaths());
     }
 
+    /**
+     * Story 335 (studio ruling R5) — an out-of-range tempo is REJECTED at
+     * the row, never silently dropped: the model keeps its default, the row
+     * keeps the typed text and shows the message. (The old test pinned the
+     * silent drop this story removes.)
+     */
     @Test
-    void applyShouldSilentlyDropOutOfRangeTempo() throws Exception {
-        SettingsModel model = runOnFxThread(() -> {
-            SettingsModel m = newModel();
-            SettingsDialog dialog = new SettingsDialog(m);
-            tempoRow(dialog).setValue("1000");
+    void applyShouldRejectOutOfRangeTempoAtTheRow() throws Exception {
+        SettingsModel model = newModel();
+        String rejection = runOnFxThread(() -> {
+            SettingsDialog dialog = new SettingsDialog(model);
+            SettingRow row = tempoRow(dialog);
+            row.setValue("1000");
             dialog.applySettings();
-            return m;
+            assertThat(row.getValue()).as("the typed text is kept").isEqualTo("1000");
+            return row.rejectionProperty().get();
         });
 
-        // The descriptor-validator delegation must keep the old semantics:
-        // an out-of-range tempo is dropped silently, the model keeps its
-        // default (120.0).
         assertThat(model.getDefaultTempo())
                 .isCloseTo(newModel().getDefaultTempo(), within(0.01));
+        assertThat(rejection).isEqualTo("1000 BPM is out of range. Enter a number from 20 to 999.");
     }
 
+    /**
+     * Story 335 (studio ruling R5) — NaN parses but is no tempo: rejected
+     * at the row as unparseable, nothing written. (The old test pinned the
+     * silent drop this story removes.)
+     */
     @Test
-    void applyShouldSilentlyDropNaNTempo() throws Exception {
-        SettingsModel model = runOnFxThread(() -> {
-            SettingsModel m = newModel();
-            SettingsDialog dialog = new SettingsDialog(m);
-            tempoRow(dialog).setValue("NaN");
+    void applyShouldRejectNaNTempoAtTheRow() throws Exception {
+        SettingsModel model = newModel();
+        String rejection = runOnFxThread(() -> {
+            SettingsDialog dialog = new SettingsDialog(model);
+            SettingRow row = tempoRow(dialog);
+            row.setValue("NaN");
             dialog.applySettings();
-            return m;
+            return row.rejectionProperty().get();
         });
 
-        // The setter guard's range comparisons are both false for NaN, so
-        // it cannot reject it — the call site must. Pre-305 the inline
-        // range check dropped NaN silently; the model keeps its default.
         assertThat(model.getDefaultTempo())
                 .isCloseTo(newModel().getDefaultTempo(), within(0.01));
+        assertThat(rejection)
+                .isEqualTo("\"NaN\" is not a tempo. Enter a number from 20 to 999, for example 120 or 128.5.");
     }
 
     @Test

@@ -1,8 +1,11 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawgIcon;
+import com.benesquivelmusic.daw.app.ui.theme.UiScale;
 
+import javafx.beans.value.ObservableValue;
 import javafx.scene.Node;
+import javafx.scene.Scene;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.Separator;
@@ -64,19 +67,22 @@ final class ToolbarAppearanceController {
     private final OverflowGroups overflowGroups;
     private final BorderPane rootPane;
     private final KeyBindingManager keyBindingManager;
+    private final ObservableValue<UiScale> uiScale;
 
     ToolbarAppearanceController(TransportButtons transportButtons,
                                 ToolbarButtons toolbarButtons,
                                 AppearanceLabels labels,
                                 OverflowGroups overflowGroups,
                                 BorderPane rootPane,
-                                KeyBindingManager keyBindingManager) {
+                                KeyBindingManager keyBindingManager,
+                                ObservableValue<UiScale> uiScale) {
         this.transportButtons = Objects.requireNonNull(transportButtons, "transportButtons must not be null");
         this.toolbarButtons = Objects.requireNonNull(toolbarButtons, "toolbarButtons must not be null");
         this.labels = Objects.requireNonNull(labels, "labels must not be null");
         this.overflowGroups = Objects.requireNonNull(overflowGroups, "overflowGroups must not be null");
         this.rootPane = Objects.requireNonNull(rootPane, "rootPane must not be null");
         this.keyBindingManager = Objects.requireNonNull(keyBindingManager, "keyBindingManager must not be null");
+        this.uiScale = Objects.requireNonNull(uiScale, "uiScale must not be null");
     }
 
     // ── Public entry point ───────────────────────────────────────────────────
@@ -262,24 +268,43 @@ final class ToolbarAppearanceController {
      * Installs a listener that hides non-essential toolbar button groups when
      * the window width drops at or below {@link #TOOLBAR_OVERFLOW_THRESHOLD}.
      * The transport controls and time display always remain visible.
+     *
+     * <p>Story 335 (amendment A16): the width is compared in 100&nbsp;%
+     * pixels — the scene width divided by the UI-scale factor — and the rule
+     * re-runs when the scale changes, so at a large scale the groups hide at
+     * the window width where their scaled buttons stop fitting.</p>
      */
     private void installToolbarOverflowListener() {
         rootPane.sceneProperty().addListener((_, _, scene) -> {
             if (scene != null) {
-                scene.widthProperty().addListener((_, _, newWidth) ->
-                        applyToolbarOverflow(newWidth.doubleValue()));
-                applyToolbarOverflow(scene.getWidth());
+                scene.widthProperty().addListener((_, _, _) -> applyToolbarOverflow(scene));
+                applyToolbarOverflow(scene);
             }
         });
+        uiScale.addListener((_, _, _) -> {
+            Scene scene = rootPane.getScene();
+            if (scene != null) {
+                applyToolbarOverflow(scene);
+            }
+        });
+        if (rootPane.getScene() != null) {
+            applyToolbarOverflow(rootPane.getScene());
+        }
+    }
+
+    private void applyToolbarOverflow(Scene scene) {
+        applyToolbarOverflow(scene.getWidth() / uiScale.getValue().factor());
     }
 
     /**
      * Shows or hides lower-priority toolbar groups based on the current
-     * scene width.  Both the utility and undo/redo groups are hidden
-     * simultaneously when the width is at or below the threshold.
+     * scene width in 100&nbsp;% pixels. Both the utility and undo/redo groups
+     * are hidden simultaneously when the width is at or below the threshold.
+     *
+     * @param unscaledWidth the scene width divided by the UI-scale factor
      */
-    private void applyToolbarOverflow(double width) {
-        boolean narrow = width <= TOOLBAR_OVERFLOW_THRESHOLD;
+    void applyToolbarOverflow(double unscaledWidth) {
+        boolean narrow = unscaledWidth <= TOOLBAR_OVERFLOW_THRESHOLD;
         setGroupVisible(overflowGroups.utilityGroup, !narrow);
         setGroupVisible(overflowGroups.undoRedoGroup, !narrow);
     }

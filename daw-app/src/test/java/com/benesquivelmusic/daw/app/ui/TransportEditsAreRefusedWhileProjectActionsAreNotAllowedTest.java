@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
@@ -48,13 +49,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * The transport's own edits read the window's edit gate (PR #989 review
  * 5711460812; ruling R-5.1 B): the pre/post-roll toggles and spinners, the
- * tempo editor's commit, the live settings' tempo write and the rescued
+ * tempo editor's commit, an edited default tempo's write and the rescued
  * take's Review seek. While the gate says no, the act — a toggle's FIRE; a
  * spinner's SET_TEXT, committed by its commitValue; the tempo editor's
  * SET_TEXT, after the double-click that opens it, committed by its action
- * event; the live settings' apply, called directly with the gate's answer as
- * its last argument, as MainController.applyLiveSettings passes
- * projectActionsAllowed(); and the Review, run as its notification pill runs
+ * event; a live settings' apply, which never writes the tempo (story 335),
+ * followed by the default-tempo decision MainController.applyEditedDefaultTempo
+ * called directly with the gate; and the Review, run as its notification pill runs
  * it — writes nothing, writes no status text, adds no history entry,
  * publishes nothing, and the control shows the stored value again; once it
  * says yes, the same act edits. The return-to-start preference is the
@@ -229,10 +230,15 @@ class TransportEditsAreRefusedWhileProjectActionsAreNotAllowedTest {
             model.setReturnToStartOnStop(!project.getTransport().isReturnToStartOnStop());
             ProjectManager projectManager = new ProjectManager(new CheckpointManager(AutoSaveConfig.DEFAULT));
             PluginRegistry plugins = new PluginRegistry();
+            ThemeManager appearance = new ThemeManager(preferences.node("theme"));
             double stored = project.getTransport().getTempo();
 
-            LiveSettingsApplier.apply(model, model.getPluginScanPaths(), null, projectManager, project, plugins,
-                    allowed.get());
+            // Story 335 (studio ruling R4) — the applier never writes the tempo, gate open or closed; an edited
+            // default tempo reaches the project only through MainController.applyEditedDefaultTempo, which reads
+            // the gate first.
+            LiveSettingsApplier.apply(model, model.getPluginScanPaths(), appearance, projectManager, project, plugins);
+            assertThat(onFx(() -> MainController.applyEditedDefaultTempo(project, undo, allowed::get, false, false, 150.0)))
+                    .isEqualTo(MainController.DefaultTempoOutcome.GATE_CLOSED);
             assertThat(project.getTransport().getTempo()).as("refused: the project's tempo is not written")
                     .isEqualTo(stored);
             assertThat(project.getTransport().isReturnToStartOnStop())
@@ -240,9 +246,12 @@ class TransportEditsAreRefusedWhileProjectActionsAreNotAllowedTest {
             assertNothingElseHappened();
 
             allowed.set(true);
-            LiveSettingsApplier.apply(model, model.getPluginScanPaths(), null, projectManager, project, plugins,
-                    allowed.get());
+            LiveSettingsApplier.apply(model, model.getPluginScanPaths(), appearance, projectManager, project, plugins);
+            assertThat(project.getTransport().getTempo()).as("an Apply alone never writes it").isEqualTo(stored);
+            assertThat(onFx(() -> MainController.applyEditedDefaultTempo(project, undo, allowed::get, false, false, 150.0)))
+                    .isEqualTo(MainController.DefaultTempoOutcome.WRITTEN);
             assertThat(project.getTransport().getTempo()).isEqualTo(150.0);
+            assertThat(undo.undoSize()).as("admitted, as one undoable step").isEqualTo(1);
         } finally {
             preferences.removeNode();
         }

@@ -108,13 +108,7 @@ final class TempoEditController {
             if (!(newTempo >= 20.0 && newTempo <= 999.0)) {
                 throw new IllegalArgumentException("tempo out of range");
             }
-            double oldTempo = project.get().getTransport().getTempo();
-            if (Double.compare(newTempo, oldTempo) != 0) {
-                undoManager.get().execute(new UndoableAction() {
-                    @Override public String description() { return String.format("Set Tempo to %.1f BPM", newTempo); }
-                    @Override public void execute() { project.get().getTransport().setTempo(newTempo); }
-                    @Override public void undo() { project.get().getTransport().setTempo(oldTempo); }
-                });
+            if (setTempo(project.get(), undoManager.get(), projectActionsAllowed, newTempo)) {
                 syncMenuState.run();
             }
             statusBar.accept(String.format("Tempo set to %.1f BPM", newTempo), DawIcon.METRONOME);
@@ -125,5 +119,35 @@ final class TempoEditController {
         // Story 293: the tempo label binds TransportVM.tempo \u2014 no imperative
         // updateTempoDisplay() to forward.
         hbox.getChildren().set(index, tempoLabel);
+    }
+
+    /**
+     * One "Set Tempo to %.1f BPM" history step; the transport bar's edit and
+     * an edited default tempo (story 335, studio ruling R4.3) share it. It
+     * writes only the beat-0 BPM, as one undoable step whose undo restores the
+     * prior BPM, and nothing while the window's edit gate says no or when the
+     * tempo is already {@code newTempo}.
+     *
+     * @param project               the open project
+     * @param history               its undo history
+     * @param projectActionsAllowed the window's edit gate
+     * @param newTempo              the tempo, 20 to 999 BPM
+     * @return whether the step was written
+     */
+    static boolean setTempo(DawProject project, UndoManager history, BooleanSupplier projectActionsAllowed,
+                            double newTempo) {
+        if (!projectActionsAllowed.getAsBoolean()) {
+            return false;
+        }
+        double oldTempo = project.getTransport().getTempo();
+        if (Double.compare(newTempo, oldTempo) == 0) {
+            return false;
+        }
+        history.execute(new UndoableAction() {
+            @Override public String description() { return String.format("Set Tempo to %.1f BPM", newTempo); }
+            @Override public void execute() { project.getTransport().setTempo(newTempo); }
+            @Override public void undo() { project.getTransport().setTempo(oldTempo); }
+        });
+        return true;
     }
 }

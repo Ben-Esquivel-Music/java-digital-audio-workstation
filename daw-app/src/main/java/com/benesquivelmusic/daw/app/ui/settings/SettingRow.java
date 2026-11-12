@@ -6,10 +6,13 @@ import javafx.beans.property.ReadOnlyObjectProperty;
 import javafx.beans.property.ReadOnlyObjectWrapper;
 import javafx.beans.property.ReadOnlyBooleanProperty;
 import javafx.beans.property.ReadOnlyBooleanWrapper;
+import javafx.beans.property.ReadOnlyStringProperty;
+import javafx.beans.property.ReadOnlyStringWrapper;
 import javafx.beans.property.SimpleBooleanProperty;
 import javafx.beans.property.SimpleObjectProperty;
 import javafx.beans.property.SimpleStringProperty;
 import javafx.beans.property.StringProperty;
+import javafx.css.PseudoClass;
 import javafx.scene.Node;
 import javafx.scene.control.Control;
 import javafx.scene.control.Skin;
@@ -127,6 +130,21 @@ public final class SettingRow extends Control {
     private final BooleanProperty armed =
             new SimpleBooleanProperty(this, "armed", false);
 
+    /** Story 335 — the {@code :rejected} pseudo-class, on while {@link #rejectionProperty()} is non-empty. */
+    private static final PseudoClass REJECTED = PseudoClass.getPseudoClass("rejected");
+
+    /**
+     * Story 335 (studio ruling R5) — the row-level rejection message of the
+     * last Apply, {@code ""} for none. Set by the shell; cleared when the
+     * value changes.
+     */
+    private final ReadOnlyStringWrapper rejection = new ReadOnlyStringWrapper(this, "rejection", "") {
+        @Override
+        protected void invalidated() {
+            pseudoClassStateChanged(REJECTED, !get().isEmpty());
+        }
+    };
+
     /**
      * Story 309 §5.3/§5.4 — pre-localized per-row scope-override chip text,
      * set once by the shell BEFORE the skin attaches when this row's
@@ -165,6 +183,8 @@ public final class SettingRow extends Control {
                 modified.set(!Objects.equals(
                         canonicalComparisonValue(descriptor, get()),
                         descriptor.defaultValue()));
+                // Story 335 (R5): the rejection clears when the text changes.
+                clearRejection();
             }
         };
         // The property ctor does not run invalidated() — seed modified here.
@@ -248,6 +268,42 @@ public final class SettingRow extends Control {
     /** Resets the pending value to {@link SettingDescriptor#defaultValue()}. */
     public void resetToDefault() {
         setValue(descriptor.defaultValue());
+    }
+
+    /**
+     * Story 335 (studio ruling R5) — the row-level rejection of the last
+     * Apply: the message the skin shows in place of the description (error
+     * style, pseudo-class {@code rejected}) and as the editor's accessible
+     * help; {@code ""} when the row is not rejected.
+     *
+     * @return the read-only rejection message
+     */
+    public ReadOnlyStringProperty rejectionProperty() {
+        return rejection.getReadOnlyProperty();
+    }
+
+    /**
+     * Rejects the row's pending value. The value is kept; the rejection
+     * clears when the value changes ({@link #clearRejection()}).
+     *
+     * @param message the localized message; not blank
+     */
+    public void reject(String message) {
+        Objects.requireNonNull(message, "message must not be null");
+        if (message.isBlank()) {
+            throw new IllegalArgumentException("message must not be blank");
+        }
+        rejection.set(message);
+    }
+
+    /** Clears the rejection, if any. */
+    public void clearRejection() {
+        rejection.set("");
+    }
+
+    /** @return whether the row's pending value was rejected by the last Apply */
+    public boolean isRejected() {
+        return !rejection.get().isEmpty();
     }
 
     /**
@@ -342,7 +398,8 @@ public final class SettingRow extends Control {
      * canonical value type is a boxed {@link Double} (the catalogue's
      * {@code project.defaultTempo} — the only such descriptor), so a
      * parseable String coerces to Double before {@code Objects.equals};
-     * unparseable text stays a String (a real, silently-droppable edit).
+     * unparseable text stays a String (a real edit, which the Apply rejects
+     * visibly, story 335).
      * Every other kind/value passes through untouched — those editors
      * already produce the persisted boxed types. Shared with the shell's
      * pending-edit diff so the ↺ marker and the dirty state always agree.

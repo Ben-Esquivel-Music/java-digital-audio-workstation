@@ -3,7 +3,6 @@ package com.benesquivelmusic.daw.app.ui.settings;
 import com.benesquivelmusic.daw.app.ui.SettingsModel;
 import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.audio.SampleRateConverter.QualityTier;
-import com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy;
 
 import org.junit.jupiter.api.Test;
 
@@ -54,14 +53,6 @@ class SettingDescriptorTest {
         setters.put("audio.workerPoolSize", v -> model.setWorkerPoolSize((Integer) v));
         setters.put("audio.masterCpuBudgetFraction",
                 v -> model.setMasterCpuBudgetFraction((Double) v));
-        // The descriptor's value is the persisted policy short-name String.
-        // SettingsModel.parsePolicy (package-private, unreachable here) maps
-        // every non-null name to a policy object the setter accepts, so the
-        // real guard chain sees null iff the name is null — mirror exactly
-        // that: null name -> null policy (requireNonNull rejects), non-null
-        // name -> a policy instance (accepted).
-        setters.put("audio.masterCpuBudgetPolicy", v -> model.setMasterCpuBudgetPolicy(
-                v == null ? null : new DegradationPolicy.DoNothing()));
         setters.put("project.autoSaveIntervalSeconds",
                 v -> model.setAutoSaveIntervalSeconds((Integer) v));
         setters.put("project.defaultTempo", v -> model.setDefaultTempo((Double) v));
@@ -93,13 +84,13 @@ class SettingDescriptorTest {
         candidates.put("audio.workerPoolSize", Arrays.asList(1, 0));
         candidates.put("audio.masterCpuBudgetFraction",
                 Arrays.asList(0.5, 1.0, 0.0, 1.5, Double.NaN));
-        candidates.put("audio.masterCpuBudgetPolicy", Arrays.asList("DoNothing", null));
         candidates.put("project.autoSaveIntervalSeconds", Arrays.asList(30, 0));
         candidates.put("project.defaultTempo",
                 Arrays.asList(20.0, 999.0, 19.9, 999.1, 1000.0));
         candidates.put("project.useJournaledPersistence", Arrays.asList(true, false));
         candidates.put("transport.returnToStartOnStop", Arrays.asList(true, false));
-        candidates.put("appearance.uiScale", Arrays.asList(0.5, 3.0, 0.49, 3.01));
+        // Story 335 (studio ruling R6; amendment A28) — steps plus off-steps.
+        candidates.put("appearance.uiScale", Arrays.asList(1.25, 2.0, 0.9, 1.3, 3.0, 0.5));
         candidates.put("plugins.scanPaths", Arrays.asList("C:\\plugins;D:\\vst", null));
         return candidates;
     }
@@ -119,9 +110,9 @@ class SettingDescriptorTest {
         SettingsModel model = new SettingsModel(isolatedNode());
         Map<String, Consumer<Object>> setters = settersById(model);
         Map<String, List<Object>> candidates = candidatesById();
-        // Non-empty guard: the table must cover all 18 SettingsModel-backed
+        // Non-empty guard: the table must cover all 17 SettingsModel-backed
         // descriptors, so a silently shrunken table cannot green-wash this.
-        assertThat(candidates).hasSize(18);
+        assertThat(candidates).hasSize(17);
         assertThat(candidates.keySet()).isEqualTo(setters.keySet());
 
         for (Map.Entry<String, List<Object>> entry : candidates.entrySet()) {
@@ -187,8 +178,6 @@ class SettingDescriptorTest {
         expectedById.put("audio.workerPoolSize", fresh.getWorkerPoolSize());
         expectedById.put("audio.masterCpuBudgetFraction",
                 fresh.getMasterCpuBudgetFraction());
-        expectedById.put("audio.masterCpuBudgetPolicy",
-                canonicalPolicyName(fresh, emptyNode));
         expectedById.put("project.autoSaveIntervalSeconds",
                 fresh.getAutoSaveIntervalSeconds());
         expectedById.put("project.defaultTempo", fresh.getDefaultTempo());
@@ -198,26 +187,12 @@ class SettingDescriptorTest {
                 fresh.isReturnToStartOnStop());
         expectedById.put("appearance.uiScale", fresh.getUiScale());
         expectedById.put("plugins.scanPaths", fresh.getPluginScanPaths());
-        assertThat(expectedById).hasSize(18);
+        assertThat(expectedById).hasSize(17);
 
         for (Map.Entry<String, Object> expected : expectedById.entrySet()) {
             assertThat(catalogue.byId(expected.getKey()).orElseThrow().defaultValue())
                     .as("defaultValue of %s", expected.getKey())
                     .isEqualTo(expected.getValue());
         }
-    }
-
-    /**
-     * Derives the canonical persisted policy short-name the same way the
-     * catalogue does: round-trip the default policy through the real
-     * setter (which persists {@code SettingsModel.policyName(...)},
-     * package-private in {@code ..app.ui}) and read the persisted
-     * representation back — no duplicated literal.
-     */
-    private static String canonicalPolicyName(SettingsModel fresh, Preferences node) {
-        fresh.setMasterCpuBudgetPolicy(fresh.getMasterCpuBudgetPolicy());
-        String name = node.get("audio.masterCpuBudgetPolicy", null);
-        assertThat(name).as("setter persisted the default policy name").isNotNull();
-        return name;
     }
 }

@@ -1,22 +1,32 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import com.benesquivelmusic.daw.app.ui.theme.UiScale;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.project.DawProject;
-import javafx.scene.Scene;
-import javafx.scene.transform.Scale;
 
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Applies live settings changes to the running DAW — UI scale, auto-save
- * interval, default tempo, transport stop behaviour, and plugin scan
- * paths.
+ * interval, transport stop behaviour, and plugin scan paths.
+ *
+ * <p>The UI scale goes through {@link ThemeManager#setUiScale(UiScale)}
+ * (story 335, studio ruling R6): a root font size plus rem-resolved lengths
+ * in every styled window, never a scale transform. Setting the same step
+ * fires nothing, so an Apply of unrelated rows does not restyle anything.</p>
+ *
+ * <p>It never writes the open project's tempo (story 335, studio ruling
+ * R4): an Apply that carried an edited default tempo hands it to
+ * {@code MainController}'s default-tempo decision instead, so an Apply of
+ * unrelated rows never reaches the transport's tempo.</p>
  *
  * <p>Extracted from {@code MainController} to keep the main coordinator
  * free of settings propagation logic.</p>
@@ -27,32 +37,18 @@ final class LiveSettingsApplier {
 
     /**
      * Applies {@code model} to the running DAW.
-     *
-     * @param tempoWriteAllowed whether the default tempo may be written to the
-     *                          open project's transport — a value the project
-     *                          file stores, so it is written only while the
-     *                          window's edit gate says yes; the other settings
-     *                          are the application's and are always applied
-     *                          (PR #989 review 5711460812)
      */
     static void apply(SettingsModel model, String previousPluginPaths,
-                      Scene scene, ProjectManager projectManager,
-                      DawProject project, PluginRegistry pluginRegistry,
-                      boolean tempoWriteAllowed) {
-        if (scene != null && scene.getRoot() != null) {
-            double scale = model.getUiScale();
-            scene.getRoot().getTransforms().clear();
-            scene.getRoot().getTransforms().add(new Scale(scale, scale));
-        }
+                      ThemeManager appearance, ProjectManager projectManager,
+                      DawProject project, PluginRegistry pluginRegistry) {
+        Objects.requireNonNull(appearance, "appearance must not be null");
+        appearance.setUiScale(UiScale.ofFactor(model.getUiScale()));
         CheckpointManager checkpointManager = projectManager.getCheckpointManager();
         AutoSaveConfig currentConfig = checkpointManager.getConfig();
         Duration newInterval = Duration.ofSeconds(model.getAutoSaveIntervalSeconds());
         if (!currentConfig.autoSaveInterval().equals(newInterval)) {
             checkpointManager.reconfigure(new AutoSaveConfig(newInterval,
                     currentConfig.maxCheckpoints(), currentConfig.enabled()));
-        }
-        if (tempoWriteAllowed) {
-            project.getTransport().setTempo(model.getDefaultTempo());
         }
         // Story 315 — LIVE apply class: the transport reads the volatile
         // flag on each Stop, so pushing it here is all a settings Apply

@@ -29,7 +29,7 @@ class AllAudioSettingsHaveRowsTest {
                 "audio.applyLatencyCompensation");
         assertThat(ids(audio.groups().get(2))).containsExactly(
                 "audio.srcQuality", "audio.workerPoolSize",
-                "audio.masterCpuBudgetFraction", "audio.masterCpuBudgetPolicy");
+                "audio.masterCpuBudgetFraction");
 
         Story307TestSupport.onFx(() -> {
             SettingsDialog dialog = new SettingsDialog(
@@ -38,7 +38,7 @@ class AllAudioSettingsHaveRowsTest {
                     "audio.mixPrecision", "audio.backend", "audio.inputDevice",
                     "audio.outputDevice", "audio.applyLatencyCompensation",
                     "audio.srcQuality", "audio.workerPoolSize",
-                    "audio.masterCpuBudgetFraction", "audio.masterCpuBudgetPolicy"))
+                    "audio.masterCpuBudgetFraction"))
                     .allSatisfy(id -> assertThat(dialog.getShell().settingRow(id)).isPresent());
             return null;
         });

@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui.status;
 import com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress.NamedOperation;
 import com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress.SaveScope;
 import com.benesquivelmusic.daw.app.ui.status.StatusStripCell.Severity;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
@@ -21,6 +22,7 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 import javafx.stage.Popup;
 import javafx.stage.Window;
+import javafx.util.Subscription;
 
 import java.nio.file.Path;
 import java.time.Instant;
@@ -93,6 +95,12 @@ import java.util.Locale;
  * hidden cells move into the trailing {@code ⋯} overflow popover. (Stage 1
  * simplification: a collapsed cell is moved whole into the popover rather than
  * rendered icon-only inline as §4.4's mockup ultimately envisions.)</p>
+ *
+ * <p>The thresholds are 100&nbsp;% pixels (story 335 review, engineer S1 —
+ * the A16 rule of the toolbar overflow): the strip compares its width divided
+ * by the UI-scale factor with them, and re-runs the rule when the scale
+ * changes, so at 200&nbsp;% a 1280&nbsp;px strip collapses as a 640&nbsp;px
+ * one does at 100&nbsp;%.</p>
  */
 public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
 
@@ -159,6 +167,11 @@ public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
 
     private final ChangeListener<Number> widthListener;
 
+    /** The UI-scale factor the collapse thresholds are compared in (story 335, engineer S1). */
+    private double uiScale;
+    /** The scale observation, cancelled in {@link #dispose()}. */
+    private final Subscription uiScaleSubscription;
+
     /**
      * Builds the cells, binds them to the model, and installs the responsive
      * layout listener.
@@ -187,6 +200,15 @@ public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
 
         rows.getChildren().setAll(rowTop, rowBottom);
         getChildren().add(rows);
+
+        ThemeManager appearance = ThemeManager.getDefault();
+        uiScale = appearance.getUiScale().factor();
+        uiScaleSubscription = appearance.uiScaleProperty()
+                .when(strip.sceneProperty().isNotNull())
+                .subscribe((_, now) -> {
+                    uiScale = now.factor();
+                    reconcile(getSkinnable().getWidth());
+                });
 
         widthListener = (_, _, w) -> reconcile(w.doubleValue());
         strip.widthProperty().addListener(widthListener);
@@ -480,7 +502,9 @@ public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
 
     // ── Responsive layout / overflow (§4.4) ──────────────────────────────────
 
-    private void reconcile(double width) {
+    /** @param scaledWidth the strip's width; the thresholds are compared with it divided by the UI-scale factor */
+    private void reconcile(double scaledWidth) {
+        double width = scaledWidth / uiScale;
         List<StatusStripCell> hidden = new ArrayList<>();
         // Collapse order: Workspace first, Journal last (§4.4).
         if (width < T_WORKSPACE) {
@@ -663,6 +687,8 @@ public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
     @Override
     public void dispose() {
         getSkinnable().widthProperty().removeListener(widthListener);
+        uiScaleSubscription.unsubscribe();
+        checkpointCountdown.dispose();
         model.savesSucceededProperty().removeListener(savedFlashTrigger);
         savedFlash.stop();
         savedCell.pseudoClassStateChanged(FLASH, false);

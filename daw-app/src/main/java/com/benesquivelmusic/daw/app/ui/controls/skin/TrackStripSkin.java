@@ -6,7 +6,11 @@ import com.benesquivelmusic.daw.app.ui.controls.TrackStrip.TrackSelectionEvent;
 import com.benesquivelmusic.daw.app.ui.density.DensityManager;
 import com.benesquivelmusic.daw.app.ui.density.DensityMode;
 import com.benesquivelmusic.daw.app.ui.icons.DawgIcon;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import com.benesquivelmusic.daw.app.ui.theme.UiScale;
 
+import javafx.beans.property.DoubleProperty;
+import javafx.beans.property.SimpleDoubleProperty;
 import javafx.beans.value.ChangeListener;
 import javafx.beans.value.WeakChangeListener;
 import javafx.scene.Parent;
@@ -26,6 +30,7 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
 import javafx.scene.shape.Rectangle;
+import javafx.util.Subscription;
 
 import java.util.Locale;
 
@@ -121,6 +126,15 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
     private final ToggleButton soloBtn;
     private final ToggleButton armBtn;
     private final StackPane meterHolder;
+    /**
+     * The embedded meter's height, set by {@link #layoutChildren}. While the
+     * meter is attached its min, pref and max height are BOUND to it rather
+     * than set: a value set from Java is overridden by the scale sheet's
+     * author-origin copy of {@code .level-meter.size-inline} on every CSS
+     * pass at a UI scale other than 100%, and the next layout set it back
+     * (story 335 review, 2b-java S2(b)); CSS never sets a bound property.
+     */
+    private final DoubleProperty meterHeight = new SimpleDoubleProperty(this, "meterHeight", 8.0);
     private final Label meterReadout;
     private final Label overflowBtn;
     private final javafx.event.EventHandler<KeyEvent> keyHandler;
@@ -147,6 +161,15 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
     private final DensityManager densityManager;
     private final ChangeListener<DensityMode> densityListener;
     private final WeakChangeListener<DensityMode> weakDensityListener;
+
+    /**
+     * Story 335 (studio ruling R6, amendment A15) — the UI-scale factor the
+     * Java-measured sizes are multiplied by, and the subscription that keeps
+     * it current. The subscription observes the scale only while the control
+     * is in a scene and is cancelled in {@link #dispose()}.
+     */
+    private double uiScale = 1.0;
+    private final Subscription uiScaleSubscription;
 
     private boolean disposed;
     private int registeredListenerCount;
@@ -308,6 +331,20 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
         densityManager.activeDensityProperty()
                 .addListener(weakDensityListener);
 
+        // Story 335 — a UI-scale change re-measures exactly like a density
+        // switch: the row height and the meter width are px × factor.
+        ThemeManager appearance = ThemeManager.getDefault();
+        uiScale = appearance.getUiScale().factor();
+        uiScaleSubscription = appearance.uiScaleProperty()
+                .when(control.sceneProperty().isNotNull())
+                .subscribe((_, now) -> {
+                    uiScale = now.factor();
+                    requestRemeasure();
+                });
+        // Counted with the control listeners so the dispose leak pins cover it
+        // (story 335 review, 2b-java N4).
+        registeredListenerCount++;
+
         // Initial render.
         refreshReadout();
     }
@@ -361,13 +398,27 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
             if (!meterHolder.getChildren().contains(meter)) {
                 meterHolder.getChildren().setAll(meter);
             }
+            bindMeterHeight(meter);
             meterHolder.setVisible(true);
             meterHolder.setManaged(true);
         } else {
             meterHolder.getChildren().remove(meter);
+            unbindMeterHeight(meter);
             meterHolder.setVisible(false);
             meterHolder.setManaged(false);
         }
+    }
+
+    private void bindMeterHeight(LevelMeter meter) {
+        meter.minHeightProperty().bind(meterHeight);
+        meter.prefHeightProperty().bind(meterHeight);
+        meter.maxHeightProperty().bind(meterHeight);
+    }
+
+    private static void unbindMeterHeight(LevelMeter meter) {
+        meter.minHeightProperty().unbind();
+        meter.prefHeightProperty().unbind();
+        meter.maxHeightProperty().unbind();
     }
 
     private void refreshReadout() {
@@ -456,19 +507,15 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
 
         // Embedded meter sized to METER_WIDTH (fixed) × the row's
         // available height minus 8 px of padding so it never overflows.
-        // Only configure meter geometry when it's attached to the scene
-        // graph (showMeter=true); when detached, meterHolder is
-        // invisible/unmanaged and occupies no layout space.
+        // The meter's heights follow meterHeight only while it is attached
+        // (showMeter=true, see syncMeterAttachment); when detached,
+        // meterHolder is invisible/unmanaged and occupies no layout space.
         double meterH = Math.max(8.0, h - 8.0);
-        LevelMeter meter = getSkinnable().getMeter();
-        meterHolder.setMinWidth(METER_WIDTH);
-        meterHolder.setPrefWidth(METER_WIDTH);
-        meterHolder.setMaxWidth(METER_WIDTH);
-        if (meterHolder.getChildren().contains(meter)) {
-            meter.setMinHeight(meterH);
-            meter.setPrefHeight(meterH);
-            meter.setMaxHeight(meterH);
-        }
+        double meterWidth = METER_WIDTH * uiScale;
+        meterHolder.setMinWidth(meterWidth);
+        meterHolder.setPrefWidth(meterWidth);
+        meterHolder.setMaxWidth(meterWidth);
+        meterHeight.set(meterH);
 
         // Toggle buttons are square per the row height (minus 4 px inset).
         double btnSize = Math.max(16.0, h - 4.0);
@@ -502,10 +549,12 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
      * truth) rather than re-deriving from style classes here.</p>
      */
     private double rowHeightForVariant() {
+        // Story 335 — every row height is px × the UI-scale factor, so a 2×
+        // label never clips in a 1× row.
         if (getSkinnable().getStyleClass().contains("size-performance")) {
-            return PERFORMANCE_ROW_HEIGHT;             // 80 (story 280)
+            return PERFORMANCE_ROW_HEIGHT * uiScale;   // 80 (story 280)
         }
-        return switch (DensityMode.resolveFor(getSkinnable())) {
+        return uiScale * switch (DensityMode.resolveFor(getSkinnable())) {
             case COMPACT -> COMPACT_ROW_HEIGHT;        // 24
             case COMFORTABLE -> DEFAULT_ROW_HEIGHT;    // 28
             case TOUCH -> COMFORTABLE_ROW_HEIGHT;      // 32 (legacy name)
@@ -535,13 +584,13 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
             double topInset, double rightInset, double bottomInset, double leftInset) {
         // A reasonable minimum so the row remains usable; the container
         // (ListView / VBox) drives the actual width.
-        return 160.0;
+        return 160.0 * uiScale;
     }
 
     @Override
     protected double computePrefWidth(double height,
             double topInset, double rightInset, double bottomInset, double leftInset) {
-        return 320.0;
+        return 320.0 * uiScale;
     }
 
     @Override
@@ -598,6 +647,7 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
             // Detach meter from meterHolder so the AnimationTimer
             // stops (sceneProperty → null).
             meterHolder.getChildren().clear();
+            unbindMeterHeight(c.getMeter());
             armBar.visibleProperty().unbind();
             armBar.managedProperty().unbind();
             c.removeEventHandler(KeyEvent.KEY_PRESSED, keyHandler);
@@ -607,6 +657,8 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
         // wrapper is belt-and-braces for cells that never get dispose().
         densityManager.activeDensityProperty()
                 .removeListener(weakDensityListener);
+        uiScaleSubscription.unsubscribe();
+        registeredListenerCount--;
         super.dispose();
     }
 }

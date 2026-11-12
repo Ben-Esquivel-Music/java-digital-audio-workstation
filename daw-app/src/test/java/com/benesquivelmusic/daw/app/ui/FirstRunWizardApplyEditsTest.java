@@ -93,6 +93,11 @@ class FirstRunWizardApplyEditsTest {
                 }
 
                 @Override
+                public boolean storedPolicyUnreadable() {
+                    return false;
+                }
+
+                @Override
                 public Optional<Path> projectDirectory() {
                     return Optional.empty();
                 }

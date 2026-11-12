@@ -56,11 +56,11 @@ class ScopeAndApplyClassAssignmentTest {
     }
 
     @Test
-    void allTwelveAudioDescriptorsShouldBeAudioDeviceScope() {
+    void allElevenAudioDescriptorsShouldBeAudioDeviceScope() {
         List<SettingDescriptor<?>> audioDescriptors = catalogue.descriptors().stream()
                 .filter(descriptor -> descriptor.id().startsWith("audio."))
                 .toList();
-        assertThat(audioDescriptors).hasSize(12);
+        assertThat(audioDescriptors).as("story 335 removed the master CPU policy").hasSize(11);
         assertThat(audioDescriptors)
                 .allSatisfy(descriptor -> assertThat(descriptor.scope())
                         .as("scope of %s", descriptor.id())

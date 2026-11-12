@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui.settings;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.persistence.backup.ProjectDiskUsage;
 
+import java.text.MessageFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -10,6 +11,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * The Backups-category disk-usage scan (story 308, Settings View Design
@@ -149,24 +151,39 @@ public final class DiskUsageTask {
     // ── Pure aggregation seam (unit-testable with no toolkit) ────────────────
 
     /**
-     * The three labelled slices the §5.8 pie renders — the same
-     * "Autosaves (1.2 MiB)" formatted-bytes labels the absorbed dialog
-     * produced. Pure math; the FX {@code PieChart.Data} conversion stays
-     * with the caller.
+     * The four labelled slices the §5.8 pie renders (story 335, studio
+     * ruling R2): Checkpoints — the only part the retention rows govern —
+     * Snapshots, Archives, and the project, audio and other files, each
+     * label {@code MessageFormat}-ted from its message key with the bytes
+     * as {@link #formatBytes}. Pure; the FX {@code PieChart.Data}
+     * conversion stays with the caller.
+     *
+     * @param usage  the project's disk usage
+     * @param legend the label pattern of a message key (production: the
+     *               {@code Messages} bundle)
+     * @return the slices, in that order
      */
-    public static List<Slice> slices(ProjectDiskUsage usage) {
+    public static List<Slice> slices(ProjectDiskUsage usage, Function<String, String> legend) {
         Objects.requireNonNull(usage, "usage must not be null");
+        Objects.requireNonNull(legend, "legend must not be null");
         return List.of(
-                new Slice("Autosaves (" + formatBytes(usage.autosavesBytes()) + ")",
-                        usage.autosavesBytes()),
-                new Slice("Archives (" + formatBytes(usage.archivesBytes()) + ")",
-                        usage.archivesBytes()),
-                new Slice("Assets (" + formatBytes(usage.assetsBytes()) + ")",
-                        usage.assetsBytes()));
+                slice(legend, "settings.backups.diskUsage.checkpoints", usage.checkpointBytes()),
+                slice(legend, "settings.backups.diskUsage.snapshots", usage.snapshotBytes()),
+                slice(legend, "settings.backups.diskUsage.archives", usage.archiveBytes()),
+                slice(legend, "settings.backups.diskUsage.other", usage.otherBytes()));
     }
 
-    /** B / KiB / MiB / GiB rendering, ported verbatim from the absorbed dialog. */
-    static String formatBytes(long bytes) {
+    private static Slice slice(Function<String, String> legend, String key, long bytes) {
+        return new Slice(MessageFormat.format(legend.apply(key), formatBytes(bytes)), bytes);
+    }
+
+    /**
+     * B / KiB / MiB / GiB rendering, ported verbatim from the absorbed dialog.
+     *
+     * @param bytes a byte count
+     * @return its display text
+     */
+    public static String formatBytes(long bytes) {
         if (bytes < 1024) {
             return bytes + " B";
         }

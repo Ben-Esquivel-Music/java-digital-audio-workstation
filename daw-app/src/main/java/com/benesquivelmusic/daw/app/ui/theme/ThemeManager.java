@@ -10,14 +10,22 @@ import javafx.application.Platform;
 import javafx.beans.property.ObjectProperty;
 import javafx.beans.property.SimpleObjectProperty;
 import javafx.collections.ObservableList;
+import javafx.scene.Parent;
 import javafx.scene.Scene;
 import javafx.scene.control.DialogPane;
+import javafx.scene.text.Font;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.MissingResourceException;
 import java.util.Objects;
 import java.util.ResourceBundle;
@@ -57,6 +65,50 @@ import java.util.prefs.Preferences;
  * {@link Preferences} store. The two systems do not share state by
  * design: one validates arbitrary user colour for accessibility, the
  * other swaps the three canonical design-book palettes.</p>
+ *
+ * <h2>UI scale (story 335)</h2>
+ *
+ * <p>The same ordered list carries the UI scale: at any step other than
+ * {@link UiScale#P100} a generated {@code data:} stylesheet is appended at the
+ * <em>tail</em> (see {@link ScaledStylesheet}). It sets the root font size and
+ * re-states every px length of the application's stylesheets times the
+ * factor, so every scene, dialog pane and popup that this manager styles is
+ * laid out at the new size — no scale transform. Views whose own sheets sit
+ * at {@code Parent} level (they would beat a scene sheet) call
+ * {@link #registerScaledParent(Parent)}. The scale is not persisted here:
+ * {@code SettingsModel} owns {@code appearance.uiScale}; startup and Apply
+ * push it through {@link #setUiScale(UiScale)}. Canvases and skins whose
+ * sizes are computed in Java observe {@link #uiScaleProperty()}.</p>
+ *
+ * <p><strong>Not scaled</strong> (categories, not a closed list): sizes set
+ * from Java on surfaces that do not read {@link #uiScaleProperty()}; inline
+ * {@code setStyle} font sizes; FXML {@code spacing} and {@code Insets}
+ * attributes (no source rule targets them, so the scale sheet re-states
+ * nothing for them); the analysis displays' canvas text ({@code display/*}
+ * except {@code LevelMeterDisplay}, which is scaled, and {@code telemetry/*});
+ * fixed-size icons; stroke widths and background/border insets; windows that
+ * ThemeManager does not style (they also ignore theme and density), for
+ * example the Command Palette.</p>
+ *
+ * <p><strong>Scaled but not capped to the screen</strong> (category): dialogs
+ * not built on {@code DawgDialog} (the {@code @LegacyDialog} set, for example
+ * the export and calibration dialogs) follow the UI scale through their
+ * dialog pane's stylesheets but are not capped to the screen, and their
+ * Java-set sizes stay at 100&nbsp;%.</p>
+ *
+ * <p><strong>Cascade.</strong> The scale sheet is an author sheet, so the
+ * component (user-agent) declarations it re-states compete with the
+ * application's author rules by specificity rather than losing to them by
+ * origin, they override sizes set from Java (a user-agent value never
+ * does), and they apply scene-wide rather than inside their component. So
+ * a re-stated component declaration that some author rule overrides at
+ * 100&nbsp;% is removed at its source; a size that Java owns on a node a
+ * component rule also sizes is bound, or the node does not carry that
+ * rule's class; and a component rule must not be written with a selector
+ * that matches outside its component. {@code UiScaleLayoutTest} checks every
+ * scaled property of the main window, the Settings dialog, the Inspector and
+ * the styled components at 90&nbsp;% and 150&nbsp;% against its 100&nbsp;%
+ * value.</p>
  *
  * <h2>Threading</h2>
  *
@@ -131,6 +183,30 @@ public final class ThemeManager {
 
     /** Base structural stylesheet — always first in the applied list. */
     private static final String BASE_STYLESHEET = "styles.css";
+
+    /**
+     * The stylesheets the UI-scale sheet re-states, in cascade order
+     * (amendment A14): the components' user-agent sheets first, then the
+     * author sheets — {@code styles.css}, then the views' {@code Parent}-level
+     * sheets, which beat scene sheets at equal specificity. The theme
+     * overlays only re-declare colour tokens and carry no scaled property
+     * ({@code UiScaleSourceSheetsTest} pins both facts).
+     */
+    private static final List<String> SCALE_SOURCE_SHEETS = List.of(
+            "controls/fader.css",
+            "controls/knob.css",
+            "controls/level-meter.css",
+            "controls/mixer-channel-strip.css",
+            "controls/track-strip.css",
+            "hub/project-card.css",
+            "inspector/inspector.css",
+            "settings/setting-row.css",
+            "settings/settings-nav-rail.css",
+            "status/checkpoint-countdown.css",
+            "status/status-strip-cell.css",
+            BASE_STYLESHEET,
+            "hub/project-hub.css",
+            "hub/welcome-view.css");
 
     private static final ResourceBundle MESSAGES = ResourceBundle.getBundle(
             "com.benesquivelmusic.daw.app.i18n.Messages", Locale.ROOT);
@@ -214,6 +290,23 @@ public final class ThemeManager {
             Collections.newSetFromMap(new WeakHashMap<>());
     private final Set<DialogPane> dialogPanes =
             Collections.newSetFromMap(new WeakHashMap<>());
+    /**
+     * Views whose own {@code Parent}-level stylesheets would beat the scene's
+     * scale sheet ({@link #registerScaledParent(Parent)}). Weak, FX thread
+     * only, like {@link #scenes}.
+     */
+    private final Set<Parent> scaledParents =
+            Collections.newSetFromMap(new WeakHashMap<>());
+
+    /** The UI scale; not persisted here ({@code SettingsModel} owns it). */
+    private final ObjectProperty<UiScale> uiScale;
+
+    /**
+     * Rendered scale sheets as {@code data:} URIs, filled lazily (one render
+     * per step actually used). Its values are also the scale URLs this
+     * manager may have installed (amendment A30).
+     */
+    private final Map<UiScale, String> scaleSheetUrls = new EnumMap<>(UiScale.class);
 
     private volatile String resolvedBaseUrl;
 
@@ -258,6 +351,8 @@ public final class ThemeManager {
             }
             reapplyAll();
         });
+        this.uiScale = new SimpleObjectProperty<>(this, "uiScale", UiScale.DEFAULT);
+        this.uiScale.addListener((_, _, _) -> reapplyAll());
     }
 
     /**
@@ -297,6 +392,52 @@ public final class ThemeManager {
      */
     public void setActiveTheme(Theme theme) {
         activeTheme.set(Objects.requireNonNull(theme, "theme must not be null"));
+    }
+
+    // ── UI scale (story 335) ─────────────────────────────────────────────────
+
+    /**
+     * The UI scale. Setting a different step re-applies the ordered list to
+     * every registered scene, dialog pane and scaled parent; setting the same
+     * step fires nothing. Canvases and skins that size themselves in Java
+     * observe this property (skill §4). FX thread.
+     *
+     * @return the observable UI-scale property, never holding {@code null}
+     */
+    public ObjectProperty<UiScale> uiScaleProperty() {
+        return uiScale;
+    }
+
+    /** @return the current UI scale (never {@code null}) */
+    public UiScale getUiScale() {
+        return uiScale.get();
+    }
+
+    /**
+     * Sets the UI scale. Not persisted by this manager:
+     * {@code SettingsModel} owns {@code appearance.uiScale}.
+     *
+     * @param scale the new step (must not be {@code null})
+     */
+    public void setUiScale(UiScale scale) {
+        uiScale.set(Objects.requireNonNull(scale, "scale must not be null"));
+    }
+
+    /**
+     * Keeps the scale sheet at the tail of {@code parent}'s <em>own</em>
+     * stylesheet list. Needed by views that add their stylesheet at
+     * {@code Parent} level: those sheets beat the scene's sheets at equal
+     * specificity, so without this their unscaled lengths would win.
+     * Idempotent; held weakly; FX thread.
+     *
+     * @param parent the view whose own stylesheets must stay scaled (must not be {@code null})
+     */
+    public void registerScaledParent(Parent parent) {
+        Objects.requireNonNull(parent, "parent must not be null");
+        runOnFx(() -> {
+            scaledParents.add(parent);
+            applyScaleSheet(parent.getStylesheets());
+        });
     }
 
     // ── Settings-event subscription (story 294) ──────────────────────────────
@@ -444,21 +585,50 @@ public final class ThemeManager {
     }
 
     /**
+     * Keeps exactly the current scale sheet (none at 100&nbsp;%) at the tail
+     * of a scaled parent's own list, leaving its other sheets in order.
+     */
+    private void applyScaleSheet(ObservableList<String> target) {
+        Set<String> managed = Set.copyOf(renderedScaleSheetUrls());
+        List<String> finalList = new ArrayList<>(target.size() + 1);
+        for (String sheet : target) {
+            if (!managed.contains(sheet)) {
+                finalList.add(sheet);
+            }
+        }
+        UiScale scale = uiScale.get();
+        if (scale != UiScale.P100) {
+            finalList.add(scaleSheetUrl(scale));
+        }
+        if (!finalList.equals(target)) {
+            target.setAll(finalList);
+        }
+    }
+
+    /**
      * @return the ordered stylesheet URL list for the active theme:
      *         {@code [styles.css]} for {@link Theme#ONYX_REFINED},
-     *         {@code [styles.css, <overlay>]} otherwise
+     *         {@code [styles.css, <overlay>]} otherwise, followed by the
+     *         generated scale sheet when the UI scale is not 100&nbsp;%
      */
     public List<String> orderedStylesheetUrls() {
-        List<String> urls = new ArrayList<>(2);
+        List<String> urls = new ArrayList<>(3);
         urls.add(baseStylesheetUrl());
         String overlay = activeTheme.get().overlayResource();
         if (overlay != null) {
             urls.add(resolve(overlay));
         }
+        UiScale scale = uiScale.get();
+        if (scale != UiScale.P100) {
+            urls.add(scaleSheetUrl(scale));
+        }
         return List.copyOf(urls);
     }
 
-    /** Every URL this manager may have installed (base + all overlays). */
+    /**
+     * Every URL this manager may have installed: the base, all overlays and
+     * every scale sheet rendered so far.
+     */
     private List<String> allManagedUrls() {
         List<String> all = new ArrayList<>();
         all.add(baseStylesheetUrl());
@@ -467,7 +637,63 @@ public final class ThemeManager {
                 all.add(resolve(t.overlayResource()));
             }
         }
+        all.addAll(renderedScaleSheetUrls());
         return all;
+    }
+
+    private List<String> renderedScaleSheetUrls() {
+        synchronized (scaleSheetUrls) {
+            return List.copyOf(scaleSheetUrls.values());
+        }
+    }
+
+    /**
+     * The scale sheet for {@code scale} as a {@code data:} URI, rendered once
+     * per step from the classpath copies of {@link #SCALE_SOURCE_SHEETS} (in
+     * the module image, so no user-disk I/O).
+     */
+    private String scaleSheetUrl(UiScale scale) {
+        synchronized (scaleSheetUrls) {
+            return scaleSheetUrls.computeIfAbsent(scale, step -> ScaledStylesheet.dataUri(
+                    ScaledStylesheet.render(scaleSourceCss(), step, Font.getDefault().getSize())));
+        }
+    }
+
+    /**
+     * @return the source sheets' resource paths (relative to the {@code ui}
+     *         package) in cascade order — the list {@code UiScaleSourceSheetsTest} checks
+     */
+    static List<String> scaleSourceSheets() {
+        return SCALE_SOURCE_SHEETS;
+    }
+
+    /** @return the theme overlays' resource paths (relative to the {@code ui} package) */
+    static List<String> themeOverlaySheets() {
+        List<String> overlays = new ArrayList<>();
+        for (Theme theme : Theme.values()) {
+            if (theme.overlayResource() != null) {
+                overlays.add(theme.overlayResource());
+            }
+        }
+        return List.copyOf(overlays);
+    }
+
+    /** @return the source sheets' text in cascade order */
+    static List<String> scaleSourceCss() {
+        List<String> css = new ArrayList<>(SCALE_SOURCE_SHEETS.size());
+        for (String resource : SCALE_SOURCE_SHEETS) {
+            css.add(readResource(resource));
+        }
+        return List.copyOf(css);
+    }
+
+    private static String readResource(String resource) {
+        try (InputStream in = ThemeManager.class.getResourceAsStream(UI_RESOURCE_ROOT + resource)) {
+            Objects.requireNonNull(in, "Stylesheet resource not found: " + resource);
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new UncheckedIOException("Stylesheet resource unreadable: " + resource, e);
+        }
     }
 
     private void reapplyAll() {
@@ -479,7 +705,7 @@ public final class ThemeManager {
         // silently drop the work — which is fine because there can be no
         // live scenes/panes to update in that case.
         runOnFx(() -> {
-            if (scenes.isEmpty() && dialogPanes.isEmpty()) {
+            if (scenes.isEmpty() && dialogPanes.isEmpty() && scaledParents.isEmpty()) {
                 return;
             }
             // Snapshot the weak sets: copying decouples iteration from a
@@ -490,6 +716,9 @@ public final class ThemeManager {
             }
             for (DialogPane pane : List.copyOf(dialogPanes)) {
                 applyOrderedSheets(pane.getStylesheets());
+            }
+            for (Parent parent : List.copyOf(scaledParents)) {
+                applyScaleSheet(parent.getStylesheets());
             }
         });
     }

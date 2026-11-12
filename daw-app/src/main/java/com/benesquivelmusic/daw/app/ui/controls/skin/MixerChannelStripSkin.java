@@ -11,6 +11,8 @@ import com.benesquivelmusic.daw.app.ui.controls.MixerChannelStrip.SendSelectedEv
 import com.benesquivelmusic.daw.app.ui.controls.SendSlotModel;
 import com.benesquivelmusic.daw.app.ui.density.DensityManager;
 import com.benesquivelmusic.daw.app.ui.density.DensityMode;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import com.benesquivelmusic.daw.app.ui.theme.UiScale;
 
 import javafx.beans.value.ChangeListener;
 import javafx.beans.value.WeakChangeListener;
@@ -32,6 +34,7 @@ import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.scene.shape.Circle;
+import javafx.util.Subscription;
 
 import java.util.List;
 import java.util.Locale;
@@ -54,7 +57,7 @@ import java.util.Objects;
  *   → Dly   ▭▭▭   P
  *   ⋯ +1
  *   ───────────────────────
- *        (●)  pan knob (size-28, bipolar)
+ *        (●)  pan knob (28 px, sized by the strip, bipolar)
  *   ───────────────────────
  *      ║ fader column ║ ▌    (Fader.size-mixer + integrated meter)
  *      ║              ║ ▌
@@ -210,6 +213,15 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
     private final ChangeListener<DensityMode> densityListener;
     private final WeakChangeListener<DensityMode> weakDensityListener;
 
+    /**
+     * Story 335 (studio ruling R6, amendment A15) — the UI-scale factor the
+     * Java-measured sizes are multiplied by, and the subscription that keeps
+     * it current. It observes the scale only while the control is in a scene
+     * and is cancelled in {@link #dispose()}.
+     */
+    private double uiScale = 1.0;
+    private final Subscription uiScaleSubscription;
+
     private boolean disposed;
     private int registeredListenerCount;
 
@@ -241,10 +253,16 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
         sendsOverflow.getStyleClass().addAll(
                 "mixer-channel-strip-overflow", "numeric-caption");
 
-        // ── Pan knob (story 268, size-28, bipolar) ────────────────────
+        // ── Pan knob (story 268, 28 px, bipolar) ──────────────────────
+        // No size-28 class: layoutChildren sizes the knob from the strip's
+        // width, and a CSS size rule would fight that on every CSS pass at a
+        // UI scale other than 100% (the scale sheet re-states it at author
+        // origin, which overrides a size set from Java; story 335 review,
+        // 2b-java S2(b)). Before its first layout the knob's skin gives it
+        // the same 28 px (times the scale) as the class did.
         panKnob = Knob.create()
                 .bipolar(true).min(-1).max(1).defaultValue(0)
-                .unit("L / R").size(28).build();
+                .unit("L / R").build();
         panKnob.setValue(control.getPan());
 
         // ── Fader (story 269, size-mixer, LOG_DB, integrated meter) ────
@@ -444,6 +462,20 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
         densityManager = DensityManager.getDefault();
         densityManager.activeDensityProperty()
                 .addListener(weakDensityListener);
+
+        // Story 335 — a UI-scale change re-measures exactly like a density
+        // switch: the strip width and its row and knob bands are px × factor.
+        ThemeManager appearance = ThemeManager.getDefault();
+        uiScale = appearance.getUiScale().factor();
+        uiScaleSubscription = appearance.uiScaleProperty()
+                .when(control.sceneProperty().isNotNull())
+                .subscribe((_, now) -> {
+                    uiScale = now.factor();
+                    requestRemeasure();
+                });
+        // Counted with the control listeners so the dispose leak pins cover it
+        // (story 335 review, 2b-java N4).
+        registeredListenerCount++;
 
         // Initial render.
         rebuildInserts();
@@ -759,8 +791,8 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
         // Pan knob diameter scales with the assigned width (clamped to a
         // sensible band so a very narrow strip doesn't produce a 0 px
         // knob and a very wide one doesn't waste vertical budget).
-        double knobD = Math.max(MIN_KNOB_DIAMETER,
-                Math.min(w * KNOB_WIDTH_FRACTION, MAX_KNOB_DIAMETER));
+        double knobD = Math.max(MIN_KNOB_DIAMETER * uiScale,
+                Math.min(w * KNOB_WIDTH_FRACTION, MAX_KNOB_DIAMETER * uiScale));
         panKnob.setMinHeight(knobD);
         panKnob.setPrefHeight(knobD);
         panKnob.setMaxHeight(knobD);
@@ -772,8 +804,8 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
         // so the whole strip reflows proportionally (e.g. on a Compact↔
         // Comfortable density switch) rather than via a fixed offset. Both
         // slot lists use the same single-sourced math so they stay in lockstep.
-        double rowH = Math.max(MIN_ROW_HEIGHT,
-                Math.min(h * ROW_HEIGHT_FRACTION, MAX_ROW_HEIGHT));
+        double rowH = Math.max(MIN_ROW_HEIGHT * uiScale,
+                Math.min(h * ROW_HEIGHT_FRACTION, MAX_ROW_HEIGHT * uiScale));
         applyRowHeight(insertsBox, rowH);
         applyRowHeight(sendsBox, rowH);
     }
@@ -801,7 +833,8 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
      * §5.4, so it deliberately maps to 88&nbsp;px (same as Comfortable).
      */
     private double widthForDensity() {
-        return switch (DensityMode.resolveFor(getSkinnable())) {
+        // Story 335 — px × the UI-scale factor.
+        return uiScale * switch (DensityMode.resolveFor(getSkinnable())) {
             case COMPACT -> COMPACT_WIDTH;            // 72
             case COMFORTABLE -> COMFORTABLE_WIDTH;    // 88
             case TOUCH -> COMFORTABLE_WIDTH;          // 88 (unspecified → == Comfortable)
@@ -830,14 +863,20 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
     protected double computeMinHeight(double width,
             double topInset, double rightInset, double bottomInset, double leftInset) {
         // A modest minimum so the strip remains usable in a tiny window;
-        // the mixer panel drives the actual height.
-        return 240.0;
+        // the mixer panel drives the actual height. Never less than the
+        // column's own minimum (story 335 review, engineer B1): at a large UI
+        // scale the 2× rows, M/S/R, readout and name need more than 240 px × the
+        // factor, and a strip laid out shorter than its column would push the
+        // readout and the name past its own bottom — out of reach of the
+        // mixer's vertical scroll bar, which scrolls to the strip's bottom.
+        double contentWidth = width < 0 ? -1 : Math.max(0, width - leftInset - rightInset);
+        return Math.max(240.0 * uiScale, topInset + column.minHeight(contentWidth) + bottomInset);
     }
 
     @Override
     protected double computePrefHeight(double width,
             double topInset, double rightInset, double bottomInset, double leftInset) {
-        return 480.0;
+        return 480.0 * uiScale;
     }
 
     @Override
@@ -975,6 +1014,8 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
         // skinnable is already null at dispose.
         densityManager.activeDensityProperty()
                 .removeListener(weakDensityListener);
+        uiScaleSubscription.unsubscribe();
+        registeredListenerCount--;
         // Detach the embedded fader's meter so its AnimationTimer stops
         // (sceneProperty → null) when the skin is swapped. Done outside the
         // null guard so the timer is guaranteed to stop even if the
