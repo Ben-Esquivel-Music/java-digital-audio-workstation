@@ -19,7 +19,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the exit protocol, pinned in the sources because {@code MainController} is
  * never FXML-loaded in tests and {@code DawApplication} never starts in them.
  * {@code DawApplication} installs the primary stage before it shows it and
- * has no hidden handler — its {@code stop()} runs the application-stop
+ * has no hidden handler — its {@code stop()}, once it has disarmed the
+ * failure funnel's toasts (story 336), runs the application-stop
  * fallback first, through {@code MainController.applicationStopping()},
  * and the bus and the dispatcher go down after it, in a {@code finally};
  * {@code MainController} installs the coordinator's
@@ -59,9 +60,11 @@ class ExitWiringSourceTest {
         assertThat(stop).as("Application.stop() tears the bus and the dispatcher down, last")
                 .contains("bus.close();").contains("fxDispatcher.dispose();")
                 .contains("FxDispatcher.installDefault(null);");
-        assertThat(stop).as("story 333's stage 8: the application-stop fallback runs first, the teardown in a"
-                        + " finally after it (ruling R4, constraint 1)")
-                .startsWith("{ try { if (mainController != null) { mainController.applicationStopping(); } }"
+        assertThat(stop).as("story 336 disarms the failure funnel's toasts first, which never throws;"
+                        + " then story 333's stage 8: the application-stop fallback, the teardown in a finally after"
+                        + " it (ruling R4, constraint 1)")
+                .startsWith("{ if (failureFunnel != null) { failureFunnel.disarmToasts(); }"
+                        + " try { if (mainController != null) { mainController.applicationStopping(); } }"
                         + " finally { if (bus != null) { bus.close();");
         assertThat(stop.indexOf("mainController.applicationStopping();")).as("the fallback before the teardown")
                 .isLessThan(stop.indexOf("fxDispatcher.dispose();"));

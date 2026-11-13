@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.diagnostics.DeclaredSubject;
 import com.benesquivelmusic.daw.app.ui.drag.DragSourceKind;
 import com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
@@ -669,18 +670,22 @@ public final class InsertEffectRack extends VBox {
      * live view. A load started before the window's edit gate said no, that
      * lands while it says no, is not inserted: its slot is disposed as a
      * cancelled load's is, no editor opens, and that is logged at INFO
-     * (ruling R-1.5; PR #989 review 5711460812).
+     * (ruling R-1.5; PR #989 review 5711460812). Whatever a discarded slot's
+     * disposal throws reaches the failure funnel once, as that exception, naming
+     * the plugin (story 336; studio-engineer ruling E10).
      */
     void completeExternalInsert(int slotIndex, InsertSlot slot) {
         setDisable(false);
         if (disposed) {
-            Thread.ofVirtual().name("cancelled-plugin-dispose").start(slot::disposeAfterQuiescence);
+            Thread.ofVirtual().name("cancelled-plugin-dispose")
+                    .start(DeclaredSubject.pluginDisposal(slot.getName()).guard(slot::disposeAfterQuiescence));
             return;
         }
         if (!projectActionsAllowed.getAsBoolean()) {
             LOG.info(() -> "The plug-in “" + slot.getName()
                     + "” finished loading while the project could not be edited; it was not inserted.");
-            Thread.ofVirtual().name("refused-plugin-dispose").start(slot::disposeAfterQuiescence);
+            Thread.ofVirtual().name("refused-plugin-dispose")
+                    .start(DeclaredSubject.pluginDisposal(slot.getName()).guard(slot::disposeAfterQuiescence));
             return;
         }
         try {
@@ -694,7 +699,8 @@ public final class InsertEffectRack extends VBox {
                     ? "Inserted plugin " + slot.getName() + ", but a step after the insert failed"
                     : "Could not insert plugin " + slot.getName(), failure);
             if (!inserted) {
-                Thread.ofVirtual().name("failed-plugin-dispose").start(slot::disposeAfterQuiescence);
+                Thread.ofVirtual().name("failed-plugin-dispose")
+                        .start(DeclaredSubject.pluginDisposal(slot.getName()).guard(slot::disposeAfterQuiescence));
             }
             showPickerError("Could not insert plugin: " + PluginText.failureName(failure));
         }

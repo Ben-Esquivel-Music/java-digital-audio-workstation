@@ -36,7 +36,7 @@ This skill describes how the `java-digital-audio-workstation` codebase uses cust
 
 ## 2. The eight reflection consumers
 
-All non-FFM reflection in the codebase falls into one of these eight call sites. (FFM-related `MethodHandles` use in `ClapPluginHost` and `PortAudioBackend` is for native upcalls, not annotation processing.)
+All annotation-driven reflection in the codebase falls into one of these eight call sites; the production reflective loads that are neither annotation-driven nor FFM are listed below the table. (FFM-related `MethodHandles` use in `ClapPluginHost` and `PortAudioBackend` is for native upcalls, not annotation processing.)
 
 | # | File | Inputs | What it does | Caching |
 |---|---|---|---|---|
@@ -54,6 +54,10 @@ All non-FFM reflection in the codebase falls into one of these eight call sites.
 These use `MethodHandles` purely for FFM upcalls — listed for completeness so they don't get confused with the annotation layer:
 - `daw-core/src/main/java/com/benesquivelmusic/daw/core/plugin/clap/ClapPluginHost.java:1041-1071` — static `findStatic` lookups for CLAP host-callback upcalls.
 - `daw-core/src/main/java/com/benesquivelmusic/daw/core/audio/portaudio/PortAudioBackend.java:391` — `MethodHandles.lookup().bind(...)` for the PortAudio stream callback.
+
+Two production reflective loads are neither annotation-driven nor FFM, besides the reflection JavaFX itself performs on the packages `daw.app` opens to it (`FXMLLoader`, `Application.launch`):
+- `ExternalPluginLoader.loadWithClassLoader` loads an external JAR plugin's class through a `URLClassLoader` of its own, by the class name its manifest declares (`loadClass`, then `getConstructor().newInstance()`).
+- `java.logging`'s `LogManager` loads and instantiates `com.benesquivelmusic.daw.app.logging.ExitHoldingLogManager` by the class name in the system property `java.util.logging.manager` (story 336). The name comes from the jlink launcher's `JLINK_VM_OPTIONS` (the javafx-maven-plugin `<options>` in `daw-app/pom.xml`), jpackage's `--java-options` and the manual commands of `docs/java26-setup.md`, and otherwise from `DawLauncher.selectExitHoldingLogManager`, which sets it before any `Logger` is created. The load needs a public class with a public no-arg constructor, in a package exported only to `java.logging` (`module-info.java`: `exports com.benesquivelmusic.daw.app.logging to java.logging;`). Without the export, `LogManager` prints "Could not load Logmanager" and falls back to its own class. Surefire's `--add-reads` hides module readability, so `PackagedLaunchLoggingTest` and `ExitWaitLinesReachTheLogTest` prove the load in JVMs of their own (`ChildJvm`, `-m daw.app/…`), and `LaunchPathsNameTheLogManagerTest` pins the launch paths and the export.
 
 Production code has **one** `Class.forName(String)`: `daw-fx`'s `GpuPipeline.detectViaReflection`, on the literal JavaFX-internal name `com.sun.prism.GraphicsPipeline` (renderer detection, falling back to the `prism.order` property); test classes use it in classpath scanners and contract tests (for example `ProcessorDiscovery`, `RealTimeSafeContractTest`, `EveryDialogConformsTest`). Production code uses `ServiceLoader` in **one** place: `BuiltInDawPlugin`'s discovery (consumer 6); tests also call `ServiceLoader.load(BuiltInDawPlugin.class)` (`BuiltInPluginProviders`, `DspRegressionCoverageTest`). There is **no** production `Proxy.newProxyInstance` / `InvocationHandler` usage. Test code uses `java.lang.reflect.Proxy`: `DomReadRecorder` (daw-core test) is a test-only `Proxy` over the `org.w3c.dom` interfaces that records what the project deserializer reads for the persistence parity harness (`ProjectSchemaParityContractTest`), and the daw-app tests `CaptureBlockBudget`, `LiveMasteringViewTest` and `MixerPluginLifetimeTest` proxy collaborator interfaces.
 

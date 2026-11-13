@@ -24,7 +24,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       registered once, right after the project manager is built, as a
  *       platform thread that only calls {@code awaitWritesBeforeExit} — and
  *       no other in the application, the calls counted on the code without
- *       its comments and string literals; the strip's 5&nbsp;s poll that
+ *       its comments and string literals — and, since story 336, handed to
+ *       the application's log manager, which holds the log's shutdown reset
+ *       until it returns; the strip's 5&nbsp;s poll that
  *       publishes today's date (ruling L1), mounted at startup and played;
  *       and no countdown guessed when a project's status is published
  *       (ruling M4), which the model's own countdown writers back up — a
@@ -65,7 +67,13 @@ class SourcePinnedWiringTest {
                 .contains("Thread hook = Thread.ofPlatform().name(\"daw-exit-write-wait\")"
                         + ".unstarted(manager::awaitWritesBeforeExit);")
                 .contains("Runtime.getRuntime().addShutdownHook(hook);")
-                .contains("catch (IllegalStateException shuttingDown) { LOG.log(Level.FINE,");
+                .contains("catch (IllegalStateException shuttingDown) { LOG.log(Level.FINE,")
+                // Story 336 (Goals bullet 9; story 331, ruling N1): the registered hook is handed to the log
+                // manager right after it is registered, which holds the log's shutdown reset until it returns;
+                // a refused registration registers no hold. Re-pinned deliberately.
+                .as("the registered hook is handed to the log manager")
+                .contains("Runtime.getRuntime().addShutdownHook(hook);"
+                        + " ExitHoldingLogManager.holdShutdownResetFor(hook, ProjectManager.EXIT_WRITE_WAIT);");
         String calls = callsIn(UI.resolve("MainController.java"));
         assertThat(occurrences(calls, "addShutdownHook(")).as("one shutdown hook in MainController").isEqualTo(1);
         assertThat(occurrences(calls, "registerExitWriteWait("))

@@ -12,7 +12,7 @@ Since story 330, an open that cannot honour everything its file saved says so in
 That leaves the engineer without a place to see the items:
 
 - **The announcement's `Review…` is for missing assets only.** `OpenAnnouncement.of` offers it when the missing-assets report has rows (`!report.isEmpty()`), and it opens `MissingAssetsDialog`. An open whose only damage is three skipped notes has no `Review…`.
-- **The log is not reachable.** No `FileHandler` exists in main code; the log goes to the console, which a packaged windowed application does not have (story 336 adds the file sink and Help ▸ Open log folder).
+- **The log is not reachable.** No `FileHandler` exists in main code; the log goes to the console, which a packaged windowed application does not have (story 336 adds the file sink and Help ▸ Open Log Folder).
 - **The degraded-open backup is not named anywhere on screen.** Story 330 writes `project.daw.degraded.<stamp>.bak` (or the migration backup) on the first save after such an open and logs its path at INFO; the announcement deliberately does not mention it, because at open it does not exist yet (studio ruling, round 3, Q1).
 
 An engineer told "3 MIDI notes skipped" needs to know which notes on which track, to decide whether to save over the file or repair it from the backup.

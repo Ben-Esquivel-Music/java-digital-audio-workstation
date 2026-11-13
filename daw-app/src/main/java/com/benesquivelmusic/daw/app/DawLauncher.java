@@ -1,5 +1,10 @@
 package com.benesquivelmusic.daw.app;
 
+import com.benesquivelmusic.daw.app.diagnostics.FailureFunnel;
+import com.benesquivelmusic.daw.app.diagnostics.LastResortLog;
+import com.benesquivelmusic.daw.app.diagnostics.LogSink;
+import com.benesquivelmusic.daw.app.logging.ExitHoldingLogManager;
+
 import javafx.application.Application;
 
 import java.io.BufferedReader;
@@ -13,6 +18,9 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import java.util.regex.Pattern;
 
 /**
@@ -28,6 +36,10 @@ import java.util.regex.Pattern;
  * script references that file via {@code java @<settings>/zgc.conf ...}
  * to run the DAW under the real-time ZGC tuning profile documented in
  * {@code docs/java26-setup.md}.</p>
+ *
+ * <p>Before that, it installs the application's log file and failure
+ * funnel ({@link #prepareLaunch(Path)}, story 336), so a failure is logged
+ * from {@code main}'s first statement on.</p>
  */
 public final class DawLauncher {
 
@@ -39,6 +51,9 @@ public final class DawLauncher {
 
     /** Default heap size used when {@code sessionMem} is not provided. */
     static final String DEFAULT_SESSION_MEM = "4G";
+
+    /** The system property {@code java.util.logging.LogManager} reads its class from. */
+    static final String LOG_MANAGER_PROPERTY = "java.util.logging.manager";
 
     /**
      * Conservative validation for {@code sessionMem}: a positive integer
@@ -54,13 +69,102 @@ public final class DawLauncher {
     }
 
     public static void main(String[] args) {
+        prepareLaunch(userSettingsDirectory());
+        Application.launch(DawApplication.class, args);
+    }
+
+    /**
+     * Every step {@code main} takes before the toolkit starts, in the Failure
+     * Surfacing book §6.4's order (story 336, Goals bullet 8): name the
+     * application's log manager before anything touches
+     * {@code java.util.logging}; install the log sink and write the session
+     * banner; install the failure funnel as the default uncaught-exception
+     * handler; then install {@code zgc.conf}, whose failure is now a WARNING
+     * in the log rather than a line on a standard error that the packaged
+     * application does not show. Public only inside {@code daw.app}: the module
+     * exports this package to no one.
+     *
+     * @param settingsDirectory the user settings directory ({@link #userSettingsDirectory()} in production)
+     * @return the installed failure funnel
+     */
+    public static FailureFunnel prepareLaunch(Path settingsDirectory) {
+        selectExitHoldingLogManager();
+        FailureFunnel funnel = installDiagnostics(settingsDirectory, Thread.currentThread());
         try {
-            installZgcConfig(userSettingsDirectory(), resolveSessionMem());
+            installZgcConfig(settingsDirectory, resolveSessionMem());
         } catch (IOException e) {
             // Non-fatal: the DAW still runs, just without the tuned GC profile.
-            System.err.println("Warning: could not install zgc.conf: " + e.getMessage());
+            Logger.getLogger(DawLauncher.class.getName()).log(Level.WARNING,
+                    "Could not install zgc.conf; the application runs without the tuned garbage-collector profile",
+                    e);
         }
-        Application.launch(DawApplication.class, args);
+        return funnel;
+    }
+
+    /**
+     * Names the application's log manager when the launch path did not
+     * (story 336): {@code java.util.logging.LogManager} reads
+     * {@value #LOG_MANAGER_PROPERTY} once, when it is first initialized, and
+     * nothing initializes it before {@code main}'s first statement on the
+     * application's launch paths. An explicit choice on the command line is
+     * respected. The class literal loads the class and does not initialize
+     * it; this class itself declares no logger and touches no
+     * {@code java.util.logging} state in a static initializer.
+     */
+    static void selectExitHoldingLogManager() {
+        if (System.getProperty(LOG_MANAGER_PROPERTY) == null) {
+            System.setProperty(LOG_MANAGER_PROPERTY, ExitHoldingLogManager.class.getName());
+        }
+    }
+
+    /**
+     * Installs the log sink under {@code settingsDirectory}, writes the session
+     * banner and installs a failure funnel as the default uncaught-exception
+     * handler — in that order, so the sink exists before any handler can fire.
+     * An oversized last-resort file from an earlier session is moved aside
+     * first, while this is still single-threaded. Idempotent:
+     * an installed funnel is returned as it is.
+     *
+     * @param settingsDirectory the user settings directory
+     * @param launchThread      the thread whose uncaught failures are {@code app.launch}
+     * @return the installed funnel
+     */
+    static FailureFunnel installDiagnostics(Path settingsDirectory, Thread launchThread) {
+        Optional<FailureFunnel> installed = FailureFunnel.installed();
+        if (installed.isPresent()) {
+            return installed.get();
+        }
+        Path logFolder = LogSink.folderUnder(settingsDirectory);
+        LastResortLog.moveOversizedAtLaunch(logFolder);
+        LogSink sink = LogSink.install(logFolder);
+        sink.logSessionStart();
+        FailureFunnel funnel = FailureFunnel.forLaunch(sink, launchThread);
+        funnel.installAsDefaultHandler();
+        return funnel;
+    }
+
+    /**
+     * The funnel {@code DawApplication.start} arms: the one {@code main}
+     * installed, or — when the application starts without {@code main} — one
+     * installed now, with no launch thread, an oversized last-resort file
+     * moved aside first as {@link #installDiagnostics} moves it. Then the log
+     * manager was already chosen, and the banner says
+     * whether the exit hold is active.
+     *
+     * @return the installed failure funnel
+     */
+    static FailureFunnel failureFunnel() {
+        Optional<FailureFunnel> installed = FailureFunnel.installed();
+        if (installed.isPresent()) {
+            return installed.get();
+        }
+        Path logFolder = LogSink.folderUnder(userSettingsDirectory());
+        LastResortLog.moveOversizedAtLaunch(logFolder);
+        LogSink sink = LogSink.install(logFolder);
+        sink.logSessionStart();
+        FailureFunnel funnel = FailureFunnel.withoutLaunchThread(sink);
+        funnel.installAsDefaultHandler();
+        return funnel;
     }
 
     /**

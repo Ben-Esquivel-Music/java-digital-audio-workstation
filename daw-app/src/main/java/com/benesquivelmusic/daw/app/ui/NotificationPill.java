@@ -10,12 +10,14 @@ import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.Tooltip;
+import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
 import javafx.scene.paint.Paint;
 import javafx.scene.shape.Rectangle;
+import javafx.util.Duration;
 
 import java.util.Locale;
 import java.util.MissingResourceException;
@@ -47,6 +49,20 @@ import java.util.ResourceBundle;
  * bar resolved to: the bar's resolved fill is the single source of
  * truth, so the glyph follows the level colour and any future theme
  * swap (story 277) without a parallel hard-coded palette.</p>
+ *
+ * <p>Story 336: the message label carries one tooltip holding the whole
+ * message, on both kinds of pill, so a long failure message cut off by the
+ * single-line label can still be read: wrapped within 440 px and up for as
+ * long as the pointer stays on the message. A {@link Tooltip} is a popup window
+ * with a scene of its own, and the inspector rebuilds up to a hundred history
+ * pills on every toast, so a pill builds its tooltip only when the pointer
+ * first enters the label (javafx-application-design "## 4. Use JavaFX
+ * Properties for everything observable": lazy initialization for controls
+ * built in bulk; "## 13. Performance checklist"). The transient toast's action and
+ * dismiss buttons take no keyboard focus — clicking one must not leave it
+ * holding the next Space, which is Play/Pause — while a history pill's action
+ * stays keyboard-reachable (story 336, studio-engineer ruling E9; a deliberate trade-off,
+ * javafx-application-design §14).</p>
  */
 public final class NotificationPill extends StackPane {
 
@@ -57,6 +73,14 @@ public final class NotificationPill extends StackPane {
     private static final double GLYPH_SIZE = 16;
     private static final double DISMISS_ICON_SIZE = 14;
 
+    /**
+     * The widest the message tooltip grows before it wraps, in px, on both
+     * pill kinds (story 336, studio-engineer ruling R3-2): about 70 characters of 12 px
+     * text a line inside the {@code .tooltip} padding, and a third of a
+     * 1280 px screen. The popup is not bounded by the 240 px drawer.
+     */
+    private static final double MESSAGE_TOOLTIP_MAX_WIDTH = 440;
+
     /** Resource bundle for chrome strings (Skill §14) — Locale.ROOT. */
     private static final ResourceBundle MESSAGES = ResourceBundle.getBundle(
             "com.benesquivelmusic.daw.app.i18n.Messages", Locale.ROOT);
@@ -64,6 +88,11 @@ public final class NotificationPill extends StackPane {
     private final Rectangle accentBar = new Rectangle();
     private final Label iconHolder = new Label();
     private final Label messageLabel = new Label();
+    /**
+     * The message label's one tooltip, whose text is the label's (story 336);
+     * {@code null} until the pointer first enters the label.
+     */
+    private Tooltip messageTooltip;
     private final Button actionButton = new Button();
     private final Region trailingSlot = new Region();
     private final HBox contentRow;
@@ -90,6 +119,15 @@ public final class NotificationPill extends StackPane {
         accentBar.fillProperty().addListener((_, _, fill) -> retintGlyph(fill));
 
         messageLabel.getStyleClass().add("notification-message");
+        // Story 336 — the whole message stays
+        // readable where the single-line label cuts it off, on the transient
+        // toast and on a history pill alike: one tooltip whose text follows the
+        // label's (a binding, not a second setter — javafx-application-design §4).
+        // A tooltip takes no focus, and the pill's accessible text stays the
+        // whole message. It is built on the first entry of the pointer, not
+        // with the pill: the entry precedes the move that starts a tooltip's
+        // show delay, so the first hover shows it all the same.
+        messageLabel.addEventHandler(MouseEvent.MOUSE_ENTERED, _ -> installMessageTooltip());
 
         actionButton.getStyleClass().add("notification-action");
         actionButton.setVisible(false);
@@ -112,6 +150,13 @@ public final class NotificationPill extends StackPane {
         StackPane.setAlignment(accentBar, Pos.CENTER_LEFT);
 
         if (showDismiss) {
+            // Story 336 (ruling E9) — the transient toast never takes keyboard
+            // focus: a focus-traversable button takes focus when clicked and then
+            // consumes the next Space, the Play/Pause accelerator, mid-take.
+            // History pills stay keyboard-reachable; Help ▸ Open Log Folder and
+            // the inspector's history are the keyboard routes to a toast's action
+            // (a documented trade-off, javafx-application-design §14).
+            actionButton.setFocusTraversable(false);
             contentRow.getChildren().add(trailingSlot);
         }
     }
@@ -177,11 +222,39 @@ public final class NotificationPill extends StackPane {
         setAccessibleText(localizedLevelName(level) + ": " + message);
     }
 
+    /**
+     * Builds the message label's tooltip, once: its text bound to the
+     * label's, so it holds the whole message now and follows every later
+     * one (story 336). It wraps at
+     * {@link #MESSAGE_TOOLTIP_MAX_WIDTH} and stays up while the pointer is on
+     * the message (story 336, studio-engineer ruling R3-2): a long reason takes longer to
+     * read than the default five seconds, and one unwrapped line would run off
+     * the screen. Both pill kinds build it here, so they never drift; it is
+     * set in code, not in {@code styles.css}, because {@code TooltipSkin}
+     * binds its label's maximum width to the tooltip's, so a CSS width on the
+     * label never applies, and a global {@code .tooltip} rule would change
+     * every other tooltip of the application.
+     */
+    private void installMessageTooltip() {
+        if (messageTooltip != null) {
+            return;
+        }
+        messageTooltip = new Tooltip();
+        messageTooltip.textProperty().bind(messageLabel.textProperty());
+        messageTooltip.setWrapText(true);
+        messageTooltip.setMaxWidth(MESSAGE_TOOLTIP_MAX_WIDTH);
+        messageTooltip.setShowDuration(Duration.INDEFINITE);
+        messageLabel.setTooltip(messageTooltip);
+    }
+
     /** Installs a trailing dismiss affordance into the reserved slot. */
     void installDismiss(Runnable onDismiss) {
         Node closeIcon = IconNode.of(DawIcon.CLOSE, DISMISS_ICON_SIZE);
         Button dismissButton = new Button();
         dismissButton.getStyleClass().add("notification-dismiss");
+        // Story 336 (ruling E9) — only the transient toast has a dismiss button,
+        // and like its action it never takes keyboard focus.
+        dismissButton.setFocusTraversable(false);
         dismissButton.setGraphic(closeIcon);
         dismissButton.setTooltip(new Tooltip(msg("notification.dismiss")));
         dismissButton.setAccessibleText(msg("notification.dismiss"));

@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.diagnostics.FailureFunnel;
+import com.benesquivelmusic.daw.app.logging.ExitHoldingLogManager;
 import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplay;
 import com.benesquivelmusic.daw.app.ui.metering.MeterFeed;
@@ -576,6 +578,14 @@ public final class MainController {
     private FxDispatcher fxDispatcher;
 
     /**
+     * Story 336 — the failure funnel, injected by {@code DawApplication} through
+     * {@link #attachFailureFunnel(FailureFunnel)} right after the dispatcher:
+     * Help ▸ Open Log Folder opens its log folder. {@code null} until then,
+     * and in a pure-unit context.
+     */
+    private FailureFunnel failureFunnel;
+
+    /**
      * Injects the application's {@link FxDispatcher}. Set once at app init by
      * the composition root (see {@link #fxDispatcher}); never reassigned at
      * runtime.
@@ -592,6 +602,29 @@ public final class MainController {
             pluginRegistry.restore().thenAccept(report -> FxDispatcher.runOnFx(fxDispatcher,
                     () -> announceRegistryRestore(report)));
         }
+    }
+
+    /**
+     * Story 336 (Failure Surfacing book §6.4) — injects the failure funnel and arms its toasts: a
+     * failure the funnel surfaces is from now on an ERROR toast in this
+     * window's notification bar, with its entry in the inspector's
+     * Notifications history, and what failed before is shown once, now. Set
+     * once at app init by the composition root, right after
+     * {@link #setFxDispatcher(FxDispatcher)} and before the window shows. With
+     * no notification bar or dispatcher — a context that never ran
+     * {@link #initialize()} — the toasts stay off and failures are logged
+     * only, and one WARNING says so. FX thread.
+     *
+     * @param funnel the installed failure funnel; must not be {@code null}
+     */
+    public void attachFailureFunnel(FailureFunnel funnel) {
+        this.failureFunnel = Objects.requireNonNull(funnel, "funnel must not be null");
+        if (notificationBar == null || fxDispatcher == null) {
+            LOG.warning("The window has no notification bar or FX dispatcher yet, so failure toasts stay off;"
+                    + " failures are logged only");
+            return;
+        }
+        funnel.armToasts(fxDispatcher, notificationBar);
     }
 
     /**
@@ -1956,12 +1989,21 @@ public final class MainController {
      * right after the project manager is built; a JVM already shutting down
      * refuses it, which is logged at FINE.
      *
+     * <p>Story 336 (Goals bullet 9; story 331, ruling N1): the registered hook
+     * is handed to the application's log manager, which holds the JDK's
+     * shutdown reset of the log sink until this hook returns, at most 35 s
+     * ({@link ProjectManager#EXIT_WRITE_WAIT} plus
+     * {@link ExitHoldingLogManager#HOLD_MARGIN}), so the wait's own lines reach
+     * the log file. A refused registration registers no hold, and the log
+     * then resets at once.</p>
+     *
      * @param manager the project manager whose writers the hook waits for
      */
     static void registerExitWriteWait(ProjectManager manager) {
         Thread hook = Thread.ofPlatform().name("daw-exit-write-wait").unstarted(manager::awaitWritesBeforeExit);
         try {
             Runtime.getRuntime().addShutdownHook(hook);
+            ExitHoldingLogManager.holdShutdownResetFor(hook, ProjectManager.EXIT_WRITE_WAIT);
         } catch (IllegalStateException shuttingDown) {
             LOG.log(Level.FINE, "The JVM is already shutting down; no wait for the writes before the exit was"
                     + " registered", shuttingDown);
@@ -4119,6 +4161,7 @@ public final class MainController {
                     @Override public void onPitchShiftClip() { MainController.this.onPitchShiftClip(); }
                     @Override public void onOpenImmersiveAb() { MainController.this.onOpenImmersiveAb(); }
                     @Override public void onHelp() { MainController.this.onHelp(); }
+                    @Override public void onOpenLogFolder() { MainController.this.onOpenLogFolder(); }
                 },
                 keyBindingManager,
                 // Story 294 — Save-enabled derives from ProjectVM.dirty, the §1.2
@@ -6081,6 +6124,17 @@ public final class MainController {
         status("Opening help...", DawIcon.INFO);
         new HelpDialog().showAndWait();
         status("Help closed", DawIcon.STATUS);
+    }
+
+    /**
+     * Story 336 — Help ▸ Open Log Folder (Failure Surfacing book §2.8): opens
+     * the folder the log file is written into, the one every
+     * failure toast's action opens, off the FX thread.
+     */
+    void onOpenLogFolder() {
+        if (failureFunnel != null) {
+            failureFunnel.openLogFolder();
+        }
     }
 
     /**

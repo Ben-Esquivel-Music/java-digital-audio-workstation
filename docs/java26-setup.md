@@ -48,11 +48,25 @@ run. Pass it to the `jlink` runtime JVM via `@<settings>/zgc.conf`:
 ```bash
 daw-app/target/daw-runtime/bin/java @<settings>/zgc.conf \
     --enable-native-access=daw.core,daw.sdk,daw.app \
+    -Djava.util.logging.manager=com.benesquivelmusic.daw.app.logging.ExitHoldingLogManager \
     -m daw.app/com.benesquivelmusic.daw.app.DawLauncher
 ```
 
 The application JAR is a thin JPMS module and is not directly runnable with
 `java -jar`.
+
+### Log file
+
+The application writes its log to `<settings>/logs`: `daw-0.log` is the
+newest file, and at most five files of 5 MiB each are kept. Help ▸ Open Log
+Folder opens that folder. Keep
+`-Djava.util.logging.manager=com.benesquivelmusic.daw.app.logging.ExitHoldingLogManager`
+on the command line: it holds the log open at exit until the wait for saves
+and checkpoints has returned, so the lines that wait writes reach the file.
+When the option is missing, the launcher names the same class itself unless
+something initialized logging before it ran; if that happened, the session
+banner in the log says `Exit hold: inactive`, and lines logged while the
+application exits may be lost.
 
 ### Flags and rationale
 
@@ -136,6 +150,7 @@ To reproduce locally:
 # 2. Launch with the ZGC profile:
 daw-app/target/daw-runtime/bin/java @<settings>/zgc.conf \
      --enable-native-access=daw.core,daw.sdk,daw.app \
+     -Djava.util.logging.manager=com.benesquivelmusic.daw.app.logging.ExitHoldingLogManager \
      -m daw.app/com.benesquivelmusic.daw.app.DawLauncher \
      --benchmark=stress --tracks=64 --inserts=4 --sample-rate=48000 --buffer=64
 # 3. Compare against the baseline (default G1, no buffer pool):

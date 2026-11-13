@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.diagnostics.DeclaredSubject;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.metering.AnalyzerFeeds;
@@ -190,7 +191,8 @@ final class PluginViewController {
                     pendingActivations.remove(activation);
                     if (disposed || requestedProject != deps.project().get()
                             || (requestedProject != null && !graphChannels().contains(activation.channel()))) {
-                        activationWorker.execute(slot::disposeAfterQuiescence);
+                        activationWorker.execute(
+                                DeclaredSubject.pluginDisposal(slot.getName()).guard(slot::disposeAfterQuiescence));
                         return;
                     }
                     if (!deps.projectActionsAllowed().getAsBoolean()) {
@@ -198,19 +200,22 @@ final class PluginViewController {
                         // discarded, never deferred (PR #989 review 5711460812).
                         LOG.info(() -> "The plug-in “" + slot.getName()
                                 + "” finished loading while the project could not be edited; it was not inserted.");
-                        activationWorker.execute(slot::disposeAfterQuiescence);
+                        activationWorker.execute(
+                                DeclaredSubject.pluginDisposal(slot.getName()).guard(slot::disposeAfterQuiescence));
                         return;
                     }
                     try {
                         if (focusExistingSlot(activation)) {
-                            activationWorker.execute(slot::disposeAfterQuiescence);
+                            activationWorker.execute(
+                                    DeclaredSubject.pluginDisposal(slot.getName()).guard(slot::disposeAfterQuiescence));
                             return;
                         }
                         requireFreeSlot(activation.channel());
                         insertAndOpen(activation.channel(), slot);
                     } catch (RuntimeException | Error failure) {
                         if (!activation.channel().getInsertSlots().contains(slot)) {
-                            activationWorker.execute(slot::disposeAfterQuiescence);
+                            activationWorker.execute(
+                                    DeclaredSubject.pluginDisposal(slot.getName()).guard(slot::disposeAfterQuiescence));
                         }
                         activationFailed(label, failure);
                     }

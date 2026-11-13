@@ -205,6 +205,11 @@ public final class DawMenuBarController {
 
         // Help actions
         void onHelp();
+        /**
+         * Story 336 — Help ▸ Open Log Folder: opens the folder the log file is
+         * written into (Failure Surfacing book §2.8). Default no-op for tests.
+         */
+        default void onOpenLogFolder() { }
     }
 
     private final MenuConstructionService constructionService;
