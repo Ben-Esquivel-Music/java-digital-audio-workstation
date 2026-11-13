@@ -928,7 +928,10 @@ the wizard was the proof of what happens otherwise.
 
 *As built in story 336: `DawLauncher.prepareLaunch` names the log manager, installs the
 sink and its banner, then the default handler, then `zgc.conf`, all before
-`Application.launch`. `DawApplication.start` installs the FX‑thread handler right after
+`Application.launch`; a session‑memory setting it rejects, or a `zgc.conf` it cannot
+write, is a WARNING in the log and never stops the launch, and a rejected setting leaves an
+earlier `zgc.conf` as it was (story 336, ruling R992-8). `DawApplication.start` installs
+the FX‑thread handler right after
 the dispatcher, and `MainController.attachFailureFunnel` arms the toasts right after
 `setFxDispatcher`, before the window shows and before `showWelcomeIfNoProjectOpen` can
 open the first‑run wizard. Until then the funnel logs every surfaced failure, keeps the

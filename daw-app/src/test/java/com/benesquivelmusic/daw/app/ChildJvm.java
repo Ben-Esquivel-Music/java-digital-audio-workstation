@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -24,14 +25,26 @@ import java.util.regex.Pattern;
  * with the main's class files patched into the module, and none of
  * surefire's {@code --add-reads} or {@code --add-opens} (dawg-annotations-reflection
  * "### Adding a new reflection consumer": module readability shows only in a
- * JVM of its own). The environment has none of the variables the launcher
- * reads options from ({@code JAVA_TOOL_OPTIONS}, {@code JDK_JAVA_OPTIONS},
- * {@code _JAVA_OPTIONS}); the user settings directory resolves into the
- * test's own folder on every platform ({@code APPDATA}, {@code XDG_CONFIG_HOME}
- * and {@code user.home}). Standard output and error go to files, not pipes
- * (on Linux {@code destroyForcibly} closes the parent's end of a pipe); the
- * wait is bounded below the 60 s per-test timeout, and a child still running
- * then is destroyed.
+ * JVM of its own). The environment has none of the variables the JVM and its
+ * {@code java} launcher read options from ({@code JAVA_TOOL_OPTIONS},
+ * {@code JDK_JAVA_OPTIONS}, {@code _JAVA_OPTIONS}), nor {@code DawLauncher}'s
+ * session-memory variable {@code DAW_SESSION_MEM}, so a value set on the
+ * machine that runs the tests reaches no child (story 336, studio-engineer
+ * ruling R992-8); the user settings directory resolves into the test's own
+ * folder on every platform ({@code APPDATA}, {@code XDG_CONFIG_HOME} and
+ * {@code user.home}). Standard output and error go to files, not pipes (on
+ * Linux {@code destroyForcibly} closes the parent's end of a pipe).
+ *
+ * <p>The wait is bounded at {@link #BOUND}. On every way out of {@link #run}
+ * once the child has started — its exit, that bound, an interrupt such as the
+ * one JUnit's per-test timeout delivers, or any other failure — a child still
+ * running is destroyed forcibly and awaited for at most {@link #DESTROY_BOUND},
+ * a wait no interrupt cuts short, before its files are read or the failure
+ * propagates, so, unless it outlives that wait, it holds none of the test's files open (story 336,
+ * studio-engineer ruling R992-9). The two bounds together stay under the 60 s
+ * per-test timeout: JUnit interrupts the test's thread at that timeout without
+ * waiting for it, so only {@link #BOUND} puts a hung child's destruction
+ * before the test's folder is deleted.</p>
  *
  * <p>{@link #logManagerOption()} reads the {@code -Djava.util.logging.manager}
  * value from {@code daw-app/pom.xml}'s jpackage {@code --java-options}, so the
@@ -39,10 +52,19 @@ import java.util.regex.Pattern;
  */
 final class ChildJvm {
 
-    /** The longest a child may run before it is destroyed; under the 60 s per-test timeout. */
+    /**
+     * The longest a child may run before it is destroyed; with {@link #DESTROY_BOUND}, under the 60 s per-test
+     * timeout.
+     */
     static final Duration BOUND = Duration.ofSeconds(45);
 
-    /** The environment variables the launcher reads options from; the child gets none of them. */
+    /**
+     * The longest a child still running at a way out of {@link #run} is awaited once destroyed; with
+     * {@link #BOUND}, 55 s, under the 60 s per-test timeout (story 336, studio-engineer ruling R992-9).
+     */
+    static final Duration DESTROY_BOUND = Duration.ofSeconds(10);
+
+    /** The variables the JVM and its {@code java} launcher read options from; the child gets none of them. */
     private static final List<String> LAUNCHER_OPTION_VARIABLES =
             List.of("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS");
 
@@ -72,16 +94,12 @@ final class ChildJvm {
             Objects.requireNonNull(work, "work must not be null");
         }
 
-        /** The settings directory the production resolution gives the child, worked out independently here. */
+        /**
+         * The settings directory the production resolution gives the child:
+         * {@link ChildJvm#settingsDirectory(Path)}.
+         */
         Path settingsDirectory() {
-            String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
-            if (os.contains("win")) {
-                return work.resolve("appdata").resolve("java-daw");
-            }
-            if (os.contains("mac") || os.contains("darwin")) {
-                return work.resolve("home").resolve("Library").resolve("Application Support").resolve("java-daw");
-            }
-            return work.resolve("xdg").resolve("java-daw");
+            return ChildJvm.settingsDirectory(work);
         }
 
         /** The log file the child wrote. */
@@ -109,8 +127,13 @@ final class ChildJvm {
      * @param jvmOptions options before the module path, for example {@link #logManagerOption()}
      * @param arguments  the main's arguments
      * @return what it did
-     * @throws IOException          if the child cannot be set up
-     * @throws InterruptedException if the wait is interrupted
+     * @throws IOException           if the child cannot be set up
+     * @throws InterruptedException  if the wait is interrupted; the child has then been destroyed and awaited
+     *                               (story 336, studio-engineer ruling R992-9)
+     * @throws IllegalStateException if this JVM does not run {@code daw.app} on the module path, or if the child
+     *                               is still running {@link #DESTROY_BOUND} after it was destroyed and nothing
+     *                               else is propagating; with an exception propagating, that one is added to it
+     *                               as suppressed
      */
     static Result run(Path work, Class<?> main, List<String> jvmOptions, List<String> arguments)
             throws IOException, InterruptedException {
@@ -137,19 +160,115 @@ final class ChildJvm {
                 .redirectError(stderr.toFile());
         Map<String, String> environment = builder.environment();
         LAUNCHER_OPTION_VARIABLES.forEach(environment::remove);
+        // DawLauncher's session-memory setting: a value set on the machine that runs the tests would rewrite every
+        // child's zgc.conf or add a WARNING to its log (story 336, studio-engineer ruling R992-8).
+        environment.remove(DawLauncher.SESSION_MEM_VARIABLE);
         environment.put("APPDATA", appData.toString());
         environment.put("XDG_CONFIG_HOME", xdg.toString());
 
         long start = System.nanoTime();
         Process child = builder.start();
-        boolean exited = child.waitFor(BOUND.toMillis(), TimeUnit.MILLISECONDS);
-        if (!exited) {
-            child.destroyForcibly().waitFor(10, TimeUnit.SECONDS);
+        boolean exited = false;
+        Optional<Throwable> propagating = Optional.empty();
+        try {
+            exited = child.waitFor(BOUND.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (Throwable failure) {
+            propagating = Optional.of(failure);
+            throw failure;
+        } finally {
+            // Every way out once the child has started ends it, or reports one that outlives DESTROY_BOUND: its exit,
+            // BOUND, an interrupt such as JUnit's per-test timeout delivers, or any other failure, which propagates
+            // unchanged (story 336, studio-engineer ruling R992-9).
+            endIfRunning(child, propagating);
         }
         Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
         return new Result(exited, exited ? child.exitValue() : -1,
                 Files.readString(stdout, StandardCharsets.UTF_8), Files.readString(stderr, StandardCharsets.UTF_8),
                 elapsed, work);
+    }
+
+    /**
+     * Ends {@code child} on a way out of {@link #run}: a child still running
+     * is destroyed forcibly, never gracefully, since on Linux a graceful stop
+     * runs its shutdown hooks, the exit hold among them, which can outlast the
+     * bound; then it is awaited for at most {@link #DESTROY_BOUND}. A child still
+     * running after that, or a failure of this cleanup itself, is added as
+     * suppressed to {@code propagating}, never in its place, or else thrown
+     * (story 336, studio-engineer ruling R992-9). Package-private so that
+     * {@code ChildJvmTest} drives it with a scripted {@link Process}.
+     *
+     * @param child       the child
+     * @param propagating what {@link #run} is throwing, if anything
+     */
+    static void endIfRunning(Process child, Optional<Throwable> propagating) {
+        try {
+            if (!child.isAlive()) {
+                return;
+            }
+            child.destroyForcibly();
+            if (!awaitThroughInterrupts(child, DESTROY_BOUND)) {
+                throw new IllegalStateException("the child JVM, process " + child.pid() + ", was still running "
+                        + DESTROY_BOUND.toSeconds() + " s after it was destroyed");
+            }
+        } catch (RuntimeException | Error cleanup) {
+            if (propagating.isEmpty()) {
+                throw cleanup;
+            }
+            propagating.get().addSuppressed(cleanup);
+        }
+    }
+
+    /**
+     * Waits up to {@code bound} for {@code child} to end. An interrupt does not
+     * cut the wait short: {@code Process.waitFor} throws at once while the
+     * interrupt flag is set and the child runs, so each interrupt is caught and
+     * remembered, and the wait goes on with the time remaining. The flag is set
+     * again before this returns if any interrupt was absorbed (story 336,
+     * studio-engineer ruling R992-9).
+     *
+     * @param child the child
+     * @param bound the longest wait
+     * @return whether the child ended within {@code bound}
+     */
+    private static boolean awaitThroughInterrupts(Process child, Duration bound) {
+        long deadline = System.nanoTime() + bound.toNanos();
+        boolean interrupted = false;
+        try {
+            while (true) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) {
+                    return !child.isAlive();
+                }
+                try {
+                    return child.waitFor(remaining, TimeUnit.NANOSECONDS);
+                } catch (InterruptedException absorbed) {
+                    interrupted = true;
+                }
+            }
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    /**
+     * The settings directory the production resolution gives a child that
+     * {@link #run} runs in {@code work}, worked out independently here, so a
+     * test can lay files in it before the run.
+     *
+     * @param work the folder the child runs in
+     * @return its user settings directory
+     */
+    static Path settingsDirectory(Path work) {
+        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        if (os.contains("win")) {
+            return work.resolve("appdata").resolve("java-daw");
+        }
+        if (os.contains("mac") || os.contains("darwin")) {
+            return work.resolve("home").resolve("Library").resolve("Application Support").resolve("java-daw");
+        }
+        return work.resolve("xdg").resolve("java-daw");
     }
 
     /**

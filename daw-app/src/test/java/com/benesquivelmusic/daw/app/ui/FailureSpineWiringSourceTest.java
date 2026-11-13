@@ -32,7 +32,15 @@ import static org.assertj.core.api.Assertions.entry;
  * route, the seven plugin disposals story 334 left to this story, and that the
  * spine's own code opens no window and takes no focus (story 336, studio-engineer ruling E9) and posts to
  * the FX thread only through the dispatcher (javafx-application-design
- * "## 11. Threading"; book Appendix B).
+ * "## 11. Threading"; book Appendix B). It also pins what the tests that run
+ * {@code DawLauncher} cannot tell apart: that the production read names the
+ * system property and the environment variable by the constants the rejection's
+ * message is built from, the second of which {@code ChildJvm} also uses to
+ * remove the variable from each child's environment, that a rejection is
+ * logged without parameters, which would make its value a {@code MessageFormat} pattern,
+ * and that {@code IOException} is the only failure caught around {@code zgc.conf}'s write
+ * (story 336, studio-engineer ruling R992-8). Its pin of that log call also holds that a
+ * rejection has no throwable, which {@code PackagedLaunchLoggingTest} checks too.
  *
  * <p>A source scan, not a reflection consumer (dawg-annotations-reflection
  * §4, "Adding a new reflection consumer"): comments are stripped, and string
@@ -73,6 +81,24 @@ class FailureSpineWiringSourceTest {
                 .as("DawLauncher declares no Logger field: one would initialize LogManager before main names it")
                 .isFalse();
         assertThat(launcher).as("and no static initializer").doesNotContain("static {");
+    }
+
+    @Test
+    void theLauncherReadsTheSessionMemorySettingByItsConstantsAndCatchesOnlyTheWriteFailure() throws IOException {
+        String launcher = flat(code(APP.resolve("DawLauncher.java")));
+        String prepare = body(launcher, "public static FailureFunnel prepareLaunch(Path settingsDirectory)");
+
+        assertThat(occurrences(prepare, "log(Level.WARNING, rejected.warning());"))
+                .as("a rejection is logged with neither parameters, which would make its value a MessageFormat"
+                        + " pattern, nor a throwable")
+                .isEqualTo(1);
+        assertThat(body(launcher, "static SessionMem resolveSessionMem()"))
+                .as("the production read names the property and the variable by the constants the rejection's"
+                        + " message is built from")
+                .isEqualTo("{ return resolveSessionMem(Optional.ofNullable(System.getProperty(SESSION_MEM_PROPERTY)),"
+                        + " Optional.ofNullable(System.getenv(SESSION_MEM_VARIABLE))); }");
+        assertThat(occurrences(prepare, "catch (")).as("one catch in prepareLaunch").isEqualTo(1);
+        assertThat(prepare).as("and it catches only zgc.conf's IOException").contains("} catch (IOException e) {");
     }
 
     @Test

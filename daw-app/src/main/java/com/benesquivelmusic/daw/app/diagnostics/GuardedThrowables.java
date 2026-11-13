@@ -361,12 +361,14 @@ public final class GuardedThrowables {
      * lower-case {@code u} and four upper-case hex digits, so LF reads
      * <code>&#92;u000A</code> and CR LF is two escapes (story 336,
      * studio-engineer ruling R992-2). It is a visible marker, not a
-     * reversible encoding.
+     * reversible encoding. Public so that {@code DawLauncher} quotes a
+     * rejected session-memory setting with it, keeping its WARNING on one line
+     * (story 336, studio-engineer ruling R992-8).
      *
      * @param text the value
      * @return {@code text} itself when it holds none of them, else a copy with each one escaped
      */
-    static String oneLine(String text) {
+    public static String oneLine(String text) {
         int first = 0;
         while (first < text.length() && !isLineBreak(text.charAt(first))) {
             first++;

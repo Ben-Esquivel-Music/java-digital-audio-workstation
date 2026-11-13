@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app;
 
 import com.benesquivelmusic.daw.app.diagnostics.FailureFunnel;
+import com.benesquivelmusic.daw.app.diagnostics.GuardedThrowables;
 import com.benesquivelmusic.daw.app.diagnostics.LastResortLog;
 import com.benesquivelmusic.daw.app.diagnostics.LogSink;
 import com.benesquivelmusic.daw.app.logging.ExitHoldingLogManager;
@@ -56,13 +57,31 @@ public final class DawLauncher {
     static final String LOG_MANAGER_PROPERTY = "java.util.logging.manager";
 
     /**
-     * Conservative validation for {@code sessionMem}: a positive integer
-     * followed by an optional {@code k/K/m/M/g/G} unit suffix. This is
-     * the same syntax accepted by {@code -Xms} / {@code -Xmx}, and
-     * prevents arbitrary whitespace / newlines / extra JVM args from
-     * being injected into the options file via substitution.
+     * Conservative validation for {@code sessionMem}: a whole number
+     * followed by an optional {@code k/K/m/M/g/G} unit suffix. Its syntax is
+     * narrower than the size syntax {@code -Xms} / {@code -Xmx} read, which
+     * also takes a {@code t/T} unit; yet a value it matches can still be one
+     * the JVM refuses at start: {@code -Xmx} reads {@code 0} and a number too
+     * large for it as invalid sizes, and {@code 4096}, which is bytes, as too
+     * small a heap (story 336, studio-engineer ruling R992-10). It prevents
+     * arbitrary whitespace / newlines / extra JVM args from being injected
+     * into the options file via substitution.
      */
     static final Pattern SESSION_MEM_PATTERN = Pattern.compile("\\d+[kKmMgG]?");
+
+    /**
+     * The system property that sets the heap size {@code zgc.conf} is written
+     * with, ahead of {@link #SESSION_MEM_VARIABLE} (story 336, studio-engineer
+     * ruling R992-8).
+     */
+    static final String SESSION_MEM_PROPERTY = "daw.sessionMem";
+
+    /**
+     * The environment variable that sets the heap size {@code zgc.conf} is
+     * written with when {@link #SESSION_MEM_PROPERTY} does not (story 336,
+     * studio-engineer ruling R992-8).
+     */
+    static final String SESSION_MEM_VARIABLE = "DAW_SESSION_MEM";
 
     private DawLauncher() {
         // utility class
@@ -79,10 +98,15 @@ public final class DawLauncher {
      * application's log manager before anything touches
      * {@code java.util.logging}; install the log sink and write the session
      * banner; install the failure funnel as the default uncaught-exception
-     * handler; then install {@code zgc.conf}, whose failure is now a WARNING
-     * in the log rather than a line on a standard error that the packaged
-     * application does not show. Public only inside {@code daw.app}: the module
-     * exports this package to no one.
+     * handler; then write {@code zgc.conf} for a later launch that passes it.
+     * Neither a session-memory setting that is not a heap size nor a
+     * {@code zgc.conf} that cannot be written stops the launch: each is a
+     * WARNING in the log, which the packaged application has, rather than a
+     * line on a standard error it does not show. A rejected setting is named
+     * with its value, and {@code zgc.conf} is then not written, so a size an
+     * earlier launch wrote is not replaced by the default (story 336,
+     * studio-engineer ruling R992-8). Public only inside {@code daw.app}: the
+     * module exports this package to no one.
      *
      * @param settingsDirectory the user settings directory ({@link #userSettingsDirectory()} in production)
      * @return the installed failure funnel
@@ -90,13 +114,21 @@ public final class DawLauncher {
     public static FailureFunnel prepareLaunch(Path settingsDirectory) {
         selectExitHoldingLogManager();
         FailureFunnel funnel = installDiagnostics(settingsDirectory, Thread.currentThread());
-        try {
-            installZgcConfig(settingsDirectory, resolveSessionMem());
-        } catch (IOException e) {
-            // Non-fatal: the DAW still runs, just without the tuned GC profile.
-            Logger.getLogger(DawLauncher.class.getName()).log(Level.WARNING,
-                    "Could not install zgc.conf; the application runs without the tuned garbage-collector profile",
-                    e);
+        switch (resolveSessionMem()) {
+            case SessionMem.Rejected rejected ->
+                    // The user's setting, not a fault of the system: one WARNING naming it, without a stack, and no
+                    // zgc.conf written (story 336, studio-engineer ruling R992-8).
+                    Logger.getLogger(DawLauncher.class.getName()).log(Level.WARNING, rejected.warning());
+            case SessionMem.Accepted(String size, SessionMem.Source _) -> {
+                try {
+                    installZgcConfig(settingsDirectory, size);
+                } catch (IOException e) {
+                    // A fault of the system, with its stack; this session is unaffected, since the running JVM read
+                    // its options when it started (story 336, studio-engineer ruling R992-8).
+                    Logger.getLogger(DawLauncher.class.getName()).log(Level.WARNING,
+                            "Could not write zgc.conf; a zgc.conf from an earlier launch is left as it was", e);
+                }
+            }
         }
         return funnel;
     }
@@ -242,20 +274,127 @@ public final class DawLauncher {
     }
 
     /**
-     * Resolves the session memory size used to pin {@code -Xms} / {@code -Xmx}.
-     * The system property {@code daw.sessionMem} or the environment variable
-     * {@code DAW_SESSION_MEM} may override the default.
+     * The heap size {@code zgc.conf} is written with, which pins {@code -Xms}
+     * and {@code -Xmx}, read from this JVM's system property
+     * {@value #SESSION_MEM_PROPERTY} and environment variable
+     * {@value #SESSION_MEM_VARIABLE} ({@link #resolveSessionMem(Optional, Optional)}).
+     *
+     * @return the size, or the rejection of the value the setting holds
      */
-    static String resolveSessionMem() {
-        String prop = System.getProperty("daw.sessionMem");
-        if (prop != null && !prop.isBlank()) {
-            return prop;
+    static SessionMem resolveSessionMem() {
+        return resolveSessionMem(Optional.ofNullable(System.getProperty(SESSION_MEM_PROPERTY)),
+                Optional.ofNullable(System.getenv(SESSION_MEM_VARIABLE)));
+    }
+
+    /**
+     * The heap size {@code zgc.conf} is written with: the system property
+     * {@value #SESSION_MEM_PROPERTY}, else the environment variable
+     * {@value #SESSION_MEM_VARIABLE}, else {@link #DEFAULT_SESSION_MEM}; a
+     * blank value counts as unset. The chosen value is trimmed and must match
+     * {@link #SESSION_MEM_PATTERN} whole. Otherwise it is rejected, the
+     * rejection naming its source and keeping its raw value, and neither the
+     * next source nor the default takes its place: the user chose that source
+     * (story 336, studio-engineer ruling R992-8).
+     *
+     * @param property the system property's raw value, if it is set
+     * @param variable the environment variable's raw value, if it is set
+     * @return the trimmed size and its source, or the rejection
+     */
+    static SessionMem resolveSessionMem(Optional<String> property, Optional<String> variable) {
+        Objects.requireNonNull(property, "property must not be null");
+        Objects.requireNonNull(variable, "variable must not be null");
+        Optional<String> fromProperty = property.filter(value -> !value.isBlank());
+        if (fromProperty.isPresent()) {
+            return checked(fromProperty.get(), SessionMem.Source.SYSTEM_PROPERTY);
         }
-        String env = System.getenv("DAW_SESSION_MEM");
-        if (env != null && !env.isBlank()) {
-            return env;
+        Optional<String> fromVariable = variable.filter(value -> !value.isBlank());
+        if (fromVariable.isPresent()) {
+            return checked(fromVariable.get(), SessionMem.Source.ENVIRONMENT_VARIABLE);
         }
-        return DEFAULT_SESSION_MEM;
+        return new SessionMem.Accepted(DEFAULT_SESSION_MEM, SessionMem.Source.DEFAULT);
+    }
+
+    private static SessionMem checked(String value, SessionMem.Source source) {
+        String trimmed = value.trim();
+        if (SESSION_MEM_PATTERN.matcher(trimmed).matches()) {
+            return new SessionMem.Accepted(trimmed, source);
+        }
+        return new SessionMem.Rejected(source, value);
+    }
+
+    /**
+     * What {@link DawLauncher#resolveSessionMem} gives: a heap size, or a
+     * value the setting holds that is not one. The rejection is a value, not
+     * an exception (story 336, studio-engineer ruling R992-8).
+     */
+    sealed interface SessionMem {
+
+        /** Where a value came from. */
+        enum Source {
+            /** The system property {@value DawLauncher#SESSION_MEM_PROPERTY}. */
+            SYSTEM_PROPERTY("system property " + SESSION_MEM_PROPERTY),
+            /** The environment variable {@value DawLauncher#SESSION_MEM_VARIABLE}. */
+            ENVIRONMENT_VARIABLE("environment variable " + SESSION_MEM_VARIABLE),
+            /** Neither: {@link DawLauncher#DEFAULT_SESSION_MEM}. */
+            DEFAULT("default");
+
+            private final String setting;
+
+            Source(String setting) {
+                this.setting = setting;
+            }
+
+            /** The words that name it in a WARNING, such as {@code system property daw.sessionMem}. */
+            String setting() {
+                return setting;
+            }
+        }
+
+        /**
+         * A heap size {@link DawLauncher#SESSION_MEM_PATTERN} matches.
+         *
+         * @param size   the size, trimmed
+         * @param source where it came from
+         */
+        record Accepted(String size, Source source) implements SessionMem {
+
+            public Accepted {
+                Objects.requireNonNull(size, "size must not be null");
+                Objects.requireNonNull(source, "source must not be null");
+            }
+        }
+
+        /**
+         * A value the user set that is not a heap size: the user's to fix, so
+         * a WARNING without a stack, and no {@code zgc.conf} written.
+         *
+         * @param source the setting that holds it; never {@link Source#DEFAULT}
+         * @param value  the value as it was set, untrimmed
+         */
+        record Rejected(Source source, String value) implements SessionMem {
+
+            public Rejected {
+                Objects.requireNonNull(source, "source must not be null");
+                Objects.requireNonNull(value, "value must not be null");
+                if (source == Source.DEFAULT) {
+                    throw new IllegalArgumentException("the default session memory is never rejected");
+                }
+            }
+
+            /**
+             * The WARNING, on one line: the value is quoted with its line
+             * breaks written as their escapes ({@link GuardedThrowables#oneLine}),
+             * and every other character as it is.
+             *
+             * @return the message
+             */
+            String warning() {
+                return "The " + source.setting() + " holds \"" + GuardedThrowables.oneLine(value)
+                        + "\", which is not a heap size this setting accepts: use a whole number, optionally"
+                        + " followed by k, m or g in either case, such as 16G. zgc.conf was not written; a zgc.conf"
+                        + " from an earlier launch is left as it was.";
+            }
+        }
     }
 
     private static String readResource(String resource) throws IOException {
