@@ -617,7 +617,9 @@ public final class FailureFunnel {
             header.append(", ").append(notLogged)
                     .append(" occurrences since the previous notice were not logged individually");
         }
-        LogRecord record = new LogRecord(Level.SEVERE, header.toString());
+        // One line, so the record's header line carries the fingerprint: a line break anywhere in it, a thread's
+        // name and the key included, is written as its escape (story 336, studio-engineer ruling R992-3).
+        LogRecord record = new LogRecord(Level.SEVERE, GuardedThrowables.oneLine(header.toString()));
         record.setLoggerName(log.getName());
         record.setThrown(fact.failure());
         log.log(record);
@@ -651,12 +653,17 @@ public final class FailureFunnel {
                 + " occurrences counted since its last notice)";
     }
 
-    /** One SEVERE line without a stack that accounts for a tail. */
+    /**
+     * One SEVERE line without a stack that accounts for a tail; a line break
+     * in its fingerprint is written as its escape (story 336, studio-engineer
+     * ruling R992-3).
+     */
     private void logTail(FingerprintRateLimiter.Tail tail) {
-        LogRecord record = new LogRecord(Level.SEVERE, "Failure " + tail.fingerprint().category() + " repeated "
-                + tail.suppressed() + " more times between " + logTime(tail.firstSuppressed()) + " and "
-                + logTime(tail.last()) + ", not logged individually (fingerprint " + tail.fingerprint().key()
-                + "); last message: " + tail.lastMessage());
+        LogRecord record = new LogRecord(Level.SEVERE, GuardedThrowables.oneLine("Failure "
+                + tail.fingerprint().category() + " repeated " + tail.suppressed() + " more times between "
+                + logTime(tail.firstSuppressed()) + " and " + logTime(tail.last())
+                + ", not logged individually (fingerprint " + tail.fingerprint().key() + "); last message: "
+                + tail.lastMessage()));
         record.setLoggerName(log.getName());
         log.log(record);
     }

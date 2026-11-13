@@ -545,7 +545,9 @@ stopped by a `ScopedValue` binding and by a guard inside every runnable the funn
 posts; what the funnel itself throws goes to `LastResortLog`, which writes to standard
 error and to `daw-last-resort.log` in the log folder, because the packaged application
 has no standard error. A failure held in a future, a `Task` or an executor never reaches
-a handler (future story 443).*
+a handler (future story 443). The fingerprint's anchor line is the throw site's in the
+installed application too: the jlink image keeps the class files' line numbers
+(story 336, ruling R992-1).*
 
 ### 4.2 The log sink (story 336)
 
@@ -569,8 +571,11 @@ a bundled properties file the image build could drop.
 `<settings>/logs/daw-%g.log`, five files of 5 MiB, appended across sessions, INFO and
 above, each record flushed. Every root handler formats with `LogLineFormatter`: one
 header line per record with its thread and logger, every following line tab‑indented,
-and a throwable read so that formatting never throws and still names the exception's
-class. A session's lines in each file begin with a session line, the file formatter's
+a line break inside a value written as its escape (`\u000A` for LF), a message's CR, LF
+and CRLF still beginning tab‑indented lines, so no name or message can split or forge
+a record (story 336, ruling R992-2), and a throwable read so
+that formatting never throws and still names the exception's class. A session's lines
+in each file begin with a session line, the file formatter's
 head, naming the version, the session's start and the process; at launch the two banner
 lines follow it (`Session started: …`, `Exit hold: …`). The version is the `daw.app`
 module's; the installer's is only ever labelled as such. The exit lines are kept by
@@ -832,7 +837,7 @@ Row 4 surfaces nothing deliberately: a stop racing a callback is normal teardown
 |-----------------------------|---------------------------------------------------------------------|
 | Level fits severity          | FATAL/ERROR → ERROR toast; degraded → WARNING; recovery → INFO/SUCCESS |
 | Fingerprint rate limit       | Same fingerprint ≤ 1 toast per window (≈30 s, the track‑budget precedent); count carried in the message on re‑show |
-| History is complete          | Every toast enters the story‑273 history; occurrences rate‑limited off the screen are accounted for in the next re‑show entry, which carries the running total, or in one history‑only tail entry, while a fingerprint's notices and tails reach the history and are still in it (newest 100 entries). Where they do not — among those cases a pre‑arm notice that the startup summary or a FATAL toast stands in for, a pre‑arm notice only counted beyond the 16 kept until arming, LRU eviction, a tail owed when the toasts were disarmed, and every occurrence after that — the log file accounts for them, within limits, among them: occurrences counted after the disarming reach it only when the application's log manager closes the log ("Exit hold: active"), and only those counted before that last write; counts not yet written when the process ends without the JDK's shutdown reset (a crash) are in neither, at most one 30 s window per fingerprint (story 336) |
+| History is complete          | Every toast enters the story‑273 history; occurrences rate‑limited off the screen are accounted for in the next re‑show entry, which carries the running total, or in one history‑only tail entry, while a fingerprint's notices and tails reach the history and are still in it (newest 100 entries). Where they do not — among those cases a pre‑arm notice that the startup summary or a FATAL toast stands in for, a pre‑arm notice only counted beyond the 16 kept until arming, LRU eviction, a tail owed when the toasts were disarmed, a notice that had not yet run on the FX thread then, and every occurrence after that — the log file accounts for them, within limits, among them: occurrences counted after the disarming reach it only when the application's log manager closes the log ("Exit hold: active"), and only those counted before that last write; counts not yet written when the process ends without the JDK's shutdown reset (a crash) are in neither, at most one 30 s window per fingerprint (story 336) |
 | Message names the thing      | The device, plugin, setting, or action — never a bare exception class |
 | No toast from the RT thread  | Producers are FX‑side drains only (§2.3)                            |
 | Actionable when possible     | Restart engine / Open Audio Settings / Open Log Folder as toast actions |
@@ -930,7 +935,8 @@ open the first‑run wizard. Until then the funnel logs every surfaced failure, 
 first 16 toasts, counts the rest and keeps the first FATAL one whichever it was, and at
 arming it posts once: the sink's WARNINGs, then the first FATAL toast, else the one
 failure's toast, else one summary. `DawApplication.stop()` disarms the toasts first;
-from then on failures are logged only.*
+from then on failures are logged only, and a failure's toast still queued for the FX
+thread is dropped there, its record already in the log.*
 
 ---
 

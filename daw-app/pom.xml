@@ -278,7 +278,16 @@
                     <!-- jlink custom runtime image -->
                     <jlinkImageName>daw-runtime</jlinkImageName>
                     <launcher>daw</launcher>
-                    <stripDebug>true</stripDebug>
+                    <!-- Story 336, studio-engineer ruling R992-1: the image keeps the class
+                         files' line numbers, source-file names and local-variable tables. A
+                         stripped image reads every frame of its classes as "(Unknown Source)",
+                         line -1, so Fingerprint's anchor class.method:line merges two throw
+                         sites of one method into one fingerprint, and the second failure is
+                         only counted. Both are false explicitly, because an unset parameter
+                         takes -Djavafx.stripDebug and -Djavafx.stripJavaDebugAttributes from
+                         the command line. PackagedRuntimeKeepsLineNumbersTest pins them. -->
+                    <stripDebug>false</stripDebug>
+                    <stripJavaDebugAttributes>false</stripJavaDebugAttributes>
                     <compress>2</compress>
                     <noManPages>true</noManPages>
                     <noHeaderFiles>true</noHeaderFiles>

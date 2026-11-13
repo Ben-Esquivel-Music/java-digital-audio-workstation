@@ -4,6 +4,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.UndeclaredThrowableException;
@@ -35,7 +37,9 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * of them, a cycle of carriers ends the walk, a carrier whose
  * {@code getCause()} throws is itself the failure — still logged and
  * fingerprinted — and a frame array an override returns with {@code null}
- * elements in it fingerprints without throwing.
+ * elements in it fingerprints without throwing. It also covers the one place
+ * that keeps a value on its line (story 336, studio-engineer ruling R992-2):
+ * {@code oneLine} and {@code endLine} write each line break as its escape.
  *
  * <p>The funnel case runs a {@link FailureFunnel} over a real
  * {@link LogSink} in the test's own folder; the root logger is global in the
@@ -177,6 +181,48 @@ class GuardedThrowablesTest {
                 .as("no frame left: no anchor").isEqualTo(Fingerprint.NO_ANCHOR);
     }
 
+    @Test
+    void oneLineReturnsTextWithoutALineBreakItself() {
+        String clean = "daw-vt-EXPORT:bundle-export:mix part.zip\tC:\\Users\\nina";
+
+        assertThat(GuardedThrowables.oneLine(clean)).isSameAs(clean);
+    }
+
+    @ParameterizedTest
+    @EnumSource(LineBreak.class)
+    void oneLineWritesEachLineBreakAsItsEscapeAndKeepsTheTextAroundIt(LineBreak lineBreak) {
+        assertThat(GuardedThrowables.oneLine("mix" + lineBreak.text() + "part.zip"))
+                .isEqualTo("mix" + lineBreak.escape() + "part.zip");
+    }
+
+    @Test
+    void crAndLfTogetherAreTwoEscapes() {
+        assertThat(GuardedThrowables.oneLine("first\r\nsecond")).isEqualTo("first\\u000D\\u000Asecond");
+    }
+
+    @Test
+    void endLineLeavesALineWithoutALineBreakAsItIsAndEndsIt() {
+        StringBuilder out = new StringBuilder("an earlier line\n");
+        int lineStart = out.length();
+        out.append("\tat com.example.Clean.run(Clean.java:7)");
+
+        GuardedThrowables.endLine(out, lineStart, "<end>");
+
+        assertThat(out.toString()).isEqualTo("an earlier line\n\tat com.example.Clean.run(Clean.java:7)<end>");
+    }
+
+    @ParameterizedTest
+    @EnumSource(LineBreak.class)
+    void endLineEscapesALineBreakInsideTheLineAndLeavesTheEarlierLinesAlone(LineBreak lineBreak) {
+        StringBuilder out = new StringBuilder("an earlier line\n");
+        int lineStart = out.length();
+        out.append("\tat loader").append(lineBreak.text()).append("name");
+
+        GuardedThrowables.endLine(out, lineStart, "<end>");
+
+        assertThat(out.toString()).isEqualTo("an earlier line\n\tat loader" + lineBreak.escape() + "name<end>");
+    }
+
     private static Throwable wrapInCompletions(Throwable held, int carriers) {
         Throwable wrapped = held;
         for (int i = 0; i < carriers; i++) {
@@ -208,6 +254,41 @@ class GuardedThrowablesTest {
         @Override
         public synchronized Throwable getCause() {
             throw new NoClassDefFoundError("com/example/plugin/Gone");
+        }
+    }
+
+    /**
+     * The line breaks no log writer leaves inside a line (story 336,
+     * studio-engineer ruling R992-2): the seven characters {@code \R} matches,
+     * and CR LF together, each with the escape it is written as. The log
+     * writers' tests run over the same eight.
+     */
+    enum LineBreak {
+        LF("\n", "\\u000A"),
+        CR("\r", "\\u000D"),
+        CRLF("\r\n", "\\u000D\\u000A"),
+        VT(Character.toString(0x0B), "\\u000B"),
+        FF(Character.toString(0x0C), "\\u000C"),
+        NEL(Character.toString(0x85), "\\u0085"),
+        LS(Character.toString(0x2028), "\\u2028"),
+        PS(Character.toString(0x2029), "\\u2029");
+
+        private final String text;
+        private final String escape;
+
+        LineBreak(String text, String escape) {
+            this.text = text;
+            this.escape = escape;
+        }
+
+        /** @return the line break itself */
+        String text() {
+            return text;
+        }
+
+        /** @return what a log writer writes in its place */
+        String escape() {
+            return escape;
         }
     }
 

@@ -7,12 +7,15 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.entry;
 
 /**
  * Story 336, the wiring the in-process tests cannot run:
@@ -166,6 +169,38 @@ class FailureSpineWiringSourceTest {
                 .as("and every one is a body handed to postOnFx")
                 .isEqualTo(count(Pattern.compile("postOnFx\\([^;]*?\\(\\) -> target\\.bar\\(\\)\\.show\\("), funnel));
         assertThat(offenders).isEmpty();
+    }
+
+    /**
+     * No log line holds a line break its writer did not add (story 336,
+     * studio-engineer ruling R992-2): the three writers of {@code daw-*.log},
+     * the console and the last-resort record end every line through
+     * {@code GuardedThrowables.endLine}, the one place that appends a line
+     * separator. Read with comments stripped and string literals kept, so an
+     * appended {@code "\n"} is found too.
+     */
+    @Test
+    void everyLineTheLogWritersEndPassesThroughEndLine() throws IOException {
+        Pattern separatorAppend = Pattern.compile("\\.append\\(\\s*(?:lineSeparator|nl"
+                + "|System\\s*\\.\\s*lineSeparator\\(\\s*\\)|'\\\\[nr]'|\"\\\\[nr]\")\\s*\\)");
+        Map<String, Integer> separatorAppends = new LinkedHashMap<>();
+        Map<String, Integer> endLines = new LinkedHashMap<>();
+        for (String writer : List.of("GuardedThrowables.java", "LastResortLog.java", "LogLineFormatter.java")) {
+            String source = SourceScanSupport.stripComments(read(APP.resolve("diagnostics").resolve(writer)));
+            separatorAppends.put(writer, count(separatorAppend, source));
+            endLines.put(writer, occurrences(source, "endLine("));
+        }
+
+        assertThat(separatorAppends).as("a line separator is appended once, in endLine, and nowhere else")
+                .containsExactly(entry("GuardedThrowables.java", 1), entry("LastResortLog.java", 0),
+                        entry("LogLineFormatter.java", 0));
+        String guarded = flat(SourceScanSupport.stripComments(read(APP.resolve("diagnostics/GuardedThrowables.java"))));
+        assertThat(body(guarded, "static void endLine(StringBuilder out, int lineStart, String lineSeparator)"))
+                .as("the one append is endLine's own").contains(".append(lineSeparator)");
+        assertThat(endLines).as("non-vacuity: the lines each writer ends through endLine")
+                .hasEntrySatisfying("GuardedThrowables.java", calls -> assertThat(calls).isGreaterThanOrEqualTo(6))
+                .hasEntrySatisfying("LastResortLog.java", calls -> assertThat(calls).isGreaterThanOrEqualTo(3))
+                .hasEntrySatisfying("LogLineFormatter.java", calls -> assertThat(calls).isGreaterThanOrEqualTo(3));
     }
 
     private static String read(Path file) throws IOException {

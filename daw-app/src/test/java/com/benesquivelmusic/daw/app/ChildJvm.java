@@ -185,18 +185,30 @@ final class ChildJvm {
 
     /** The {@code <option>}s of the POM's javafx-maven-plugin configuration, in order. */
     static List<String> jlinkLauncherOptions() throws IOException {
+        String configuration = javafxPluginConfiguration();
+        int start = configuration.indexOf("<options>");
+        if (start < 0) {
+            return List.of();
+        }
+        return matches(OPTION, configuration.substring(start, configuration.indexOf("</options>", start)));
+    }
+
+    /**
+     * The POM's javafx-maven-plugin block, comments removed: from its
+     * {@code <artifactId>} up to its {@code </plugin>}, which holds the jlink
+     * image's configuration and the launcher {@code <options>}.
+     *
+     * @return the block's text
+     * @throws IOException if the POM cannot be read
+     */
+    static String javafxPluginConfiguration() throws IOException {
         String pom = pomWithoutComments();
         int plugin = pom.indexOf("<artifactId>javafx-maven-plugin</artifactId>");
         if (plugin < 0) {
             throw new IllegalStateException("the POM has no javafx-maven-plugin");
         }
         int end = pom.indexOf("</plugin>", plugin);
-        String configuration = pom.substring(plugin, end);
-        int start = configuration.indexOf("<options>");
-        if (start < 0) {
-            return List.of();
-        }
-        return matches(OPTION, configuration.substring(start, configuration.indexOf("</options>", start)));
+        return pom.substring(plugin, end);
     }
 
     /** {@code daw-app/pom.xml}. */

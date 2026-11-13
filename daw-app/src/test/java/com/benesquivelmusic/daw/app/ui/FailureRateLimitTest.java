@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.app.diagnostics.FingerprintRateLimiter;
 import com.benesquivelmusic.daw.app.diagnostics.FunnelTailNaming;
 import com.benesquivelmusic.daw.app.logging.ExitHoldingLogManager;
 
+import javafx.application.Platform;
 import javafx.beans.value.ChangeListener;
 import javafx.scene.control.Label;
 
@@ -23,6 +24,8 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -109,6 +112,12 @@ class FailureRateLimitTest {
     private static final Pattern TAIL_COUNT = Pattern.compile("It happened (?:once more|(\\d+) more times) after");
     /** The class a root handler's formatter can no longer load when it throws on a tail line. */
     private static final String TAIL_FORMATTER = "com/example/broken/TailFormatter";
+    /** A host class the poisoned failure's one frame names, so the fingerprint anchors on it. */
+    private static final String POISONED = "com.benesquivelmusic.daw.app.Poisoned";
+    /** Every line break a reader may split on. */
+    private static final Pattern LINE_BREAK = Pattern.compile("\\R");
+    /** A log file line that begins a record: its timestamp. */
+    private static final Pattern RECORD_START = Pattern.compile("^\\d{4}-\\d{2}-\\d{2}T");
 
     private final AtomicLong nanos = new AtomicLong(SECOND);
     /** Noon today, so every time the copy shows is today's, whatever time the test runs. */
@@ -231,6 +240,9 @@ class FailureRateLimitTest {
             assertThat(spine.dispatcher().pulseParticipantCount()).as("armed: the one tail check").isEqualTo(1);
 
             failOnce();
+            settle();
+            assertThat(shownOrRecorded(spine)).as("the notice's toast reaches the history before the disarming")
+                    .containsExactly(BASE);
             advance(SECOND);
             Instant counted = wall.get();
             failOnce();
@@ -277,6 +289,85 @@ class FailureRateLimitTest {
                             notice -> assertThat(notice).contains(", occurrence 3, fingerprint ")
                                     .doesNotContain("not logged individually"),
                             tail -> assertThat(tail).isEqualTo(closingTail));
+        }
+    }
+
+    /**
+     * A failure's toast posted before the disarming that has not yet run on
+     * the FX thread is dropped there, and the failure's record is already in
+     * the log (story 336, studio-engineer ruling R992-5): the FX thread is
+     * held while the failure is handled and the toasts are disarmed, then let
+     * go.
+     */
+    @Test
+    void aToastStillQueuedWhenTheToastsAreDisarmedIsDroppedAndItsFailureIsInTheLog(@TempDir Path settings)
+            throws Exception {
+        try (FailureSpineFixture spine = FailureSpineFixture.withClock(settings, nanos::get, wall::get,
+                folder -> { })) {
+            spine.armOnFx();
+            CountDownLatch held = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            Platform.runLater(() -> {
+                held.countDown();
+                try {
+                    release.await(GUARD.toMillis(), TimeUnit.MILLISECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            try {
+                assertThat(held.await(10, TimeUnit.SECONDS)).as("the FX thread is held").isTrue();
+                failOnce();
+                spine.funnel().disarmToasts();
+            } finally {
+                release.countDown();
+            }
+            settle();
+
+            String key = theOneFingerprint(spine);
+            assertThat(shownOrRecorded(spine)).as("the toast still queued at the disarming is dropped").isEmpty();
+            assertThat(recordsOf(spine, key)).as("its failure is in the log").singleElement()
+                    .satisfies(record -> assertThat(record.getMessage()).contains(", occurrence 1, fingerprint "));
+        }
+    }
+
+    /**
+     * A line break in a fingerprint's key — here the anchor frame's method
+     * name — is written as its escape in the funnel's record header and in its
+     * tail line, so each is one line and the record's header line carries its
+     * fingerprint; the key the limiter counts by is unchanged (story 336,
+     * studio-engineer ruling R992-3).
+     */
+    @Test
+    void aLineBreakInTheFingerprintLeavesTheFailuresHeaderAndItsTailLineEachOnOneLine(@TempDir Path settings)
+            throws Exception {
+        try (FailureSpineFixture spine = FailureSpineFixture.detached(settings, nanos::get, wall::get,
+                folder -> { })) {
+            FailureFunnel funnel = spine.funnel();
+            failPoisonedOnce(funnel);
+            advance(SECOND);
+            failPoisonedOnce(funnel);
+            String key = "thread.uncaught|java.lang.IllegalStateException|" + POISONED + ".run\nX:7";
+            assertThat(funnel.occurrenceTotals()).as("the key is unchanged, and a tail is owed").containsEntry(key, 2L);
+
+            funnel.disarmToasts();
+
+            String escapedKey = "thread.uncaught|java.lang.IllegalStateException|" + POISONED + ".run\\u000AX:7";
+            List<LogRecord> poisoned = spine.funnelRecords().stream()
+                    .filter(record -> record.getLevel() == Level.SEVERE && record.getMessage().contains(POISONED))
+                    .toList();
+            assertThat(poisoned).as("the notice's record, then the tail's").hasSize(2);
+            assertThat(poisoned.getFirst().getMessage()).as("the notice's header is one line")
+                    .doesNotContainPattern(LINE_BREAK)
+                    .contains(", occurrence 1, fingerprint " + escapedKey);
+            assertThat(recordStarts(spine)).as("and its record's header line carries the fingerprint")
+                    .filteredOn(line -> line.contains(", occurrence 1, fingerprint " + escapedKey)).hasSize(1);
+            assertThat(poisoned.getLast().getMessage()).as("the tail's line is one line")
+                    .doesNotContainPattern(LINE_BREAK)
+                    .contains(" repeated 1 more times ", "(fingerprint " + escapedKey + ")");
+            assertThat(recordStarts(spine)).as("and its record's header line carries the fingerprint too")
+                    .filteredOn(line -> line.contains(" repeated 1 more times ") && line.contains(escapedKey))
+                    .hasSize(1);
         }
     }
 
@@ -586,6 +677,28 @@ class FailureRateLimitTest {
             throw new IllegalStateException(MESSAGE);
         });
         assertThat(worker.join(GUARD)).isTrue();
+    }
+
+    /**
+     * A real background thread's uncaught failure handed to the detached
+     * funnel's handler, its one frame a host frame whose method name holds a
+     * line feed: one fingerprint every time.
+     */
+    private static void failPoisonedOnce(FailureFunnel funnel) throws InterruptedException {
+        Thread worker = Thread.ofVirtual().name(THREAD).uncaughtExceptionHandler(funnel.defaultHandler()).start(() -> {
+            IllegalStateException failure = new IllegalStateException(MESSAGE);
+            failure.setStackTrace(new StackTraceElement[] {
+                    new StackTraceElement(POISONED, "run" + "\n" + "X", "Poisoned.java", 7)});
+            throw failure;
+        });
+        assertThat(worker.join(GUARD)).isTrue();
+    }
+
+    /** The log file's lines that begin a record, read with every line break a reader may split on. */
+    private static List<String> recordStarts(FailureSpineFixture spine) throws Exception {
+        return LINE_BREAK.splitAsStream(spine.logText())
+                .filter(line -> RECORD_START.matcher(line).find())
+                .toList();
     }
 
     private void advance(long byNanos) {

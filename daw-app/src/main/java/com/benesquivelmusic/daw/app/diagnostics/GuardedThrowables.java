@@ -29,6 +29,16 @@ import java.util.concurrent.ExecutionException;
  * {@code catch (Throwable)}, and {@code toString()} and
  * {@code printStackTrace()} are never called. {@code getClass().getName()}
  * loads no class and is always safe.</p>
+ *
+ * <p>It is also the one place that keeps a value on its line (story 336,
+ * studio-engineer ruling R992-2): every line of {@code daw-*.log}, the
+ * console and the last-resort record ends through {@link #endLine}, which
+ * writes any of the seven characters {@code \R} matches inside the line as
+ * its escape, <code>&#92;u000A</code> for LF ({@link #oneLine}), so a line
+ * holds no line break but the one its writer ends it with.
+ * {@link LastResortLog}, which uses no {@code java.util.logging} (story 336,
+ * studio-engineer ruling E11), ends its lines here too: this class uses none
+ * either.</p>
  */
 public final class GuardedThrowables {
 
@@ -43,6 +53,9 @@ public final class GuardedThrowables {
 
     /** The JavaFX launcher whose {@code RuntimeException} wrappers carry a launch failure. */
     private static final String LAUNCHER_IMPL = "com.sun.javafx.application.LauncherImpl";
+
+    /** The digits of a line break's escape ({@link #oneLine}). */
+    private static final String HEX_DIGITS = "0123456789ABCDEF";
 
     private GuardedThrowables() {
     }
@@ -260,15 +273,17 @@ public final class GuardedThrowables {
 
     private static void appendThrowable(StringBuilder out, Throwable failure, String indent, String caption,
                                         Set<Throwable> seen, int depth, String lineSeparator) {
+        int start = out.length();
         if (!seen.add(failure)) {
             out.append(indent).append(caption).append("<circular reference: ").append(className(failure))
-                    .append('>').append(lineSeparator);
+                    .append('>');
+            endLine(out, start, lineSeparator);
             return;
         }
         if (depth > MAX_CHAIN_DEPTH) {
             out.append(indent).append(caption).append("<the chain goes deeper than ").append(MAX_CHAIN_DEPTH)
-                    .append(" exceptions; not written: ").append(className(failure)).append('>')
-                    .append(lineSeparator);
+                    .append(" exceptions; not written: ").append(className(failure)).append('>');
+            endLine(out, start, lineSeparator);
             return;
         }
         out.append(indent).append(caption).append(className(failure));
@@ -284,31 +299,39 @@ public final class GuardedThrowables {
         if (hasMessage) {
             List<String> lines = messageText.lines().toList();
             out.append(": ").append(lines.isEmpty() ? "" : lines.getFirst());
-            out.append(lineSeparator);
+            endLine(out, start, lineSeparator);
             for (int i = 1; i < lines.size(); i++) {
-                out.append(indent).append(lines.get(i)).append(lineSeparator);
+                int lineStart = out.length();
+                out.append(indent).append(lines.get(i));
+                endLine(out, lineStart, lineSeparator);
             }
         } else {
-            out.append(lineSeparator);
+            endLine(out, start, lineSeparator);
         }
         try {
             StackTraceElement[] frames = failure.getStackTrace();
             if (frames != null) {
                 for (StackTraceElement frame : frames) {
-                    out.append(indent).append("\tat ").append(frame).append(lineSeparator);
+                    int lineStart = out.length();
+                    out.append(indent).append("\tat ").append(frame);
+                    endLine(out, lineStart, lineSeparator);
                 }
             }
         } catch (Throwable unreadable) {
+            int lineStart = out.length();
             out.append(indent).append("\t<the stack trace could not be read: ").append(className(unreadable))
-                    .append('>').append(lineSeparator);
+                    .append('>');
+            endLine(out, lineStart, lineSeparator);
         }
         Throwable[] suppressed;
         try {
             suppressed = failure.getSuppressed();
         } catch (Throwable unreadable) {
             suppressed = new Throwable[0];
+            int lineStart = out.length();
             out.append(indent).append("\t<the suppressed exceptions could not be read: ")
-                    .append(className(unreadable)).append('>').append(lineSeparator);
+                    .append(className(unreadable)).append('>');
+            endLine(out, lineStart, lineSeparator);
         }
         if (suppressed != null) {
             for (Throwable each : suppressed) {
@@ -322,12 +345,76 @@ public final class GuardedThrowables {
             cause = failure.getCause();
         } catch (Throwable unreadable) {
             cause = null;
+            int lineStart = out.length();
             out.append(indent).append("<the cause could not be read: ").append(className(unreadable))
-                    .append('>').append(lineSeparator);
+                    .append('>');
+            endLine(out, lineStart, lineSeparator);
         }
         if (cause != null) {
             appendThrowable(out, cause, indent, "Caused by: ", seen, depth + 1, lineSeparator);
         }
+    }
+
+    /**
+     * {@code text} on one line: each of the seven characters {@code \R}
+     * matches — LF, CR, VT, FF, NEL, LS and PS — is written as a backslash, a
+     * lower-case {@code u} and four upper-case hex digits, so LF reads
+     * <code>&#92;u000A</code> and CR LF is two escapes (story 336,
+     * studio-engineer ruling R992-2). It is a visible marker, not a
+     * reversible encoding.
+     *
+     * @param text the value
+     * @return {@code text} itself when it holds none of them, else a copy with each one escaped
+     */
+    static String oneLine(String text) {
+        int first = 0;
+        while (first < text.length() && !isLineBreak(text.charAt(first))) {
+            first++;
+        }
+        if (first == text.length()) {
+            return text;
+        }
+        StringBuilder out = new StringBuilder(text.length() + 10);
+        out.append(text, 0, first);
+        for (int at = first; at < text.length(); at++) {
+            char c = text.charAt(at);
+            if (isLineBreak(c)) {
+                out.append('\\').append('u');
+                for (int shift = 12; shift >= 0; shift -= 4) {
+                    out.append(HEX_DIGITS.charAt((c >> shift) & 0xF));
+                }
+            } else {
+                out.append(c);
+            }
+        }
+        return out.toString();
+    }
+
+    /**
+     * Ends the line that begins at {@code lineStart} in {@code out}: any of
+     * the seven characters {@code \R} matches inside it is written as its
+     * escape ({@link #oneLine}), then {@code lineSeparator} is appended. Every
+     * line {@link #appendChain}, {@link LogLineFormatter} and
+     * {@link LastResortLog} write ends here (story 336, studio-engineer
+     * ruling R992-2).
+     *
+     * @param out           the text being written
+     * @param lineStart     where the line begins in {@code out}
+     * @param lineSeparator what ends the line
+     */
+    static void endLine(StringBuilder out, int lineStart, String lineSeparator) {
+        for (int at = lineStart; at < out.length(); at++) {
+            if (isLineBreak(out.charAt(at))) {
+                out.replace(at, out.length(), oneLine(out.substring(at)));
+                break;
+            }
+        }
+        out.append(lineSeparator);
+    }
+
+    /** Whether {@code c} is one of the seven characters {@code \R} matches: LF, CR, VT, FF, NEL, LS or PS. */
+    private static boolean isLineBreak(char c) {
+        return c == 0x0A || c == 0x0D || c == 0x0B || c == 0x0C || c == 0x85 || c == 0x2028 || c == 0x2029;
     }
 
     /** {@code failure.getCause()}, guarded: empty when it is {@code null}, itself, or unreadable. */

@@ -26,7 +26,13 @@ import java.util.logging.LogRecord;
  * not localized; the thread is the current thread's name when it is the
  * record's thread and has one, else {@code #<id>} (a {@link LogRecord}
  * carries only the id); the logger is the full name, or {@code -}. Lines end
- * with {@link System#lineSeparator()}.</p>
+ * with {@link System#lineSeparator()}. A line break inside a value — the
+ * thread's name, the level, the logger, a class name, a frame, or a message's
+ * line break other than CR, LF and CR LF, which begin its tab-indented
+ * continuation lines — is written as its escape, <code>&#92;u000A</code> for
+ * LF, so no value can split a record or forge one
+ * ({@link GuardedThrowables#endLine}; story 336, studio-engineer ruling
+ * R992-2).</p>
  *
  * <p>It never throws. {@code StreamHandler} catches only an
  * {@link Exception} a formatter throws, so an {@link Error} — a closed
@@ -126,11 +132,15 @@ public final class LogLineFormatter extends Formatter {
     private String formatRecord(LogRecord record) {
         String lineSeparator = System.lineSeparator();
         StringBuilder out = new StringBuilder(256);
+        int start = out.length();
         appendHeader(out, record);
         List<String> lines = messageOf(record).lines().toList();
-        out.append(lines.isEmpty() ? "" : lines.getFirst()).append(lineSeparator);
+        out.append(lines.isEmpty() ? "" : lines.getFirst());
+        GuardedThrowables.endLine(out, start, lineSeparator);
         for (int i = 1; i < lines.size(); i++) {
-            out.append('\t').append(lines.get(i)).append(lineSeparator);
+            int lineStart = out.length();
+            out.append('\t').append(lines.get(i));
+            GuardedThrowables.endLine(out, lineStart, lineSeparator);
         }
         Throwable thrown = record.getThrown();
         if (thrown != null) {
@@ -175,6 +185,7 @@ public final class LogLineFormatter extends Formatter {
     private static String fallback(LogRecord record, Throwable unformattable) {
         String lineSeparator = System.lineSeparator();
         StringBuilder out = new StringBuilder(128);
+        int start = out.length();
         try {
             out.append(TIMESTAMP.format(record.getInstant().atZone(ZoneId.systemDefault())));
         } catch (Throwable unreadable) {
@@ -197,11 +208,14 @@ public final class LogLineFormatter extends Formatter {
             out.append('-');
         }
         out.append(": <the record could not be formatted: ").append(unformattable.getClass().getName())
-                .append('>').append(lineSeparator);
+                .append('>');
+        GuardedThrowables.endLine(out, start, lineSeparator);
         try {
             Throwable thrown = record.getThrown();
             if (thrown != null) {
-                out.append('\t').append(thrown.getClass().getName()).append(lineSeparator);
+                int lineStart = out.length();
+                out.append('\t').append(thrown.getClass().getName());
+                GuardedThrowables.endLine(out, lineStart, lineSeparator);
             }
         } catch (Throwable unreadable) {
             // The header above is the record.
