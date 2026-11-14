@@ -41,7 +41,6 @@ import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.fee
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.outcomeWithinTheGuard;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.rampBlock;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.entry;
 import static org.assertj.core.api.Assertions.within;
@@ -341,9 +340,12 @@ class StopFinalizationPendingContractTest {
                 .as("the flush thread is held in the final sweep").isTrue();
         assertThat(service.isSealed()).as("fixture: nothing is sealed yet").isFalse();
         assertThat(pipeline.isFinalizationPending()).isTrue();
-        assertThatCode(pipeline::awaitFlushed)
-                .as("a pending take was started: the fence is not refused as 'never started'")
-                .doesNotThrowAnyException();
+        // A bound the hold outlasts: the hold ends only at release.countDown() below.
+        assertThatThrownBy(() -> pipeline.awaitFlushed(Duration.ofMillis(500)))
+                .as("a pending take was started: the fence is not refused as 'never started',"
+                        + " and it waits for the block the final sweep is holding")
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageStartingWith("awaitFlushed timed out");
         assertThat(track.getClips()).isEmpty();
         assertThat(pipeline.getRecordedClips()).isEmpty();
 

@@ -59,7 +59,7 @@ project-root/
 - Declare exactly the JavaFX modules you need (typically `javafx.controls`, `javafx.graphics`, sometimes `javafx.fxml`, `javafx.media`, `javafx.web`, `javafx.swing`). Avoid pulling in modules you do not use.
 - Always provide a separate non-JavaFX **`Launcher` class** (a class with `main` that calls `Application.launch(App.class, args)`). This avoids the “JavaFX runtime components are missing” error when running a fat jar from a non-modular launcher.
 - Target a current LTS Java (Java 17 or 21) and a matching JavaFX version. Keep them in sync.
-- For distributable apps, use **`jlink` + `jpackage`** to produce a native installer with a stripped runtime image. Avoid shipping fat jars for end users.
+- For distributable apps, use **`jlink` + `jpackage`** to produce a native installer with a trimmed runtime image: only the modules you need, compressed, without man pages or header files. Keep the class files' debug attributes (no `--strip-debug`) when the application's diagnostics read stack frames, such as a failure fingerprint keyed by `class.method:line` or a log a support reader traces to `file:line`. Avoid shipping fat jars for end users.
 - Always include a `module-info.java` that:
   - `requires javafx.controls;` (and other needed modules)
   - `exports` only the public API packages

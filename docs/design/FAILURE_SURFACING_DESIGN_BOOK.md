@@ -398,7 +398,7 @@ is absence of a default.
 ### 2.8 Diagnosability outlives the session
 
 A rotating file log under the user settings directory, size‑capped, INFO and above,
-with an "Open log folder" Help affordance — so "it failed yesterday" is answerable.
+with an "Open Log Folder" Help affordance — so "it failed yesterday" is answerable.
 Every existing `LOG.log` site becomes evidence the day the sink lands; that asymmetry
 (one wiring change, hundreds of sites upgraded) is why the sink belongs to the
 foundation story, not an afterthought.
@@ -529,12 +529,35 @@ dispatcher exists by then, which the funnel needs). The palette's log‑and‑re
 lands somewhere; the keybinding mid‑apply throw (§1.2) additionally gets a local catch
 in story 339 because it needs a *specific* message and rollback, not a generic one.
 
+*As built in story 336: `DawLauncher.main` runs `prepareLaunch` before
+`Application.launch`: it names the application's log manager, installs the log sink and
+writes its banner, and then installs `FailureFunnel`'s default handler.
+`DawApplication.start` installs the funnel's FX‑thread handler right after
+`FxDispatcher.installDefault`. With no handler of its own, the FX thread's failures
+would reach the default handler through the thread's group anyway; the FX handler labels
+them `ui.handler` (story 336's Known limits). Both handlers reach `FailureFunnel`, which
+writes one SEVERE record with the whole chain and posts one ERROR toast through
+`FxDispatcher.onFx`, with an Open Log Folder action. A toast names what failed only when
+the failing site declares it (`DeclaredSubject`, today the plugin dispose sites);
+otherwise it names the user interface, or the background task its thread's name states.
+FATAL is an ERROR‑level toast with its own copy and never opens a dialog. Re‑entry is
+stopped by a `ScopedValue` binding and by a guard inside every runnable the funnel
+posts; what the funnel itself throws goes to `LastResortLog`, which binds a
+`ScopedValue` of its own while it writes, so a failure that re‑enters while it reads a
+throwable's message or frames is written once more without reading them instead of
+recursing (story 336, ruling R992-13), and which writes to standard error and to
+`daw-last-resort.log` in the log folder, because the packaged application has no
+standard error. A failure held in a future, a `Task` or an executor never reaches
+a handler (future story 443). The fingerprint's anchor line is the throw site's in the
+installed application too: the jlink image keeps the class files' line numbers
+(story 336, ruling R992-1).*
+
 ### 4.2 The log sink (story 336)
 
 **Design.** Configure `java.util.logging` at launch: a rotating `FileHandler` under
 the per‑user settings directory (the root the launcher already writes its GC profile
 into), bounded size and file count, INFO and above, compact single‑line format with
-thread and logger names. A Help ▸ "Open log folder" menu item makes the sink
+thread and logger names. A Help ▸ "Open Log Folder" menu item makes the sink
 discoverable. The uncaught‑handler funnel (§4.1) logs SEVERE with full stacks;
 everything else in the tree is already writing — the sink merely makes it real.
 
@@ -546,6 +569,27 @@ value. The sink upgrades every site in one change; a façade stays possible late
 captured), the Help menu, and — proof obligation — the packaged‑app path: the jlink
 runtime ships only the JDK console default, so configuration must be programmatic, not
 a bundled properties file the image build could drop.
+
+*As built in story 336: `LogSink.install` adds a `FileHandler` to the root logger:
+`<settings>/logs/daw-%g.log`, five files of 5 MiB, appended across sessions, INFO and
+above, each record flushed. Every root handler formats with `LogLineFormatter`: one
+header line per record with its thread and logger, every following line tab‑indented,
+a line break inside a value written as its escape (`\u000A` for LF), a message's CR, LF
+and CRLF still beginning tab‑indented lines, so no name or message can split or forge
+a record (story 336, ruling R992-2), and a throwable read so
+that formatting never throws and still names the exception's class. A session's lines
+in each file begin with a session line, the file formatter's
+head, naming the version, the session's start and the process; at launch the two banner
+lines follow it (`Session started: …`, `Exit hold: …`). The version is the `daw.app`
+module's; the installer's is only ever labelled as such. The exit lines are kept by
+`ExitHoldingLogManager`, which every launch path names in `java.util.logging.manager`
+and which `daw.app` exports to `java.logging` alone: it holds the JDK's shutdown reset
+until the `daw-exit-write-wait` hook returns, at most 35 s, then has the funnel write
+the tail lines it still owes and writes "Log closed at application exit.". When the
+launch line names no manager, `DawLauncher.main` names it first thing; when something
+initialized logging before that, the banner says `Exit hold: inactive`. The sink's own
+setup and write failures are shown as WARNING toasts. Help ▸ "Open Log Folder"
+(`LogFolderOpener`) opens the folder on a virtual thread.*
 
 ### 4.3 Callback guards and the RT error channel (story 337)
 
@@ -749,8 +793,8 @@ The reviewer's tables. A PR touching any failure path is checked against these r
 
 | # | Failure                                  | Caught at                          | Logged                       | User sees                                        | User can then |
 |---|------------------------------------------|------------------------------------|------------------------------|--------------------------------------------------|---------------|
-| 1 | FX handler exception                     | FX‑thread handler (§4.1)           | SEVERE + stack               | ERROR toast naming action/category               | Retry; open log folder |
-| 2 | Background thread exception              | default handler (§4.1)             | SEVERE + stack               | ERROR toast                                      | Retry; open log folder |
+| 1 | FX handler exception                     | FX‑thread handler (§4.1)           | SEVERE + stack               | ERROR toast naming action/category               | Retry; Open Log Folder |
+| 2 | Background thread exception              | default handler (§4.1)             | SEVERE + stack               | ERROR toast                                      | Retry; Open Log Folder |
 | 3 | Render‑callback exception                | backend guard (§4.3)               | on drain, fingerprinted      | Nothing at 1; WARNING at first; fault cell if sustained | Restart engine |
 | 4 | Engine stopped mid‑callback (race)       | engine render path (§4.3)          | —                            | Nothing (silence; not a fault)                   | — |
 | 5 | JavaSound loop failure, sustained        | loop guard (§4.3)                  | on drain                     | "Audio engine fault" + restart offer             | Restart engine |
@@ -796,10 +840,10 @@ Row 4 surfaces nothing deliberately: a stop racing a callback is normal teardown
 |-----------------------------|---------------------------------------------------------------------|
 | Level fits severity          | FATAL/ERROR → ERROR toast; degraded → WARNING; recovery → INFO/SUCCESS |
 | Fingerprint rate limit       | Same fingerprint ≤ 1 toast per window (≈30 s, the track‑budget precedent); count carried in the message on re‑show |
-| History is complete          | Every toast enters the story‑273 history even when rate‑limited on screen |
+| History is complete          | Every toast enters the story‑273 history; occurrences rate‑limited off the screen are accounted for in the next re‑show entry, which carries the running total, or in one history‑only tail entry, while a fingerprint's notices and tails reach the history and are still in it (newest 100 entries). Where they do not — among those cases a pre‑arm notice that the startup summary or a FATAL toast stands in for, a pre‑arm notice only counted beyond the 16 kept until arming, LRU eviction, a tail owed when the toasts were disarmed, a notice that had not yet run on the FX thread then, and every occurrence after that — the log file accounts for them, within limits, among them: occurrences counted after the disarming reach it only when the application's log manager closes the log ("Exit hold: active"), and only those counted before that last write; counts not yet written when the process ends without the JDK's shutdown reset (a crash) are in neither, at most one 30 s window per fingerprint (story 336) |
 | Message names the thing      | The device, plugin, setting, or action — never a bare exception class |
 | No toast from the RT thread  | Producers are FX‑side drains only (§2.3)                            |
-| Actionable when possible     | Restart engine / Open Audio Settings / Open log folder as toast actions |
+| Actionable when possible     | Restart engine / Open Audio Settings / Open Log Folder as toast actions |
 
 ### 5.5 Fault eviction truth table
 
@@ -839,6 +883,17 @@ silently; a repeat after the window re‑surfaces with the accumulated count; a
 sustained‑failure threshold *escalates* (WARNING → persistent fault cell with an
 action) rather than repeating. Frequency raises prominence, not volume (§2.9).
 
+*As built in story 336: `FingerprintRateLimiter` decides on the failing thread, before
+anything is posted. The window is 30 s on a monotonic clock, anchored at the last notice
+shown and never sliding, so a failure thrown every frame re‑surfaces every 30 s. A
+repeat inside the window is counted, not listed: no toast, no history entry and no log
+record of its own. A re‑show carries the running total and the first‑seen time, and its
+record says how many occurrences were not logged individually; a fingerprint that stays
+quiet for a window after counted occurrences gets one history‑only tail entry and one
+SEVERE line. At most 256 fingerprints are kept, the least recently seen evicted with its
+tail written to the log only. The sustained‑failure escalation to a persistent fault
+cell is not built in story 336; stories 337 and 338 own it.*
+
 ### 6.3 The conformance gates
 
 Four permanent tests, in the repo's established source‑scan/sentinel idiom
@@ -873,6 +928,21 @@ the funnel is armed for toasts (the funnel logs even earlier; visibility upgrade
 the dispatcher exists); sink injection at controller construction
 (`MainController.java:806`). The first‑run wizard shows only after the spine is live —
 the wizard was the proof of what happens otherwise.
+
+*As built in story 336: `DawLauncher.prepareLaunch` names the log manager, installs the
+sink and its banner, then the default handler, then `zgc.conf`, all before
+`Application.launch`; a session‑memory setting it rejects, or a `zgc.conf` it cannot
+write, is a WARNING in the log and never stops the launch, and a rejected setting leaves an
+earlier `zgc.conf` as it was (story 336, ruling R992-8). `DawApplication.start` installs
+the FX‑thread handler right after
+the dispatcher, and `MainController.attachFailureFunnel` arms the toasts right after
+`setFxDispatcher`, before the window shows and before `showWelcomeIfNoProjectOpen` can
+open the first‑run wizard. Until then the funnel logs every surfaced failure, keeps the
+first 16 toasts, counts the rest and keeps the first FATAL one whichever it was, and at
+arming it posts once: the sink's WARNINGs, then the first FATAL toast, else the one
+failure's toast, else one summary. `DawApplication.stop()` disarms the toasts first;
+from then on failures are logged only, and a failure's toast still queued for the FX
+thread is dropped there, its record already in the log.*
 
 ---
 
@@ -924,7 +994,7 @@ permanent.
 **Scope.** §4.1 + §4.2: default uncaught handler in `DawLauncher.main` before launch;
 FX‑thread handler in `DawApplication.start`; the fingerprinted funnel to log +
 `NotificationBar`; the rotating file sink under the user settings directory; Help ▸
-"Open log folder". Builds on story 044's *(existing, landed)* notification surface —
+"Open Log Folder". Builds on story 044's *(existing, landed)* notification surface —
 this stage adds the missing producers, not a new surface.
 
 **Proof.** The §6.3 gate‑4 wiring test: a thrown FX‑handler exception yields a SEVERE
@@ -935,6 +1005,15 @@ file exists, rotates at its cap, and is reachable from Help. The palette's rethr
 **Unblocks.** Every later stage's "surface" half has somewhere to land; hundreds of
 existing catch‑and‑log sites become diagnosable retroactively; the "button does
 nothing" class is dead for all plain‑thread and FX failures.
+
+*As built in story 336: the gate‑4 test is `FailureSpineStartupWiringTest`, in process
+and headless. Child JVMs launched as the packaged launcher (`PackagedLaunchLoggingTest`,
+`ExitWaitLinesReachTheLogTest`) and a run against the jlink image prove the logging that
+the launch configures in code. The real `DawApplication.start` and `stop` are pinned by
+source scans, and a manual check on the installed exe is the release gate. The "button
+does nothing" class is dead for failures that reach a thread's top; a failure held in a
+future, a `Task` or an executor (future story 443) and JavaFX's own prints to standard
+error stay outside it, among others (story 336's Known limits).*
 
 ### Stage 3 — RT‑Safe Error Channel and Callback Guards (story 337)
 
@@ -1074,7 +1153,7 @@ Where each construct in this book attaches to today's tree.
 | This book | Today's code | What changes |
 |---|---|---|
 | Exception spine (§4.1) | `DawLauncher.java:56‑64`, `DawApplication.java:56+` — zero handlers repo‑wide | Default handler pre‑launch; FX handler in `start`; fingerprinted funnel |
-| Log sink (§4.2) | No `FileHandler`/`LogManager` in any main source | Programmatic rotating file handler at launch; Help ▸ Open log folder |
+| Log sink (§4.2) | No `FileHandler`/`LogManager` in any main source | Programmatic rotating file handler at launch; Help ▸ Open Log Folder |
 | PortAudio guard (§4.3) | `PortAudioBackend.java:448` bare `callback.process` in the FFM upcall | Catch‑everything guard; silence + record + continue (mirrors `AsioBufferSwitchShim.java:364‑371`) |
 | Stop‑race fix (§4.3) | `AudioEngine.java:910‑913` throws when not running; raw registration `:442`/`:519` | Stopped engine renders silence; no throw on the callback path |
 | JavaSound guard (§4.3) | `JavaSoundBackend.java:155` unwrapped vthread; `:265‑275` bare loop | Per‑iteration guard; honest exit + escalation on sustained failure |

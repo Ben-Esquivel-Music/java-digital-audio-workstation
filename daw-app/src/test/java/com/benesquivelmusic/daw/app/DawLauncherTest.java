@@ -1,11 +1,15 @@
 package com.benesquivelmusic.daw.app;
 
+import com.benesquivelmusic.daw.app.DawLauncher.SessionMem;
+import com.benesquivelmusic.daw.app.DawLauncher.SessionMem.Source;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Optional;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -65,29 +69,84 @@ class DawLauncherTest {
     }
 
     @Test
-    void resolvesSessionMemFromSystemProperty() {
-        String original = System.getProperty("daw.sessionMem");
-        try {
-            System.setProperty("daw.sessionMem", "6G");
-            assertThat(DawLauncher.resolveSessionMem()).isEqualTo("6G");
-        } finally {
-            if (original == null) System.clearProperty("daw.sessionMem");
-            else System.setProperty("daw.sessionMem", original);
-        }
+    void theSystemPropertysSizeIsTrimmedAndAccepted() {
+        assertThat(DawLauncher.resolveSessionMem(Optional.of("  16G "), Optional.empty()))
+                .isEqualTo(new SessionMem.Accepted("16G", Source.SYSTEM_PROPERTY));
     }
 
     @Test
-    void fallsBackToDefaultSessionMem() {
-        String original = System.getProperty("daw.sessionMem");
-        try {
-            System.clearProperty("daw.sessionMem");
-            // ignore env DAW_SESSION_MEM here; if the test runner sets it, accept the override.
-            String env = System.getenv("DAW_SESSION_MEM");
-            String expected = (env != null && !env.isBlank()) ? env : DawLauncher.DEFAULT_SESSION_MEM;
-            assertThat(DawLauncher.resolveSessionMem()).isEqualTo(expected);
-        } finally {
-            if (original != null) System.setProperty("daw.sessionMem", original);
+    void withTheSystemPropertyAbsentOrBlankTheEnvironmentVariablesSizeIsAccepted() {
+        assertThat(DawLauncher.resolveSessionMem(Optional.empty(), Optional.of("8g")))
+                .isEqualTo(new SessionMem.Accepted("8g", Source.ENVIRONMENT_VARIABLE));
+        assertThat(DawLauncher.resolveSessionMem(Optional.of(" \t "), Optional.of("8g")))
+                .isEqualTo(new SessionMem.Accepted("8g", Source.ENVIRONMENT_VARIABLE));
+    }
+
+    @Test
+    void withBothAbsentOrBlankTheDefaultIsAccepted() {
+        SessionMem fallback = new SessionMem.Accepted(DawLauncher.DEFAULT_SESSION_MEM, Source.DEFAULT);
+
+        assertThat(DawLauncher.DEFAULT_SESSION_MEM).isEqualTo("4G");
+        assertThat(DawLauncher.resolveSessionMem(Optional.empty(), Optional.empty())).isEqualTo(fallback);
+        assertThat(DawLauncher.resolveSessionMem(Optional.of(""), Optional.of("  "))).isEqualTo(fallback);
+    }
+
+    @Test
+    void aSystemPropertyThatIsNotAHeapSizeIsRejectedAndTheEnvironmentVariableDoesNotTakeItsPlace() {
+        assertThat(DawLauncher.resolveSessionMem(Optional.of("4GB"), Optional.of("8G")))
+                .isEqualTo(new SessionMem.Rejected(Source.SYSTEM_PROPERTY, "4GB"));
+    }
+
+    @Test
+    void anEnvironmentVariableThatIsNotAHeapSizeIsRejectedAndNamed() {
+        assertThat(DawLauncher.resolveSessionMem(Optional.empty(), Optional.of("4GB")))
+                .isEqualTo(new SessionMem.Rejected(Source.ENVIRONMENT_VARIABLE, "4GB"));
+    }
+
+    @Test
+    void aTerabyteUnitIsRejected() {
+        assertThat(DawLauncher.resolveSessionMem(Optional.of("1T"), Optional.empty()))
+                .isEqualTo(new SessionMem.Rejected(Source.SYSTEM_PROPERTY, "1T"));
+    }
+
+    @Test
+    void aRejectionKeepsTheValueAsItWasSetUntrimmed() {
+        SessionMem.Rejected rejected = rejection(Optional.of(" 4GB "), Optional.empty());
+
+        assertThat(rejected).isEqualTo(new SessionMem.Rejected(Source.SYSTEM_PROPERTY, " 4GB "));
+        assertThat(rejected.warning()).contains("holds \" 4GB \", which is not");
+    }
+
+    @Test
+    void theWarningNamesTheSystemPropertyAndItsValue() {
+        assertThat(rejection(Optional.of("4GB"), Optional.empty()).warning())
+                .isEqualTo("The system property daw.sessionMem holds \"4GB\", which is not a heap size this setting"
+                        + " accepts: use a whole number, optionally followed by k, m or g in either case, such as 16G."
+                        + " zgc.conf was not written; a zgc.conf from an earlier launch is left as it was.");
+    }
+
+    @Test
+    void theWarningNamesTheEnvironmentVariableAndItsValue() {
+        assertThat(rejection(Optional.empty(), Optional.of("4GB")).warning())
+                .isEqualTo("The environment variable DAW_SESSION_MEM holds \"4GB\", which is not a heap size this"
+                        + " setting accepts: use a whole number, optionally followed by k, m or g in either case, such"
+                        + " as 16G. zgc.conf was not written; a zgc.conf from an earlier launch is left as it was.");
+    }
+
+    @Test
+    void aLineBreakInTheValueIsWrittenAsItsEscapeSoTheWarningIsOneLine() {
+        String warning = rejection(Optional.empty(), Optional.of("4G\n-XX:+HeapDumpOnOutOfMemoryError")).warning();
+
+        assertThat(warning).contains(" holds \"4G\\u000A-XX:+HeapDumpOnOutOfMemoryError\", which is not");
+        assertThat(Pattern.compile("\\R").matcher(warning).find()).as("no line break in %s", warning).isFalse();
+    }
+
+    private static SessionMem.Rejected rejection(Optional<String> property, Optional<String> variable) {
+        SessionMem resolved = DawLauncher.resolveSessionMem(property, variable);
+        if (resolved instanceof SessionMem.Rejected rejected) {
+            return rejected;
         }
+        throw new AssertionError("expected a rejection, but was " + resolved);
     }
 
     @Test

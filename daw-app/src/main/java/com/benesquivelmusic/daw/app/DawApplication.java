@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app;
 
+import com.benesquivelmusic.daw.app.diagnostics.FailureFunnel;
 import com.benesquivelmusic.daw.app.ui.MainController;
 import com.benesquivelmusic.daw.app.ui.density.DensityManager;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
@@ -40,6 +41,12 @@ public final class DawApplication extends Application {
     private EventBus bus;
     /** The FX-thread marshalling seam, disposed last by {@link #stop()}. FX thread. */
     private FxDispatcher fxDispatcher;
+    /**
+     * Story 336 — the failure funnel {@code DawLauncher.main} installed as the
+     * default handler; {@link #start} installs its FX-thread handler and arms
+     * its toasts, {@link #stop()} disarms them first. FX thread.
+     */
+    private FailureFunnel failureFunnel;
 
     /** JavaFX-required no-arg constructor: builds a default {@link DawRuntime}. */
     public DawApplication() {
@@ -76,6 +83,12 @@ public final class DawApplication extends Application {
         fxDispatcher = new FxDispatcher();
         fxDispatcher.start();
         FxDispatcher.installDefault(fxDispatcher);
+        // Story 336 (Failure Surfacing book §4.1, §6.4) — the FX thread's own
+        // handler, alongside the dispatcher the funnel's toasts ride: an FX
+        // event-dispatch failure is labelled ui.handler from here on. Its toasts
+        // stay buffered until attachFailureFunnel arms them, below.
+        failureFunnel = DawLauncher.failureFunnel();
+        failureFunnel.installOnCurrentFxThread();
 
         // Story 283 — install the application-wide EventBus before any
         // controller is constructed. The UI executor is required because
@@ -116,6 +129,11 @@ public final class DawApplication extends Application {
         mainController = loader.getController();
         if (mainController != null) {
             mainController.setFxDispatcher(fxDispatcher);
+            // Story 336 (Failure Surfacing book §6.4) — the funnel's toasts are armed once the
+            // dispatcher and the notification bar with its history are live, and
+            // before the window shows and the Welcome screen or first-run wizard
+            // opens: what failed before shows once, now.
+            mainController.attachFailureFunnel(failureFunnel);
             // Story 333 — the window's close box (and Alt+F4) asks the exit
             // protocol, whose event filter consumes the close request until
             // the protocol decides; installed before the stage shows.
@@ -161,9 +179,17 @@ public final class DawApplication extends Application {
      * ran, it only waits, at most 15 seconds from the audio engine's stop, for that stop to end (ruling 2 OQ-3) —
      * and then tears the event bus and the FX dispatcher down, last, because DISPOSE still publishes and posts
      * through them (ruling R4).
+     *
+     * <p>Story 336 — first of all it disarms the failure funnel's
+     * toasts, which never throws: the window is hidden by now, and from here on
+     * a failure is logged only, never posted to the dispatcher the
+     * {@code finally} disposes.</p>
      */
     @Override
     public void stop() {
+        if (failureFunnel != null) {
+            failureFunnel.disarmToasts();
+        }
         try {
             if (mainController != null) {
                 mainController.applicationStopping();

@@ -480,8 +480,13 @@ final class MenuConstructionService {
 
         MenuItem helpItem = menuItem("Help\u2026", DawIcon.INFO,
                 null, host::onHelp);
+        // Story 336 (Failure Surfacing book \u00a72.8) \u2014 the log file made discoverable: the same words
+        // as every failure toast's action, no shortcut, and fenced like Help\u2026
+        // while a project installs (the toast's and the history's actions are not).
+        MenuItem openLogFolderItem = menuItem(msg("menu.help.openLogFolder"), DawIcon.FOLDER,
+                null, host::onOpenLogFolder);
 
-        helpMenu.getItems().addAll(helpItem);
+        helpMenu.getItems().addAll(helpItem, openLogFolderItem);
 
         return helpMenu;
     }

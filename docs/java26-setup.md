@@ -41,18 +41,37 @@ enforces an allocation-free audio thread through buffer pooling and the
 
 ## 3. The `zgc.conf` JVM options file
 
-`zgc.conf` is packaged as a classpath resource inside `daw-app` and is
-materialized into the user's settings directory by `DawLauncher` on first
-run. Pass it to the `jlink` runtime JVM via `@<settings>/zgc.conf`:
+`zgc.conf` is packaged as a classpath resource inside `daw-app`, and
+`DawLauncher` writes it into the user's settings directory at every launch,
+unless the session-memory setting is rejected or the file cannot be written
+(see *Session memory* below). The JVM reads an options file only when it
+starts, so the file one launch writes is the one the next launch that passes
+it reads, and the first launch runs without it: `java` refuses to start when
+the file does not exist. Pass it to the `jlink` runtime JVM via
+`@<settings>/zgc.conf`:
 
 ```bash
 daw-app/target/daw-runtime/bin/java @<settings>/zgc.conf \
     --enable-native-access=daw.core,daw.sdk,daw.app \
+    -Djava.util.logging.manager=com.benesquivelmusic.daw.app.logging.ExitHoldingLogManager \
     -m daw.app/com.benesquivelmusic.daw.app.DawLauncher
 ```
 
 The application JAR is a thin JPMS module and is not directly runnable with
 `java -jar`.
+
+### Log file
+
+The application writes its log to `<settings>/logs`: `daw-0.log` is the
+newest file, and at most five files of 5 MiB each are kept. Help ▸ Open Log
+Folder opens that folder. Keep
+`-Djava.util.logging.manager=com.benesquivelmusic.daw.app.logging.ExitHoldingLogManager`
+on the command line: it holds the log open at exit until the wait for saves
+and checkpoints has returned, so the lines that wait writes reach the file.
+When the option is missing, the launcher names the same class itself unless
+something initialized logging before it ran; if that happened, the session
+banner in the log says `Exit hold: inactive`, and lines logged while the
+application exits may be lost.
 
 ### Flags and rationale
 
@@ -61,8 +80,26 @@ The application JAR is a thin JPMS module and is not directly runnable with
 | `-XX:+UseZGC` | Enable the Z Garbage Collector (sub-millisecond pause targets up to 16 TB heap). As of JDK 24 (JEP 490) ZGC is generational by default — enabling ZGC automatically selects the generational collector (JEP 439, JDK 21). The old `-XX:+ZGenerational` flag was removed in JDK 24. |
 | `-XX:-ZUncommit` | Never return heap pages to the OS. Uncommit incurs `madvise` cost; reacquiring pages can stall the audio thread. |
 | `-XX:+AlwaysPreTouch` | Touch every page of the committed heap at startup so page faults never occur on the audio thread. Startup is slightly slower; steady-state is deterministic. |
-| `-Xms${sessionMem}` | Fixed initial heap size — equal to `-Xmx` to disable heap expansion pauses. `${sessionMem}` is substituted by `DawLauncher` from the session configuration (`2G`, `4G`, `8G` are typical). |
+| `-Xms${sessionMem}` | Fixed initial heap size — equal to `-Xmx` to disable heap expansion pauses. `DawLauncher` substitutes `${sessionMem}` from the session-memory setting (see *Session memory* below; `2G`, `4G`, `8G` are typical). |
 | `-Xmx${sessionMem}` | Fixed maximum heap size. Combined with `-Xms` this gives a fully pre-touched, non-uncommitting heap. |
+
+### Session memory
+
+`DawLauncher` takes `${sessionMem}` from the system property `daw.sessionMem`,
+else from the environment variable `DAW_SESSION_MEM`, else uses `4G`; a blank
+value counts as unset. The value is a whole number, optionally followed by
+`k`, `m` or `g` in either case, such as `16G` or `8192m`, and spaces around it
+are ignored. A number with no unit is bytes, as `-Xmx` reads it. A value the
+check accepts can still be one the JVM cannot start with: `4096`, which asks
+for 4 KiB, `0` and a number too large for `-Xmx` are refused, and a size
+larger than the machine can hold fails, since all of it is committed and
+touched at start; future story 444 owns that range check. A value of any
+other form, such as `4GB` or `1T`, is rejected: the log records a WARNING
+that names the setting and its value, `zgc.conf` is not written, and a
+`zgc.conf` from an earlier launch is left as it was, so the next launch that
+passes it keeps the heap size it had. The application starts either way. The
+size takes effect at the next launch that passes `@<settings>/zgc.conf`, not
+at the launch that sets it.
 
 ### Tradeoffs
 
@@ -136,6 +173,7 @@ To reproduce locally:
 # 2. Launch with the ZGC profile:
 daw-app/target/daw-runtime/bin/java @<settings>/zgc.conf \
      --enable-native-access=daw.core,daw.sdk,daw.app \
+     -Djava.util.logging.manager=com.benesquivelmusic.daw.app.logging.ExitHoldingLogManager \
      -m daw.app/com.benesquivelmusic.daw.app.DawLauncher \
      --benchmark=stress --tracks=64 --inserts=4 --sample-rate=48000 --buffer=64
 # 3. Compare against the baseline (default G1, no buffer pool):

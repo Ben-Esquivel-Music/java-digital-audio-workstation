@@ -30,6 +30,7 @@ import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSuppo
 import static com.benesquivelmusic.daw.core.recording.PipelineLifecycleTestSupport.failureWithinTheGuard;
 import static com.benesquivelmusic.daw.core.recording.RampCaptureTestSupport.outcomeWithinTheGuard;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -301,6 +302,67 @@ class CaptureFlushServiceTest {
         service.setDrainPaused(false);
         service.awaitFlushed(GUARD);
         assertThat(service.appliedBlocks()).isEqualTo(1);
+    }
+
+    @Test
+    void awaitFlushedReturnsOnlyOnceTheBlockObserverHasReturned() throws InterruptedException {
+        // The fence ends at a block's release, so what the observer writes is
+        // readable once awaitFlushed returns (story 336, studio-engineer
+        // ruling R992-22).
+        Track synth = new Track("Synth", TrackType.AUDIO);
+        CaptureRing ring = new CaptureRing(SLOT_FRAMES, 2, 2, 8);
+        service = newService(ring, instrumentCapture(synth));
+        startAndAwaitReadiness();
+        CountDownLatch inObserver = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        List<Long> observed = new CopyOnWriteArrayList<>();
+        service.setBlockObserver((sequence, startFrame, numFrames) -> {
+            inObserver.countDown();
+            try {
+                release.await(2 * GUARD.toMillis(), TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            observed.add(sequence);
+        });
+        try {
+            publish(ring, 0, block(2, 0.5f), 2);
+            assertThat(inObserver.await(GUARD.toMillis(), TimeUnit.MILLISECONDS))
+                    .as("fixture: the flush thread is in the observer").isTrue();
+            assertThatThrownBy(() -> service.awaitFlushed(HOLD_PROBE))
+                    .as("the fence waits for the observer")
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageStartingWith("awaitFlushed timed out");
+            assertThat(service.appliedBlocks()).as("the block was counted before its observer ran").isEqualTo(1);
+            assertThat(ring.releasedBlocks()).as("its slot is released only once the observer has returned")
+                    .isZero();
+        } finally {
+            release.countDown();
+        }
+
+        service.awaitFlushed(GUARD);
+        assertThat(observed).as("read at the fence, not at the thread's termination").containsExactly(0L);
+        assertThat(ring.releasedBlocks()).isEqualTo(1);
+    }
+
+    @Test
+    void aBlockWhoseObserverThrowsIsStillCountedAndReleased() {
+        Track synth = new Track("Synth", TrackType.AUDIO);
+        CaptureRing ring = new CaptureRing(SLOT_FRAMES, 2, 2, 8);
+        service = newService(ring, instrumentCapture(synth));
+        startAndAwaitReadiness();
+        IllegalStateException fault = new IllegalStateException("injected observer fault");
+        service.setBlockObserver((sequence, startFrame, numFrames) -> {
+            throw fault;
+        });
+        publish(ring, 0, block(2, 0.5f), 2);
+        awaitTermination(service);
+
+        assertThat(service.lastFailure()).containsSame(fault);
+        assertThat(service.appliedBlocks()).isEqualTo(1);
+        assertThat(ring.releasedBlocks()).as("the slot is released whatever the observer does").isEqualTo(1);
+        assertThatCode(() -> service.awaitFlushed(GUARD)).as("the fence holds on a terminated service")
+                .doesNotThrowAnyException();
     }
 
     @Test

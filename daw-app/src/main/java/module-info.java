@@ -9,10 +9,14 @@
  * launched from {@link com.benesquivelmusic.daw.app.DawLauncher} /
  * {@link com.benesquivelmusic.daw.app.DawApplication}.</p>
  *
- * <p>{@code daw.app} <strong>exports nothing</strong> — it is the top of the
- * module graph and is consumed by no other module. It does, however,
- * selectively {@code open} two packages for the reflection JavaFX itself
- * performs:</p>
+ * <p>{@code daw.app} is the top of the module graph and is consumed by no
+ * other module, so it <strong>exports one package, and only to
+ * {@code java.logging}</strong>: {@code com.benesquivelmusic.daw.app.logging},
+ * which holds nothing but {@code ExitHoldingLogManager}, the class
+ * {@code java.util.logging.LogManager} instantiates reflectively when the
+ * {@code java.util.logging.manager} property names it (story 336). It does,
+ * however, selectively {@code open} four packages for the reflection JavaFX
+ * itself performs:</p>
  * <ul>
  *   <li>{@code com.benesquivelmusic.daw.app} is opened to
  *       {@code javafx.graphics} so {@code Application.launch(DawApplication.class,…)}
@@ -22,9 +26,14 @@
  *       {@code @FXML}-annotated fields and {@code onAction} handlers of
  *       {@code MainController} (the only {@code fx:controller} —
  *       {@code main-view.fxml}).</li>
+ *   <li>{@code com.benesquivelmusic.daw.app.ui.inspector} and
+ *       {@code com.benesquivelmusic.daw.app.ui.inspector.sections} are opened
+ *       to {@code javafx.fxml} so {@code FXMLLoader} can instantiate the
+ *       {@code InspectorDrawer} and its sections that {@code main-view.fxml}
+ *       references (story 272).</li>
  * </ul>
- * Both are <em>qualified</em> opens — no blanket {@code open module} — so the
- * rest of the application stays strongly encapsulated.
+ * All four are <em>qualified</em> opens — no blanket {@code open module} — so
+ * the rest of the application stays strongly encapsulated.
  *
  * <p>Built-in plugin discovery uses the JPMS {@link java.util.ServiceLoader}
  * SPI. The {@code ServiceLoader.load(BuiltInDawPlugin.class)} call lives in
@@ -65,4 +74,11 @@ module daw.app {
     // Application.launch(DawApplication.class, …) reflectively constructs
     // the Application subclass.
     opens com.benesquivelmusic.daw.app to javafx.graphics;
+
+    // Story 336 — LogManager's static initializer loads the class that
+    // java.util.logging.manager names and instantiates it reflectively from
+    // java.logging. Without this qualified export it prints "Could not load
+    // Logmanager" on standard error and falls back to the JDK's own manager,
+    // and the log loses the lines written while the application exits.
+    exports com.benesquivelmusic.daw.app.logging to java.logging;
 }

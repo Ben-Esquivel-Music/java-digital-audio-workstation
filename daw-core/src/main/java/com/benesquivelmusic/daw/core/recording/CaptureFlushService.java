@@ -994,11 +994,18 @@ public final class CaptureFlushService {
                 gapAnchorSequence = sequence;
                 gapAnchorFrame = startFrame + numFrames;
             }
-            ring.release();
+            // Counted and observed before the release, which ends
+            // awaitFlushed's wait, so the fence covers both (story 336,
+            // studio-engineer ruling R992-22). The slot is released even
+            // when the observer throws.
             appliedBlocks = appliedBlocks + 1;
             BlockObserver observer = blockObserver;
-            if (observer != null) {
-                observer.onBlockApplied(sequence, startFrame, numFrames);
+            try {
+                if (observer != null) {
+                    observer.onBlockApplied(sequence, startFrame, numFrames);
+                }
+            } finally {
+                ring.release();
             }
         }
         noteOverflow();
@@ -1837,8 +1844,9 @@ public final class CaptureFlushService {
 
     /**
      * Blocks until every block published before this call has been applied
-     * — routed, written, counted, its manifest rewrite done and the cadence
-     * tick after it run — and every ring overflow counted before this call
+     * — routed, written, counted, its manifest rewrite done, the cadence
+     * tick after it run and the {@link BlockObserver}, when a test has set
+     * one, returned — and every ring overflow counted before this call
      * has its {@code gap=} line recorded, or the timeout elapses. The
      * end-of-pass cadence tick is not part of the fence. "Manifest rewrite
      * done" means attempted, or — while an earlier manifest failure is still being
@@ -2030,8 +2038,13 @@ public final class CaptureFlushService {
 
     /**
      * Test seam: told about every block the flush thread has finished with,
-     * in drain order, on the flush thread, right after the block's slot was
-     * released and counted.
+     * in drain order, on the flush thread, once the block has been applied
+     * and counted and before its slot is released. {@link #awaitFlushed(Duration)}
+     * ends at the release, so it returns only once the observer has returned
+     * for every block it waits for (story 336, studio-engineer ruling R992-22).
+     * The slot is released even when the observer throws, and the throwable
+     * then ends the drain loop; an observer that blocks keeps that one slot
+     * from the producer until it returns.
      */
     @FunctionalInterface
     interface BlockObserver {

@@ -559,7 +559,8 @@ class DawMenuBarControllerTest {
                     .map(MenuItem::getText)
                     .toList();
 
-            assertThat(itemTexts).containsExactly("Help\u2026");
+            // Story 336 \u2014 Help \u25b8 Open Log Folder follows Help\u2026.
+            assertThat(itemTexts).containsExactly("Help\u2026", "Open Log Folder");
         });
     }
 
