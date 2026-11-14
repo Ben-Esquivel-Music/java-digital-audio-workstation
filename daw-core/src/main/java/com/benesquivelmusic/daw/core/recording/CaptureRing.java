@@ -521,8 +521,9 @@ public final class CaptureRing {
 
     /**
      * Returns the total number of blocks published so far (the producer
-     * index). The flush service's {@code awaitFlushed} compares its applied
-     * count against this value.
+     * index). The flush service's {@code awaitFlushed} waits until
+     * {@link #releasedBlocks()} reaches the value this returned when it was
+     * called.
      */
     public long publishedBlocks() {
         return tail.get();

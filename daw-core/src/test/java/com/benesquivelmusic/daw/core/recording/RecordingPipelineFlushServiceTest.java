@@ -212,10 +212,11 @@ class RecordingPipelineFlushServiceTest {
 
         // The interleaving a busy take produces: the ring fills (blocks 0..7),
         // five blocks are dropped (8..12), the flush thread frees ONE slot, the
-        // callback publishes block 13 into it, and the same drain pass then
-        // applies 1..7 and 13 before it looks at the overflow counter. The
-        // observer holds the flush thread after its first release until the
-        // producer has published that block. There is one producer at a
+        // callback publishes block 13 into it in the middle of the pass that
+        // applies 0..7 and then notes the overflow; the next pass applies 13. The
+        // observer runs before each block's slot is released, so it holds the
+        // flush thread in block 1, after block 0's slot was released, until
+        // the producer has published that block. There is one producer at a
         // time: the guarded thread for the first thirteen blocks, joined
         // before this thread feeds the late one.
         List<Applied> applied = new CopyOnWriteArrayList<>();
@@ -224,7 +225,7 @@ class RecordingPipelineFlushServiceTest {
         AtomicBoolean heldLongEnough = new AtomicBoolean(true);
         service.setBlockObserver((sequence, startFrame, numFrames) -> {
             applied.add(new Applied(sequence, startFrame, numFrames));
-            if (sequence == 0) {
+            if (sequence == 1) {
                 firstSlotFreed.countDown();
                 try {
                     heldLongEnough.set(lateBlockPublished.await(10, TimeUnit.SECONDS));
