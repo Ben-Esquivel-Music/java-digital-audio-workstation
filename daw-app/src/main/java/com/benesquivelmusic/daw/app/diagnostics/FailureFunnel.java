@@ -71,7 +71,12 @@ import java.util.logging.Logger;
  * hands a listener's exception straight to the FX thread's handler without
  * throwing it, and without the binding a throwing history listener would loop
  * forever through the toast that notified it. Every record the funnel writes
- * itself is written inside the binding too.</p>
+ * itself is written inside the binding too. The last resort guards its own
+ * reads the same way: a failure that re-enters the funnel while the last
+ * resort reads a throwable's message or frames reaches the last resort again
+ * as a shorter record that reads neither throwable, so the re-entry ends
+ * there instead of recursing until the stack is exhausted
+ * ({@link LastResortLog}; story 336, studio-engineer ruling R992-13).</p>
  *
  * <p><strong>Threading (javafx-application-design "## 11. Threading").</strong>
  * Not everything is off the FX thread, and the studio engineer's review of

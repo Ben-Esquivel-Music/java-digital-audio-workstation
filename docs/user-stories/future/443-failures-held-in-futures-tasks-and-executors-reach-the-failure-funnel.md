@@ -55,7 +55,7 @@ These tests are binding acceptance criteria. They run headless, and none of them
 ## Technical Notes
 
 - Seams: story 336's `FailureFunnel.reportDeclared` and `DeclaredSubject` (daw-app, package `app.diagnostics`). daw-core and daw-sdk cannot reference daw-app (`docs/research/open-source-daw-tools.md` "### 1. Modular Architecture (SDK + Core + App)"). Their sites need a route that does not name the funnel, for example handing the failure to `Thread.getDefaultUncaughtExceptionHandler()`, which story 336 sets to the funnel's default handler.
-- A site reports the exception it holds. The funnel's guarded reading of a throwable covers a plugin exception whose class loader is already closed (story 336's note from story 334).
+- A site reports the exception it holds. The funnel's guarded reading of a throwable covers a plugin exception whose class loader is already closed (story 336's note from story 334). A `null` handed to a handler leaves no trace in story 336's funnel or its last resort (story 336's Known limits): a site here that hands a failure to a handler itself never hands it `null`, and this story makes a `null` handed to a handler leave a trace, with a test that pins it.
 - javafx-application-design "## 11. Threading" makes `Task` and `Service` the tools for background work, so a `Task`'s `onFailed` is where a `Task` reports.
 - Book: `FAILURE_SURFACING_DESIGN_BOOK.md` §2.1 (no failure is silent; a worker task is one of its boundaries), §4.1 (the exception spine), §5.4 (notification discipline) and §6.2 (rate limiting).
 - Cross-refs: story 336 (rulings E10 and E12.12, its Known limits, its note from story 334), story 334 (the dispose threads), story 337, story 339.

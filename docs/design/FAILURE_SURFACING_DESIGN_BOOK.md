@@ -542,9 +542,12 @@ the failing site declares it (`DeclaredSubject`, today the plugin dispose sites)
 otherwise it names the user interface, or the background task its thread's name states.
 FATAL is an ERROR‑level toast with its own copy and never opens a dialog. Re‑entry is
 stopped by a `ScopedValue` binding and by a guard inside every runnable the funnel
-posts; what the funnel itself throws goes to `LastResortLog`, which writes to standard
-error and to `daw-last-resort.log` in the log folder, because the packaged application
-has no standard error. A failure held in a future, a `Task` or an executor never reaches
+posts; what the funnel itself throws goes to `LastResortLog`, which binds a
+`ScopedValue` of its own while it writes, so a failure that re‑enters while it reads a
+throwable's message or frames is written once more without reading them instead of
+recursing (story 336, ruling R992-13), and which writes to standard error and to
+`daw-last-resort.log` in the log folder, because the packaged application has no
+standard error. A failure held in a future, a `Task` or an executor never reaches
 a handler (future story 443). The fingerprint's anchor line is the throw site's in the
 installed application too: the jlink image keeps the class files' line numbers
 (story 336, ruling R992-1).*

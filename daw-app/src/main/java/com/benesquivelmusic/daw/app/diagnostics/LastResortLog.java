@@ -49,6 +49,26 @@ import java.util.Optional;
  * <code>&#92;u000A</code> for LF, so each record is its header line and lines
  * that begin with a tab ({@link GuardedThrowables#endLine}; story 336,
  * studio-engineer ruling R992-2).</p>
+ *
+ * <p><strong>It never recurses through what it reads (story 336,
+ * studio-engineer rulings R992-13 and R992-14).</strong> Reading a throwable's
+ * message or frames runs that throwable's own code. That code can log a record
+ * that a handler hands the funnel as another failure on the same thread, or
+ * change a JavaFX property whose listener's exception JavaFX hands the FX
+ * thread's handler; the funnel sends that re-entry here with the same original
+ * failure, or with what it was doing when it was handling no failure. So a
+ * write that finds no binding of {@link #WRITING} — a static
+ * {@link ScopedValue} (JEP 506, final in Java 25): per thread, seen by every
+ * instance, and gone when the write returns or throws — runs, from its header
+ * to its emit, inside one. A write that finds it bound calls nothing on either
+ * throwable but {@code getClass().getName()}. Its record is the usual header,
+ * the activity line when there is one, and each throwable's line with its
+ * class name and the marker
+ * {@code <the message and frames were not read: this thread was already writing a last-resort record>}
+ * where the message would be, with no frames. It is printed and appended like
+ * any record, under the same cap and lock. It comes before the record whose
+ * reading caused it, which can carry an earlier time: file order, not
+ * timestamp order, is authoritative.</p>
  */
 public final class LastResortLog {
 
@@ -70,6 +90,21 @@ public final class LastResortLog {
      * or posted while it is held.
      */
     private static final Object APPEND_LOCK = new Object();
+
+    /**
+     * Bound while the current thread writes a last-resort record, in any
+     * instance: what keeps a write's reads from recursing through the last
+     * resort (story 336, studio-engineer ruling R992-13).
+     */
+    private static final ScopedValue<Boolean> WRITING = ScopedValue.newInstance();
+
+    /**
+     * What a write made while this thread is already writing one holds where
+     * a throwable's message would be (story 336, studio-engineer ruling
+     * R992-14).
+     */
+    private static final String NOT_READ =
+            "<the message and frames were not read: this thread was already writing a last-resort record>";
 
     private final Optional<Path> file;
     private final PrintStream standardError;
@@ -127,7 +162,9 @@ public final class LastResortLog {
     }
 
     /**
-     * Records that the funnel failed while it handled {@code original}.
+     * Records that the funnel failed while it handled {@code original}. Made
+     * while this thread is already writing a record, it reads neither
+     * throwable (see the class description).
      *
      * @param thread        the thread the failure happened on
      * @param original      the failure the funnel was handling
@@ -135,10 +172,10 @@ public final class LastResortLog {
      */
     public void write(Thread thread, Throwable original, Throwable funnelFailure) {
         try {
-            StringBuilder record = header(thread);
-            appendThrowable(record, "Failure being handled", original);
-            appendThrowable(record, "What the failure funnel hit while handling it", funnelFailure);
-            emit(record.toString());
+            writeRecord(thread, (record, throwables) -> {
+                throwables.append(record, "Failure being handled", original);
+                throwables.append(record, "What the failure funnel hit while handling it", funnelFailure);
+            });
         } catch (Throwable givingUp) {
             // The end of the line.
         }
@@ -146,7 +183,9 @@ public final class LastResortLog {
 
     /**
      * Records that the funnel failed in work of its own that handled no
-     * particular failure — a tail, a notice, the log folder, disarming.
+     * particular failure — a tail, a notice, the log folder, disarming. Made
+     * while this thread is already writing a record, it does not read
+     * {@code funnelFailure} (see the class description).
      *
      * @param thread        the thread the funnel ran on
      * @param activity      what the funnel was doing
@@ -154,15 +193,39 @@ public final class LastResortLog {
      */
     public void write(Thread thread, String activity, Throwable funnelFailure) {
         try {
-            StringBuilder record = header(thread);
-            int start = record.length();
-            record.append("\tWhile ").append(activity);
-            GuardedThrowables.endLine(record, start, System.lineSeparator());
-            appendThrowable(record, "What the failure funnel hit", funnelFailure);
-            emit(record.toString());
+            writeRecord(thread, (record, throwables) -> {
+                int start = record.length();
+                record.append("\tWhile ").append(activity);
+                GuardedThrowables.endLine(record, start, System.lineSeparator());
+                throwables.append(record, "What the failure funnel hit", funnelFailure);
+            });
         } catch (Throwable givingUp) {
             // The end of the line.
         }
+    }
+
+    /**
+     * Builds and emits one record. A write that finds no binding of
+     * {@link #WRITING} runs whole, from its header to its emit, inside one,
+     * and reads each throwable's message and frames. A write that finds it
+     * bound — one made while another write on this thread is under way, as
+     * when that write reads a throwable — writes each throwable by its class
+     * name only, so it runs none of their code and cannot re-enter through
+     * them (story 336, studio-engineer rulings R992-13 and R992-14).
+     */
+    private void writeRecord(Thread thread, RecordLines lines) {
+        if (WRITING.isBound()) {
+            emit(build(thread, lines, LastResortLog::appendUnread));
+            return;
+        }
+        ScopedValue.where(WRITING, Boolean.TRUE)
+                .run(() -> emit(build(thread, lines, LastResortLog::appendThrowable)));
+    }
+
+    private static String build(Thread thread, RecordLines lines, ThrowableLines throwables) {
+        StringBuilder record = header(thread);
+        lines.appendTo(record, throwables);
+        return record.toString();
     }
 
     private static StringBuilder header(Thread thread) {
@@ -210,6 +273,19 @@ public final class LastResortLog {
         }
     }
 
+    /**
+     * A throwable in a write made while this thread is already writing one:
+     * its class name and {@link #NOT_READ}, no frames. It calls nothing on
+     * {@code failure} but {@code getClass()} (story 336, studio-engineer
+     * ruling R992-14).
+     */
+    private static void appendUnread(StringBuilder record, String label, Throwable failure) {
+        int start = record.length();
+        record.append('\t').append(label).append(": ").append(GuardedThrowables.className(failure))
+                .append(": ").append(NOT_READ);
+        GuardedThrowables.endLine(record, start, System.lineSeparator());
+    }
+
     private void emit(String record) {
         try {
             standardError.print(record);
@@ -248,5 +324,17 @@ public final class LastResortLog {
         } catch (NoSuchFileException absent) {
             return 0L;
         }
+    }
+
+    /** A record's lines after its header, each throwable written as {@code throwables} writes it. */
+    @FunctionalInterface
+    private interface RecordLines {
+        void appendTo(StringBuilder record, ThrowableLines throwables);
+    }
+
+    /** How a record writes a throwable: whole, or by its class name only in a nested write. */
+    @FunctionalInterface
+    private interface ThrowableLines {
+        void append(StringBuilder record, String label, Throwable failure);
     }
 }

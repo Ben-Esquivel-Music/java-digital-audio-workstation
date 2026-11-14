@@ -16,6 +16,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -37,16 +38,22 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the funnel counts, and the application carries on: the FX thread still
  * answers, and the next, different failure is still shown.
  *
- * <p>Five ways in: a history listener that throws while the toast is recorded
+ * <p>Six ways in: a history listener that throws while the toast is recorded
  * (the asynchronous half), a log handler that hands the funnel another
  * failure on the same thread (the synchronous half), a log handler that
  * throws an {@link Error} on the FX thread — whose failure still gets its
  * toast, though its record could not be written — a JavaFX listener on the
  * toast's label that throws, which JavaFX does not throw but hands straight
- * to the FX thread's handler, and a JavaFX listener that throws while a
+ * to the FX thread's handler, a JavaFX listener that throws while a
  * due tail is recorded, the pulse driven past due on the test's clock
- * ({@link FailureSpineFixture#withClock}). Every listener and handler a test
- * adds is removed in a {@code finally}.</p>
+ * ({@link FailureSpineFixture#withClock}), and a failure thrown on the FX
+ * thread whose own message, when the funnel reads it, logs a record that a
+ * log handler hands the funnel as another failure on the same thread. The
+ * last resort writes that re-entry whole, and the re-entry that its own read
+ * of the failure causes without reading either throwable, so the message is
+ * read a bounded number of times, which the test's fuse would show if it were
+ * not (story 336, studio-engineer ruling R992-13). Every listener and handler
+ * a test adds is removed in a {@code finally}.</p>
  *
  * <p>The funnel is the production default wiring,
  * {@link FailureSpineFixture#launch} ({@code DawLauncher.prepareLaunch}), with
@@ -66,6 +73,20 @@ class FailureFunnelReentrancyTest {
             + " went away. Its work may be incomplete.";
     private static final String STILL_SHOWN = "Internal error in the background task “autosave”: the autosave"
             + " folder went away. Its work may be incomplete.";
+
+    /**
+     * What a last-resort record written while the thread was already writing
+     * one holds where a message would be (story 336, studio-engineer ruling
+     * R992-14): spelled here, never read from the class.
+     */
+    private static final String NOT_READ =
+            "<the message and frames were not read: this thread was already writing a last-resort record>";
+
+    /**
+     * The read of {@link MessageThatLogs}'s message from which it no longer
+     * logs a record, so a recursion ends: only the reads before it log.
+     */
+    private static final int FUSE = 32;
 
     @Test
     void aHistoryListenerThatThrowsGoesToTheLastResortAndNeverLoops(@TempDir Path settings) throws Exception {
@@ -272,6 +293,80 @@ class FailureFunnelReentrancyTest {
         }
     }
 
+    /**
+     * The callback chain of the pull request's third review: a failure thrown
+     * on the FX thread whose own message, when read, logs a record that a log
+     * handler hands the funnel as another failure on the same thread. The
+     * funnel sends that re-entry to the last resort with the same original,
+     * which reads its message again; the last resort writes that re-entry
+     * whole, and the re-entry its own read causes without reading either
+     * throwable, so the message is read a bounded number of times (story 336,
+     * studio-engineer ruling R992-13). The name's "once" is per read by the funnel.
+     * The message logs only while fewer than {@link #FUSE} reads have been
+     * made, so a last resort without that guard ends its recursion there.
+     */
+    @Test
+    void aFailureWhoseMessageLogsARecordAHandlerHandsBackToTheFunnelIsWrittenOnceWholeAndOnceUnread(
+            @TempDir Path settings) throws Exception {
+        Logger messageLog = Logger.getLogger(FailureFunnelReentrancyTest.class.getName() + ".message");
+        Handler handingBack = new LogHandler() {
+            @Override
+            public void publish(LogRecord record) {
+                Thread.currentThread().getUncaughtExceptionHandler()
+                        .uncaughtException(Thread.currentThread(), new IllegalArgumentException("re-entered"));
+            }
+        };
+        MessageThatLogs failure = new MessageThatLogs(messageLog);
+        String failureName = MessageThatLogs.class.getName();
+        String toast = "Internal error in the user interface: the waveform cache went away. Check that your last"
+                + " change took effect.";
+        try (FailureSpineFixture spine = FailureSpineFixture.launch(settings)) {
+            spine.armOnFx();
+            messageLog.addHandler(handingBack);
+            try {
+                Platform.runLater(() -> {
+                    throw failure;
+                });
+                awaitOnFx("the failure's toast", () -> toast.equals(spine.bar().getMessage()));
+                awaitLastResortNaming(spine, "\tWhat the failure funnel hit while handling it:"
+                        + " java.lang.IllegalArgumentException: re-entered");
+                settleAFewTurns();
+
+                assertThat(failure.reads()).as("the re-entry ended: its message was read fewer than %d times", FUSE)
+                        .isLessThan(FUSE);
+                String lastResort = spine.lastResortText();
+                String whole = "\tFailure being handled: " + failureName + ": the waveform cache went away";
+                String unread = "\tFailure being handled: " + failureName + ": " + NOT_READ;
+                assertThat(lastResort).as("a whole record and a record that read neither throwable")
+                        .contains(whole + System.lineSeparator() + "\t\tat ")
+                        .contains("\tWhat the failure funnel hit while handling it:"
+                                + " java.lang.IllegalArgumentException: re-entered" + System.lineSeparator())
+                        .contains(unread + System.lineSeparator()
+                                + "\tWhat the failure funnel hit while handling it: java.lang.IllegalArgumentException: "
+                                + NOT_READ + System.lineSeparator());
+                assertThat(occurrences(lastResort, unread))
+                        .as("one record that read neither throwable per whole one: each whole write's one read"
+                                + " of the failure re-entered once")
+                        .isEqualTo(occurrences(lastResort, whole));
+                assertThat(lastResort.indexOf(unread)).as("the first record that read neither comes first")
+                        .isLessThan(lastResort.indexOf(whole));
+                assertThat(spine.funnel().occurrenceTotals()).as("the failure is counted once")
+                        .containsEntry(uiHandlerKey(spine, failureName), 1L);
+                assertThat(spine.funnel().occurrenceTotals().keySet())
+                        .as("and the failures that re-entered are not failures the funnel counts")
+                        .noneMatch(key -> key.contains("java.lang.IllegalArgumentException|"));
+                assertThat(spine.history().getEntries()).filteredOn(entry -> entry.message().equals(toast))
+                        .as("one toast").hasSize(1);
+                assertThat(onFx(() -> Boolean.TRUE)).as("the FX thread still answers").isTrue();
+            } finally {
+                messageLog.removeHandler(handingBack);
+            }
+
+            failAutosave();
+            awaitOnFx("the next, different failure's toast", () -> STILL_SHOWN.equals(spine.bar().getMessage()));
+        }
+    }
+
     /** {@code daw-take-storage} ends with an uncaught failure; returns when it has ended. */
     private static void failTakeStorage() throws InterruptedException {
         Thread worker = Thread.ofVirtual().name("daw-take-storage").start(() -> {
@@ -286,6 +381,13 @@ class FailureFunnelReentrancyTest {
             throw new IllegalStateException("the autosave folder went away");
         });
         assertThat(worker.join(GUARD)).isTrue();
+    }
+
+    private static String uiHandlerKey(FailureSpineFixture spine, String failureName) {
+        return spine.funnel().occurrenceTotals().keySet().stream()
+                .filter(key -> key.startsWith(FailureFunnel.UI_HANDLER + "|" + failureName + "|"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("the failure was counted"));
     }
 
     private static String takeStorageKey(FailureSpineFixture spine) {
@@ -331,6 +433,33 @@ class FailureFunnelReentrancyTest {
 
         @Override
         public void close() {
+        }
+    }
+
+    /**
+     * A failure whose message, read, logs a record on {@code messageLog} — as
+     * a plugin's {@code getMessage()} is code that can log — while fewer than
+     * {@link #FUSE} reads have been made; it counts its reads.
+     */
+    private static final class MessageThatLogs extends IllegalStateException {
+        private final transient Logger messageLog;
+        private final AtomicInteger reads = new AtomicInteger();
+
+        MessageThatLogs(Logger messageLog) {
+            super("the waveform cache went away");
+            this.messageLog = messageLog;
+        }
+
+        int reads() {
+            return reads.get();
+        }
+
+        @Override
+        public String getMessage() {
+            if (reads.incrementAndGet() < FUSE) {
+                messageLog.info("the waveform cache's message was read");
+            }
+            return super.getMessage();
         }
     }
 }
