@@ -10,6 +10,7 @@ import com.benesquivelmusic.daw.app.ui.views.WorkshopView;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectType;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
@@ -134,7 +135,7 @@ class PluginEditsAreRefusedWhileProjectActionsAreNotAllowedTest {
     @BeforeEach
     void recordThePublications() {
         previousBus = EventBusPublisher.getDefault();
-        bus = new DefaultEventBus();
+        bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         recording = bus.onPublication(DawEvent.class, published::add);
         EventBusPublisher.setDefault(bus);
     }

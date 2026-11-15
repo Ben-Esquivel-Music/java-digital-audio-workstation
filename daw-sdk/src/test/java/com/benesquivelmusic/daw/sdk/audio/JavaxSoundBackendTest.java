@@ -34,6 +34,7 @@ import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
+import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -1872,6 +1873,230 @@ class JavaxSoundBackendTest {
         assertThat(capture.closeAttemptsWhenReadReturned())
                 .as("the read came back on the SECOND close — the one that succeeded")
                 .isEqualTo(2);
+    }
+
+    // ── Capture-thread guard (story 337, ruling E17) ─────────────────────
+
+    /**
+     * A block that cannot be published is counted as lost and the loop reads
+     * on: one bad block is a counted gap, never a dead capture thread under a
+     * stream that still reports itself open.
+     */
+    @Test
+    void aFailingPublishLosesOneBlockAndTheCaptureContinues() throws Exception {
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        markStreamOpen(backend);
+        IllegalStateException publishFailure = new IllegalStateException("subscriber pipeline failed");
+        replaceInputPublisher(backend, new SubmissionPublisher<>() {
+            @Override
+            public int offer(AudioBlock item,
+                             java.util.function.BiPredicate<Flow.Subscriber<? super AudioBlock>,
+                                     ? super AudioBlock> onDrop) {
+                throw publishFailure;
+            }
+        });
+        ScriptedCaptureLine script = new ScriptedCaptureLine(3);
+        plantCaptureLine(backend, script.line());
+
+        backend.startCapture(STREAM_FORMAT, STREAM_FRAMES);
+        Thread thread = captureThread(backend);
+        thread.join(WAIT_MILLIS);
+
+        assertThat(thread.isAlive()).as("the capture loop ended on the line's end of data").isFalse();
+        assertThat(script.reads()).as("every lost block was followed by another read").isEqualTo(4);
+        BackendThreadCounters counters = backend.threadCounters();
+        assertThat(counters.inputBlocksLost()).isEqualTo(3);
+        assertThat(counters.inputHalts()).isZero();
+        assertThat(counters.lastInputFault()).containsSame(publishFailure);
+        assertThat(counters.deviceCallbackPeriods())
+                .as("Java Sound has no device callback thread of its own")
+                .isEmpty();
+        backend.close();
+    }
+
+    /**
+     * A {@link VirtualMachineError} from the publish is not one lost block:
+     * the loop rethrows it, so it ends the capture with one halt instead of
+     * reading on (story 337, ruling E17).
+     */
+    @Test
+    void aVirtualMachineErrorFromPublishEndsTheCaptureWithOneHalt() throws Exception {
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        markStreamOpen(backend);
+        StackOverflowError fatal = new StackOverflowError("publish recursed");
+        replaceInputPublisher(backend, new SubmissionPublisher<>() {
+            @Override
+            public int offer(AudioBlock item,
+                             java.util.function.BiPredicate<Flow.Subscriber<? super AudioBlock>,
+                                     ? super AudioBlock> onDrop) {
+                throw fatal;
+            }
+        });
+        ScriptedCaptureLine script = new ScriptedCaptureLine(3);
+        plantCaptureLine(backend, script.line());
+
+        backend.startCapture(STREAM_FORMAT, STREAM_FRAMES);
+        Thread thread = captureThread(backend);
+        thread.join(WAIT_MILLIS);
+
+        assertThat(thread.isAlive()).as("the capture loop ended on the fatal error").isFalse();
+        assertThat(script.reads()).as("the line is never read again after the fatal error").isEqualTo(1);
+        BackendThreadCounters counters = backend.threadCounters();
+        assertThat(counters.inputHalts()).isEqualTo(1);
+        assertThat(counters.inputBlocksLost()).isZero();
+        assertThat(counters.lastInputFault()).containsSame(fatal);
+        backend.close();
+    }
+
+    /** A throwing read means a broken line: the loop ends with one halt instead of spinning. */
+    @Test
+    void aThrowingReadEndsTheCaptureWithOneHalt() throws Exception {
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        markStreamOpen(backend);
+        IllegalStateException broken = new IllegalStateException("device unplugged");
+        ScriptedCaptureLine script = new ScriptedCaptureLine(0).failingReadsWith(broken);
+        plantCaptureLine(backend, script.line());
+
+        backend.startCapture(STREAM_FORMAT, STREAM_FRAMES);
+        Thread thread = captureThread(backend);
+        thread.join(WAIT_MILLIS);
+
+        assertThat(thread.isAlive()).isFalse();
+        assertThat(script.reads()).as("a broken line is read once, never spun on").isEqualTo(1);
+        BackendThreadCounters counters = backend.threadCounters();
+        assertThat(counters.inputHalts()).isEqualTo(1);
+        assertThat(counters.inputBlocksLost()).isZero();
+        assertThat(counters.lastInputFault()).containsSame(broken);
+        backend.close();
+    }
+
+    /** A read that throws because the stream is closing is teardown, not a fault. */
+    @Test
+    void aCloseMidReadRecordsNothing() throws Exception {
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        markStreamOpen(backend);
+        ScriptedCaptureLine script = new ScriptedCaptureLine(0).blockingUntilClosedThenThrowing();
+        plantCaptureLine(backend, script.line());
+
+        backend.startCapture(STREAM_FORMAT, STREAM_FRAMES);
+        Thread thread = captureThread(backend);
+        assertThat(script.awaitFirstRead(WAIT_MILLIS)).isTrue();
+
+        backend.close();
+        thread.join(WAIT_MILLIS);
+
+        assertThat(thread.isAlive()).isFalse();
+        assertThat(backend.threadCounters()).isEqualTo(BackendThreadCounters.NONE);
+    }
+
+    /** Replaces the open stream's input publisher through the support's own field. */
+    private static void replaceInputPublisher(JavaxSoundBackend backend,
+                                              SubmissionPublisher<AudioBlock> publisher)
+            throws ReflectiveOperationException {
+        Field supportField = JavaxSoundBackend.class.getDeclaredField("support");
+        supportField.setAccessible(true);
+        AudioBackendSupport support = (AudioBackendSupport) supportField.get(backend);
+        Field publisherField = AudioBackendSupport.class.getDeclaredField("publisher");
+        publisherField.setAccessible(true);
+        publisherField.set(support, publisher);
+    }
+
+    private static void plantCaptureLine(JavaxSoundBackend backend, TargetDataLine line)
+            throws ReflectiveOperationException {
+        Field declared = JavaxSoundBackend.class.getDeclaredField(INPUT_LINE);
+        declared.setAccessible(true);
+        declared.set(backend, line);
+    }
+
+    /**
+     * A capture line scripted for the guard tests: {@code fullReads} full
+     * blocks of non-zero PCM, then end of data ({@code 0}) — or, when told, a
+     * throw on every read, or a read that blocks until the line is closed and
+     * then throws. Built as a {@link java.lang.reflect.Proxy} so the many
+     * {@link TargetDataLine} members the capture path never calls answer
+     * neutral defaults.
+     */
+    private static final class ScriptedCaptureLine {
+
+        private final int fullReads;
+        private final AtomicInteger reads = new AtomicInteger();
+        private final CountDownLatch firstRead = new CountDownLatch(1);
+        private final CountDownLatch closed = new CountDownLatch(1);
+        private RuntimeException readFailure;
+        private boolean blockUntilClosed;
+
+        ScriptedCaptureLine(int fullReads) {
+            this.fullReads = fullReads;
+        }
+
+        ScriptedCaptureLine failingReadsWith(RuntimeException failure) {
+            this.readFailure = failure;
+            return this;
+        }
+
+        ScriptedCaptureLine blockingUntilClosedThenThrowing() {
+            this.blockUntilClosed = true;
+            return this;
+        }
+
+        int reads() {
+            return reads.get();
+        }
+
+        boolean awaitFirstRead(long millis) throws InterruptedException {
+            return firstRead.await(millis, TimeUnit.MILLISECONDS);
+        }
+
+        TargetDataLine line() {
+            return (TargetDataLine) java.lang.reflect.Proxy.newProxyInstance(
+                    TargetDataLine.class.getClassLoader(),
+                    new Class<?>[] {TargetDataLine.class},
+                    (proxy, method, args) -> switch (method.getName()) {
+                        case "read" -> read((byte[]) args[0], (Integer) args[1], (Integer) args[2]);
+                        case "close" -> {
+                            closed.countDown();
+                            yield null;
+                        }
+                        case "isOpen" -> closed.getCount() > 0;
+                        case "equals" -> proxy == args[0];
+                        case "hashCode" -> System.identityHashCode(proxy);
+                        case "toString" -> "ScriptedCaptureLine";
+                        default -> neutral(method.getReturnType());
+                    });
+        }
+
+        private int read(byte[] buffer, int offset, int length) throws InterruptedException {
+            int call = reads.incrementAndGet();
+            firstRead.countDown();
+            if (blockUntilClosed) {
+                closed.await();
+                throw new IllegalStateException("line closed under the read");
+            }
+            if (readFailure != null) {
+                throw readFailure;
+            }
+            if (call > fullReads) {
+                return 0;
+            }
+            java.util.Arrays.fill(buffer, offset, offset + length, (byte) 0x21);
+            return length;
+        }
+
+        private static Object neutral(Class<?> type) {
+            if (type == boolean.class) {
+                return false;
+            }
+            if (type == int.class) {
+                return 0;
+            }
+            if (type == long.class) {
+                return 0L;
+            }
+            if (type == float.class) {
+                return 0f;
+            }
+            return null;
+        }
     }
 
     /** Reads the backend's capture-thread field: null means nothing is (or is still) referenced. */

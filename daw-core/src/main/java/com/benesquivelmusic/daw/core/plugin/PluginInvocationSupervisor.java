@@ -229,6 +229,12 @@ public final class PluginInvocationSupervisor {
                 if (pending.throwable == null) {
                     continue;
                 }
+                // Story 337, ruling E26: a JVM-level Error from a supervised
+                // processor is logged HERE, on the drain thread, never on the
+                // render thread that caught it — the message is unchanged.
+                if (!pending.uiSourced() && pending.throwable instanceof Error err) {
+                    logJvmError(pending.pluginId(), err);
+                }
                 if (pending.slot() != null) {
                     pending.slot().rebuildOwningChain();
                 }
@@ -249,6 +255,19 @@ public final class PluginInvocationSupervisor {
                 LOG.log(Level.WARNING, "plugin fault drain loop error", e);
             }
         }
+    }
+
+    /**
+     * Logs a JVM-level {@link Error} a supervised processor threw, at
+     * {@link Level#SEVERE}. Runs on the {@code plugin-fault-drain} thread only
+     * (story 337, ruling E26): the render thread that caught the error only
+     * zeroes its output and hands the fault over.
+     */
+    private static void logJvmError(String pluginId, Error err) {
+        String message = "JVM-level error in plugin " + pluginId
+                + " (" + err.getClass().getName()
+                + ") — session continued but the JVM may be unstable";
+        LOG.log(Level.SEVERE, message, err);
     }
 
     private PluginFault materialize(PendingFault pending) {
@@ -392,9 +411,9 @@ public final class PluginInvocationSupervisor {
             // The two-arm catch is deliberate: Exception covers ordinary
             // plugin bugs (NPE, AE, AIOOBE) and is the expected case; Error
             // (OOM, StackOverflowError, LinkageError) indicates the JVM is
-            // in an undefined state — we still bypass to keep audio flowing
-            // but log at SEVERE so the collapse isn't silenced alongside
-            // routine plugin bugs.
+            // in an undefined state — we still bypass to keep audio flowing,
+            // and the drain thread logs it at SEVERE (story 337, ruling E26)
+            // so the collapse isn't silenced alongside routine plugin bugs.
             if (slot.isBypassed()) {
                 for (int ch = 0; ch < Math.min(inputBuffer.length, outputBuffer.length); ch++) {
                     System.arraycopy(inputBuffer[ch], 0, outputBuffer[ch], 0, numFrames);
@@ -407,8 +426,8 @@ public final class PluginInvocationSupervisor {
                 zero(outputBuffer, numFrames);
                 handleFault(e);
             } catch (Error err) {
+                // Logged at SEVERE by the drain thread (story 337, ruling E26).
                 zero(outputBuffer, numFrames);
-                logJvmError(err);
                 handleFault(err);
             }
         }
@@ -427,8 +446,8 @@ public final class PluginInvocationSupervisor {
                 zeroDouble(outputBuffer, numFrames);
                 handleFault(e);
             } catch (Error err) {
+                // Logged at SEVERE by the drain thread (story 337, ruling E26).
                 zeroDouble(outputBuffer, numFrames);
-                logJvmError(err);
                 handleFault(err);
             }
         }
@@ -445,8 +464,8 @@ public final class PluginInvocationSupervisor {
                 zero(output, frames);
                 handleFault(e);
             } catch (Error error) {
+                // Logged at SEVERE by the drain thread (story 337, ruling E26).
                 zero(output, frames);
-                logJvmError(error);
                 handleFault(error);
             }
         }
@@ -463,7 +482,7 @@ public final class PluginInvocationSupervisor {
             } catch (Exception e) {
                 handleFault(e);
             } catch (Error err) {
-                logJvmError(err);
+                // Logged at SEVERE by the drain thread (story 337, ruling E26).
                 handleFault(err);
             }
         }
@@ -495,13 +514,6 @@ public final class PluginInvocationSupervisor {
             // Instant.now() and PendingFault allocations are unavoidable but
             // tiny and only occur on the exception path, not the hot path.
             faultQueue.offer(new PendingFault(pluginId, t, Instant.now(), false, slot));
-        }
-
-        private void logJvmError(Error err) {
-            String message = "JVM-level error in plugin " + pluginId
-                    + " (" + err.getClass().getName()
-                    + ") — session continued but the JVM may be unstable";
-            LOG.log(Level.SEVERE, message, err);
         }
 
         private static void zero(float[][] buffer, int numFrames) {

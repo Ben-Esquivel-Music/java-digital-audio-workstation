@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.mixer;
 
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.event.EventBus;
@@ -87,7 +88,7 @@ class InsertEffectActionTest {
         MixerChannel channel = new MixerChannel("Drums");
         InsertSlot slot = new InsertSlot("Compressor", createDummyProcessor());
 
-        EventBus bus = DefaultEventBus.builder().build();
+        EventBus bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).build();
         EventBusPublisher.setDefault(bus);
         try {
             List<PluginEvent> events = new CopyOnWriteArrayList<>();

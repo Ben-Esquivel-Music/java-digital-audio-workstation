@@ -11,6 +11,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.Flow;
 import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.locks.LockSupport;
@@ -166,6 +168,30 @@ public final class JavaxSoundBackend implements AudioBackend {
      * open started is already running.</p>
      */
     private volatile int openedInputChannels;
+
+    /**
+     * Captured blocks the {@code javax-sound-capture} thread lost to a throw
+     * from {@code decode} or {@code publishInput} (story 337, ruling E17) —
+     * {@code audio.input}. The loop counts the block and continues, so one bad
+     * block is a counted one-block gap instead of a dead capture thread under
+     * a stream that still answers {@code isOpen()}. Single writer: the capture
+     * thread of the stream currently open ({@link #releaseInputLine()} joins it
+     * before another starts; a join that timed out can leave at worst one lost
+     * increment, never a torn value).
+     */
+    private volatile long inputBlocksLost;
+
+    /**
+     * Capture threads that ended on a fault they cannot continue past — a
+     * throw from {@code line.read} (a broken line; continuing would spin) or a
+     * {@link VirtualMachineError} (story 337, ruling E17). A throw while the
+     * stream is closing or the thread is interrupted is teardown and is not
+     * counted. Single writer, as {@link #inputBlocksLost}.
+     */
+    private volatile long inputHalts;
+
+    /** The newest fault behind {@link #inputBlocksLost} or {@link #inputHalts}. */
+    private volatile Throwable lastInputFault;
 
     /** Creates a new Java Sound backend whose session input is the default capture line. */
     public JavaxSoundBackend() {
@@ -1370,19 +1396,55 @@ public final class JavaxSoundBackend implements AudioBackend {
         final SubmissionPublisher<AudioBlock> stream = support.currentInputPublisher();
         Thread t = new Thread(() -> {
             byte[] buf = new byte[bytes];
-            while (support.isOpen() && !stream.isClosed()
-                    && !Thread.currentThread().isInterrupted()) {
-                int read = line.read(buf, 0, buf.length);
-                if (read <= 0) {
-                    break;
+            try {
+                while (support.isOpen() && !stream.isClosed()
+                        && !Thread.currentThread().isInterrupted()) {
+                    // A throw from read means a broken line: it ends the loop
+                    // through the outer catch (story 337, ruling E17).
+                    int read = line.read(buf, 0, buf.length);
+                    if (read <= 0) {
+                        break;
+                    }
+                    try {
+                        support.publishInput(stream, decode(buf, read, format, lineFormat));
+                    } catch (VirtualMachineError fatal) {
+                        throw fatal;
+                    } catch (Throwable lostBlock) {
+                        // Story 337, ruling E17: one lost block, counted; the
+                        // loop continues with the next read.
+                        inputBlocksLost++;
+                        lastInputFault = lostBlock;
+                    }
                 }
-                AudioBlock block = decode(buf, read, format, lineFormat);
-                support.publishInput(stream, block);
+            } catch (Throwable terminal) {
+                // A throw while the stream is closing or the thread is
+                // interrupted is teardown, not a fault (story 337, ruling E17
+                // and the pump's ruling E7 applied to this thread).
+                if (support.isOpen() && !stream.isClosed()
+                        && !Thread.currentThread().isInterrupted()) {
+                    inputHalts++;
+                    lastInputFault = terminal;
+                }
             }
         }, "javax-sound-capture");
         t.setDaemon(true);
         this.captureThread = t;
         t.start();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Java Sound counts the blocks its {@code javax-sound-capture} thread
+     * lost and the capture threads that ended on a fault ({@code audio.input};
+     * story 337, ruling E17). It reports no device heartbeat: the engine's
+     * render drive is this backend's only clock (story 337, ruling E5).</p>
+     */
+    @Override
+    public BackendThreadCounters threadCounters() {
+        return new BackendThreadCounters(0L, inputBlocksLost, inputHalts, 0L,
+                OptionalLong.empty(), Optional.empty(),
+                Optional.ofNullable(lastInputFault), Optional.empty());
     }
 
     static AudioBlock decodePcm16(byte[] pcm, int bytes, AudioFormat format) {

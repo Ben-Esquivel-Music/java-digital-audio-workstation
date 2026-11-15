@@ -48,6 +48,72 @@ class PortAudioBackendTest {
         assertThat(backend.isStreamActive()).isFalse();
     }
 
+    /**
+     * Story 337, rulings E4 and E5: with no stream ever opened there is
+     * nothing to count, and the device heartbeat is present at zero —
+     * PortAudio always has a device callback thread to report on.
+     */
+    @Test
+    void threadCountersWithNoStreamAreZeroWithADeviceHeartbeatOfZero() {
+        PortAudioBackend backend = new PortAudioBackend();
+
+        com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters counters = backend.threadCounters();
+
+        assertThat(counters.callbackFaults()).isZero();
+        assertThat(counters.inputBlocksLost()).isZero();
+        assertThat(counters.deviceCallbackPeriods()).hasValue(0L);
+        assertThat(counters.lastCallbackFault()).isEmpty();
+    }
+
+    /**
+     * Story 337, ruling E4: an invoker lives for one stream, so its counts are
+     * folded into the backend's totals when the stream closes — a reopen
+     * never loses them, and the retired invoker is no longer read.
+     */
+    @Test
+    void retiringTheLiveInvokerKeepsItsCounts() {
+        IllegalStateException fault = new IllegalStateException("callback failed");
+        java.util.concurrent.atomic.AtomicBoolean failing =
+                new java.util.concurrent.atomic.AtomicBoolean(true);
+        PortAudioBackend.CallbackInvoker first = PortAudioBackend.CallbackInvoker.forStream(
+                (in, out, frames) -> {
+                    if (failing.get()) {
+                        throw fault;
+                    }
+                }, 0, 1, 16);
+        PortAudioBackend.CallbackInvoker second = PortAudioBackend.CallbackInvoker.forStream(
+                (in, out, frames) -> { }, 0, 1, 16);
+
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment output = arena.allocate(16L * Float.BYTES, Float.BYTES);
+            PortAudioBackend.InvokerCounters counters =
+                    PortAudioBackend.InvokerCounters.NONE.withLive(first);
+            first.invoke(MemorySegment.NULL, output, 16, MemorySegment.NULL, 0L, MemorySegment.NULL);
+            failing.set(false);
+            first.invoke(MemorySegment.NULL, output, 16, MemorySegment.NULL, 0L, MemorySegment.NULL);
+
+            assertThat(counters.view().faults()).isEqualTo(1L);
+            assertThat(counters.view().periods()).isEqualTo(2L);
+
+            PortAudioBackend.InvokerCounters retired = counters.retireLive();
+            failing.set(true);
+            first.invoke(MemorySegment.NULL, output, 16, MemorySegment.NULL, 0L, MemorySegment.NULL);
+
+            assertThat(retired.live()).isEmpty();
+            assertThat(retired.faults()).as("a retired invoker is no longer read").isEqualTo(1L);
+            assertThat(retired.periods()).isEqualTo(2L);
+            assertThat(retired.lastFault()).containsSame(fault);
+            assertThat(retired.retireLive()).as("retiring again is a no-op").isEqualTo(retired);
+
+            PortAudioBackend.InvokerCounters reopened = retired.withLive(second);
+            second.invoke(MemorySegment.NULL, output, 16, MemorySegment.NULL, 0L, MemorySegment.NULL);
+
+            assertThat(reopened.view().faults()).isEqualTo(1L);
+            assertThat(reopened.view().periods()).as("folded plus the live invoker").isEqualTo(3L);
+            assertThat(reopened.view().lastFault()).containsSame(fault);
+        }
+    }
+
     @Test
     void shouldThrowOnInitializeWhenUnavailable() {
         PortAudioBackend backend = new PortAudioBackend();

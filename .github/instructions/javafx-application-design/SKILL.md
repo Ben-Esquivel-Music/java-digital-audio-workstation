@@ -209,6 +209,7 @@ Smooth, purposeful motion makes a JavaFX UI feel premium.
 - Keep durations short (150–400 ms for UI, longer only for ambient/data motion).
 - Make animation **opt-out**: expose an `animatedProperty()` (boolean) on controls so users can disable motion for accessibility/performance.
 - Always **stop** running `AnimationTimer`s and `Timeline`s in `dispose()` or when the control is removed from the scene.
+- **Guard each unit of work inside `AnimationTimer.handle`.** JavaFX hands a throwable that leaves `handle` to the FX thread's uncaught-exception handler only for that timer's first 100 throws; it then logs one warning ("Too many exceptions thrown by …, ignoring further exceptions.") and drops every later one silently. A `handle` that runs several units of work per frame (channel drains, queued updates, participants) catches `Throwable` around each unit, keeps the others running, and reports the failure from there instead of relying on the handler.
 
 ---
 

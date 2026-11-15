@@ -794,6 +794,26 @@ final class TransportController implements TransportIntentHandler {
     }
 
     /**
+     * Story 337, ruling E67 — the Stop of a render-drive halt: the normal
+     * {@link #stop()}, which ends a take through its normal finalization, and
+     * then the end of any post-roll at once ({@link #finishPostRoll()}, its
+     * timer stopped first), because no tail can play on a dead drive and the
+     * halt notice says "Playback was stopped." — so on this turn the transport
+     * is STOPPED and out of post-roll, and the post-roll's deferred half (its
+     * Stopped announce and status) has run. FX thread; the audio health
+     * drain's halt response calls it.
+     */
+    void stopForEngineHalt() {
+        stop();
+        if (project.getTransport().isInPostRoll()) {
+            if (postRollTimer != null) {
+                postRollTimer.stop();
+            }
+            finishPostRoll();
+        }
+    }
+
+    /**
      * Stops the transport for a close (story 333; the studio engineer's
      * rulings R1, R2 and B2): a take that is recording or counting in gets
      * its ordinary Stop ({@link #stop()}) — its seal requested, the MIDI
@@ -863,6 +883,47 @@ final class TransportController implements TransportIntentHandler {
     void stopAudioOutputWhenIdle() {
         if (recordCoordinator.deferInputStreamStop()) return;
         if (!hasGraphInstruments()) audioEngine.stopAudioOutput();
+    }
+
+    /**
+     * Story 337, ruling E11 step 2 — closes the engine's stream after its
+     * render drive halted, once the record coordinator no longer defers the
+     * input-stream stop: unlike {@link #stopAudioOutputWhenIdle()}, also with
+     * graph instruments, because a stream left open behind a dead drive keeps
+     * its clock claim and every queued seek waits on it. The halted pump has
+     * already ended, so the stop joins it at once. Never reopens the stream.
+     * FX thread; the audio health drain calls it once, on the halt's frame,
+     * after the halt's Stop ({@link #stopForEngineHalt()}); each later frame
+     * that still owes the close retries through
+     * {@link #retryCloseStreamAfterEngineHalt()} instead (story 337, ruling
+     * E66).
+     *
+     * @return {@code true} once the stream was closed; {@code false} while the
+     *         take still defers the stop
+     */
+    boolean closeStreamAfterEngineHalt() {
+        if (recordCoordinator.deferInputStreamStop()) return false;
+        audioEngine.stopAudioOutput();
+        return true;
+    }
+
+    /**
+     * Story 337, ruling E66 — a later frame's retry of
+     * {@link #closeStreamAfterEngineHalt()}: it only asks the record
+     * coordinator whether the take still defers the input-stream stop
+     * ({@link RecordCoordinator#isInputStreamStopDeferred()}), so a retry
+     * never restarts a failed input cleanup or repeats its ERROR toast; after
+     * the halt frame's own attempt, only the user's Stop retries that cleanup.
+     * Closes the stream, also with graph instruments, once the take no longer
+     * defers it. Never reopens the stream. FX thread.
+     *
+     * @return {@code true} once the stream was closed; {@code false} while the
+     *         take still defers the stop
+     */
+    boolean retryCloseStreamAfterEngineHalt() {
+        if (recordCoordinator.isInputStreamStopDeferred()) return false;
+        audioEngine.stopAudioOutput();
+        return true;
     }
 
     /**

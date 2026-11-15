@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCodes;
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer;
 import com.benesquivelmusic.daw.core.automation.AutomationData;
 import com.benesquivelmusic.daw.core.automation.AutomationParameter;
@@ -37,8 +39,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 
 /**
  * Unified per-block audio render pipeline shared by live playback and
@@ -86,7 +86,13 @@ import java.util.logging.Logger;
  */
 public final class RenderPipeline {
 
-    private static final Logger LOG = Logger.getLogger(RenderPipeline.class.getName());
+    /**
+     * The subject of the {@code audio.config} record raised when the mixer has
+     * more return buses than the pipeline pre-allocated (story 337, ruling
+     * E25). A constant, so recording it allocates nothing; the record's detail
+     * carries the mixer's bus count.
+     */
+    public static final String RETURN_BUS_CAP_SUBJECT = "returnBusCap";
 
     /** Maximum number of tracks supported by this pipeline instance. */
     private final int maxTracks;
@@ -257,8 +263,15 @@ public final class RenderPipeline {
      */
     private double trackPreviousSegmentEndBeat = Double.NaN;
 
-    // One-shot warning flag for exceeding return bus cap
-    private boolean returnBusCapWarningLogged;
+    // Once-per-pipeline gate of the return-bus cap notice (story 337, ruling E25).
+    private boolean returnBusCapNoticeRaised;
+
+    /**
+     * The engine's health record the render thread records into (story 337,
+     * ruling E20). An offline pipeline gets a record of its own; it runs on
+     * no render thread, so nothing is recorded there.
+     */
+    private final AudioHealthRecord health;
 
     /**
      * Optional cache of sample-rate-converted clip buffers. When set,
@@ -293,9 +306,16 @@ public final class RenderPipeline {
      * @param format    the audio format describing channel count and sample rate
      * @param maxTracks the maximum number of tracks rendered per block
      * @param blockSize the maximum block size in frames
+     * @param health    the health record render-path notices are recorded
+     *                  into on a render thread (story 337, ruling E20) — the
+     *                  engine's own, or an explicit fresh record for an
+     *                  offline render, never defaulted (failure-surfacing book
+     *                  §2.7); must not be null
      */
-    public RenderPipeline(AudioFormat format, int maxTracks, int blockSize) {
+    public RenderPipeline(AudioFormat format, int maxTracks, int blockSize,
+                          AudioHealthRecord health) {
         this.format = Objects.requireNonNull(format, "format must not be null");
+        this.health = Objects.requireNonNull(health, "health must not be null");
         if (maxTracks <= 0) {
             throw new IllegalArgumentException("maxTracks must be positive: " + maxTracks);
         }
@@ -801,15 +821,16 @@ public final class RenderPipeline {
                 applyAutomation(tracks, trackCount, mixerChannels, transport, mixer);
             }
 
-            // Warn once if the mixer has more return buses than pre-allocated
-            if (!returnBusCapWarningLogged
+            // Record once if the mixer has more return buses than
+            // pre-allocated: an audio.config record with no throwable, the
+            // bus count as detail — no logger, no formatting, no allocation on
+            // the render thread (story 337, ruling E25). The plain flag stays
+            // the once-per-pipeline gate.
+            if (!returnBusCapNoticeRaised
                     && mixer.getReturnBusCount() > Mixer.MAX_RETURN_BUSES) {
-                returnBusCapWarningLogged = true;
-                final Mixer m = mixer;
-                LOG.log(Level.WARNING,
-                        () -> "Mixer has " + m.getReturnBusCount()
-                                + " return buses but only " + Mixer.MAX_RETURN_BUSES
-                                + " are supported; extra buses will not receive send audio");
+                returnBusCapNoticeRaised = true;
+                health.recordOnCurrentThread(AudioFailureCodes.CONFIG, null,
+                        RETURN_BUS_CAP_SUBJECT, mixer.getReturnBusCount());
             }
 
             // Per-track CPU timing for budget enforcement. The enforcer

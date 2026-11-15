@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
@@ -80,7 +81,7 @@ class TransportEditsAreRefusedWhileProjectActionsAreNotAllowedTest {
     @BeforeEach
     void aTransportBehindTheGate() throws Exception {
         previousBus = EventBusPublisher.getDefault();
-        bus = new DefaultEventBus();
+        bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         recording = bus.onPublication(DawEvent.class, published::add);
         EventBusPublisher.setDefault(bus);
         project = new DawProject("Song", FORMAT);

@@ -1,11 +1,18 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCategory;
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCodes;
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthLane;
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
+import com.benesquivelmusic.daw.core.audio.health.LaneRole;
+import com.benesquivelmusic.daw.core.audio.health.RenderThread;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioBlock;
 
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Flow;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.logging.Level;
@@ -30,36 +37,63 @@ import java.util.logging.Logger;
  * {@code sink} contract permits reuse: implementations consume the block
  * synchronously) so the steady-state loop allocates nothing either.</p>
  *
- * <h2>Fault tolerance</h2>
+ * <h2>Fault tolerance (failure-surfacing book §4.3; story 337)</h2>
+ * <p>The render drive never logs and never surfaces a failure itself, and
+ * takes no lock of its own (the bounded input queue's {@code poll}, one hop
+ * off the device thread, is the one pre-existing exception): it RECORDS each
+ * one into its own {@link AudioHealthLane} —
+ * a category constant and the thrown reference, no formatting — and the
+ * application's drain decides what the user sees (book §2.3; story 337,
+ * ruling E14). The lane is claimed from the engine's
+ * {@link AudioHealthRecord} when the pump is built, and the thread is a
+ * {@link RenderThread} that carries it, so render code deep inside
+ * {@code processBlock} records into the same lane (story 337, ruling E20).</p>
  * <ul>
- *   <li>{@code processBlock} throwing {@link IllegalStateException} <em>while
- *       the engine (or this pump) is no longer running</em> means the engine
- *       stopped racing the pump — the loop exits quietly. The condition is
- *       the STATE, not the exception type (story 316 review): every other
- *       {@code IllegalStateException} — a mixer, effects chain, insert
- *       plugin, MIDI renderer or graph scheduler asserting an invariant while
- *       the engine IS running — is treated as an ordinary render fault, not
- *       as a reason to end audio.</li>
- *   <li>Any other {@link RuntimeException} from {@code processBlock} (for
- *       example a plugin NPE) is logged once at {@link Level#SEVERE},
- *       counted ({@link #renderFaults()}), and survived: the faulted block
- *       is replaced with silence and the loop keeps running — a misbehaving
- *       plugin must not kill audio. (Surfacing engine health to the user is
- *       story 338.)</li>
- *   <li>{@code sink} throwing (for example a frame-size mismatch after a
- *       driver reset) is logged once at {@link Level#WARNING}, counted, and
- *       the loop keeps running: the reopen path fixes the shape; a transient
- *       fault must not kill the render drive. That iteration is then held to
- *       a <em>floor</em> of one block period ({@link #parkUntil(long)}) — a
- *       floor rather than an extra wait, because what the following
- *       {@code awaitSinkCapacity} costs after a failed {@code sink} depends
- *       entirely on the backend (see below).</li>
- *   <li>{@code awaitSinkCapacity} throwing is logged once at
- *       {@link Level#SEVERE} and the same floor applies. This is the harsher
+ *   <li><strong>A stopped engine</strong> answers {@code processBlock} with
+ *       {@code false} after writing silence, and the loop exits at once with
+ *       no record (story 337, ruling E6). A {@link Throwable} from
+ *       {@code processBlock} while the engine (or this pump) is no longer
+ *       running is the same teardown — for example one caused by
+ *       {@link #stop()}'s interrupt — and also exits quietly with no record.
+ *       The condition is the STATE, not the exception type (story 337,
+ *       ruling E7).</li>
+ *   <li><strong>A render fault</strong> — any other {@link Throwable} from
+ *       {@code processBlock} while the engine runs, including a
+ *       {@link LinkageError}, an {@link AssertionError} or a smuggled checked
+ *       throwable — is recorded as {@code audio.render} with the current
+ *       fault streak, the faulted block is replaced with silence, and the
+ *       loop keeps running: a single fault never ends the render loop (story
+ *       337, ruling E9). One rendered block resets the streak.</li>
+ *   <li><strong>The honest exit</strong> (story 337, rulings E8 and E10).
+ *       {@link #haltThreshold(AudioFormat)} consecutive faulted blocks — one
+ *       second of continuously faulted audio counted in frames, never fewer
+ *       than 8 blocks — end the drive: the pump clears its own
+ *       {@code running}, writes a terminal {@code audio.render.halted} record
+ *       (the last throwable, the streak length and the stream generation) and
+ *       returns. It never touches the engine's lifecycle lock, its stream
+ *       state, the transport or the backend; the engine reports the dead drive
+ *       through {@code AudioEngine.isRenderDriveAlive()} and the next open
+ *       reaps it. A {@link VirtualMachineError} from anywhere in the iteration
+ *       halts at once, and an outer catch-all turns anything the specific
+ *       catches miss into the same terminal exit, so the thread never dies by
+ *       unwinding (story 337, ruling E9).</li>
+ *   <li><strong>{@code sink} throwing</strong> (for example a frame-size
+ *       mismatch after a driver reset) is recorded as {@code audio.sink} and
+ *       the loop keeps running: the reopen path fixes the shape, and a dead
+ *       output device is the watchdog's verdict through the render-drive
+ *       heartbeat — which a {@code sink} that threw does not beat (story 337,
+ *       rulings E5 and E8). That iteration is then held to a <em>floor</em>
+ *       of one block period ({@link #parkUntil(long)}) — a floor rather than
+ *       an extra wait, because what the following {@code awaitSinkCapacity}
+ *       costs after a failed {@code sink} depends entirely on the backend
+ *       (see below).</li>
+ *   <li>{@code awaitSinkCapacity} throwing is recorded as
+ *       {@code audio.pacing} and the same floor applies. This is the harsher
  *       fault: a seam that threw cannot be credited with any of the wait it
  *       was asked for, so the loop re-arms the deadline at the throw and the
- *       floor supplies the whole period rather than the loop dying silently
- *       or spinning un-paced.</li>
+ *       floor supplies the whole period rather than the loop spinning
+ *       un-paced. A {@code sink} or pacing throw after this pump stopped is
+ *       teardown and is not recorded (story 337, ruling E7).</li>
  *   <li><strong>Why a floor and not a park.</strong> The loop's pacing comes
  *       from {@link AudioBackend#awaitSinkCapacity(long)}, and its behaviour
  *       after a failed {@code sink} is BACKEND-SPECIFIC (story 316 review,
@@ -81,9 +115,9 @@ import java.util.logging.Logger;
  *       transport one block per iteration with no hardware clock behind it,
  *       running the timeline far faster than real time for the duration of
  *       the fault.</li>
- *   <li>An {@link Error} still kills the pump thread; the installed
- *       uncaught-exception handler logs it at {@link Level#SEVERE} so the
- *       death is at least visible.</li>
+ *   <li>The installed uncaught-exception handler stays as a last-resort
+ *       backstop: only a throwable the outer catch-all itself cannot handle
+ *       (an error raised while handling one) can still kill the thread.</li>
  *   <li>Input blocks arriving faster than the loop consumes them are dropped
  *       (bounded queue) and counted; both sides of that queue are non-RT
  *       threads, so the queue's internal lock is fine here.</li>
@@ -101,6 +135,9 @@ final class EngineStreamPump {
 
     /** How long {@link #stop()} waits for the pump thread to exit. */
     private static final long STOP_JOIN_MILLIS = 1_000L;
+
+    /** The fewest consecutive faulted blocks that can halt the drive (story 337, ruling E8). */
+    private static final int MIN_HALT_THRESHOLD = 8;
 
     private final AudioBackend backend;
     private final AudioEngine engine;
@@ -124,14 +161,24 @@ final class EngineStreamPump {
 
     private final ArrayBlockingQueue<AudioBlock> inputQueue =
             new ArrayBlockingQueue<>(INPUT_QUEUE_CAPACITY);
+    /**
+     * Written by the backend's input marshalling thread, never by this pump's
+     * render thread, so it stays a shared atomic rather than a lane counter.
+     */
     private final AtomicLong droppedInputBlocks = new AtomicLong();
-    private final AtomicLong sinkFailures = new AtomicLong();
-    private final AtomicLong renderFaults = new AtomicLong();
-    private volatile boolean sinkFailureLogged;
-    private volatile boolean renderFaultLogged;
-    private volatile boolean pacingFaultLogged;
 
-    private final Thread thread;
+    /** This pump's render-drive lane: its only writer is {@link #thread}. */
+    private final AudioHealthLane lane;
+    /** The stream this pump renders for — the subject of a halt record. */
+    private final Object streamGeneration;
+    /** Consecutive faulted blocks that end the drive (story 337, ruling E8). */
+    private final int haltThreshold;
+    /** Consecutive faulted {@code processBlock} calls — pump thread only. */
+    private int renderFaultStreak;
+    /** Retires {@link #lane} exactly once, whichever exit path gets there first. */
+    private final AtomicBoolean laneRetired = new AtomicBoolean();
+
+    private final RenderThread thread;
     private volatile boolean running;
     private volatile boolean inputStreamTerminated;
     private volatile Flow.Subscription inputSubscription;
@@ -142,8 +189,9 @@ final class EngineStreamPump {
     private boolean inputPlanesDirty;
 
     /**
-     * Pre-allocates every buffer the render loop needs. Runs on the
-     * lifecycle (non-RT) thread.
+     * Pre-allocates every buffer the render loop needs and claims the render
+     * drive's lane from the engine's health record. Runs on the lifecycle
+     * (non-RT) thread.
      *
      * @param backend      the open backend to stream through; must not be null
      * @param engine       the engine whose {@code processBlock} drives rendering;
@@ -189,6 +237,7 @@ final class EngineStreamPump {
         this.bufferFrames = format.bufferSize();
         this.blockPeriodNanos =
                 (long) (bufferFrames * 1_000_000_000L / format.sampleRate());
+        this.haltThreshold = haltThreshold(format);
         this.input = new float[Math.max(1, backend.openedInputChannels())][bufferFrames];
         this.inputViews = new float[input.length + 1][][];
         for (int width = 0; width <= input.length; width++) inputViews[width] = java.util.Arrays.copyOf(input, width);
@@ -197,15 +246,18 @@ final class EngineStreamPump {
         this.interleaved = new float[channels * bufferFrames];
         this.reusableBlock = new AudioBlock(
                 openedFormat.sampleRate(), channels, bufferFrames, interleaved);
-        this.thread = Thread.ofPlatform()
-                .name(THREAD_NAME)
-                .daemon(true)
-                .priority(Thread.MAX_PRIORITY)
-                .unstarted(this::renderLoop);
-        // RuntimeExceptions are survived inside the loop; only an Error can
-        // still kill the thread. Make that death loud — a silently dead pump
+        this.streamGeneration = engine.getStreamGeneration();
+        // Claimed last, once nothing above can throw, so a failed construction
+        // never leaves a lane registered (story 337, ruling E18). A RenderThread
+        // is a daemon platform thread at MAX_PRIORITY that carries the lane.
+        this.lane = engine.audioHealth().claimLane(LaneRole.RENDER_DRIVE);
+        this.thread = new RenderThread(lane, this::renderLoop, THREAD_NAME);
+        // The loop's outer catch-all turns every throwable into a counted
+        // fault or the recorded honest exit (story 337, ruling E9), so only a
+        // throwable the catch-all itself cannot handle can still kill the
+        // thread. Keep that last-resort death loud — a silently dead pump
         // leaves the engine RUNNING with the RT clock claimed and nothing
-        // driving it (engine-health surfacing is story 338).
+        // driving it (surfacing this handler's record is story 338's).
         this.thread.setUncaughtExceptionHandler((deadThread, failure) ->
                 LOG.log(Level.SEVERE,
                         "engine-render-pump thread died; audio output is dead until"
@@ -214,12 +266,31 @@ final class EngineStreamPump {
     }
 
     /**
+     * Returns how many consecutive faulted blocks end the render drive: one
+     * second of continuously faulted audio counted in frames,
+     * {@code max(8, ceil(sampleRate / bufferFrames))} (story 337, ruling E8)
+     * — 22 blocks at 2048 frames and 44.1&nbsp;kHz, 6000 at 32 frames and
+     * 192&nbsp;kHz. Counting frames instead of reading a clock is the same at
+     * every block size and deterministic in tests; the floor of 8 binds only
+     * for degenerate formats.
+     *
+     * @param format the engine format
+     * @return the threshold, at least 8
+     */
+    static int haltThreshold(AudioFormat format) {
+        Objects.requireNonNull(format, "format must not be null");
+        return Math.max(MIN_HALT_THRESHOLD,
+                (int) Math.ceil(format.sampleRate() / format.bufferSize()));
+    }
+
+    /**
      * Subscribes to the backend's capture stream and starts the render
      * thread. Any {@link RuntimeException} the subscription raises propagates
      * to the caller — {@link AudioEngine} treats it as a pump-start failure,
      * unwinds what its start had claimed and rethrows. That unwind is not a
      * fallback: unlike a rung whose OPEN is refused, a failed pump start does
-     * not move on to the next ladder rung.
+     * not move on to the next ladder rung. A failed start retires the lane
+     * the constructor claimed: its thread never ran.
      *
      * @throws IllegalStateException if the pump was already started
      */
@@ -234,6 +305,9 @@ final class EngineStreamPump {
         } catch (RuntimeException | Error startFailure) {
             running = false;
             cancelInputSubscription();
+            if (!thread.isAlive()) {
+                retireLane();
+            }
             throw startFailure;
         }
     }
@@ -243,7 +317,9 @@ final class EngineStreamPump {
      * the pump thread (it may be parked in
      * {@link AudioBackend#awaitSinkCapacity(long)} or blocked inside
      * {@code sink}), cancels the capture subscription, and joins the thread
-     * with a bounded wait. Idempotent; never throws.
+     * with a bounded wait. Idempotent; never throws. A confirmed exit retires
+     * the pump's lane into the engine's health record, folding its counts in
+     * (story 337, ruling E18); a timed-out join keeps the lane live.
      *
      * @return {@code true} when the pump thread is confirmed exited (or was
      *         never started) — only then can the caller know nothing will
@@ -256,6 +332,7 @@ final class EngineStreamPump {
         running = false;
         cancelInputSubscription();
         if (!thread.isAlive() && thread.getState() == Thread.State.NEW) {
+            retireLane();
             return true;
         }
         thread.interrupt();
@@ -270,10 +347,15 @@ final class EngineStreamPump {
                     + " ms; the stop must be retried once the loop unblocks");
             return false;
         }
+        retireLane();
         return true;
     }
 
-    /** Returns {@code true} while the render loop is meant to be running. */
+    /**
+     * Returns {@code true} while the render loop is meant to be running —
+     * {@code false} once it stopped, including after the honest exit of
+     * story 337, ruling E10.
+     */
     boolean isRunning() {
         return running && thread.isAlive();
     }
@@ -283,18 +365,35 @@ final class EngineStreamPump {
         return droppedInputBlocks.get();
     }
 
-    /** Number of {@code sink} calls that threw and were survived. */
+    /** Number of {@code sink} calls that threw and were survived — this pump's lane. */
     long sinkFailures() {
-        return sinkFailures.get();
+        return lane.count(AudioFailureCategory.SINK);
     }
 
     /**
-     * Number of {@code processBlock} calls that threw a non-lifecycle
-     * {@link RuntimeException} (for example a plugin NPE) and were survived
-     * by rendering silence for the faulted block.
+     * Number of {@code processBlock} calls that threw while the engine ran
+     * and were survived by rendering silence for the faulted block — this
+     * pump's lane.
      */
     long renderFaults() {
-        return renderFaults.get();
+        return lane.count(AudioFailureCategory.RENDER);
+    }
+
+    /** Number of {@code awaitSinkCapacity} calls that threw and were survived — this pump's lane. */
+    long pacingFaults() {
+        return lane.count(AudioFailureCategory.PACING);
+    }
+
+    /** The render-drive lane this pump records into. */
+    AudioHealthLane lane() {
+        return lane;
+    }
+
+    /** Retires {@link #lane} once; only after the thread exited or never started. */
+    private void retireLane() {
+        if (laneRetired.compareAndSet(false, true)) {
+            engine.audioHealth().retireLane(lane);
+        }
     }
 
     /**
@@ -332,91 +431,133 @@ final class EngineStreamPump {
 
     // ── The render loop (pump thread only) ───────────────────────────────
 
+    /**
+     * The render drive. Records into {@link #lane}; never logs or surfaces,
+     * and takes no lock but the input queue's {@code poll} (story 337,
+     * rulings E9, E14 and E46). The outer catch-all is the
+     * terminal exit for anything the specific catches below do not handle —
+     * {@link #fillInputPlanes()} included — so the thread never dies by
+     * unwinding.
+     */
     private void renderLoop() {
-        while (running) {
-            fillInputPlanes();
-            try {
-                // A terminal publisher cannot regain availability through queued input.
-                engine.processBlock(inputViews[inputStreamTerminated ? 0 : availableInputChannels],
-                        output, bufferFrames, interleaved);
-            } catch (RuntimeException renderFault) {
-                // Test the STATE, not the exception type (story 316 review):
-                // any collaborator reachable from processBlock — the mixer, an
-                // effects chain, an insert plugin asserting "not prepared"
-                // after a mid-session swap, the MIDI renderer, the graph
-                // scheduler — can throw IllegalStateException, and treating
-                // every one of them as "the engine stopped" silently ended
-                // audio. Only a stopped engine (or a stopped pump) is a
-                // lifecycle race.
-                if (renderFault instanceof IllegalStateException
-                        && (!running || !engine.isRunning())) {
-                    // The engine stopped racing the pump — exit quietly; the
-                    // lifecycle thread owns the stream teardown.
+        try {
+            while (running) {
+                fillInputPlanes();
+                if (!renderOneBlock()) {
                     return;
                 }
-                // A plugin NPE (or any other render-path fault) must not
-                // kill audio: log once, count, and sink silence for this
-                // block so the device keeps its cadence.
-                renderFaults.incrementAndGet();
-                if (!renderFaultLogged) {
-                    renderFaultLogged = true;
-                    LOG.log(Level.SEVERE,
-                            "processBlock threw; the faulted block is rendered as"
-                                    + " silence and the pump keeps running",
-                            renderFault);
+                // A fault below owes this iteration a FLOOR of one block
+                // period, measured from the moment the fault happened. It is
+                // deliberately not an extra park: the awaitSinkCapacity that
+                // follows may pace the iteration in full by itself (see
+                // parkUntil).
+                boolean pacingOwed = false;
+                long paceDeadlineNanos = 0L;
+                try {
+                    backend.sink(reusableBlock);
+                    // The render-drive heartbeat: a block the backend accepted
+                    // (story 337, ruling E5). A sink that threw does not beat.
+                    lane.beat();
+                } catch (VirtualMachineError fatal) {
+                    halt(fatal);
+                    return;
+                } catch (Throwable sinkFailure) {
+                    if (!running) {
+                        return;
+                    }
+                    lane.record(AudioFailureCodes.SINK, sinkFailure, null, 0);
+                    pacingOwed = true;
+                    paceDeadlineNanos = System.nanoTime() + blockPeriodNanos;
                 }
-                zeroOutputPlanes();
-                RenderPipeline.writeInterleavedOutput(output, interleaved, channels, bufferFrames, null);
-            }
-            // A fault below owes this iteration a FLOOR of one block period,
-            // measured from the moment the fault happened. It is deliberately
-            // not an extra park: the awaitSinkCapacity that follows may pace
-            // the iteration in full by itself (see parkUntil).
-            boolean pacingOwed = false;
-            long paceDeadlineNanos = 0L;
-            try {
-                backend.sink(reusableBlock);
-            } catch (RuntimeException sinkFailure) {
-                sinkFailures.incrementAndGet();
-                if (!sinkFailureLogged) {
-                    sinkFailureLogged = true;
-                    LOG.log(Level.WARNING,
-                            "Audio sink rejected a rendered block; the pump keeps running"
-                                    + " (a driver reset/reopen fixes the shape)",
-                            sinkFailure);
+                if (!running) {
+                    return;
                 }
-                pacingOwed = true;
-                paceDeadlineNanos = System.nanoTime() + blockPeriodNanos;
-            }
-            if (!running) {
-                return;
-            }
-            try {
-                backend.awaitSinkCapacity(blockPeriodNanos);
-            } catch (RuntimeException pacingFault) {
-                // A throwing pacing seam must not kill the render drive
-                // either — log once and stand in for the wait that threw.
-                // The loop cannot know how much of that wait the seam had
-                // actually performed before it threw, so it credits none of
-                // it: the deadline is re-armed here and the floor below pays
-                // a whole period. Deliberately conservative — a seam that
-                // parked most of a period first is then paced slightly long,
-                // which is the safe direction.
-                if (!pacingFaultLogged) {
-                    pacingFaultLogged = true;
-                    LOG.log(Level.SEVERE,
-                            "awaitSinkCapacity threw; the pump holds each iteration to"
-                                    + " a floor of one block period until the seam"
-                                    + " recovers",
-                            pacingFault);
+                try {
+                    backend.awaitSinkCapacity(blockPeriodNanos);
+                } catch (VirtualMachineError fatal) {
+                    halt(fatal);
+                    return;
+                } catch (Throwable pacingFault) {
+                    // A throwing pacing seam must not kill the render drive
+                    // either — record it and stand in for the wait that threw.
+                    // The loop cannot know how much of that wait the seam had
+                    // actually performed before it threw, so it credits none
+                    // of it: the deadline is re-armed here and the floor below
+                    // pays a whole period. Deliberately conservative — a seam
+                    // that parked most of a period first is then paced
+                    // slightly long, which is the safe direction.
+                    if (!running) {
+                        return;
+                    }
+                    lane.record(AudioFailureCodes.PACING, pacingFault, null, 0);
+                    pacingOwed = true;
+                    paceDeadlineNanos = System.nanoTime() + blockPeriodNanos;
                 }
-                pacingOwed = true;
-                paceDeadlineNanos = System.nanoTime() + blockPeriodNanos;
+                if (pacingOwed) {
+                    parkUntil(paceDeadlineNanos);
+                }
             }
-            if (pacingOwed) {
-                parkUntil(paceDeadlineNanos);
-            }
+        } catch (Throwable escaped) {
+            halt(escaped);
         }
+    }
+
+    /**
+     * Renders one block into the output planes and the interleave buffer.
+     *
+     * @return {@code false} when the loop must end — the engine stopped (story
+     *         337, rulings E6 and E7), or the drive halted (rulings E8 and E9)
+     */
+    private boolean renderOneBlock() {
+        try {
+            // A terminal publisher cannot regain availability through queued input.
+            if (!engine.processBlock(inputViews[inputStreamTerminated ? 0 : availableInputChannels],
+                    output, bufferFrames, interleaved)) {
+                // Story 337, ruling E6: a stopped engine wrote silence and
+                // recorded nothing; the lifecycle thread owns the teardown.
+                return false;
+            }
+            renderFaultStreak = 0;
+            return true;
+        } catch (VirtualMachineError fatal) {
+            halt(fatal);
+            return false;
+        } catch (Throwable renderFault) {
+            // Test the STATE, not the exception type (story 316 review; story
+            // 337, ruling E7): a throw while the engine or this pump is no
+            // longer running is teardown — for example stop()'s interrupt
+            // surfacing from a blocking call — and exits with no record.
+            if (!running || !engine.isRunning()) {
+                return false;
+            }
+            renderFaultStreak++;
+            lane.record(AudioFailureCodes.RENDER, renderFault, null, renderFaultStreak);
+            if (renderFaultStreak >= haltThreshold) {
+                halt(renderFault);
+                return false;
+            }
+            // A plugin NPE (or any other render-path fault) must not kill
+            // audio: sink silence for this block so the device keeps its
+            // cadence; the partial write must not leak out.
+            zeroOutputPlanes();
+            RenderPipeline.writeInterleavedOutput(output, interleaved, channels, bufferFrames, null);
+            return true;
+        }
+    }
+
+    /**
+     * The honest exit, pump side (story 337, ruling E10): this pump stops
+     * running, then writes one terminal {@code audio.render.halted} record —
+     * the cause, the streak length and the stream generation — so a reader
+     * that sees the record already sees a dead drive. It never touches
+     * the engine's lifecycle lock, stream state, transport or backend.
+     */
+    private void halt(Throwable cause) {
+        // running FIRST: the drain reacts to this record by asking
+        // AudioEngine.isRenderDriveAlive(), so the record's release store must
+        // publish a drive that already reads as dead (story 337, ruling E60).
+        running = false;
+        lane.record(AudioFailureCodes.RENDER_HALTED, cause, streamGeneration, renderFaultStreak);
     }
 
     /**

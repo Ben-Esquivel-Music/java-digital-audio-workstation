@@ -189,14 +189,24 @@ final class CoreAudioFormatChangeShim implements AutoCloseable {
     /**
      * Method handle target invoked by the FFM upcall stub when the
      * CoreAudio dispatch queue delivers a property change.
+     *
+     * <p>Every fault is caught and counted on the backend (story 337, ruling
+     * E31) and answers {@code 0} (noErr): an exception reaching the native
+     * frame would terminate the JVM. The count sits in its own catch-all so
+     * nothing can escape the handler either. Package-private so tests drive
+     * this entry the way the stub would.</p>
      */
-    @SuppressWarnings("unused") // invoked via upcall stub
-    private int listenerUpcall(int inObjectID, int inNumberAddresses,
-                               MemorySegment inAddresses,
-                               MemorySegment inClientData) {
+    int listenerUpcall(int inObjectID, int inNumberAddresses,
+                       MemorySegment inAddresses,
+                       MemorySegment inClientData) {
         try {
             return dispatch(inObjectID, inNumberAddresses, inAddresses);
         } catch (Throwable t) {
+            try {
+                backend.noteDeviceNotificationFault(t);
+            } catch (Throwable ignored) {
+                // Nothing may reach the dispatch queue.
+            }
             return 0;
         }
     }

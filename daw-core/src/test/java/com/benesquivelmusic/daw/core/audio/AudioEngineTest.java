@@ -92,15 +92,62 @@ class AudioEngineTest {
         assertThat(output[0]).containsExactly(0.5f, -0.5f, 0.25f, -0.25f);
     }
 
+    /**
+     * Story 337, ruling E6: a stopped engine renders silence instead of
+     * throwing — {@code false}, zeroed planes over {@code [0, numFrames)}, a
+     * zeroed interleaved block, no metering stamp and no failure record.
+     */
     @Test
-    void shouldThrowWhenProcessingWhileNotRunning() {
+    void processingOnAStoppedEngineRendersSilenceAndRecordsNothing() {
         AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
 
-        float[][] input = {{0.0f}};
-        float[][] output = {{0.0f}};
+        float[][] input = {{1.0f, 1.0f, 1.0f, 1.0f}};
+        float[][] output = {{1.0f, 1.0f, 1.0f, 1.0f}, {1.0f, 1.0f, 1.0f, 1.0f}};
+        float[] interleaved = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
 
-        assertThatThrownBy(() -> engine.processBlock(input, output, 1))
-                .isInstanceOf(IllegalStateException.class);
+        assertThat(engine.processBlock(input, output, 3, interleaved)).isFalse();
+
+        assertThat(output[0]).containsExactly(0.0f, 0.0f, 0.0f, 1.0f);
+        assertThat(output[1]).containsExactly(0.0f, 0.0f, 0.0f, 1.0f);
+        assertThat(interleaved).containsOnly(0.0f);
+        assertThat(engine.meteringTapBus().blockIndex())
+                .as("a stopped engine consumes no metering stamp")
+                .isZero();
+        assertThat(engine.audioHealth().totals())
+                .as("a stopped engine records no failure")
+                .containsOnly(0L);
+
+        float[][] planarOnly = {{1.0f, 1.0f}};
+        assertThat(engine.processBlock(input, planarOnly, 2)).isFalse();
+        assertThat(planarOnly[0]).containsExactly(0.0f, 0.0f);
+    }
+
+    /** Story 337, ruling E6: the silence never writes past a plane or below zero frames. */
+    @Test
+    void processingOnAStoppedEngineToleratesShortPlanesNullPlanesAndNegativeFrames() {
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+
+        float[][] output = {{1.0f, 1.0f}, null};
+        assertThat(engine.processBlock(null, output, 8, null)).isFalse();
+        assertThat(output[0]).containsExactly(0.0f, 0.0f);
+
+        float[][] untouched = {{1.0f, 1.0f}};
+        assertThat(engine.processBlock(null, untouched, -4, null)).isFalse();
+        assertThat(untouched[0]).containsExactly(1.0f, 1.0f);
+
+        assertThat(engine.processBlock(null, null, 4, null)).isFalse();
+    }
+
+    @Test
+    void processingOnARunningEngineReportsTheBlockRendered() {
+        AudioEngine engine = new AudioEngine(new AudioFormat(44_100.0, 1, 16, 4));
+        engine.start();
+        try {
+            assertThat(engine.processBlock(new float[][] {{0.0f, 0.0f, 0.0f, 0.0f}},
+                    new float[][] {{0.0f, 0.0f, 0.0f, 0.0f}}, 4)).isTrue();
+        } finally {
+            engine.stop();
+        }
     }
 
     @Test

@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.mixer;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCodes;
+import com.benesquivelmusic.daw.core.audio.health.RenderThread;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.ExternalPluginHost;
 
@@ -19,6 +21,11 @@ import java.util.logging.Logger;
  * <p>Once a plugin has crashed, the adapter marks it as faulted and all
  * subsequent calls pass audio through unprocessed until {@link #reset()} is
  * called, which clears the faulted state.</p>
+ *
+ * <p>The crash is recorded, never logged, on the render thread: an
+ * {@code audio.plugin} record in the current render thread's lane, with the
+ * plugin host as subject (story 337, ruling E30). Off a render thread nothing
+ * is recorded.</p>
  */
 public final class ClapInsertEffect implements AudioProcessor {
 
@@ -65,8 +72,9 @@ public final class ClapInsertEffect implements AudioProcessor {
         try {
             pluginHost.process(inputBuffer, outputBuffer, numFrames);
         } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "CLAP plugin processing failed, falling back to pass-through: "
-                    + pluginHost.getDescriptor().name(), e);
+            // Story 337, ruling E30: a record, not a SEVERE log line built by
+            // string concatenation on the render thread.
+            RenderThread.recordOnCurrentThread(AudioFailureCodes.PLUGIN, e, pluginHost, 0);
             faulted = true;
             copyBuffer(inputBuffer, outputBuffer, numFrames);
         }

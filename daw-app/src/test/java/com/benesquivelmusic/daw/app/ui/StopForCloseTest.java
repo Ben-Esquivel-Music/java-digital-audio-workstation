@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -80,7 +81,7 @@ class StopForCloseTest {
         project.setMetadata(project.getMetadata().withPath(folder));
         transport = project.getTransport();
         previous = EventBusPublisher.getDefault();
-        bus = new DefaultEventBus();
+        bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         bus.onPublication(TransportEvent.class, published::add);
         EventBusPublisher.setDefault(bus);
         runOnFx(() -> transport.setPreRollPostRoll(new PreRollPostRoll(0, 2, true)));

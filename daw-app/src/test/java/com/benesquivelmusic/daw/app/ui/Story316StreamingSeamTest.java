@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
 import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector;
@@ -177,7 +178,7 @@ class Story316StreamingSeamTest {
                 new BackendStreamRung(fallback, DeviceId.defaultFor("SpyFallback")))));
 
         EventBus previousBus = EventBusPublisher.getDefault();
-        DefaultEventBus bus = new DefaultEventBus();
+        DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         List<BackendFallbackEvent> events =
                 Collections.synchronizedList(new ArrayList<>());
         CountDownLatch published = new CountDownLatch(1);

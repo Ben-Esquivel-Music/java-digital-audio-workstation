@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
 import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrackManager;
@@ -97,7 +98,7 @@ class ToolbarAndEditorEditsAreRefusedWhileProjectActionsAreNotAllowedTest {
     @BeforeEach
     void recordThePublications() {
         previousBus = EventBusPublisher.getDefault();
-        bus = new DefaultEventBus();
+        bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         recording = bus.onPublication(DawEvent.class, published::add);
         EventBusPublisher.setDefault(bus);
     }

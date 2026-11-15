@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 import com.benesquivelmusic.daw.core.mixer.CueBusManager;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
@@ -86,7 +87,7 @@ class MetronomeMasterLatencyTest {
                 timeline.write(invocation.getArgument(0), invocation.getArgument(1));
                 return null;
             }).when(backend).writeToChannel(anyInt(), any(float[].class));
-            var pipeline = new RenderPipeline(format, 1, block);
+            var pipeline = new RenderPipeline(format, 1, block, new AudioHealthRecord());
             var output = new float[2][block];
             for (timeline.position = 0; timeline.position < TOTAL_FRAMES; timeline.position += block) {
                 int frames = Math.min(block, TOTAL_FRAMES - timeline.position);

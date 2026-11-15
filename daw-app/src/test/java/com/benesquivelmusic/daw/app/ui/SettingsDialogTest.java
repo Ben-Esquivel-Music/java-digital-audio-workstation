@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.app.ui.settings.SettingsShell;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.sdk.event.DispatchMode;
 import com.benesquivelmusic.daw.sdk.event.EventBus;
 import com.benesquivelmusic.daw.sdk.event.UiEvent;
@@ -216,7 +217,7 @@ class SettingsDialogTest {
         EventBus previous = EventBusPublisher.getDefault();
         // ON_UI_THREAD subscribers run inline on the publish thread — no toolkit
         // needed for the capture (mirrors SettingsSurfaceWiringTest's bus).
-        DefaultEventBus bus = DefaultEventBus.builder().uiExecutor(Runnable::run).build();
+        DefaultEventBus bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).uiExecutor(Runnable::run).build();
         AtomicReference<UiEvent.SettingsApplied> captured = new AtomicReference<>();
         bus.on(UiEvent.SettingsApplied.class, DispatchMode.ON_UI_THREAD, captured::set);
         EventBusPublisher.setDefault(bus);

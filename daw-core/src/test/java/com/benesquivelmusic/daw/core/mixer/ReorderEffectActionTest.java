@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.mixer;
 
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.event.EventBus;
@@ -90,7 +91,7 @@ class ReorderEffectActionTest {
         channel.addInsert(comp);
         channel.addInsert(eq);
 
-        EventBus bus = DefaultEventBus.builder().build();
+        EventBus bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).build();
         EventBusPublisher.setDefault(bus);
         try {
             List<PluginEvent> events = new CopyOnWriteArrayList<>();
@@ -132,7 +133,7 @@ class ReorderEffectActionTest {
         InsertSlot comp = new InsertSlot("Compressor", createDummyProcessor());
         channel.addInsert(comp);
 
-        EventBus bus = DefaultEventBus.builder().build();
+        EventBus bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).build();
         EventBusPublisher.setDefault(bus);
         try {
             List<PluginEvent> events = new CopyOnWriteArrayList<>();

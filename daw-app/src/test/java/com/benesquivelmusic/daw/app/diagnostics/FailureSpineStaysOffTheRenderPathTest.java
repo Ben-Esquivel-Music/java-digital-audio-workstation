@@ -27,17 +27,20 @@ import static org.assertj.core.api.Assertions.assertThat;
  * first write to the log file to fail, the sink hands that failure to the
  * funnel on the same thread ({@code FailureFunnel.onSinkWriteFailure});
  * story 336's Known limits record that under the render path's log-once
- * sites, which story 337 moves off the render thread. This scan pins the
+ * sites, which story 337 moved off the render thread: a render thread now
+ * records into its lane of the engine's audio health record, and the
+ * application's drain surfaces it. This scan pins the
  * handler half: no module below {@code daw.app} looks a handler up or sets
  * one — on a thread with {@code setUncaughtExceptionHandler}, or on a
  * {@code Thread.Builder} with {@code uncaughtExceptionHandler} — except
  * {@code EngineStreamPump}'s own per-thread handler, which pre-empts the
  * default handler, so the {@code engine-render-pump} thread's death is
- * logged, not shown. It complements {@code RealTimeSafeContractTest}
+ * logged, not shown; since story 337 it is a last-resort backstop behind the
+ * pump's own catch-all. It complements {@code RealTimeSafeContractTest}
  * (daw-core), whose invariant 7 keeps {@code java.util.logging} out of the
- * bytecode it walks from the render-path roots, but for an exact allow-list
- * of pre-existing sites, and whose bytecode walk would not see a call into
- * the default handler.
+ * bytecode it walks from the render-path roots — its allow-list of
+ * pre-existing logging sites is empty since story 337 — and whose bytecode
+ * walk would not see a call into the default handler.
  */
 class FailureSpineStaysOffTheRenderPathTest {
 

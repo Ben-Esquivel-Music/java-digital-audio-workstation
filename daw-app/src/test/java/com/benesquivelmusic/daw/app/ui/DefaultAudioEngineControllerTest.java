@@ -2491,7 +2491,8 @@ class DefaultAudioEngineControllerTest {
         com.benesquivelmusic.daw.sdk.event.EventBus previousBus =
                 com.benesquivelmusic.daw.core.event.EventBusPublisher.getDefault();
         com.benesquivelmusic.daw.core.event.DefaultEventBus bus =
-                new com.benesquivelmusic.daw.core.event.DefaultEventBus();
+                new com.benesquivelmusic.daw.core.event.DefaultEventBus(
+                        com.benesquivelmusic.daw.core.event.SubscriberFailureSink.LOG_ONLY);
         List<com.benesquivelmusic.daw.sdk.audio.BackendFallbackEvent> events =
                 new java.util.concurrent.CopyOnWriteArrayList<>();
         CountDownLatch published = new CountDownLatch(2);
@@ -2951,7 +2952,8 @@ class DefaultAudioEngineControllerTest {
         com.benesquivelmusic.daw.sdk.event.EventBus previousBus =
                 com.benesquivelmusic.daw.core.event.EventBusPublisher.getDefault();
         com.benesquivelmusic.daw.core.event.DefaultEventBus bus =
-                new com.benesquivelmusic.daw.core.event.DefaultEventBus();
+                new com.benesquivelmusic.daw.core.event.DefaultEventBus(
+                        com.benesquivelmusic.daw.core.event.SubscriberFailureSink.LOG_ONLY);
         List<com.benesquivelmusic.daw.sdk.audio.BackendFallbackEvent> events =
                 new java.util.concurrent.CopyOnWriteArrayList<>();
         CountDownLatch published = new CountDownLatch(1);
@@ -3018,7 +3020,8 @@ class DefaultAudioEngineControllerTest {
         com.benesquivelmusic.daw.sdk.event.EventBus previousBus =
                 com.benesquivelmusic.daw.core.event.EventBusPublisher.getDefault();
         com.benesquivelmusic.daw.core.event.DefaultEventBus bus =
-                new com.benesquivelmusic.daw.core.event.DefaultEventBus();
+                new com.benesquivelmusic.daw.core.event.DefaultEventBus(
+                        com.benesquivelmusic.daw.core.event.SubscriberFailureSink.LOG_ONLY);
         List<com.benesquivelmusic.daw.sdk.audio.BackendFallbackEvent> events =
                 new java.util.concurrent.CopyOnWriteArrayList<>();
         CountDownLatch published = new CountDownLatch(1);

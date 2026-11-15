@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 
 import com.benesquivelmusic.daw.core.metering.MeterFrame;
@@ -52,7 +53,7 @@ class RenderPipelineOutputMeteringTest {
         var chain = new MasteringChain();
         mixer.getMasterChannel().addInsert(new com.benesquivelmusic.daw.core.mixer.InsertSlot("Master signal", new InterfaceSignal()));
         chain.allocateIntermediateBuffers(2, BLOCK);
-        var pipeline = new RenderPipeline(FORMAT, 4, BLOCK);
+        var pipeline = new RenderPipeline(FORMAT, 4, BLOCK, new AudioHealthRecord());
         var output = new float[4][BLOCK];
         var interleaved = new float[2 * BLOCK];
         var bus = new MeteringTapBus();
@@ -98,7 +99,7 @@ class RenderPipelineOutputMeteringTest {
     @ValueSource(ints = {1, 2, 4})
     void interfaceWriterMetersPassthroughAndIdleSilenceWithNoUntappedAudioDifference(int channels) {
         var format = new AudioFormat(48_000, channels, 24, BLOCK);
-        var pipeline = new RenderPipeline(format, 4, BLOCK);
+        var pipeline = new RenderPipeline(format, 4, BLOCK, new AudioHealthRecord());
         var chain = new MasteringChain();
         var input = new float[channels][BLOCK];
         var output = new float[channels + 2][BLOCK];
@@ -137,7 +138,7 @@ class RenderPipelineOutputMeteringTest {
 
     @Test
     void planarOnlyRenderingNeverScansOrPublishesTheInterfaceMeter() {
-        var pipeline = new RenderPipeline(FORMAT, 4, BLOCK);
+        var pipeline = new RenderPipeline(FORMAT, 4, BLOCK, new AudioHealthRecord());
         var bus = new MeteringTapBus();
         try {
             bus.rebind(new Mixer(), FORMAT, 1L);

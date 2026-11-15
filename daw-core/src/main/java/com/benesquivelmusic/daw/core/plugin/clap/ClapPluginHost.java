@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.plugin.clap;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCodes;
+import com.benesquivelmusic.daw.core.audio.health.RenderThread;
 import com.benesquivelmusic.daw.core.audio.ringbuffer.LockFreeRingBuffer;
 import com.benesquivelmusic.daw.core.mixer.ClapInsertEffect;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
@@ -343,13 +345,22 @@ public final class ClapPluginHost implements ExternalPluginHost {
 
             int status = (int) pluginProcess.invoke(pluginSegment, processStruct);
             if (status == ClapBindings.CLAP_PROCESS_ERROR) {
+                // Story 337, ruling E30: the plugin's own error report is
+                // recorded as audio.plugin on a render thread — a
+                // preallocated stackless constant, so nothing allocates —
+                // and the pass-through audio is unchanged.
+                RenderThread.recordOnCurrentThread(AudioFailureCodes.PLUGIN,
+                        PROCESS_ERROR_REPORTED, this, status);
                 copyBuffer(inputBuffer, outputBuffer, numFrames);
                 return;
             }
 
             readOutputFromNative(outputBuffer, numFrames);
         } catch (Throwable e) {
-            // On error, pass through
+            // On error, pass through — recorded as audio.plugin on a render
+            // thread, never silent (story 337, ruling E30). Routing CLAP
+            // faults into plugin-fault supervision is future story 451.
+            RenderThread.recordOnCurrentThread(AudioFailureCodes.PLUGIN, e, this, 0);
             copyBuffer(inputBuffer, outputBuffer, numFrames);
         } finally {
             CURRENT_EVENT_SEGMENTS.set(null);
@@ -1019,6 +1030,15 @@ public final class ClapPluginHost implements ExternalPluginHost {
     // Upcall targets for host callbacks and events
     // -----------------------------------------------------------------------
 
+    // Every upcall target below catches Throwable around its whole body and
+    // answers an ABI-safe value (story 337, ruling E31): an exception that
+    // reaches the plugin's native frame terminates the JVM. A plugin may call
+    // these from its own threads, so a fault is recorded as audio.plugin only
+    // on a render thread, and that call sits in its own catch-all so nothing
+    // escapes the handler either. A target with nothing that can throw needs
+    // no handler. The guarded targets are package-private so tests can drive
+    // them the way a stub would.
+
     /** No-op host callback: {@code void callback(const clap_host_t*)} */
     @SuppressWarnings("unused")
     private static void noOpHostCallback(MemorySegment host) {
@@ -1027,26 +1047,44 @@ public final class ClapPluginHost implements ExternalPluginHost {
 
     /**
      * Input events size callback: returns the number of pending parameter events
-     * queued for the current process() call via the ThreadLocal.
+     * queued for the current process() call via the ThreadLocal. Answers
+     * {@code 0} on a fault.
      */
-    @SuppressWarnings("unused")
-    private static int pendingEventsSize(MemorySegment events) {
-        int[] count = CURRENT_EVENT_COUNT.get();
-        return count != null ? count[0] : 0;
+    static int pendingEventsSize(MemorySegment events) {
+        try {
+            int[] count = CURRENT_EVENT_COUNT.get();
+            return count != null ? count[0] : 0;
+        } catch (Throwable fault) {
+            try {
+                RenderThread.recordOnCurrentThread(AudioFailureCodes.PLUGIN, fault, null, 0);
+            } catch (Throwable ignored) {
+                // Nothing may reach the plugin's native frame.
+            }
+            return 0;
+        }
     }
 
     /**
      * Input events get callback: returns the pending parameter event at {@code index}
-     * for the current process() call via the ThreadLocal.
+     * for the current process() call via the ThreadLocal. Answers
+     * {@code NULL} on a fault.
      */
-    @SuppressWarnings("unused")
-    private static MemorySegment pendingEventsGet(MemorySegment events, int index) {
-        int[] count = CURRENT_EVENT_COUNT.get();
-        MemorySegment[] segs = CURRENT_EVENT_SEGMENTS.get();
-        if (count == null || segs == null || index < 0 || index >= count[0]) {
-            return MemorySegment.NULL;
+    static MemorySegment pendingEventsGet(MemorySegment events, int index) {
+        try {
+            int[] count = CURRENT_EVENT_COUNT.get();
+            MemorySegment[] segs = CURRENT_EVENT_SEGMENTS.get();
+            if (count == null || segs == null || index < 0 || index >= count[0]) {
+                return MemorySegment.NULL;
+            }
+            return segs[index];
+        } catch (Throwable fault) {
+            try {
+                RenderThread.recordOnCurrentThread(AudioFailureCodes.PLUGIN, fault, null, index);
+            } catch (Throwable ignored) {
+                // Nothing may reach the plugin's native frame.
+            }
+            return NO_EVENT;
         }
-        return segs[index];
     }
 
     /** Empty output events: always returns false (discard events). */
@@ -1058,37 +1096,82 @@ public final class ClapPluginHost implements ExternalPluginHost {
     /**
      * Output-stream write callback for {@code saveState()}: appends the native buffer
      * contents to the {@link ByteArrayOutputStream} stored in the ThreadLocal.
+     * Answers {@code -1} (a write error) on a fault.
      */
-    @SuppressWarnings("unused")
-    private static long ostreamWrite(MemorySegment stream, MemorySegment buffer, long size) {
-        ByteArrayOutputStream target = CURRENT_WRITE_TARGET.get();
-        if (target == null || size <= 0) {
-            return size <= 0 ? 0L : -1L;
+    static long ostreamWrite(MemorySegment stream, MemorySegment buffer, long size) {
+        try {
+            ByteArrayOutputStream target = CURRENT_WRITE_TARGET.get();
+            if (target == null || size <= 0) {
+                return size <= 0 ? 0L : -1L;
+            }
+            byte[] bytes = buffer.reinterpret(size).toArray(ValueLayout.JAVA_BYTE);
+            target.write(bytes, 0, bytes.length);
+            return size;
+        } catch (Throwable fault) {
+            try {
+                RenderThread.recordOnCurrentThread(AudioFailureCodes.PLUGIN, fault, null, 0);
+            } catch (Throwable ignored) {
+                // Nothing may reach the plugin's native frame.
+            }
+            return -1L;
         }
-        byte[] bytes = buffer.reinterpret(size).toArray(ValueLayout.JAVA_BYTE);
-        target.write(bytes, 0, bytes.length);
-        return size;
     }
 
     /**
      * Input-stream read callback for {@code loadState()}: copies bytes from the
-     * state array stored in the ThreadLocal into the native buffer.
+     * state array stored in the ThreadLocal into the native buffer. Answers
+     * {@code -1} (a read error) on a fault.
      */
-    @SuppressWarnings("unused")
-    private static long istreamRead(MemorySegment stream, MemorySegment buffer, long size) {
-        byte[] source = CURRENT_READ_SOURCE.get();
-        int[] pos = CURRENT_READ_POSITION.get();
-        if (source == null || pos == null || size <= 0) {
-            return size <= 0 ? 0L : -1L;
+    static long istreamRead(MemorySegment stream, MemorySegment buffer, long size) {
+        try {
+            byte[] source = CURRENT_READ_SOURCE.get();
+            int[] pos = CURRENT_READ_POSITION.get();
+            if (source == null || pos == null || size <= 0) {
+                return size <= 0 ? 0L : -1L;
+            }
+            int available = source.length - pos[0];
+            if (available <= 0) {
+                return 0L; // end of stream
+            }
+            int toRead = (int) Math.min(size, available);
+            MemorySegment.copy(source, pos[0], buffer, ValueLayout.JAVA_BYTE, 0, toRead);
+            pos[0] += toRead;
+            return toRead;
+        } catch (Throwable fault) {
+            try {
+                RenderThread.recordOnCurrentThread(AudioFailureCodes.PLUGIN, fault, null, 0);
+            } catch (Throwable ignored) {
+                // Nothing may reach the plugin's native frame.
+            }
+            return -1L;
         }
-        int available = source.length - pos[0];
-        if (available <= 0) {
-            return 0L; // end of stream
+    }
+
+    /**
+     * The {@code NULL} segment {@link #pendingEventsGet} answers on a fault —
+     * held as this class's own constant so the handler reads no other class's
+     * static field (the upcall guard rule of story 337, ruling E31).
+     */
+    private static final MemorySegment NO_EVENT = MemorySegment.NULL;
+
+    /**
+     * The plugin's own {@code CLAP_PROCESS_ERROR} report, recorded as the
+     * failure of an {@code audio.plugin} record (story 337, ruling E30): one
+     * preallocated, stackless, suppression-free instance, so recording it on
+     * the render thread allocates nothing and the notice's reason reads as
+     * this message.
+     */
+    private static final ClapProcessingError PROCESS_ERROR_REPORTED =
+            new ClapProcessingError("the plugin reported a processing error");
+
+    /** The type of {@link #PROCESS_ERROR_REPORTED}: stackless and shareable. */
+    private static final class ClapProcessingError extends RuntimeException {
+
+        private static final long serialVersionUID = 1L;
+
+        ClapProcessingError(String message) {
+            super(message, null, false, false);
         }
-        int toRead = (int) Math.min(size, available);
-        MemorySegment.copy(source, pos[0], buffer, ValueLayout.JAVA_BYTE, 0, toRead);
-        pos[0] += toRead;
-        return toRead;
     }
 
     // -----------------------------------------------------------------------

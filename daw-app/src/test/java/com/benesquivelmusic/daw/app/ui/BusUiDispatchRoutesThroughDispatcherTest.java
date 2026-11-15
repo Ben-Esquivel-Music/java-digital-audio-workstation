@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.sdk.event.DispatchMode;
 import com.benesquivelmusic.daw.sdk.event.EventBus;
 import com.benesquivelmusic.daw.sdk.event.TransportEvent;
@@ -44,7 +45,7 @@ class BusUiDispatchRoutesThroughDispatcherTest {
         FxDispatcher dispatcher = new FxDispatcher();
         startOnFxAndWait(dispatcher);
 
-        EventBus bus = DefaultEventBus.builder()
+        EventBus bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY)
                 .uiExecutor(dispatcher::onFx)
                 .build();
         try {

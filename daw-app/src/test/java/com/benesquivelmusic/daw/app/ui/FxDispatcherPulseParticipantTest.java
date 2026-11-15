@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.app.ui.marshal.PulseItemKind;
 
 import org.junit.jupiter.api.Test;
 
@@ -9,6 +10,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -19,6 +21,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * channel drains; the removal token works and is idempotent;
  * {@link FxDispatcher#dispose()} clears them. No toolkit: the pulse is
  * driven manually, as in {@code FxDispatcherDrainTest}.
+ *
+ * <p>Story 337 (rulings E32 and E33): the no-arg dispatcher's contract —
+ * every item runs, the first failure is rethrown after the frame — holds for
+ * an {@link Error} too; a dispatcher built with a
+ * {@link com.benesquivelmusic.daw.app.ui.marshal.PulseFailureSink} reports
+ * each failure instead and its pulse never throws.</p>
  */
 class FxDispatcherPulseParticipantTest {
 
@@ -161,6 +169,74 @@ class FxDispatcherPulseParticipantTest {
                         .containsExactly(distinctFailure));
         assertThat(order).containsExactly("throwing participant", "throwing participant",
                 "distinct failure", "survivor", "keyed", "generic channel", "double channel 1.0");
+    }
+
+    @Test
+    void anErrorFromAParticipantDoesNotStopTheOthersOrTheRestOfTheFrameAndIsRethrown() {
+        FxDispatcher dispatcher = new FxDispatcher();
+        AssertionError error = new AssertionError("a participant's invariant broke");
+        AtomicInteger survivor = new AtomicInteger();
+        List<String> order = new ArrayList<>();
+        dispatcher.addPulseParticipant(() -> {
+            throw error;
+        });
+        dispatcher.addPulseParticipant(survivor::incrementAndGet);
+        dispatcher.onFx("key", () -> order.add("keyed"));
+        FxDispatcher.ContinuousDoubleChannel channel = dispatcher.openContinuousDouble(v -> order.add("channel"));
+        channel.publish(1.0);
+
+        assertThatThrownBy(dispatcher::pulse).as("story 337, ruling E33: an Error is held like an exception")
+                .isSameAs(error);
+        assertThat(survivor.get()).as("the later participant still ran").isEqualTo(1);
+        assertThat(order).as("the keyed work and the channel drains still ran").containsExactly("keyed", "channel");
+    }
+
+    @Test
+    void withASinkAThrowingParticipantIsReportedAndThePulseDoesNotThrow() {
+        List<Throwable> reported = new ArrayList<>();
+        List<PulseItemKind> kinds = new ArrayList<>();
+        FxDispatcher dispatcher = new FxDispatcher((kind, offender, failure) -> {
+            kinds.add(kind);
+            reported.add(failure);
+        });
+        AtomicInteger survivor = new AtomicInteger();
+        List<String> order = new ArrayList<>();
+        IllegalStateException first = new IllegalStateException("boom");
+        AssertionError second = new AssertionError("second boom");
+        dispatcher.addPulseParticipant(() -> {
+            throw first;
+        });
+        dispatcher.addPulseParticipant(survivor::incrementAndGet);
+        dispatcher.addPulseParticipant(() -> {
+            throw second;
+        });
+        dispatcher.onFx("key", () -> order.add("keyed"));
+        FxDispatcher.ContinuousDoubleChannel channel = dispatcher.openContinuousDouble(v -> order.add("channel"));
+        channel.publish(1.0);
+
+        assertThatCode(dispatcher::pulse).as("story 337, ruling E32: the sink owns the failures")
+                .doesNotThrowAnyException();
+        assertThat(reported).as("each failure reported as it happened, in order").containsExactly(first, second);
+        assertThat(kinds).containsOnly(PulseItemKind.PARTICIPANT);
+        assertThat(survivor.get()).isEqualTo(1);
+        assertThat(order).containsExactly("keyed", "channel");
+    }
+
+    @Test
+    void withASinkARepeatedParticipantFailureIsReportedEveryTimeItIsThrown() {
+        List<Throwable> reported = new ArrayList<>();
+        FxDispatcher dispatcher = new FxDispatcher((kind, offender, failure) -> reported.add(failure));
+        IllegalStateException repeatedFailure = new IllegalStateException("repeated failure");
+        Runnable throwingParticipant = () -> {
+            throw repeatedFailure;
+        };
+        dispatcher.addPulseParticipant(throwingParticipant);
+        dispatcher.addPulseParticipant(throwingParticipant);
+
+        dispatcher.pulse();
+
+        assertThat(reported).as("the funnel, not the dispatcher, counts and dedupes (story 337, ruling E34)")
+                .containsExactly(repeatedFailure, repeatedFailure);
     }
 
     @Test

@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.automation.AutomationPoint;
 import com.benesquivelmusic.daw.core.dsp.PreparedParameterProcessor;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
@@ -51,7 +52,7 @@ public class OfflineParameterPreparationTest {
             trackProcessor.beforeProcess = () -> assertThat(compensation.getChannelLatencySamples(0)).isZero();
             var transport = new Transport();
             transport.play();
-            var pipeline = new RenderPipeline(new AudioFormat(48_000, 1, 16, 64), 1, 64);
+            var pipeline = new RenderPipeline(new AudioFormat(48_000, 1, 16, 64), 1, 64, new AudioHealthRecord());
             float[][] output = {new float[128]};
 
             pipeline.renderOffline(transport, mixer, List.of(track), null, outputChain, output, 128, 64);

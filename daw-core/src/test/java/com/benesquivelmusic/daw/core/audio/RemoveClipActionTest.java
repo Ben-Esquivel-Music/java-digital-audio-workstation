@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.audio;
 
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
@@ -92,7 +93,7 @@ class RemoveClipActionTest {
         AudioClip clip = new AudioClip("kick", 0.0, 4.0, null);
         track.addClip(clip);
 
-        EventBus bus = DefaultEventBus.builder().build();
+        EventBus bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).build();
         EventBusPublisher.setDefault(bus);
         try {
             List<ClipEvent> events = new CopyOnWriteArrayList<>();

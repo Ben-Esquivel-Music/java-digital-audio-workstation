@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 
 import com.benesquivelmusic.daw.core.mixer.Mixer;
@@ -58,7 +59,7 @@ class RenderPipelineSampleRateConversionTest {
         master.allocateIntermediateBuffers(CHANNELS, BUFFER_SIZE);
 
         RenderPipeline pipeline = new RenderPipeline(format(sessionRateHz),
-                AudioEngine.MAX_TRACKS, BUFFER_SIZE);
+                AudioEngine.MAX_TRACKS, BUFFER_SIZE, new AudioHealthRecord());
         pipeline.setSampleRateConversionCache(cache);
         pipeline.setSrcQualityTier(QualityTier.MEDIUM);
 

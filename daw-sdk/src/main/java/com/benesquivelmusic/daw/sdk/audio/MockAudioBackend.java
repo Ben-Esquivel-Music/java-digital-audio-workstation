@@ -49,6 +49,7 @@ public final class MockAudioBackend implements AudioBackend {
     private final java.util.List<Integer> clockSourceSelections =
             java.util.Collections.synchronizedList(new java.util.ArrayList<>());
     private volatile RoundTripLatency reportedLatency = RoundTripLatency.UNKNOWN;
+    private volatile BackendThreadCounters threadCounters = BackendThreadCounters.NONE;
     private volatile boolean available = true;
 
     /**
@@ -555,6 +556,28 @@ public final class MockAudioBackend implements AudioBackend {
      */
     public void setReportedLatency(RoundTripLatency latency) {
         this.reportedLatency = Objects.requireNonNull(latency, "latency must not be null");
+    }
+
+    /**
+     * Returns the counters last set through {@link #setThreadCounters}, or
+     * {@link BackendThreadCounters#NONE} — this mock runs no thread of its own.
+     */
+    @Override
+    public BackendThreadCounters threadCounters() {
+        return threadCounters;
+    }
+
+    /**
+     * Configures the {@link BackendThreadCounters} this mock reports from
+     * {@link #threadCounters()} (story 337). Engine-level tests use it to drive
+     * the health record's backend ledger through the same pull path a real
+     * backend's counters take; like a real backend, a test should only ever
+     * grow the counts.
+     *
+     * @param counters the counters to report (must not be null)
+     */
+    public void setThreadCounters(BackendThreadCounters counters) {
+        this.threadCounters = Objects.requireNonNull(counters, "counters must not be null");
     }
 
     /**

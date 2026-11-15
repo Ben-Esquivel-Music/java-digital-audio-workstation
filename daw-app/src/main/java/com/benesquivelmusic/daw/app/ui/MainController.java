@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.diagnostics.AudioHealthDrain;
 import com.benesquivelmusic.daw.app.diagnostics.FailureFunnel;
+import com.benesquivelmusic.daw.app.diagnostics.HaltContext;
 import com.benesquivelmusic.daw.app.logging.ExitHoldingLogManager;
 import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplay;
@@ -109,6 +111,7 @@ import javafx.util.Duration;
 
 import java.nio.file.Path;
 import java.text.MessageFormat;
+import java.time.InstantSource;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Locale;
@@ -586,6 +589,23 @@ public final class MainController {
     private FailureFunnel failureFunnel;
 
     /**
+     * Story 337 (ruling E42) — the audio health drain over the window engine's
+     * health record, a pulse participant of the window's dispatcher: built by
+     * {@link #attachFailureFunnel(FailureFunnel)} once the toasts are armed,
+     * removed by the window's disposal ({@link #disposeWindowLifetime()}).
+     * {@code null} before, after, and in a context with no engine. FX thread.
+     */
+    private AudioHealthDrain audioHealthDrain;
+    /** Story 337 — removes {@link #audioHealthDrain}'s pulse participant; {@code null} while none is registered. */
+    private Runnable audioHealthDrainRemoval;
+
+    /**
+     * The thread {@link #restartAudioEngine(SettingsModel, AudioEngineController, BooleanSupplier, Runnable)}
+     * restarts on.
+     */
+    static final String RESTART_AUDIO_ENGINE_THREAD = "daw-audio-engine-restart";
+
+    /**
      * Injects the application's {@link FxDispatcher}. Set once at app init by
      * the composition root (see {@link #fxDispatcher}); never reassigned at
      * runtime.
@@ -606,7 +626,8 @@ public final class MainController {
 
     /**
      * Story 336 (Failure Surfacing book §6.4) — injects the failure funnel and arms its toasts: a
-     * failure the funnel surfaces is from now on an ERROR toast in this
+     * failure the funnel surfaces is from now on a toast (ERROR, or since
+     * story 337 WARNING for a first real-time or isolated-consumer notice) in this
      * window's notification bar, with its entry in the inspector's
      * Notifications history, and what failed before is shown once, now. Set
      * once at app init by the composition root, right after
@@ -614,6 +635,11 @@ public final class MainController {
      * no notification bar or dispatcher — a context that never ran
      * {@link #initialize()} — the toasts stay off and failures are logged
      * only, and one WARNING says so. FX thread.
+     *
+     * <p>Story 337 (ruling E42): once the toasts are armed, the window's
+     * audio health drain joins the dispatcher's pulse
+     * ({@link #attachAudioHealthDrain}), so what the engine's real-time
+     * threads record reaches this window's notifications.</p>
      *
      * @param funnel the installed failure funnel; must not be {@code null}
      */
@@ -625,6 +651,138 @@ public final class MainController {
             return;
         }
         funnel.armToasts(fxDispatcher, notificationBar);
+        attachAudioHealthDrain(funnel);
+    }
+
+    /**
+     * Story 337 (ruling E42) — registers the audio health drain over the
+     * window engine's health record as a pulse participant of the window's
+     * dispatcher; its baselines start at zero, so what the engine recorded
+     * before is reported on the first frame. A context with no engine — one
+     * that never ran {@link #initialize()} — has nothing to drain. A second
+     * call replaces the drain. FX thread.
+     *
+     * @param funnel the armed failure funnel
+     */
+    private void attachAudioHealthDrain(FailureFunnel funnel) {
+        if (audioEngine == null) {
+            return;
+        }
+        if (audioHealthDrainRemoval != null) {
+            audioHealthDrainRemoval.run();
+            audioHealthDrainRemoval = null;
+        }
+        audioHealthDrain = new AudioHealthDrain(new AudioHealthDrain.Collaborators(audioEngine.audioHealth(),
+                funnel, System::nanoTime, InstantSource.system(), this::audioDeviceDisplayName,
+                () -> restartAudioEngine(), new AudioHealthDrain.HaltResponse() {
+                    @Override
+                    public HaltContext stopTransportForHalt() {
+                        return stopTransportForEngineHalt();
+                    }
+
+                    @Override
+                    public boolean closeStreamForHalt() {
+                        return closeStreamForEngineHalt();
+                    }
+
+                    @Override
+                    public boolean retryCloseStreamForHalt() {
+                        return retryCloseStreamForEngineHalt();
+                    }
+                }));
+        audioHealthDrainRemoval = fxDispatcher.addPulseParticipant(audioHealthDrain::pulse);
+    }
+
+    /**
+     * Story 337 — the window's audio health drain, for story 338's engine
+     * state cell ({@link AudioHealthDrain#engineFaultProperty()}).
+     *
+     * @return the drain, while one is attached
+     */
+    Optional<AudioHealthDrain> audioHealthDrain() {
+        return Optional.ofNullable(audioHealthDrain);
+    }
+
+    /**
+     * The device an audio notice names (story 337, ruling E45 {@code {device}}):
+     * the open stream's device, else its backend, else the installed
+     * provision's first backend — read from the engine, which takes no lock
+     * for any of them, so the drain's frame never waits on the controller's
+     * monitor while a restart reconfigures. FX thread.
+     */
+    private String audioDeviceDisplayName() {
+        AudioEngine engine = audioEngine;
+        if (engine == null) {
+            return "";
+        }
+        Optional<String> open = engine.openStreamDevice().map(DeviceId::name).filter(name -> !name.isBlank())
+                .or(engine::openStreamBackendName);
+        if (open.isPresent()) {
+            return open.get();
+        }
+        com.benesquivelmusic.daw.core.audio.StreamingProvision provision = engine.getStreamingProvision();
+        return provision == null ? "" : provision.firstRung().backend().name();
+    }
+
+    /**
+     * Story 337, ruling E11 step 1 — after the render drive halted: the
+     * transport's normal Stop when it is rolling or a take is in flight, so
+     * the take ends through its normal finalization and keeps what it
+     * captured; it also ends a post-roll at once
+     * ({@link TransportController#stopForEngineHalt()}, story 337, ruling
+     * E67), because no tail can play on a dead drive. FX thread.
+     *
+     * @return what the transport was doing
+     */
+    private HaltContext stopTransportForEngineHalt() {
+        TransportController transport = transportController;
+        DawProject current = project;
+        if (transport == null || current == null) {
+            return HaltContext.IDLE;
+        }
+        boolean recording = transport.isRecordingInFlight();
+        boolean rolling = current.getTransport().getState() != TransportState.STOPPED;
+        if (recording || rolling) {
+            transport.stopForEngineHalt();
+        }
+        return recording ? HaltContext.RECORDING : rolling ? HaltContext.PLAYBACK : HaltContext.IDLE;
+    }
+
+    /**
+     * Story 337, ruling E11 step 2 — closes the halted stream once the take
+     * allows it ({@link TransportController#closeStreamAfterEngineHalt()}).
+     * A render drive that is alive again — the stream was reopened since the
+     * halt, by Play (story 337, ruling E10) or a restart — is left alone. FX
+     * thread.
+     *
+     * @return {@code true} when nothing more is owed
+     */
+    private boolean closeStreamForEngineHalt() {
+        AudioEngine engine = audioEngine;
+        if (engine != null && engine.isRenderDriveAlive()) {
+            return true;
+        }
+        TransportController transport = transportController;
+        return transport == null || transport.closeStreamAfterEngineHalt();
+    }
+
+    /**
+     * Story 337, ruling E66 — a later frame's retry of the halted stream's
+     * close ({@link TransportController#retryCloseStreamAfterEngineHalt()}),
+     * which only asks whether the take still defers it, so a retry never
+     * restarts a failed input cleanup or repeats its toast. A render drive
+     * that is alive again is left alone, as in
+     * {@link #closeStreamForEngineHalt()}. FX thread.
+     *
+     * @return {@code true} when nothing more is owed
+     */
+    private boolean retryCloseStreamForEngineHalt() {
+        AudioEngine engine = audioEngine;
+        if (engine != null && engine.isRenderDriveAlive()) {
+            return true;
+        }
+        TransportController transport = transportController;
+        return transport == null || transport.retryCloseStreamAfterEngineHalt();
     }
 
     /**
@@ -1767,7 +1925,8 @@ public final class MainController {
      *
      * <p>Its FX part, in this order: the open project's audio retired, the
      * view models and the mixer-control wiring released, the device-state
-     * bridge cancelled, the meter consumers detached, the engine unbound
+     * bridge cancelled, the audio health drain removed (story 337), the
+     * meter consumers detached, the engine unbound
      * from the project, the render queue's window closed, the plug-in views
      * and the closed project's plug-ins retired, the plug-in fault UI, the
      * view navigation, the lock indicator's timer, the strip's checkpoint
@@ -1822,6 +1981,14 @@ public final class MainController {
                 if (engineStateBridge != null) {
                     engineStateBridge.cancel();
                 }
+            }, () -> {
+                // Story 337 (ruling E42) — remove the audio health
+                // drain's pulse participant, next to the meters'.
+                if (audioHealthDrainRemoval != null) {
+                    audioHealthDrainRemoval.run();
+                    audioHealthDrainRemoval = null;
+                }
+                audioHealthDrain = null;
             }, () -> {
                 // Story 318 — detach every meter consumer (and the
                 // feed's pulse participant) before the engine unbinds
@@ -2160,24 +2327,10 @@ public final class MainController {
             String inputDevice = "";
             String outputDevice = "";
             try {
-                String persistedBackend = settings.getAudioBackend();
-                // Story 316 review: a blank persisted backend means "keep
-                // what is provisioned" — the backend the next open will try.
-                // Not getActiveBackendName(): nothing is streaming at
-                // startup, so that honestly answers BACKEND_NONE.
-                backend = persistedBackend.isBlank()
-                        ? controller.getProvisionedBackendName() : persistedBackend;
+                backend = configuredAudioBackend(settings, controller);
                 inputDevice = settings.getAudioInputDevice();
                 outputDevice = settings.getAudioOutputDevice();
-                controller.applyConfiguration(new AudioEngineController.Request(
-                        backend,
-                        inputDevice,
-                        outputDevice,
-                        com.benesquivelmusic.daw.sdk.audio.SampleRate.fromHz(
-                                (int) settings.getSampleRate()),
-                        settings.getBufferSize(),
-                        settings.getBitDepth(),
-                        settings.getWorkerPoolSize()));
+                controller.applyConfiguration(audioConfigurationRequest(settings, backend));
                 controller.applySrcQuality(settings.getSrcQuality());
             } catch (RuntimeException failure) {
                 LOG.log(Level.WARNING,
@@ -2206,6 +2359,123 @@ public final class MainController {
 
     private static String configuredValue(String value) {
         return value == null || value.isBlank() ? "<default>" : value;
+    }
+
+    /**
+     * The audio configuration the persisted settings ask for — what startup
+     * applies and what Restart Audio Engine re-applies (story 337, ruling E12).
+     *
+     * @param settings   the persisted settings
+     * @param controller the controller, which names the provisioned backend for a blank persisted one
+     * @return the request
+     */
+    static AudioEngineController.Request audioConfigurationRequest(SettingsModel settings,
+                                                                   AudioEngineController controller) {
+        return audioConfigurationRequest(settings, configuredAudioBackend(settings, controller));
+    }
+
+    private static AudioEngineController.Request audioConfigurationRequest(SettingsModel settings, String backend) {
+        return new AudioEngineController.Request(
+                backend,
+                settings.getAudioInputDevice(),
+                settings.getAudioOutputDevice(),
+                com.benesquivelmusic.daw.sdk.audio.SampleRate.fromHz((int) settings.getSampleRate()),
+                settings.getBufferSize(),
+                settings.getBitDepth(),
+                settings.getWorkerPoolSize());
+    }
+
+    /**
+     * The backend the persisted settings name. Story 316 review: a blank
+     * persisted backend means "keep what is provisioned" — the backend the
+     * next open will try. Not {@code getActiveBackendName()}: nothing is
+     * streaming at startup, so that honestly answers {@code BACKEND_NONE}.
+     */
+    private static String configuredAudioBackend(SettingsModel settings, AudioEngineController controller) {
+        String persistedBackend = settings.getAudioBackend();
+        return persistedBackend.isBlank() ? controller.getProvisionedBackendName() : persistedBackend;
+    }
+
+    /**
+     * Restart Audio Engine (story 337, rulings E12 and E13): the Settings ▸
+     * Apply path, {@link AudioEngineController#applyConfiguration}, with the
+     * configuration the persisted settings ask for, on the window's controller
+     * — which takes the configuration lease and the record guard (it asks
+     * before ending a take in flight), stops and quiesces the stream, restarts
+     * the engine, and reopens only a stream that was open. When it succeeded —
+     * it returned normally and, if a stream was open when it began, one is
+     * open again (story 337, ruling E62) — the window's engine fault clears.
+     * FX thread; the restart itself runs on its own virtual thread.
+     *
+     * @return the restart's thread, already started
+     * @throws IllegalStateException in a window that never ran {@link #initialize()}
+     */
+    public Thread restartAudioEngine() {
+        if (settingsModel == null || audioEngineController == null) {
+            throw new IllegalStateException("the window has no audio engine controller to restart");
+        }
+        return restartAudioEngine(settingsModel, audioEngineController, () -> {
+            AudioEngine engine = audioEngine;
+            return engine != null && engine.isStreamOpen();
+        }, () -> FxDispatcher.runOnFx(fxDispatcher,
+                () -> audioHealthDrain().ifPresent(AudioHealthDrain::clearEngineFault)));
+    }
+
+    /**
+     * Restarts the audio engine on a virtual thread named
+     * {@value #RESTART_AUDIO_ENGINE_THREAD} (story 337, ruling E12): applies
+     * {@link #audioConfigurationRequest(SettingsModel, AudioEngineController)}
+     * through {@code controller} and then, when the restart succeeded, runs
+     * {@code onRestarted}. Never on the FX thread or the render drive; it
+     * never moves the transport and never starts playback or recording. A
+     * declined record guard keeps the take: no restart, nothing more shown. A
+     * failed restart runs nothing more — the controller has already logged and
+     * shown its own failure — and is logged once more here; a request the
+     * settings cannot build is not caught, so it reaches the thread's
+     * uncaught-exception handler. A restart that returned normally but left
+     * closed a stream that was open when it began did not succeed either —
+     * the controller swallowed a failed reopen after logging and showing it,
+     * or the record guard's Stop closed the stream and the controller, finding
+     * none open, reopened nothing — so nothing more runs (story 337, ruling
+     * E62).
+     *
+     * @param settings    the persisted settings
+     * @param controller  the audio engine controller
+     * @param streamOpen  whether the engine's stream is open, read on the restart's thread before the restart
+     *                    and after it
+     * @param onRestarted what runs when the restart succeeded — it returned normally and, if a stream was open
+     *                    when it began, one is open again — on the restart's thread
+     * @return the restart's thread, already started
+     */
+    static Thread restartAudioEngine(SettingsModel settings, AudioEngineController controller,
+                                     BooleanSupplier streamOpen, Runnable onRestarted) {
+        Objects.requireNonNull(settings, "settings must not be null");
+        Objects.requireNonNull(controller, "controller must not be null");
+        Objects.requireNonNull(streamOpen, "streamOpen must not be null");
+        Objects.requireNonNull(onRestarted, "onRestarted must not be null");
+        Thread worker = Thread.ofVirtual().name(RESTART_AUDIO_ENGINE_THREAD).unstarted(() -> {
+            AudioEngineController.Request request = audioConfigurationRequest(settings, controller);
+            boolean wasOpen = streamOpen.getAsBoolean();
+            try {
+                controller.applyConfiguration(request);
+            } catch (AudioConfigurationDeclinedException declined) {
+                // Story 337, ruling E12: the take was kept — no restart, and no toast of its own.
+                LOG.log(Level.FINE, "Restart Audio Engine was declined: the take is still recording", declined);
+                return;
+            } catch (RuntimeException failure) {
+                LOG.log(Level.WARNING, "Restart Audio Engine failed", failure);
+                return;
+            }
+            if (wasOpen && !streamOpen.getAsBoolean()) {
+                // The stream that was open is closed: the controller swallowed a failed reopen after logging and
+                // showing it, or the record guard's Stop closed the stream and nothing reopened it. Not a successful
+                // restart (story 337, ruling E62).
+                return;
+            }
+            onRestarted.run();
+        });
+        worker.start();
+        return worker;
     }
 
     private void createToolbarAppearanceController() {

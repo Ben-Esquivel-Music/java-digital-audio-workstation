@@ -5,6 +5,10 @@ import com.benesquivelmusic.daw.app.ui.NotificationBar;
 import com.benesquivelmusic.daw.app.ui.NotificationHistoryService;
 import com.benesquivelmusic.daw.app.ui.NotificationLevel;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.app.ui.marshal.PulseFailureSink;
+import com.benesquivelmusic.daw.app.ui.marshal.PulseItemKind;
+import com.benesquivelmusic.daw.core.event.SubscriberDescription;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -40,6 +44,23 @@ import java.util.logging.Logger;
  * The categories are {@link #UI_HANDLER} (the FX thread), {@link #THREAD_UNCAUGHT}
  * (any other thread), {@link #APP_LAUNCH} (the launch thread, log-only) and a
  * declared subject's own.</p>
+ *
+ * <p><strong>Story 337's entry points.</strong> The application's
+ * {@code FxDispatcher} reports each pulse item that threw through
+ * {@link #pulseFailureSink()} ({@link #UI_PULSE}), and the application's event
+ * bus each consumer that threw through {@link #busFailureSink()}
+ * ({@link #BUS_SUBSCRIBER}); both are isolated consumers, which one policy
+ * decides for (story 337, rulings E34 and E35): the first occurrence of a
+ * fingerprint is one WARNING record with its stack and the offender, and no
+ * toast; the {@value FingerprintRateLimiter#ISOLATED_CONSUMER_THRESHOLD}rd
+ * shows one WARNING toast with Open Log Folder; after that the 30 s window
+ * re-shows it with the running total; a FATAL one surfaces at once. The
+ * audio health drain reports what the real-time threads recorded through
+ * {@link #reportRealTime} (a first occurrence, rate-limited by the window
+ * with weighted counts), {@link #escalateRealTime} (a sustained fault or a
+ * halt: always shown, latched) and {@link #foldRealTime} (a worker failure
+ * folded into a render notice): the report names the guard site instead of
+ * a thread, and carries its own action (story 337, rulings E39–E44).</p>
  *
  * <p><strong>Step by step.</strong> The throwable's carriers are unwrapped and
  * its {@linkplain Fingerprint fingerprint} taken; the
@@ -112,6 +133,12 @@ public final class FailureFunnel {
     /** Anything reaching the default handler on the launch thread; log-only. */
     public static final String APP_LAUNCH = "app.launch";
 
+    /** A unit of work of the FX pulse that threw: a participant, keyed work or a channel drain (story 337). */
+    public static final String UI_PULSE = "ui.pulse";
+
+    /** An event bus consumer that threw while an event was delivered to it (story 337). */
+    public static final String BUS_SUBSCRIBER = "bus.subscriber";
+
     /** The JavaFX application thread's name ({@code QuantumToolkit}). */
     static final String FX_THREAD_NAME = "JavaFX Application Thread";
 
@@ -133,6 +160,10 @@ public final class FailureFunnel {
     /** What the funnel does while it records the due tails; also each tail's activity when it cannot be named. */
     private static final String RECORDING_DUE_TAILS = "recording the tails of rate-limited failures";
 
+    /** The record header's detail of a real-time occurrence folded into another notice (story 337, ruling E65). */
+    private static final String FOLDED_DETAIL = "folded into the notice of the same frame; no toast of its own (story 337,"
+            + " ruling E65)";
+
     private final LogSink sink;
     private final FingerprintRateLimiter limiter;
     private final FailureCopy copy;
@@ -146,6 +177,12 @@ public final class FailureFunnel {
     private final FunnelHandler defaultHandler;
     private final FunnelHandler fxHandler;
     private final Runnable openLogFolderAction = this::openLogFolder;
+    /** Open Log Folder as a notice's action: every story-336 toast's, and a caller's choice (story 337, ruling E43). */
+    private final NoticeAction openLogFolderNotice;
+    /** The production dispatcher's pulse failure sink (story 337, ruling E32); the same instance on every call. */
+    private final PulseFailureSink pulseSink = this::pulseItemFailed;
+    /** The application bus's consumer failure sink (story 337, ruling E37); the same instance on every call. */
+    private final SubscriberFailureSink busSink = this::subscriberFailed;
     private final Runnable flushDueTailsWork = this::flushDueTails;
     private final Runnable tailParticipant = this::postTailsIfDue;
     /** The one key of this funnel's tail flush: one key, one fact. */
@@ -217,6 +254,7 @@ public final class FailureFunnel {
         this.lastResort = new LastResortLog(lastResortFile(sink.folder()));
         this.log = Logger.getLogger(FailureFunnel.class.getName());
         this.openLogFolderLabel = copy.openLogFolderLabel();
+        this.openLogFolderNotice = new NoticeAction(openLogFolderLabel, openLogFolderAction);
         this.defaultHandler = new FunnelHandler(this, FailureFact.Origin.DEFAULT_HANDLER);
         this.fxHandler = new FunnelHandler(this, FailureFact.Origin.FX_HANDLER);
         sink.onFirstWriteFailure(this::onSinkWriteFailure);
@@ -316,6 +354,140 @@ public final class FailureFunnel {
     }
 
     /**
+     * The sink the composition root builds the application's
+     * {@link FxDispatcher} with (story 337, ruling E32): each pulse item that
+     * threw is an isolated consumer of {@link #UI_PULSE}, origin
+     * {@code PULSE_DRAIN}; the item's kind and description go into its log
+     * record only (story 337, ruling E36). Never throws. The same instance on
+     * every call.
+     *
+     * @return the pulse failure sink
+     */
+    public PulseFailureSink pulseFailureSink() {
+        return pulseSink;
+    }
+
+    /**
+     * The sink the composition root builds the application's event bus
+     * with (story 337, ruling E37): each consumer that threw is an isolated
+     * consumer of {@link #BUS_SUBSCRIBER}, origin {@code BUS_DELIVERY}, whose
+     * notice names the event type; the subscriber's description goes into
+     * its log record only (story 337, ruling E36). Never throws. The same
+     * instance on every call.
+     *
+     * @return the bus failure sink
+     */
+    public SubscriberFailureSink busFailureSink() {
+        return busSink;
+    }
+
+    /**
+     * Reports what the real-time threads recorded for one fingerprint in one
+     * audio drain frame, under the window policy (story 337, ruling E44): its
+     * first occurrence surfaces at once — one record and one toast with the
+     * report's action; repeats inside the 30 s window are counted, weighted;
+     * a repeat after it re-surfaces with the weighted running total; while the
+     * fingerprint's escalation is latched it is only counted. On the FX
+     * thread, from the audio health drain. Never throws.
+     *
+     * @param report the drain's report
+     */
+    public void reportRealTime(RealTimeReport report) {
+        Objects.requireNonNull(report, "report must not be null");
+        handleRealTimeGuarded(report, "reporting a real-time failure", () -> realTimeWithinWindow(report));
+    }
+
+    /**
+     * Escalates a sustained real-time fault or a halt (story 337, rulings E41
+     * and E44): the report's occurrences are counted, its fingerprint's
+     * escalation is latched — no WARNING re-show until
+     * {@link #clearEscalation} — and it always surfaces, whatever the window:
+     * one record at its severity's level and one toast, with its history
+     * entry, carrying the report's action. On the FX thread, from the audio
+     * health drain. Never throws.
+     *
+     * @param report the drain's report; its severity is ERROR or FATAL
+     */
+    public void escalateRealTime(RealTimeReport report) {
+        Objects.requireNonNull(report, "report must not be null");
+        handleRealTimeGuarded(report, "escalating a real-time failure", () -> realTimeEscalated(report));
+    }
+
+    /**
+     * Counts a real-time report folded into another notice of the same drain
+     * frame (story 337, rulings E27 and E65): a first worker failure in the
+     * same frame as a first render failure is one notice, the render one,
+     * whose log record names the worker's anchor; a render failure in the
+     * frame of a halt is folded into the halt's notice. The fold's occurrences
+     * are counted, weighted; when they would surface, the fold writes its own
+     * record at its severity — its site, its sampled anchors, its count and
+     * the occurrences since its previous notice, and that it was folded — and
+     * the notice is noted for the fingerprint, but no toast is shown. Every
+     * counted occurrence so stays in exactly one record or tail line. Never
+     * throws.
+     *
+     * @param report the drain's report of the folded fingerprint
+     */
+    public void foldRealTime(RealTimeReport report) {
+        Objects.requireNonNull(report, "report must not be null");
+        handleRealTimeGuarded(report, "counting a folded real-time failure", () -> realTimeFolded(report));
+    }
+
+    /**
+     * Whether {@code fingerprint} has occurred and is still kept by the rate
+     * limiter (story 337, ruling E27).
+     *
+     * @param fingerprint the fingerprint
+     * @return whether it has been seen
+     */
+    public boolean hasSeen(Fingerprint fingerprint) {
+        return limiter.hasSeen(fingerprint);
+    }
+
+    /**
+     * Whether {@code fingerprint}'s escalation is latched (story 337, ruling
+     * E44).
+     *
+     * @param fingerprint the fingerprint
+     * @return whether it is escalated
+     */
+    public boolean isEscalated(Fingerprint fingerprint) {
+        return limiter.isEscalated(fingerprint);
+    }
+
+    /**
+     * Clears {@code fingerprint}'s escalation when its engine fault clears
+     * (story 337, ruling E41): its occurrences follow the window rule again.
+     *
+     * @param fingerprint the fingerprint
+     */
+    public void clearEscalation(Fingerprint fingerprint) {
+        limiter.clearEscalation(fingerprint);
+    }
+
+    /**
+     * The funnel's Open Log Folder as a notice's action (story 337, ruling
+     * E43): the action of every story-336 toast, and of the audio categories
+     * a stream restart cannot cure (story 337, ruling E13). The same instance
+     * on every call.
+     *
+     * @return the action
+     */
+    public NoticeAction openLogFolderNotice() {
+        return openLogFolderNotice;
+    }
+
+    /**
+     * The copy this funnel formats its notices with; the audio health drain
+     * formats its reports' sentences with it too.
+     *
+     * @return the copy
+     */
+    FailureCopy copy() {
+        return copy;
+    }
+
+    /**
      * Arms the toasts, on the FX thread, once the dispatcher and the
      * notification bar with its history are live (Failure Surfacing book
      * §6.4): registers the
@@ -382,10 +554,14 @@ public final class FailureFunnel {
     }
 
     /**
-     * Records every tail now due: for each, one history-only entry
-     * with the Open Log Folder action, when armed, and one SEVERE line without
-     * a stack. The pulse participant posts it as keyed work when a tail may be
-     * due; on the FX thread. Never throws.
+     * Records every tail now due: for each, one line without a stack at its
+     * last notice's level (SEVERE, or WARNING after a WARNING notice) and,
+     * when armed and its fingerprint ever surfaced, one history-only entry at
+     * that level with its last notice's action (Open Log Folder unless the
+     * notice carried another; story 337, ruling E43). The tail of an isolated
+     * consumer that never reached its threshold is log-only (ruling E35). The
+     * pulse participant posts it as keyed work when a tail may be due; on the
+     * FX thread. Never throws.
      */
     public void flushDueTails() {
         Handling handling = new Handling(Optional.empty(), RECORDING_DUE_TAILS);
@@ -397,8 +573,9 @@ public final class FailureFunnel {
     }
 
     /**
-     * Writes every tail still owed, due or not, to the log only: one SEVERE
-     * line each, inside the funnel's binding; a line that cannot be written
+     * Writes every tail still owed, due or not, to the log only: one line
+     * each at its last notice's level, inside the funnel's binding; a line
+     * that cannot be written
      * goes to the last resort naming its tail's fingerprint and count — or,
      * when even the tail's name cannot be built, naming {@code activity} —
      * and the tails after it are still written. Never throws.
@@ -448,9 +625,9 @@ public final class FailureFunnel {
 
     /**
      * Opens the log folder, off the FX thread: the Help item and
-     * every toast's action. A failure shows a plain ERROR toast — not through
-     * the funnel and without the action, so it cannot loop — and one WARNING
-     * line. Never throws.
+     * the action of every toast that offers Open Log Folder. A failure shows
+     * a plain ERROR toast — not through the funnel and without the action, so
+     * it cannot loop — and one WARNING line. Never throws.
      */
     public void openLogFolder() {
         try {
@@ -593,11 +770,12 @@ public final class FailureFunnel {
         FailureFact.Severity severity = severityOf(category, failure, fingerprint);
         String threadName = thread.getName();
         String base = copy.base(severity, category, subject, threadName, unwrapped);
-        limiter.noticeShown(fingerprint, base);
+        limiter.noticeShown(fingerprint, base, severity, openLogFolderNotice);
         FailureFact fact = new FailureFact(origin, severity, category, fingerprint, base, surface.total(),
-                surface.firstSeen(), surface.at(), threadName, failure);
+                surface.firstSeen(), surface.at(), threadName, Optional.of(failure));
         try {
-            logFact(fact, thread, surface.notLoggedSinceNotice(), subject);
+            logFact(fact, onThread(thread), surface.notLoggedSinceNotice(),
+                    subject.map(declared -> List.of("subject \"" + declared + "\"")).orElse(List.of()));
         } catch (Throwable unloggable) {
             // A record that cannot be written — a log handler's formatter that throws an Error on a plugin's
             // exception, or memory running out while formatting — must not cost the failure its toast.
@@ -607,27 +785,268 @@ public final class FailureFunnel {
             return;
         }
         String text = surface.total() == 1 ? base : copy.repeated(base, surface.total(), surface.firstSeen());
-        toast(new PendingToast(fact, text, thread));
+        toast(new PendingToast(fact, text, thread, openLogFolderNotice));
     }
 
-    /** One SEVERE record with the original throwable's whole chain. */
-    private void logFact(FailureFact fact, Thread thread, long notLogged, Optional<String> subject) {
+    /**
+     * One record of the fact, at its severity's level — SEVERE for FATAL and
+     * ERROR, WARNING for WARNING (story 337, ruling E43) — with the original
+     * throwable's whole chain when there is one.
+     *
+     * @param fact      the fact
+     * @param where     where it failed: {@code on thread "name"}, or a real-time report's {@code at "site"}
+     * @param notLogged the occurrences since the previous notice that no record logged
+     * @param details   what the header names besides: a declared subject, an isolated consumer's offender,
+     *                  a real-time report's sampled anchors
+     */
+    private void logFact(FailureFact fact, String where, long notLogged, List<String> details) {
         StringBuilder header = new StringBuilder(160)
                 .append("Failure ").append(fact.category())
-                .append(" (").append(fact.severity().name()).append(") on thread \"")
-                .append(threadLabel(thread)).append("\", occurrence ").append(fact.count())
+                .append(" (").append(fact.severity().name()).append(") ").append(where)
+                .append(", occurrence ").append(fact.count())
                 .append(", fingerprint ").append(fact.fingerprint().key());
-        subject.ifPresent(declared -> header.append(", subject \"").append(declared).append('"'));
+        for (String detail : details) {
+            header.append(", ").append(detail);
+        }
         if (notLogged > 0) {
             header.append(", ").append(notLogged)
                     .append(" occurrences since the previous notice were not logged individually");
         }
         // One line, so the record's header line carries the fingerprint: a line break anywhere in it, a thread's
         // name and the key included, is written as its escape (story 336, studio-engineer ruling R992-3).
-        LogRecord record = new LogRecord(Level.SEVERE, GuardedThrowables.oneLine(header.toString()));
+        LogRecord record = new LogRecord(fact.severity().logLevel(), GuardedThrowables.oneLine(header.toString()));
         record.setLoggerName(log.getName());
-        record.setThrown(fact.failure());
+        fact.failure().ifPresent(record::setThrown);
         log.log(record);
+    }
+
+    private static String onThread(Thread thread) {
+        return "on thread \"" + threadLabel(thread) + "\"";
+    }
+
+    // ── story 337: isolated consumers (the pulse and the bus) ───────────────
+
+    /** The pulse sink's body; never throws (story 337, ruling E33). */
+    private void pulseItemFailed(PulseItemKind kind, String offender, Throwable failure) {
+        Thread thread = Thread.currentThread();
+        try {
+            reportIsolatedConsumer(UI_PULSE, FailureFact.Origin.PULSE_DRAIN, Optional.empty(),
+                    kind + " " + offender, thread, failure);
+        } catch (Throwable unreportable) {
+            lastResortQuietly(thread, "reporting a failed pulse item", failure);
+        }
+    }
+
+    /** The bus sink's body; never throws. */
+    private void subscriberFailed(SubscriberDescription subscriber, Throwable failure) {
+        Thread thread = Thread.currentThread();
+        try {
+            reportIsolatedConsumer(BUS_SUBSCRIBER, FailureFact.Origin.BUS_DELIVERY,
+                    Optional.of(subscriber.eventTypeName()), subscriber.toString(), thread, failure);
+        } catch (Throwable unreportable) {
+            lastResortQuietly(thread, "reporting a failed event bus consumer", failure);
+        }
+    }
+
+    private void lastResortQuietly(Thread thread, String activity, Throwable failure) {
+        try {
+            lastResort.write(thread, activity, failure);
+        } catch (Throwable givingUp) {
+            // The end of the line: a sink must not throw into the dispatcher or the bus.
+        }
+    }
+
+    /** Never throws: re-entry and the funnel's own failures go to the last-resort record, as in {@link #report}. */
+    private void reportIsolatedConsumer(String category, FailureFact.Origin origin, Optional<String> copyArgument,
+                                        String offender, Thread thread, Throwable failure) {
+        try {
+            if (IN_FUNNEL.isBound()) {
+                reentered(thread, failure);
+                return;
+            }
+            try {
+                ScopedValue.where(IN_FUNNEL, new Handling(Optional.of(failure), "handling a failure"))
+                        .run(() -> handleIsolatedConsumer(category, origin, copyArgument, offender, thread, failure));
+            } catch (Throwable funnelFailure) {
+                lastResort.write(thread, failure, funnelFailure);
+            }
+        } catch (Throwable givingUp) {
+            // The end of the line: a sink must not throw into the dispatcher or the bus.
+        }
+    }
+
+    /**
+     * The isolated-consumer policy (story 337, rulings E34–E36): the
+     * fingerprint is the standard {@code category|exceptionClass|anchor} with
+     * no declared subject; the offender is named in the record only. ERROR is
+     * graded down to WARNING; a FATAL one takes the standard path and
+     * surfaces at once.
+     */
+    private void handleIsolatedConsumer(String category, FailureFact.Origin origin, Optional<String> copyArgument,
+                                        String offender, Thread thread, Throwable failure) {
+        Throwable unwrapped = GuardedThrowables.unwrapCarriers(failure);
+        Fingerprint fingerprint = Fingerprint.of(category, Optional.empty(), unwrapped);
+        String reason = GuardedThrowables.reason(unwrapped);
+        boolean fatal = severityOf(category, failure, fingerprint) == FailureFact.Severity.FATAL;
+        FailureFact.Severity severity = fatal ? FailureFact.Severity.FATAL : FailureFact.Severity.WARNING;
+        FingerprintRateLimiter.Verdict verdict = fatal
+                ? limiter.occur(fingerprint, reason)
+                : limiter.occurIsolatedConsumer(fingerprint, reason);
+        String threadName = thread.getName();
+        List<String> details = List.of("offender " + offender);
+        if (verdict instanceof FingerprintRateLimiter.Verdict.LogOnly logOnly) {
+            logOnly.evicted().ifPresent(tail -> logTailOf(thread, failure, tail));
+            FailureFact fact = new FailureFact(origin, severity, category, fingerprint,
+                    copy.isolatedConsumer(category, copyArgument, unwrapped), 1, logOnly.at(), logOnly.at(),
+                    threadName, Optional.of(failure));
+            writeFact(fact, thread, failure, 0, details);
+            return;
+        }
+        if (!(verdict instanceof FingerprintRateLimiter.Verdict.Surface surface)) {
+            return;
+        }
+        surface.evicted().ifPresent(tail -> logTailOf(thread, failure, tail));
+        String base = fatal
+                ? copy.base(severity, category, Optional.empty(), threadName, unwrapped)
+                : copy.isolatedConsumer(category, copyArgument, unwrapped);
+        limiter.noticeShown(fingerprint, base, severity, openLogFolderNotice);
+        FailureFact fact = new FailureFact(origin, severity, category, fingerprint, base, surface.total(),
+                surface.firstSeen(), surface.at(), threadName, Optional.of(failure));
+        writeFact(fact, thread, failure, surface.notLoggedSinceNotice(), details);
+        // The threshold notice shows the base sentence; a re-show after the window carries the running total.
+        boolean firstNotice = fatal
+                ? surface.total() == 1
+                : surface.total() <= FingerprintRateLimiter.ISOLATED_CONSUMER_THRESHOLD;
+        String text = firstNotice ? base : copy.repeated(base, surface.total(), surface.firstSeen());
+        toast(new PendingToast(fact, text, thread, openLogFolderNotice));
+    }
+
+    /** The fact's record; one that cannot be written costs the failure nothing more (it goes to the last resort). */
+    private void writeFact(FailureFact fact, Thread thread, Throwable failure, long notLogged, List<String> details) {
+        try {
+            logFact(fact, onThread(thread), notLogged, details);
+        } catch (Throwable unloggable) {
+            lastResort.write(thread, failure, unloggable);
+        }
+    }
+
+    // ── story 337: the real-time reports of the audio health drain ──────────
+
+    /** Never throws: re-entry and the funnel's own failures go to the last-resort record. */
+    private void handleRealTimeGuarded(RealTimeReport report, String activity, Runnable body) {
+        Thread thread = Thread.currentThread();
+        try {
+            if (IN_FUNNEL.isBound()) {
+                lastResort.write(thread, activity + " (" + report.fingerprint().key() + ") inside the funnel",
+                        report.newest().orElseGet(() -> new IllegalStateException(report.baseText())));
+                return;
+            }
+            try {
+                ScopedValue.where(IN_FUNNEL, new Handling(report.newest(), activity)).run(body);
+            } catch (Throwable funnelFailure) {
+                lastResort.write(thread, activity + " (" + report.fingerprint().key() + ")", funnelFailure);
+            }
+        } catch (Throwable givingUp) {
+            // The end of the line: the drain's pulse must not be thrown into.
+        }
+    }
+
+    private void realTimeWithinWindow(RealTimeReport report) {
+        FingerprintRateLimiter.Verdict verdict =
+                limiter.occur(report.fingerprint(), guardedMessageOf(report), report.weight());
+        if (verdict instanceof FingerprintRateLimiter.Verdict.Surface surface) {
+            surfaceRealTime(report, surface, false);
+        }
+    }
+
+    private void realTimeEscalated(RealTimeReport report) {
+        surfaceRealTime(report, limiter.occurEscalating(report.fingerprint(), guardedMessageOf(report),
+                report.weight()), true);
+    }
+
+    private void realTimeFolded(RealTimeReport report) {
+        FingerprintRateLimiter.Verdict verdict =
+                limiter.occur(report.fingerprint(), guardedMessageOf(report), report.weight());
+        if (verdict instanceof FingerprintRateLimiter.Verdict.Surface surface) {
+            Thread thread = Thread.currentThread();
+            Fingerprint fingerprint = report.fingerprint();
+            surface.evicted().ifPresent(tail -> logEvictedTail(tail, "counting a folded real-time failure"));
+            // Its own record, without a toast: the surface has handed over what was counted since the last notice,
+            // so only this record accounts for it (story 337, ruling E65).
+            FailureFact fact = realTimeFact(report, surface);
+            List<String> details = new ArrayList<>(sampledAnchorDetails(report));
+            details.add(FOLDED_DETAIL);
+            try {
+                logFact(fact, "at \"" + report.site() + "\"", surface.notLoggedSinceNotice(), details);
+            } catch (Throwable unloggable) {
+                lastResort.write(thread, "writing the record of " + fingerprint.key(), unloggable);
+            }
+            limiter.noticeShown(fingerprint, report.baseText(), report.severity(), report.action());
+        }
+    }
+
+    /**
+     * One record at the report's severity, naming its site and every anchor
+     * sampled since the last notice (story 337, ruling E40), and one toast
+     * with its action. A weighted surface is the fingerprint's first when its
+     * total is the report's weight: then the base sentence shows, else the
+     * running total; an escalation shows its base sentence, which carries its
+     * own count.
+     */
+    private void surfaceRealTime(RealTimeReport report, FingerprintRateLimiter.Verdict.Surface surface,
+                                 boolean escalation) {
+        Thread thread = Thread.currentThread();
+        Fingerprint fingerprint = report.fingerprint();
+        surface.evicted().ifPresent(tail -> logEvictedTail(tail, "writing a tail evicted by a real-time failure"));
+        String base = report.baseText();
+        limiter.noticeShown(fingerprint, base, report.severity(), report.action());
+        FailureFact fact = realTimeFact(report, surface);
+        List<String> details = sampledAnchorDetails(report);
+        try {
+            logFact(fact, "at \"" + report.site() + "\"", surface.notLoggedSinceNotice(), details);
+        } catch (Throwable unloggable) {
+            lastResort.write(thread, "writing the record of " + fingerprint.key(), unloggable);
+        }
+        String text = escalation || surface.total() == report.weight()
+                ? base
+                : copy.repeated(base, surface.total(), surface.firstSeen());
+        toast(new PendingToast(fact, text, thread, report.action()));
+    }
+
+    /** A surfaced real-time report's fact: its base sentence, the surface's running total and times, its site. */
+    private static FailureFact realTimeFact(RealTimeReport report, FingerprintRateLimiter.Verdict.Surface surface) {
+        Fingerprint fingerprint = report.fingerprint();
+        return new FailureFact(report.origin(), report.severity(), fingerprint.category(), fingerprint,
+                report.baseText(), surface.total(), surface.firstSeen(), surface.at(), report.site(), report.newest());
+    }
+
+    /** The record header's detail naming the anchors sampled since the last notice, if any (story 337, ruling E40). */
+    private static List<String> sampledAnchorDetails(RealTimeReport report) {
+        return report.sampledAnchors().isEmpty()
+                ? List.of()
+                : List.of("sampled anchors " + String.join("; ", report.sampledAnchors()));
+    }
+
+    /** The message a real-time report's occurrences are counted under: its newest throwable's reason, or its site. */
+    private static String guardedMessageOf(RealTimeReport report) {
+        return report.newest()
+                .map(newest -> GuardedThrowables.reason(GuardedThrowables.unwrapCarriers(newest)))
+                .orElse(report.site());
+    }
+
+    /** An evicted fingerprint's tail line, when no throwable is being handled: a failure to write it goes to the last resort. */
+    private void logEvictedTail(FingerprintRateLimiter.Tail evicted, String activity) {
+        Thread thread = Thread.currentThread();
+        try {
+            logTail(evicted);
+        } catch (Throwable unloggable) {
+            try {
+                lastResort.write(thread, "writing " + tailNames.apply(evicted) + ", whose fingerprint was evicted",
+                        unloggable);
+            } catch (Throwable unnameable) {
+                lastResort.write(thread, activity, unloggable);
+            }
+        }
     }
 
     /**
@@ -659,12 +1078,13 @@ public final class FailureFunnel {
     }
 
     /**
-     * One SEVERE line without a stack that accounts for a tail; a line break
-     * in its fingerprint is written as its escape (story 336, studio-engineer
-     * ruling R992-3).
+     * One line without a stack that accounts for a tail, at the level of its
+     * last notice's severity — SEVERE, or WARNING for a WARNING notice (story
+     * 337, ruling E43); a line break in its fingerprint is written as its
+     * escape (story 336, studio-engineer ruling R992-3).
      */
     private void logTail(FingerprintRateLimiter.Tail tail) {
-        LogRecord record = new LogRecord(Level.SEVERE, GuardedThrowables.oneLine("Failure "
+        LogRecord record = new LogRecord(tail.severity().logLevel(), GuardedThrowables.oneLine("Failure "
                 + tail.fingerprint().category() + " repeated " + tail.suppressed() + " more times between "
                 + logTime(tail.firstSuppressed()) + " and " + logTime(tail.last())
                 + ", not logged individually (fingerprint " + tail.fingerprint().key() + "); last message: "
@@ -722,9 +1142,10 @@ public final class FailureFunnel {
     }
 
     private void postFact(Target target, PendingToast toast) {
-        Handling handling = new Handling(Optional.of(toast.fact().failure()), "showing a failure's toast");
+        Handling handling = new Handling(toast.fact().failure(), "showing a failure's toast");
         postOnFx(target, handling, toast.failingThread(), () -> target.bar().show(
-                toast.fact().severity().notificationLevel(), toast.text(), openLogFolderLabel, openLogFolderAction));
+                toast.fact().severity().notificationLevel(), toast.text(), toast.action().label(),
+                toast.action().action()));
     }
 
     private void postWithAction(Target target, NotificationLevel level, String text, String activity) {
@@ -839,12 +1260,20 @@ public final class FailureFunnel {
         }
     }
 
+    /**
+     * A due tail: its line, and — when its fingerprint ever surfaced and the
+     * toasts are armed — one history entry at its last notice's level with
+     * its last notice's action (story 337, ruling E43). The tail of an
+     * isolated consumer that never reached its threshold is log-only (story
+     * 337, ruling E35): no notice in the history for it to follow.
+     */
     private void recordTail(Target target, FingerprintRateLimiter.Tail tail) {
         logTail(tail);
-        if (target != null && target.history().isPresent()) {
-            target.history().get().record(NotificationLevel.ERROR,
+        if (tail.surfaced() && target != null && target.history().isPresent()) {
+            NoticeAction action = tail.action().orElse(openLogFolderNotice);
+            target.history().get().record(tail.severity().notificationLevel(),
                     copy.tail(tail.baseMessage(), tail.suppressed(), tail.last()),
-                    Optional.of(openLogFolderAction), Optional.of(openLogFolderLabel));
+                    Optional.of(action.action()), Optional.of(action.label()));
         }
     }
 
@@ -946,12 +1375,17 @@ public final class FailureFunnel {
         }
     }
 
-    /** A surfaced failure's toast, with the thread it failed on. */
-    private record PendingToast(FailureFact fact, String text, Thread failingThread) {
+    /**
+     * A surfaced failure's toast, with the thread it failed on — the drain's,
+     * for a real-time report — and the action it carries (story 337, ruling
+     * E43).
+     */
+    private record PendingToast(FailureFact fact, String text, Thread failingThread, NoticeAction action) {
         private PendingToast {
             Objects.requireNonNull(fact, "fact must not be null");
             Objects.requireNonNull(text, "text must not be null");
             Objects.requireNonNull(failingThread, "failingThread must not be null");
+            Objects.requireNonNull(action, "action must not be null");
         }
     }
 

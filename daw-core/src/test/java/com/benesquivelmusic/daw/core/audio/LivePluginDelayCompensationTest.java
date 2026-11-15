@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.automation.AutomationData;
 import com.benesquivelmusic.daw.core.automation.AutomationPoint;
 import com.benesquivelmusic.daw.core.dsp.dynamics.TruePeakLimiterProcessor;
@@ -198,7 +199,7 @@ public class LivePluginDelayCompensationTest {
             track.getAutomationData().getOrCreatePluginLane(target).addPoint(new AutomationPoint(0, 48));
             var transport = new Transport();
             transport.play();
-            var pipeline = new RenderPipeline(new AudioFormat(48_000, 1, 16, 64), 1, 64);
+            var pipeline = new RenderPipeline(new AudioFormat(48_000, 1, 16, 64), 1, 64, new AudioHealthRecord());
             var master = new com.benesquivelmusic.daw.core.mastering.MasteringChain(1);
             master.allocateIntermediateBuffers(1, 64);
             pipeline.renderOffline(transport, mixer, List.of(track), null, master, new float[1][128], 128, 64);

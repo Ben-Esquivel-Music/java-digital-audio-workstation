@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 
 import com.benesquivelmusic.daw.core.mixer.Mixer;
@@ -131,7 +132,7 @@ class RenderPipelineParityTest {
         offlineMaster.allocateIntermediateBuffers(CHANNELS, BUFFER_SIZE);
 
         RenderPipeline offlinePipeline = new RenderPipeline(format(),
-                AudioEngine.MAX_TRACKS, BUFFER_SIZE);
+                AudioEngine.MAX_TRACKS, BUFFER_SIZE, new AudioHealthRecord());
         float[][] offlineOut = new float[CHANNELS][totalFrames];
         offlinePipeline.renderOffline(offlineTransport, offlineMixer,
                 List.of(offlineTracks[0], offlineTracks[1]), null,
@@ -154,7 +155,7 @@ class RenderPipelineParityTest {
     @Test
     void offlineRenderRejectsInvalidArguments() {
         RenderPipeline pipeline = new RenderPipeline(format(),
-                AudioEngine.MAX_TRACKS, BUFFER_SIZE);
+                AudioEngine.MAX_TRACKS, BUFFER_SIZE, new AudioHealthRecord());
         Transport t = new Transport();
         Mixer m = new Mixer();
         MasteringChain mc = new MasteringChain();

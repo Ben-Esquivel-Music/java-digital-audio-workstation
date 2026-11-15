@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
@@ -121,7 +122,7 @@ class AudioGraphSchedulerTest {
         refMixer.mixDown(refTrackBufs, refOut, refReturns, numFrames);
 
         // Parallel render with a 4-worker pool and identical inputs.
-        try (AudioWorkerPool pool = new AudioWorkerPool(4)) {
+        try (AudioWorkerPool pool = new AudioWorkerPool(4, new AudioHealthRecord())) {
             Mixer parMixer = buildBusyMixer(42L);
             parMixer.setGraphScheduler(new AudioGraphScheduler(pool, trackCount));
             float[][][] parTrackBufs = new float[trackCount][CHANNELS][numFrames];
@@ -166,7 +167,7 @@ class AudioGraphSchedulerTest {
         final int blocks = 32;
 
         Mixer refMixer = buildBusyMixer(5L);
-        try (AudioWorkerPool pool = new AudioWorkerPool(3)) {
+        try (AudioWorkerPool pool = new AudioWorkerPool(3, new AudioHealthRecord())) {
             Mixer parMixer = buildBusyMixer(5L);
             parMixer.setGraphScheduler(new AudioGraphScheduler(pool, trackCount));
 
@@ -199,7 +200,7 @@ class AudioGraphSchedulerTest {
         // Default threshold is 64 frames — anything smaller must not dispatch
         // to workers (so sessions with very small block sizes are not penalized
         // by coordination overhead).
-        try (AudioWorkerPool pool = new AudioWorkerPool(4)) {
+        try (AudioWorkerPool pool = new AudioWorkerPool(4, new AudioHealthRecord())) {
             AudioGraphScheduler scheduler = new AudioGraphScheduler(pool, 16);
 
             Mixer mixer = buildBusyMixer(1L);
@@ -218,7 +219,7 @@ class AudioGraphSchedulerTest {
 
     @Test
     void singleWorkerPoolDisablesDispatch() {
-        try (AudioWorkerPool pool = new AudioWorkerPool(1)) {
+        try (AudioWorkerPool pool = new AudioWorkerPool(1, new AudioHealthRecord())) {
             AudioGraphScheduler scheduler = new AudioGraphScheduler(pool, 16);
             Mixer mixer = buildBusyMixer(2L);
             mixer.setGraphScheduler(scheduler);
@@ -242,7 +243,7 @@ class AudioGraphSchedulerTest {
         // Wrapped in assertTimeoutPreemptively so a real deadlock fails the
         // test instead of hanging CI indefinitely.
         assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
-            try (AudioWorkerPool pool = new AudioWorkerPool(8)) {
+            try (AudioWorkerPool pool = new AudioWorkerPool(8, new AudioHealthRecord())) {
                 Mixer mixer = buildBusyMixer(99L);
                 mixer.setGraphScheduler(new AudioGraphScheduler(pool, 16));
 
@@ -259,7 +260,7 @@ class AudioGraphSchedulerTest {
 
     @Test
     void constructorsValidate() {
-        try (AudioWorkerPool pool = new AudioWorkerPool(2)) {
+        try (AudioWorkerPool pool = new AudioWorkerPool(2, new AudioHealthRecord())) {
             org.assertj.core.api.Assertions.assertThatThrownBy(
                     () -> new AudioGraphScheduler(null, 4))
                     .isInstanceOf(NullPointerException.class);

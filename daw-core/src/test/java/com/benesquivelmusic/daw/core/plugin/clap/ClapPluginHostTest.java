@@ -5,15 +5,95 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginStateRejectedException;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCategory;
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureSample;
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
+import com.benesquivelmusic.daw.core.audio.health.LaneRole;
+import com.benesquivelmusic.daw.core.audio.health.RenderThread;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayOutputStream;
+import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ClapPluginHostTest {
+
+    /**
+     * Story 337, ruling E31: every guarded host callback catches whatever its
+     * body throws and answers its ABI-safe value — an exception that reached
+     * the plugin's native frame would terminate the JVM — and on a render
+     * thread records {@code audio.plugin}. Each body is driven to a real
+     * fault through the per-call state it reads.
+     */
+    @Test
+    void everyGuardedHostCallbackAnswersItsAbiValueOnAFaultAndRecordsIt() throws Exception {
+        AudioHealthRecord record = new AudioHealthRecord();
+        AtomicReference<int[]> answers = new AtomicReference<>();
+        AtomicReference<MemorySegment> event = new AtomicReference<>();
+
+        onRenderThread(record, () -> {
+            threadLocal("CURRENT_EVENT_COUNT").set(new int[0]);
+            int size = ClapPluginHost.pendingEventsSize(MemorySegment.NULL);
+            threadLocal("CURRENT_EVENT_COUNT").set(new int[] {3});
+            threadLocal("CURRENT_EVENT_SEGMENTS").set(new MemorySegment[1]);
+            event.set(ClapPluginHost.pendingEventsGet(MemorySegment.NULL, 2));
+            threadLocal("CURRENT_WRITE_TARGET").set(new ByteArrayOutputStream());
+            long written = ClapPluginHost.ostreamWrite(MemorySegment.NULL,
+                    MemorySegment.ofArray(new byte[4]), 4);
+            threadLocal("CURRENT_READ_SOURCE").set(new byte[8]);
+            threadLocal("CURRENT_READ_POSITION").set(new int[] {0});
+            long read = ClapPluginHost.istreamRead(MemorySegment.NULL,
+                    MemorySegment.ofArray(new byte[2]), 8);
+            answers.set(new int[] {size, (int) written, (int) read});
+            for (String name : List.of("CURRENT_EVENT_COUNT", "CURRENT_EVENT_SEGMENTS",
+                    "CURRENT_WRITE_TARGET", "CURRENT_READ_SOURCE", "CURRENT_READ_POSITION")) {
+                threadLocal(name).remove();
+            }
+        });
+
+        assertThat(answers.get()).containsExactly(0, -1, -1);
+        assertThat(event.get()).isEqualTo(MemorySegment.NULL);
+        assertThat(record.total(AudioFailureCategory.PLUGIN)).isEqualTo(4);
+        List<AudioFailureSample> samples = new ArrayList<>();
+        record.drainSamples(samples::add);
+        assertThat(samples).extracting(AudioFailureSample::detail)
+                .as("the events-get fault carries the index it was asked for")
+                .contains(2);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ThreadLocal<Object> threadLocal(String name) {
+        try {
+            java.lang.reflect.Field field = ClapPluginHost.class.getDeclaredField(name);
+            field.setAccessible(true);
+            return (ThreadLocal<Object>) field.get(null);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("ClapPluginHost." + name + " must exist", e);
+        }
+    }
+
+    private static void onRenderThread(AudioHealthRecord record, Runnable body) throws Exception {
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        RenderThread thread = new RenderThread(record.claimLane(LaneRole.RENDER_DRIVE), () -> {
+            try {
+                body.run();
+            } catch (Throwable t) {
+                failure.set(t);
+            }
+        }, "clap-callback-thread");
+        thread.start();
+        thread.join(5_000L);
+        assertThat(thread.isAlive()).as("the render thread finished within the guard budget").isFalse();
+        assertThat(failure.get()).as("nothing escaped a host callback").isNull();
+    }
 
     @TempDir
     Path tempDir;

@@ -3,8 +3,10 @@ package com.benesquivelmusic.daw.sdk.audio;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.Flow;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * macOS CoreAudio backend driven by FFM bindings to {@code AudioUnit.h} and
@@ -27,6 +29,17 @@ public final class CoreAudioBackend implements AudioBackend {
 
     private final AudioBackendSupport support = new AudioBackendSupport();
     private volatile CoreAudioFormatChangeShim formatChangeShim;
+
+    /**
+     * Property-listener upcalls whose handling failed (story 337, ruling E31)
+     * — {@code audio.device}. The notifications may arrive on more than one
+     * dispatch-queue thread, so this one counter is an {@link AtomicLong},
+     * incremented on the failure path only.
+     */
+    private final AtomicLong deviceNotificationFaults = new AtomicLong();
+
+    /** The newest fault behind {@link #deviceNotificationFaults}. */
+    private volatile Throwable lastDeviceNotificationFault;
 
     /** Creates a new CoreAudio backend (no native resources allocated until {@link #open}). */
     public CoreAudioBackend() {
@@ -84,6 +97,35 @@ public final class CoreAudioBackend implements AudioBackend {
     @Override
     public Flow.Publisher<AudioDeviceEvent> deviceEvents() {
         return support.deviceEvents();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>CoreAudio counts the device-notification upcalls whose handling failed
+     * ({@code audio.device}; story 337, ruling E31). It reports no device
+     * heartbeat: this backend runs no device callback thread in this tree, so
+     * a watchdog uses the engine's render-drive heartbeat (story 337, ruling
+     * E5).</p>
+     */
+    @Override
+    public BackendThreadCounters threadCounters() {
+        return new BackendThreadCounters(0L, 0L, 0L, deviceNotificationFaults.get(),
+                OptionalLong.empty(), Optional.empty(), Optional.empty(),
+                Optional.ofNullable(lastDeviceNotificationFault));
+    }
+
+    /**
+     * Counts one notification upcall whose handling failed (story 337, ruling
+     * E31). Called from {@link CoreAudioFormatChangeShim}'s upcall catch,
+     * inside its own catch-all: an {@link AtomicLong} increment and a
+     * reference store, on the failure path only.
+     *
+     * @param fault the fault the shim caught
+     */
+    void noteDeviceNotificationFault(Throwable fault) {
+        deviceNotificationFaults.incrementAndGet();
+        lastDeviceNotificationFault = fault;
     }
 
     /**

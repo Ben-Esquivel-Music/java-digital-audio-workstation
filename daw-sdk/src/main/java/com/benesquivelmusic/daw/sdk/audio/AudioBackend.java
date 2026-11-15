@@ -1032,6 +1032,30 @@ public interface AudioBackend extends AutoCloseable {
     }
 
     /**
+     * Returns the failure counters this backend keeps on the threads it owns
+     * (story 337, ruling E4) — a device callback, an input drain, a capture
+     * loop, a device-notification upcall.
+     *
+     * <p>The counters are PULLED: each one lives inside the backend with the
+     * thread or threads that write it, and the engine reads them from a
+     * lifecycle or drain thread. They are monotonic for the life of this backend
+     * instance — a backend folds the counts of each per-stream helper into
+     * its own totals when the helper is torn down, so reopening never resets
+     * them. This is a report, not a failure sink (failure-surfacing book
+     * §2.7): a backend that runs no thread of its own truthfully has nothing
+     * to count.</p>
+     *
+     * <p>Never called from a real-time thread: building the value allocates.</p>
+     *
+     * @return the counters; never {@code null}. The default is
+     *         {@link BackendThreadCounters#NONE} — "no own threads, zero
+     *         counts"
+     */
+    default BackendThreadCounters threadCounters() {
+        return BackendThreadCounters.NONE;
+    }
+
+    /**
      * Closes any open stream and releases native resources. Idempotent.
      *
      * <p>Returning normally does not always mean the device was given back:

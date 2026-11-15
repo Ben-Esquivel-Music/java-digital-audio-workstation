@@ -224,7 +224,8 @@ class SendTapTest {
         mixer.addChannel(ch2);
 
         try (com.benesquivelmusic.daw.core.audio.AudioWorkerPool pool =
-                     new com.benesquivelmusic.daw.core.audio.AudioWorkerPool(2)) {
+                     new com.benesquivelmusic.daw.core.audio.AudioWorkerPool(2,
+                             new com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord())) {
             mixer.setGraphScheduler(
                     new com.benesquivelmusic.daw.core.audio.AudioGraphScheduler(pool, 2));
 

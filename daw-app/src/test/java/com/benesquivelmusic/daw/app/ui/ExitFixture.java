@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.status.ProjectJournalCoordinator;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointEvent;
 import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
@@ -80,7 +81,7 @@ final class ExitFixture implements AutoCloseable {
 
     final SaveFlowFixture save;
     final Path songA;
-    final DefaultEventBus bus = new DefaultEventBus();
+    final DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
     final SessionManager sessions = new SessionManager();
     final ProjectJournalCoordinator journal;
     final AtomicReference<WorkingSession> activeSession = new AtomicReference<>();

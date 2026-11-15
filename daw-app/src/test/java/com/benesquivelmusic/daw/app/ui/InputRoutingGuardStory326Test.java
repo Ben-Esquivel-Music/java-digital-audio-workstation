@@ -63,7 +63,7 @@ class InputRoutingGuardStory326Test {
     }
     @Test void sharedSurfacesStayUnarmedUntilValidationAndRefuseInvalidRoutingWithoutAnArmedEvent() throws Exception {
         Rig rig=ArrangementStripFixture.onFx(Rig::new);
-        DefaultEventBus bus=new DefaultEventBus();var previous=EventBusPublisher.getDefault();
+        DefaultEventBus bus=new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);var previous=EventBusPublisher.getDefault();
         List<TrackEvent.Armed> events=new CopyOnWriteArrayList<>();
         try(var subscription=bus.on(TrackEvent.Armed.class,events::add)) {
             EventBusPublisher.setDefault(bus);
@@ -83,7 +83,7 @@ class InputRoutingGuardStory326Test {
     }
     @Test void validAsyncArmMirrorsAllSurfacesAndAnnouncesExactlyOnce() throws Exception {
         Rig rig=ArrangementStripFixture.onFx(Rig::new);
-        DefaultEventBus bus=new DefaultEventBus();var previous=EventBusPublisher.getDefault();
+        DefaultEventBus bus=new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);var previous=EventBusPublisher.getDefault();
         List<TrackEvent.Armed> events=new CopyOnWriteArrayList<>();
         try(var subscription=bus.on(TrackEvent.Armed.class,events::add)) {
             EventBusPublisher.setDefault(bus);
@@ -107,7 +107,7 @@ class InputRoutingGuardStory326Test {
     }
     @Test void twoValidGroupArmsAreBothAcceptedAfterSerializedValidation() throws Exception {
         Rig rig=ArrangementStripFixture.onFx(Rig::new);AtomicReference<Track> other=new AtomicReference<>();
-        DefaultEventBus bus=new DefaultEventBus();var previous=EventBusPublisher.getDefault();
+        DefaultEventBus bus=new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);var previous=EventBusPublisher.getDefault();
         List<TrackEvent.Armed> events=new CopyOnWriteArrayList<>();
         AtomicInteger armedVmSignals=new AtomicInteger();
         try(var subscription=bus.on(TrackEvent.Armed.class,events::add)) {
@@ -146,7 +146,7 @@ class InputRoutingGuardStory326Test {
     void backendErrorRefusesThePendingArmAndContinuesQueuedValidation(Error failure,String diagnostic) throws Exception {
         Rig rig=ArrangementStripFixture.onFx(Rig::new);
         Track other=ArrangementStripFixture.onFx(()->rig.project.createAudioTrack("Other"));
-        DefaultEventBus bus=new DefaultEventBus();var previous=EventBusPublisher.getDefault();
+        DefaultEventBus bus=new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);var previous=EventBusPublisher.getDefault();
         List<TrackEvent.Armed> events=new CopyOnWriteArrayList<>();
         try(var subscription=bus.on(TrackEvent.Armed.class,events::add)) {
             EventBusPublisher.setDefault(bus);
@@ -197,7 +197,7 @@ class InputRoutingGuardStory326Test {
     }
     @Test void invalidRoutingEditDisarmsThroughTheSharedIntentAndDoesNotAnnounceARearm() throws Exception {
         Rig rig=ArrangementStripFixture.onFx(Rig::new);
-        DefaultEventBus bus=new DefaultEventBus();var previous=EventBusPublisher.getDefault();
+        DefaultEventBus bus=new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);var previous=EventBusPublisher.getDefault();
         List<TrackEvent.Armed> events=new CopyOnWriteArrayList<>();
         try(var subscription=bus.on(TrackEvent.Armed.class,events::add)) {
             EventBusPublisher.setDefault(bus);

@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.JournalEnding.JournalEnd;
 import com.benesquivelmusic.daw.app.ui.status.ProjectJournalCoordinator;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.journal.JournalRecord;
 import com.benesquivelmusic.daw.core.persistence.journal.JournalState;
@@ -63,7 +64,7 @@ class SessionJournalEndingTest {
     @BeforeEach
     void songAWithItsJournalOpen() throws Exception {
         fixture = new SaveFlowFixture(workspace, AutoSaveConfig.DEFAULT);
-        bus = new DefaultEventBus();
+        bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         journal = new ProjectJournalCoordinator(fixture.progress, onFx(NotificationBar::new), fixture.dispatcher,
                 () -> true, () -> bus, fixture.checkpoints, sessions, InstantSource.system());
         journal.setSessionSealedSink((_, session) -> sealed.add(session));

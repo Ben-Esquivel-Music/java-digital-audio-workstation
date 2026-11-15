@@ -6,6 +6,13 @@ import com.benesquivelmusic.daw.app.diagnostics.LogLineFormatter;
 import com.benesquivelmusic.daw.app.diagnostics.LogSink;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.plugin.fixtures.JarOnlyExceptions;
+import com.benesquivelmusic.daw.core.audio.AudioEngine;
+import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCategory;
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCodes;
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
+import com.benesquivelmusic.daw.core.audio.health.LaneRole;
+import com.benesquivelmusic.daw.core.audio.health.RenderThread;
 
 import javafx.application.Platform;
 
@@ -26,6 +33,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
 import java.util.logging.ConsoleHandler;
 import java.util.logging.ErrorManager;
@@ -84,7 +92,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * FXML-loaded nor initialized: given the notification bar
  * {@code initializeNotificationBar} would have built, it arms the toasts on
  * it; without one, the toasts stay off and one WARNING says so, and Help ▸
- * Open Log Folder still opens the folder.</p>
+ * Open Log Folder still opens the folder. Given also the audio engine
+ * {@code initialize()} would have built, the window registers its audio health
+ * drain on the same dispatcher (story 337, ruling E42), and a failure a render
+ * thread of that engine records reaches the window's bar on the next pulse —
+ * the drain's one real-wiring test; {@code AudioHealthDrainTest} drives the
+ * drain itself.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class FailureSpineStartupWiringTest {
@@ -421,16 +434,23 @@ class FailureSpineStartupWiringTest {
                 made.setHistoryService(history);
                 return made;
             });
+            AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
             MainController window = onFx(() -> {
                 MainController made = new MainController();
                 made.setFxDispatcher(dispatcher);
                 // What initializeNotificationBar builds when the window is FXML-loaded.
                 setField(made, "notificationBar", bar);
+                // What initialize() builds: the window's engine, whose health record the drain reads (story 337).
+                setField(made, "audioEngine", engine);
                 made.attachFailureFunnel(spine.funnel());
                 return made;
             });
             try {
-                assertThat(dispatcher.pulseParticipantCount()).as("armed on the window's dispatcher").isEqualTo(1);
+                assertThat(dispatcher.pulseParticipantCount())
+                        .as("armed on the window's dispatcher: the funnel's tail check and the audio health drain"
+                                + " (story 337, ruling E42)")
+                        .isEqualTo(2);
+                assertThat(onFx(window::audioHealthDrain)).as("the drain story 338's engine cell reads").isPresent();
                 failOn(spine.funnel(), "daw-take-storage", () -> {
                     throw new IllegalStateException("disk gone");
                 });
@@ -445,6 +465,47 @@ class FailureSpineStartupWiringTest {
                 runOnFx(window::onOpenLogFolder);
                 assertThat(opened.poll(GUARD.toMillis(), TimeUnit.MILLISECONDS))
                         .as("Help ▸ Open Log Folder opens the funnel's log folder").isEqualTo(spine.funnel().logFolder());
+
+                // Story 337 — a failure a render thread of the window's engine records reaches the window's bar
+                // through the drain on the window's dispatcher.
+                assertThat(recordOnARenderThreadOf(engine, AudioFailureCodes.RENDER,
+                        new IllegalStateException("the master bus threw")))
+                        .as("recorded into the window engine's own record").isTrue();
+                runOnFx(dispatcher::pulse);
+                String render = "Audio processing failed, so a block was played as silence: the master bus threw."
+                        + " Playback continues.";
+                FailureSpineFixture.await("the render failure on the window's bar", () -> history.getEntries()
+                        .stream().anyMatch(entry -> entry.message().equals(render)));
+                assertThat(history.getEntries()).filteredOn(entry -> entry.message().equals(render))
+                        .singleElement().satisfies(entry -> {
+                            assertThat(entry.level()).isEqualTo(NotificationLevel.WARNING);
+                            assertThat(entry.actionLabel()).contains(OPEN_LOG_FOLDER);
+                        });
+
+                // Story 337, ruling E11 — a halt of the window engine's render drive reaches the window's bar as the
+                // halt notice with Restart Audio Engine, through the window's own halt response, and latches the
+                // drain's engine fault.
+                assertThat(recordOnARenderThreadOf(engine, AudioFailureCodes.RENDER_HALTED,
+                        new IllegalStateException("the mixer lost its master bus")))
+                        .as("the halt recorded into the window engine's own record").isTrue();
+                runOnFx(dispatcher::pulse);
+                String halted = "The audio engine stopped because audio processing failed for a full second without"
+                        + " recovering: the mixer lost its master bus. Restart the audio engine to continue.";
+                FailureSpineFixture.await("the halt notice on the window's bar", () -> history.getEntries()
+                        .stream().anyMatch(entry -> entry.message().equals(halted)));
+                assertThat(history.getEntries()).filteredOn(entry -> entry.message().startsWith(
+                                "The audio engine stopped"))
+                        .singleElement().satisfies(entry -> {
+                            assertThat(entry.message()).isEqualTo(halted);
+                            assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
+                            assertThat(entry.actionLabel()).contains("Restart Audio Engine");
+                        });
+                assertThat(onFx(() -> window.audioHealthDrain().orElseThrow().engineFault()))
+                        .as("the drain latched the engine fault story 338's cell renders")
+                        .hasValueSatisfying(fact -> {
+                            assertThat(fact.category()).isEqualTo(AudioFailureCategory.RENDER_HALTED);
+                            assertThat(fact.action().label()).isEqualTo("Restart Audio Engine");
+                        });
             } finally {
                 spine.funnel().disarmToasts();
                 runOnFx(() -> {
@@ -574,6 +635,24 @@ class FailureSpineStartupWiringTest {
         } catch (ReflectiveOperationException failure) {
             throw new AssertionError(failure);
         }
+    }
+
+    /**
+     * Records {@code failure} as {@code audio.render} the way the render drive does: on a render thread
+     * carrying a lane of {@code engine}'s record, through the record's own real-time entry.
+     *
+     * @return whether the record took it
+     */
+    private static boolean recordOnARenderThreadOf(AudioEngine engine, int code, Throwable failure)
+            throws InterruptedException {
+        AudioHealthRecord health = engine.audioHealth();
+        AtomicBoolean recorded = new AtomicBoolean();
+        RenderThread drive = new RenderThread(health.claimLane(LaneRole.RENDER_DRIVE),
+                () -> recorded.set(health.recordOnCurrentThread(code, failure, null, 1)),
+                "test-render-drive");
+        drive.start();
+        assertThat(drive.join(GUARD)).as("the render thread ended").isTrue();
+        return recorded.get();
     }
 
     /** Runs {@code failing} on a virtual thread whose own handler is the funnel's default handler, to its end. */

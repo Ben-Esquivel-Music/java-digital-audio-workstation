@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCodes;
+import com.benesquivelmusic.daw.core.audio.health.RenderThread;
 import com.benesquivelmusic.daw.core.mixer.InsertEffect;
 
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
@@ -8,6 +10,8 @@ import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 
 import java.util.Arrays;
 import java.util.Random;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -283,8 +287,21 @@ public final class VelvetNoiseReverbProcessor implements AudioProcessor, Prepare
                 for (int seg = 0; seg < lateSegmentCount; seg++) {
                     try {
                         futures[seg].get();
-                    } catch (Exception e) {
-                        // Segment work buffer remains zeroed on failure
+                    } catch (InterruptedException interrupted) {
+                        // Stop's teardown interrupts the render drive: restore
+                        // the flag and record nothing (story 337, ruling E29).
+                        Thread.currentThread().interrupt();
+                    } catch (ExecutionException | CancellationException segmentFailure) {
+                        // computeSegment writes frame by frame, so a segment
+                        // that failed midway left a half-written buffer whose
+                        // sum would click; zero it so the failure costs one
+                        // block of that segment's tail (story 337, ruling E29).
+                        Arrays.fill(segmentWorkBuffers[seg], 0, numFrames, 0.0f);
+                        Throwable cause = segmentFailure instanceof ExecutionException failed
+                                && failed.getCause() != null ? failed.getCause() : segmentFailure;
+                        // Recorded as audio.dsp on a render thread; a thread
+                        // with no lane records nothing.
+                        RenderThread.recordOnCurrentThread(AudioFailureCodes.DSP, cause, this, seg);
                     }
                 }
             }

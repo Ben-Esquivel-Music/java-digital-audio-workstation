@@ -11,26 +11,40 @@ import java.io.IOException;
 import java.lang.classfile.ClassFile;
 import java.lang.classfile.Attributes;
 import java.lang.classfile.ClassModel;
+import java.lang.classfile.CodeElement;
 import java.lang.classfile.Instruction;
 import java.lang.classfile.MethodModel;
 import java.lang.classfile.Opcode;
 import java.lang.classfile.attribute.CodeAttribute;
+import java.lang.classfile.constantpool.ClassEntry;
+import java.lang.classfile.constantpool.ConstantDynamicEntry;
 import java.lang.classfile.constantpool.LoadableConstantEntry;
 import java.lang.classfile.constantpool.MemberRefEntry;
 import java.lang.classfile.constantpool.MethodHandleEntry;
+import java.lang.classfile.constantpool.MethodTypeEntry;
+import java.lang.classfile.instruction.ArrayLoadInstruction;
+import java.lang.classfile.instruction.ArrayStoreInstruction;
 import java.lang.classfile.instruction.ConstantInstruction;
+import java.lang.classfile.instruction.ExceptionCatch;
 import java.lang.classfile.instruction.FieldInstruction;
 import java.lang.classfile.instruction.InvokeDynamicInstruction;
 import java.lang.classfile.instruction.InvokeInstruction;
+import java.lang.classfile.instruction.LabelTarget;
 import java.lang.classfile.instruction.MonitorInstruction;
 import java.lang.classfile.instruction.NewMultiArrayInstruction;
 import java.lang.classfile.instruction.NewObjectInstruction;
 import java.lang.classfile.instruction.NewPrimitiveArrayInstruction;
 import java.lang.classfile.instruction.NewReferenceArrayInstruction;
+import java.lang.classfile.instruction.OperatorInstruction;
+import java.lang.classfile.instruction.ThrowInstruction;
+import java.lang.classfile.instruction.TypeCheckInstruction;
 import java.lang.foreign.MemorySegment;
 import java.lang.reflect.AccessFlag;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -43,8 +57,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiPredicate;
 import java.util.function.Predicate;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -54,7 +71,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Reflection-based verification of the {@link RealTimeSafe} contract.
  *
  * <p>This suite discovers every class under {@code com.benesquivelmusic.daw}
- * at test time and enforces eight invariants:</p>
+ * at test time and enforces thirteen invariants:</p>
  * <ol>
  *   <li>Critical-path methods carry {@code @RealTimeSafe}
  *       ({@code Mixer.mixDown}, {@code EffectsChain.process},
@@ -128,6 +145,50 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       {@code RecordingPipeline.beginCapture}), with the volatile fields
  *       each rests on. The callback-side methods carry
  *       {@code @RealTimeSafe}.</li>
+ *   <li>Story 337 (failure-surfacing book §6.3 gate 3, ruling E46) — every
+ *       device-callback bridge in {@link #RT_CALLBACK_BRIDGES}, the ASIO
+ *       upcall {@code bufferSwitchUpcall} and both exempt PortAudio entry
+ *       points included, is walked (same-class callees) under the guard
+ *       predicate {@link #RT_GUARD_INVOKE_OFFENDER} plus its atomic
+ *       read-modify-write and clock-read clauses: no logging, no publisher,
+ *       no lock ({@code LockSupport.unpark} the one exemption), no
+ *       wait / notify / sleep, no collection iteration and no other
+ *       {@code java.util} call beyond {@code Arrays}, {@code Objects} and
+ *       the atomics' plain loads and stores, no clock read (the device
+ *       heartbeat is a counter), no monitor and no {@code synchronized}
+ *       callee.</li>
+ *   <li>Story 337 — the render drive every push backend runs,
+ *       {@code EngineStreamPump.renderLoop}, followed into the audio-health
+ *       package, holds to the guard predicate with its read-modify-write
+ *       clause, allocates nothing and enters no monitor, modulo an exact
+ *       allow-list of two pre-existing calls
+ *       ({@link #RENDER_DRIVE_INVOKE_ALLOWLIST}).</li>
+ *   <li>Story 337 — the multi-core worker pool's
+ *       {@code AudioWorkerPool.invokeAll} and {@code runTasks}, followed
+ *       into the audio-health package, hold to the guard predicate without
+ *       its read-modify-write clause (the CAS is the pool's algorithm), enter
+ *       no monitor and allocate nothing beyond an exact allow-list of the
+ *       argument-check throw path.</li>
+ *   <li>Story 337 — every {@code @RealTimeSafe} method of the audio-health
+ *       package ({@link #REQUIRED_AUDIO_HEALTH_ROOTS} at least), followed
+ *       across that package, has ZERO findings: no guard-predicate,
+ *       read-modify-write or clock call, no allocation or
+ *       {@code invokedynamic}, no monitor and no {@code synchronized} callee;
+ *       and the health classes are annotated bidirectionally — the
+ *       real-time write side carries {@code @RealTimeSafe}, every
+ *       lifecycle and drain-side method does not. The instruction orders
+ *       the lane's descriptor ring rests on (the slot stores before the
+ *       release of {@code tail}; the copy, then the nulling, before the
+ *       release of {@code head}) and the honest exit's one store of
+ *       {@code running} before its terminal record are pinned (story 337,
+ *       rulings E21 and E60).</li>
+ *   <li>Story 337 — every method an FFM upcall stub binds
+ *       ({@link #UPCALL_TARGETS}) catches everything: each of its
+ *       potentially-throwing instructions lies inside an exception-table
+ *       range whose catch type is {@code Throwable} or catch-any, and it is
+ *       not {@code synchronized}; a scan of the main sources cross-checks
+ *       that every {@code upcallStub(…)} target in the tree is on that
+ *       list.</li>
  * </ol>
  *
  * <p>These checks run as part of {@code mvn test} and fail the build if
@@ -175,6 +236,15 @@ class RealTimeSafeContractTest {
      * guard fails on.
      */
     private static final String ASIO_BRIDGE_METHOD = "bufferSwitch";
+
+    /**
+     * Story 337, ruling E16 — the method the ASIO upcall stub really binds:
+     * the guard around {@link #ASIO_BRIDGE_METHOD} that bumps the device
+     * heartbeat, silences the output half on a fault and counts it. Rooting
+     * the scan at {@code bufferSwitch} alone would leave that catch site
+     * unscanned. Same rename caveat, same non-empty scan guard.
+     */
+    private static final String ASIO_UPCALL_METHOD = "bufferSwitchUpcall";
 
     /**
      * Story 312 — the {@code ASIOSampleType} converter the bridge calls per
@@ -334,6 +404,8 @@ class RealTimeSafeContractTest {
      */
     private static final List<RtCallbackBridge> RT_CALLBACK_BRIDGES = List.of(
             RtCallbackBridge.annotated(ASIO_BRIDGE_CLASS, ASIO_BRIDGE_METHOD,
+                    List.of(int.class, int.class)),
+            RtCallbackBridge.annotated(ASIO_BRIDGE_CLASS, ASIO_UPCALL_METHOD,
                     List.of(int.class, int.class)),
             RtCallbackBridge.annotated(NATIVE_CALLBACK_BRIDGE_CLASS,
                     NATIVE_CALLBACK_BRIDGE_METHOD,
@@ -819,7 +891,15 @@ class RealTimeSafeContractTest {
             // INSERT_IO tap accumulation. Listed explicitly so a violation
             // there cannot hide behind the float root.
             new RenderRoot("com.benesquivelmusic.daw.core.audio.EffectsChain", "processDouble"),
-            new RenderRoot("com.benesquivelmusic.daw.core.audio.AudioEngine", "processBlock"));
+            new RenderRoot("com.benesquivelmusic.daw.core.audio.AudioEngine", "processBlock"),
+            // Story 337, ruling E46 (item 5): the automation binder and the
+            // MIDI renderer's render-thread entry points, which pin rulings
+            // E28 and E30 — a rejected automation value or a failing
+            // synthesizer is recorded into the render thread's lane, never
+            // logged and (on a render thread) never thrown.
+            new RenderRoot("com.benesquivelmusic.daw.core.automation.ReflectiveParameterBinder", "apply"),
+            new RenderRoot("com.benesquivelmusic.daw.core.audio.MidiTrackRenderer", "renderMidiTrack"),
+            new RenderRoot("com.benesquivelmusic.daw.core.audio.MidiTrackRenderer", "allNotesOff"));
 
     /**
      * Metering roots that must exist, so the reflective discovery of
@@ -866,12 +946,10 @@ class RealTimeSafeContractTest {
      * and a NEW site anywhere on the path fails the per-root sentinel.
      */
     private static final Map<String, String> RENDER_PATH_INVOKE_ALLOWLIST = Map.of(
-            // Pre-existing (pre-318): the return-bus-cap warning is guarded by
-            // the once-only returnBusCapWarningLogged flag, so the Logger is
-            // entered at most once per pipeline lifetime; the metering tap
-            // path adds no logging. Flagged, not fixed, in story 318.
-            "RenderPipeline#renderBlock: invokes java/util/logging/Logger#log",
-            "warn-once return-bus cap notice behind returnBusCapWarningLogged");
+            // Empty since story 337, ruling E25: the return-bus cap notice
+            // that was this list's only entry is now an audio.config record
+            // into the render thread's lane, with no Logger on the path.
+            );
 
     /**
      * Story 318 — PRE-EXISTING allocation / invokedynamic sites reachable
@@ -883,10 +961,19 @@ class RealTimeSafeContractTest {
      */
     private static final Map<String, String> RENDER_PATH_ALLOCATION_ALLOWLIST = new LinkedHashMap<>();
 
+    /**
+     * Story 337, ruling E57 — why the automation binder's two allocation
+     * sites are tolerated: on a render thread a rejected value is recorded
+     * and nothing is thrown; only a thread with no lane reaches them.
+     */
+    private static final String BINDER_OFF_RENDER_THREAD_THROW_PATH =
+            "throw path on a thread with no lane (offline export/bounce) — keeps that render's "
+                    + "visible failure (story 337, ruling E57)";
+
     static {
-        RENDER_PATH_ALLOCATION_ALLOWLIST.put(
-                "AudioEngine#processBlock: new java/lang/IllegalStateException",
-                "throw path of the engine-not-running guard");
+        // Story 337, ruling E6: processBlock no longer throws on a stopped
+        // engine, so its IllegalStateException entry is gone; ruling E25
+        // removed renderBlock's warn-once Supplier with its Logger.
         RENDER_PATH_ALLOCATION_ALLOWLIST.put(
                 "Mixer#mixDown: invokedynamic test -> com/benesquivelmusic/daw/core/mixer/Mixer#hasSidechainRouting",
                 "the non-capturing Mixer::hasSidechainRouting method reference handed to "
@@ -911,10 +998,6 @@ class RealTimeSafeContractTest {
                 "javac-synthesised default branch of the exhaustive SendTap enum switch — "
                         + "unreachable unless the enum changes under a stale class file");
         RENDER_PATH_ALLOCATION_ALLOWLIST.put(
-                "RenderPipeline#renderBlock: invokedynamic get -> com/benesquivelmusic/daw/core/audio/RenderPipeline#lambda$renderBlock$0",
-                "the capturing Supplier of the warn-once return-bus cap notice, behind "
-                        + "returnBusCapWarningLogged (see RENDER_PATH_INVOKE_ALLOWLIST)");
-        RENDER_PATH_ALLOCATION_ALLOWLIST.put(
                 "RenderPipeline#resolveAudioData: invokedynamic get -> com/benesquivelmusic/daw/core/audio/RenderPipeline#lambda$resolveAudioData$0",
                 "pre-existing hole: the SampleRateConversionCache lookup hands a capturing "
                         + "Supplier per clip per block (flagged by story 318, not fixed)");
@@ -922,6 +1005,12 @@ class RealTimeSafeContractTest {
                 "RenderPipeline#scheduleSegmentClicks: new primitive array FLOAT",
                 "story 136's documented bounded per-click allocation on the metronome path "
                         + "(renderBlock's 'Allocation note')");
+        RENDER_PATH_ALLOCATION_ALLOWLIST.put(
+                "ReflectiveParameterBinder#applyBindings: new java/lang/IllegalStateException",
+                BINDER_OFF_RENDER_THREAD_THROW_PATH);
+        RENDER_PATH_ALLOCATION_ALLOWLIST.put(
+                "ReflectiveParameterBinder#applyBindings: invokedynamic makeConcatWithConstants -> ?",
+                BINDER_OFF_RENDER_THREAD_THROW_PATH);
     }
 
     /** A method reached by the walk, keyed by internal owner + name + descriptor. */
@@ -1454,6 +1543,963 @@ class RealTimeSafeContractTest {
     }
 
     // ------------------------------------------------------------------
+    // Story 337 — gate 3 (failure-surfacing book §6.3; ruling E46): the
+    // guard predicate on every device-callback bridge, the render drive, the
+    // worker pool, the audio-health record, and the FFM upcall guards
+    // ------------------------------------------------------------------
+
+    /**
+     * Story 337, ruling E46 (item 1) — the gate-3 guard predicate: what no
+     * method a real-time guard reaches may call. Logging
+     * ({@code java.util.logging}, {@code System.Logger},
+     * {@code System.getLogger}); a {@code SubmissionPublisher}; every lock in
+     * {@code java.util.concurrent.locks} but {@code LockSupport.unpark} — the
+     * render path's one sanctioned signal, as in
+     * {@link #RENDER_PATH_INVOKE_OFFENDER}, so {@code LockSupport.parkNanos}
+     * IS a finding and the render drive's pacing park is allow-listed rather
+     * than hidden; {@code wait}/{@code notify}/{@code sleep}; and collection
+     * iteration, defined as the capture path's deny-by-default rule
+     * ({@link #CAPTURE_PATH_INVOKE_OFFENDER}): any {@code Iterable} or
+     * {@code java.util.stream} call, and any other {@code java.util} owner but
+     * {@code Arrays}, {@code Objects}, the atomics and {@code LockSupport} —
+     * which also catches the locks inside JDK queues. A loop over an array
+     * issues no invoke and stays allowed; {@code Thread.currentThread} (the
+     * lane lookup) is not an offender.
+     *
+     * <p>Composed per root with {@link #ATOMIC_RMW_INVOKE} and
+     * {@link #CLOCK_READ_INVOKE}: a device-callback bridge gets both (its
+     * heartbeat is a counter, ruling E5, so it needs no clock); the render
+     * drive gets the read-modify-write clause only (it paces itself with
+     * {@code System.nanoTime}); the worker pool gets neither clause — its CAS
+     * is its algorithm.</p>
+     */
+    private static final BiPredicate<String, String> RT_GUARD_INVOKE_OFFENDER = (owner, name) ->
+            owner.startsWith("java/util/logging/")
+                    || owner.equals("java/lang/System$Logger")
+                    || (owner.equals("java/lang/System") && name.equals("getLogger"))
+                    || owner.contains("SubmissionPublisher")
+                    || (owner.startsWith("java/util/concurrent/locks/")
+                            && !(owner.equals("java/util/concurrent/locks/LockSupport")
+                                    && name.equals("unpark")))
+                    || (owner.equals("java/lang/Object")
+                            && (name.equals("wait") || name.startsWith("notify")))
+                    || (owner.equals("java/lang/Thread") && name.equals("sleep"))
+                    || owner.equals("java/lang/Iterable")
+                    || owner.startsWith("java/util/stream/")
+                    || (owner.startsWith("java/util/")
+                            && !owner.equals("java/util/Arrays")
+                            && !owner.equals("java/util/Objects")
+                            && !owner.startsWith("java/util/concurrent/atomic/")
+                            && !owner.equals("java/util/concurrent/locks/LockSupport"));
+
+    /** The atomic read-modify-write clause ({@link #ATOMIC_RMW_METHODS}), composable with the guard predicate. */
+    private static final BiPredicate<String, String> ATOMIC_RMW_INVOKE = (owner, name) ->
+            (owner.startsWith("java/util/concurrent/atomic/") || owner.equals("java/lang/invoke/VarHandle"))
+                    && ATOMIC_RMW_METHODS.contains(name);
+
+    /** The clock-read clause, composable with the guard predicate. */
+    private static final BiPredicate<String, String> CLOCK_READ_INVOKE = (owner, name) ->
+            owner.equals("java/lang/System")
+                    && (name.equals("nanoTime") || name.equals("currentTimeMillis"));
+
+    /** The guard predicate with its read-modify-write clause: the render drive's. */
+    private static final BiPredicate<String, String> RT_GUARD_WITH_RMW =
+            RT_GUARD_INVOKE_OFFENDER.or(ATOMIC_RMW_INVOKE);
+
+    /** The guard predicate with both clauses: every device-callback bridge's and the health record's. */
+    private static final BiPredicate<String, String> RT_GUARD_WITH_RMW_AND_CLOCK =
+            RT_GUARD_WITH_RMW.or(CLOCK_READ_INVOKE);
+
+    /**
+     * Story 337, ruling E46 (item 1) — every device-callback bridge, the ASIO
+     * upcall and both exempt PortAudio entry points included, is walked
+     * through the methods of its own class under the full guard predicate: no
+     * logging, publisher, lock, wait, sleep, collection call, clock read or
+     * atomic read-modify-write, no monitor and no {@code synchronized} callee.
+     * The publish and read-modify-write sentinels above stay; this one adds
+     * what book §6.3 gate 3 names. The PortAudio entry points keep their
+     * exemption from the annotation (they allocate a segment view) but not
+     * from this walk.
+     */
+    @TestFactory
+    Stream<DynamicTest> everyRtCallbackBridgeIsGuardClean() {
+        assertThat(RT_CALLBACK_BRIDGES)
+                .as("at least one production RT callback bridge must be walked")
+                .isNotEmpty();
+        return RT_CALLBACK_BRIDGES.stream().map(bridge -> DynamicTest.dynamicTest(
+                bridge + " must not log, lock, iterate, read a clock or CAS on the driver's thread",
+                () -> {
+                    Class<?> bridgeClass = Class.forName(bridge.className());
+                    String bridgeInternal = bridgeClass.getName().replace('.', '/');
+                    ReachableScan scan = walkReachable(bridgeClass, named(bridge.methodName()),
+                            RT_GUARD_WITH_RMW_AND_CLOCK, owner -> owner.equals(bridgeInternal));
+                    assertThat(scan.scannedRoots())
+                            .as("no method named %s with a Code attribute was found on %s — the bridge "
+                                    + "was renamed and this sentinel would pass vacuously; update "
+                                    + "RT_CALLBACK_BRIDGES", bridge.methodName(), bridge.className())
+                            .isGreaterThanOrEqualTo(1);
+                    assertThat(scan.invokeFindings())
+                            .as("%s (and everything it calls in its own class: %s) must not log, take a "
+                                    + "lock, publish, wait, sleep, iterate a collection, read a clock or "
+                                    + "perform an atomic read-modify-write on the driver's real-time thread "
+                                    + "(book §6.3 gate 3; story 337, ruling E46)", bridge, scan.reached())
+                            .isEmpty();
+                    assertThat(scan.monitorFindings())
+                            .as("%s (reached: %s) enters a monitor on the driver's thread", bridge, scan.reached())
+                            .isEmpty();
+                    assertThat(scan.synchronizedFindings())
+                            .as("%s (reached: %s) reaches a synchronized method", bridge, scan.reached())
+                            .isEmpty();
+                }));
+    }
+
+    /** Story 337 — the render drive every push backend runs (JavaxSound, WASAPI, CoreAudio, JACK, ASIO, Mock). */
+    private static final String RENDER_DRIVE_CLASS = "com.benesquivelmusic.daw.core.audio.EngineStreamPump";
+
+    /**
+     * Story 337, rulings E14 and E46 (item 2) — the render drive's loop, the
+     * gate-3 root for the JavaSound path. Same rename caveat as
+     * {@link #ASIO_BRIDGE_METHOD}; the non-empty scan guard catches it.
+     */
+    private static final String RENDER_DRIVE_ROOT = "renderLoop";
+
+    /** The package of the audio health record, followed by the render-drive, worker-pool and health walks. */
+    private static final String AUDIO_HEALTH_PACKAGE = "com.benesquivelmusic.daw.core.audio.health";
+
+    /** {@link #AUDIO_HEALTH_PACKAGE} as a class-file internal-name prefix. */
+    private static final String AUDIO_HEALTH_INTERNAL_PREFIX = AUDIO_HEALTH_PACKAGE.replace('.', '/') + "/";
+
+    /**
+     * Story 337, ruling E46 (item 2) — the render drive's PRE-EXISTING calls
+     * the guard predicate rejects, each with the reason it is tolerated.
+     * Exact: every entry must still be observed, and nothing else may be. The
+     * backend's {@code sink} and {@code awaitSinkCapacity} are interface calls
+     * the walk does not follow — the backend's own discipline is its
+     * concern — so neither appears here.
+     */
+    private static final Map<String, String> RENDER_DRIVE_INVOKE_ALLOWLIST = Map.of(
+            "EngineStreamPump#parkUntil: invokes java/util/concurrent/locks/LockSupport#parkNanos",
+            "the pump's pacing floor after a sink or pacing fault (story 316): one bounded park "
+                    + "for the remainder of a block period, ended at once by stop()'s unpark",
+            "EngineStreamPump#fillInputPlanes: invokes java/util/concurrent/ArrayBlockingQueue#poll",
+            "one hop off the real-time thread (EngineStreamPump's class javadoc): captured input "
+                    + "reaches the pump through this bounded queue, fed by the backend's non-RT "
+                    + "drain thread");
+
+    /**
+     * Story 337, rulings E9, E14 and E46 (item 2) — the render drive records
+     * into its lane and never logs, locks, publishes or CASes: from
+     * {@code EngineStreamPump.renderLoop}, through the pump's own methods and
+     * into the audio-health package, the guard predicate with its
+     * read-modify-write clause finds exactly {@link #RENDER_DRIVE_INVOKE_ALLOWLIST},
+     * and nothing reachable allocates, enters a monitor or is
+     * {@code synchronized}.
+     */
+    @Test
+    void theRenderDriveLoopIsGuardClean() throws Exception {
+        Class<?> pump = Class.forName(RENDER_DRIVE_CLASS);
+        String pumpInternal = pump.getName().replace('.', '/');
+        ReachableScan scan = walkReachable(pump, named(RENDER_DRIVE_ROOT), RT_GUARD_WITH_RMW,
+                owner -> owner.equals(pumpInternal) || owner.startsWith(AUDIO_HEALTH_INTERNAL_PREFIX));
+        assertThat(scan.scannedRoots())
+                .as("no method named %s with a Code attribute was found on %s — the render drive's "
+                        + "loop was renamed and this sentinel would pass vacuously; update "
+                        + "RENDER_DRIVE_ROOT", RENDER_DRIVE_ROOT, RENDER_DRIVE_CLASS)
+                .isGreaterThanOrEqualTo(1);
+        assertThat(scan.reached())
+                .as("the walk must follow the drive into its health lane, or the health half of "
+                        + "this sentinel is vacuous")
+                .anyMatch(key -> key.startsWith(AUDIO_HEALTH_INTERNAL_PREFIX + "AudioHealthLane#record("));
+        assertThat(notAllowed(scan.invokeFindings(), RENDER_DRIVE_INVOKE_ALLOWLIST))
+                .as("the render drive (reached: %s) must record into its lane and never log, lock, "
+                        + "publish, wait, sleep, iterate a collection or CAS (book §6.3 gate 3; story "
+                        + "337, rulings E14 and E46)", scan.reached())
+                .isEmpty();
+        assertThat(scan.invokeFindings().stream().map(Finding::toString).distinct().toList())
+                .as("every RENDER_DRIVE_INVOKE_ALLOWLIST entry must still be observed")
+                .containsExactlyInAnyOrderElementsOf(RENDER_DRIVE_INVOKE_ALLOWLIST.keySet());
+        assertThat(scan.allocationFindings())
+                .as("the render drive (reached: %s) must not allocate (new / array / invokedynamic)",
+                        scan.reached())
+                .isEmpty();
+        assertThat(scan.monitorFindings())
+                .as("the render drive (reached: %s) must not enter a monitor", scan.reached())
+                .isEmpty();
+        assertThat(scan.synchronizedFindings())
+                .as("the render drive (reached: %s) must not reach a synchronized method", scan.reached())
+                .isEmpty();
+    }
+
+    /** Story 337 — the multi-core worker pool the render drive dispatches graph branches to. */
+    private static final String WORKER_POOL_CLASS = "com.benesquivelmusic.daw.core.audio.AudioWorkerPool";
+
+    /**
+     * Story 337, rulings E27 and E46 (item 3) — the pool's real-time roots:
+     * the coordinator's {@code invokeAll} and the task loop both the
+     * coordinator and every worker run. Same rename caveat as
+     * {@link #ASIO_BRIDGE_METHOD}; the non-empty scan guard catches it.
+     */
+    private static final List<String> WORKER_POOL_ROOTS = List.of("invokeAll", "runTasks");
+
+    /**
+     * Story 337, ruling E46 (item 3) — the pool's PRE-EXISTING allocation
+     * sites: the argument check's throw path. Exact, like
+     * {@link #RENDER_PATH_ALLOCATION_ALLOWLIST}.
+     */
+    private static final Map<String, String> WORKER_POOL_ALLOCATION_ALLOWLIST = Map.of(
+            "AudioWorkerPool#invokeAll: new java/lang/IllegalArgumentException",
+            "throw path of invokeAll's count check: a programming error, never reached with the "
+                    + "scheduler's own task arrays",
+            "AudioWorkerPool#invokeAll: invokedynamic makeConcatWithConstants -> ?",
+            "the message of the same throw");
+
+    private static ReachableScan walkWorkerPool(Predicate<MethodModel> roots) throws Exception {
+        Class<?> pool = Class.forName(WORKER_POOL_CLASS);
+        String poolInternal = pool.getName().replace('.', '/');
+        return walkReachable(pool, roots, RT_GUARD_INVOKE_OFFENDER,
+                owner -> owner.equals(poolInternal) || owner.startsWith(AUDIO_HEALTH_INTERNAL_PREFIX));
+    }
+
+    /**
+     * Story 337, rulings E27 and E46 (item 3) — from each worker-pool root,
+     * through the pool's own methods and into the audio-health package where
+     * a task failure is counted, the guard predicate WITHOUT its
+     * read-modify-write clause finds nothing — the pool's CAS is its
+     * algorithm ({@link #noRtCallbackBridgeMayUseAtomicReadModifyWrite}'s
+     * "Deliberate scope") — no monitor is entered, no {@code synchronized}
+     * method is reached, and nothing allocates beyond the exact
+     * {@link #WORKER_POOL_ALLOCATION_ALLOWLIST}.
+     */
+    @TestFactory
+    Stream<DynamicTest> theWorkerPoolRootsAreGuardClean() {
+        assertThat(WORKER_POOL_ROOTS).as("worker-pool roots must be listed").isNotEmpty();
+        List<DynamicTest> tests = new ArrayList<>();
+        for (String root : WORKER_POOL_ROOTS) {
+            tests.add(DynamicTest.dynamicTest("AudioWorkerPool#" + root
+                    + " must not log, lock, iterate or allocate on the render thread", () -> {
+                ReachableScan scan = walkWorkerPool(named(root));
+                assertThat(scan.scannedRoots())
+                        .as("no method named %s with a Code attribute was found on %s — the root was "
+                                + "renamed and this sentinel would pass vacuously; update "
+                                + "WORKER_POOL_ROOTS", root, WORKER_POOL_CLASS)
+                        .isGreaterThanOrEqualTo(1);
+                assertThat(scan.reached())
+                        .as("the walk must follow a task failure into the health record")
+                        .anyMatch(key -> key.startsWith(
+                                AUDIO_HEALTH_INTERNAL_PREFIX + "AudioHealthRecord#recordOnCurrentThread("));
+                assertThat(scan.invokeFindings())
+                        .as("AudioWorkerPool#%s (reached: %s) must count a task failure into the "
+                                + "health record and never log, lock, publish, wait, sleep or iterate a "
+                                + "collection (book §6.3 gate 3; story 337, ruling E46)", root, scan.reached())
+                        .isEmpty();
+                assertThat(notAllowed(scan.allocationFindings(), WORKER_POOL_ALLOCATION_ALLOWLIST))
+                        .as("AudioWorkerPool#%s (reached: %s) allocates outside the exact allow-list",
+                                root, scan.reached())
+                        .isEmpty();
+                assertThat(scan.monitorFindings())
+                        .as("AudioWorkerPool#%s (reached: %s) enters a monitor", root, scan.reached())
+                        .isEmpty();
+                assertThat(scan.synchronizedFindings())
+                        .as("AudioWorkerPool#%s (reached: %s) reaches a synchronized method",
+                                root, scan.reached())
+                        .isEmpty();
+            }));
+        }
+        tests.add(DynamicTest.dynamicTest("WORKER_POOL_ALLOCATION_ALLOWLIST is exact", () -> {
+            ReachableScan scan = walkWorkerPool(namedAnyOf(Set.copyOf(WORKER_POOL_ROOTS)));
+            assertThat(scan.allocationFindings().stream().map(Finding::toString)
+                    .filter(WORKER_POOL_ALLOCATION_ALLOWLIST::containsKey).distinct().toList())
+                    .as("every WORKER_POOL_ALLOCATION_ALLOWLIST entry must still be observed")
+                    .containsExactlyInAnyOrderElementsOf(WORKER_POOL_ALLOCATION_ALLOWLIST.keySet());
+        }));
+        return tests.stream();
+    }
+
+    /**
+     * Story 337, ruling E46 (item 4) — the audio-health methods every render
+     * thread records through, which must exist and be discovered, so the
+     * reflective discovery below cannot shrink to nothing (or to the wrong
+     * classes) and pass.
+     */
+    private static final Set<String> REQUIRED_AUDIO_HEALTH_ROOTS = Set.of(
+            "AudioHealthLane#record", "AudioHealthLane#beat",
+            "AudioHealthRecord#recordOnCurrentThread",
+            "RenderThread#lane", "RenderThread#recordOnCurrentThread");
+
+    /** {@code @RealTimeSafe} method names of every audio-health class that declares one. */
+    private static Map<Class<?>, Set<String>> audioHealthRealTimeSafeMethodsByClass() {
+        Map<Class<?>, Set<String>> byClass = new LinkedHashMap<>();
+        for (Method m : REAL_TIME_SAFE_METHODS) {
+            Class<?> declaring = m.getDeclaringClass();
+            if (declaring.getPackageName().equals(AUDIO_HEALTH_PACKAGE)) {
+                byClass.computeIfAbsent(declaring, _ -> new TreeSet<>()).add(m.getName());
+            }
+        }
+        return byClass;
+    }
+
+    /**
+     * Story 337, rulings E19, E21, E22 and E46 (item 4) — every
+     * {@code @RealTimeSafe} method of the audio-health package, followed
+     * across that package, has ZERO findings: no guard-predicate call, no
+     * atomic read-modify-write (a lane has one writer: a load plus a release
+     * store, ruling E19), no clock read, no allocation or
+     * {@code invokedynamic}, no monitor and no {@code synchronized} callee.
+     * No allow-list: the record was built to this rule, and every deep render
+     * site that records through it is therefore real-time safe by
+     * construction.
+     */
+    @TestFactory
+    Stream<DynamicTest> audioHealthRealTimeSafeMethodsHaveNoFindings() {
+        Map<Class<?>, Set<String>> roots = audioHealthRealTimeSafeMethodsByClass();
+        Set<String> labels = new TreeSet<>();
+        roots.forEach((c, names) -> names.forEach(n -> labels.add(c.getSimpleName() + "#" + n)));
+        assertThat(labels)
+                .as("the discovered audio-health roots must include every method a render thread "
+                        + "records through; a missing one means its @RealTimeSafe was dropped or it was "
+                        + "renamed — update REQUIRED_AUDIO_HEALTH_ROOTS")
+                .containsAll(REQUIRED_AUDIO_HEALTH_ROOTS);
+        return roots.entrySet().stream().map(entry -> DynamicTest.dynamicTest(
+                entry.getKey().getSimpleName() + " @RealTimeSafe methods " + entry.getValue()
+                        + " must have no findings",
+                () -> {
+                    ReachableScan scan = walkReachable(entry.getKey(), namedAnyOf(entry.getValue()),
+                            RT_GUARD_WITH_RMW_AND_CLOCK,
+                            owner -> owner.startsWith(AUDIO_HEALTH_INTERNAL_PREFIX));
+                    assertThat(scan.scannedRoots())
+                            .as("%s declares @RealTimeSafe methods %s but none has a Code attribute",
+                                    entry.getKey().getSimpleName(), entry.getValue())
+                            .isGreaterThanOrEqualTo(1);
+                    assertThat(scan.invokeFindings())
+                            .as("%s (reached: %s) must not log, lock, publish, wait, sleep, iterate, read "
+                                    + "a clock or CAS", entry.getKey().getSimpleName(), scan.reached())
+                            .isEmpty();
+                    assertThat(scan.allocationFindings())
+                            .as("%s (reached: %s) must not allocate (new / array / invokedynamic)",
+                                    entry.getKey().getSimpleName(), scan.reached())
+                            .isEmpty();
+                    assertThat(scan.monitorFindings())
+                            .as("%s (reached: %s) must not enter a monitor",
+                                    entry.getKey().getSimpleName(), scan.reached())
+                            .isEmpty();
+                    assertThat(scan.synchronizedFindings())
+                            .as("%s (reached: %s) must not reach a synchronized method",
+                                    entry.getKey().getSimpleName(), scan.reached())
+                            .isEmpty();
+                }));
+    }
+
+    /**
+     * Story 337, ruling E46 (item 4) — the real-time write side of the
+     * audio-health classes: exactly these public methods carry
+     * {@code @RealTimeSafe}.
+     */
+    private static final Map<String, Set<String>> AUDIO_HEALTH_RT_METHODS = Map.of(
+            AUDIO_HEALTH_PACKAGE + ".AudioHealthLane", Set.of("record", "beat"),
+            AUDIO_HEALTH_PACKAGE + ".AudioHealthRecord", Set.of("recordOnCurrentThread"),
+            AUDIO_HEALTH_PACKAGE + ".RenderThread", Set.of("lane", "recordOnCurrentThread"));
+
+    /**
+     * Story 337, ruling E46 (item 4) — the lifecycle and drain-side public
+     * methods of the same classes, which must NOT carry
+     * {@code @RealTimeSafe}: they take the record's registry lock, allocate a
+     * snapshot or an {@code Optional}, or read on behalf of a non-real-time
+     * reader. Every public method of these classes is in exactly one of the
+     * two sets.
+     */
+    private static final Map<String, Set<String>> AUDIO_HEALTH_DRAIN_SIDE_METHODS = Map.of(
+            AUDIO_HEALTH_PACKAGE + ".AudioHealthLane", Set.of("count", "beats", "lostRecords", "role"),
+            AUDIO_HEALTH_PACKAGE + ".AudioHealthRecord", Set.of("claimLane", "retireLane",
+                    "attachBackendCounters", "detachBackendCounters", "totals", "total", "lastFailure",
+                    "drainSamples", "lostSamples", "renderDriveBeats", "renderDriveEpoch",
+                    "deviceCallbackPeriods", "inputHalts", "backendCounters"),
+            AUDIO_HEALTH_PACKAGE + ".RenderThread", Set.of());
+
+    /**
+     * Story 337, ruling E46 (item 4) — the audio-health classes are annotated
+     * in both directions, so an annotation dropped from the write side or
+     * added to a locking or allocating reader fails at the moment it happens,
+     * and a new public method must be placed on one side. No other class of
+     * the package may declare a {@code @RealTimeSafe} method without joining
+     * {@link #AUDIO_HEALTH_RT_METHODS}.
+     */
+    @Test
+    void audioHealthClassesAreAnnotatedBidirectionally() throws Exception {
+        assertThat(AUDIO_HEALTH_RT_METHODS.keySet())
+                .containsExactlyInAnyOrderElementsOf(AUDIO_HEALTH_DRAIN_SIDE_METHODS.keySet());
+        for (String className : AUDIO_HEALTH_RT_METHODS.keySet()) {
+            Class<?> c = Class.forName(className);
+            Set<String> rtSide = AUDIO_HEALTH_RT_METHODS.get(className);
+            Set<String> drainSide = AUDIO_HEALTH_DRAIN_SIDE_METHODS.get(className);
+            Set<String> declared = new TreeSet<>();
+            List<String> unannotatedRt = new ArrayList<>();
+            List<String> annotatedDrainSide = new ArrayList<>();
+            for (Method m : publicDeclaredMethods(c)) {
+                declared.add(m.getName());
+                if (rtSide.contains(m.getName()) && !isRealTimeSafe(m)) {
+                    unannotatedRt.add(m.getName());
+                } else if (!rtSide.contains(m.getName()) && isRealTimeSafe(m)) {
+                    annotatedDrainSide.add(m.getName());
+                }
+            }
+            Set<String> documented = new TreeSet<>(rtSide);
+            documented.addAll(drainSide);
+            assertThat(declared)
+                    .as("every public method of %s must be documented as real-time or drain side in "
+                            + "AUDIO_HEALTH_RT_METHODS / AUDIO_HEALTH_DRAIN_SIDE_METHODS", className)
+                    .containsExactlyInAnyOrderElementsOf(documented);
+            assertThat(unannotatedRt)
+                    .as("%s real-time write-side methods must carry @RealTimeSafe", className)
+                    .isEmpty();
+            assertThat(annotatedDrainSide)
+                    .as("%s lifecycle and drain-side methods must NOT carry @RealTimeSafe — it would be "
+                            + "a promise they cannot keep", className)
+                    .isEmpty();
+        }
+        assertThat(audioHealthRealTimeSafeMethodsByClass().keySet().stream().map(Class::getName).toList())
+                .as("an audio-health class with a @RealTimeSafe method must be listed in "
+                        + "AUDIO_HEALTH_RT_METHODS")
+                .isNotEmpty()
+                .allMatch(AUDIO_HEALTH_RT_METHODS::containsKey);
+    }
+
+    /**
+     * One method an FFM upcall stub binds: the class (binary name) and the
+     * method name. Every overload of that name with a {@code Code} attribute
+     * is checked.
+     */
+    private record UpcallTarget(String className, String methodName) {
+
+        /** The binary name of the top-level class whose source file binds this target. */
+        String topLevelClassName() {
+            int nested = className.indexOf('$');
+            return nested < 0 ? className : className.substring(0, nested);
+        }
+
+        @Override
+        public String toString() {
+            return className.substring(className.lastIndexOf('.') + 1) + "#" + methodName;
+        }
+    }
+
+    private static final String SDK_AUDIO = "com.benesquivelmusic.daw.sdk.audio.";
+    private static final String WASAPI_SHIM = SDK_AUDIO + "WasapiFormatChangeShim";
+    private static final String CLAP_HOST = "com.benesquivelmusic.daw.core.plugin.clap.ClapPluginHost";
+
+    /**
+     * Story 337, rulings E1, E16, E31 and E46 (item 6) — EVERY method bound
+     * by {@code Linker.upcallStub} in the tree: the JVM terminates the process
+     * if one lets a throwable escape into native code
+     * ({@code java.lang.foreign.Linker}'s javadoc), so each must catch
+     * everything. {@link #everyUpcallStubTargetIsListed} cross-checks this
+     * list against the main sources, so a new upcall target cannot be left
+     * off it.
+     */
+    private static final List<UpcallTarget> UPCALL_TARGETS = List.of(
+            new UpcallTarget(PORTAUDIO_UPCALL_CLASS, PORTAUDIO_UPCALL_METHOD),
+            new UpcallTarget(PORTAUDIO_UPCALL_CLASS, PORTAUDIO_NARROW_UPCALL_METHOD),
+            new UpcallTarget(ASIO_BRIDGE_CLASS, ASIO_UPCALL_METHOD),
+            new UpcallTarget(SDK_AUDIO + "AsioFormatChangeShim", "asioMessageUpcall"),
+            new UpcallTarget(SDK_AUDIO + "CoreAudioFormatChangeShim", "listenerUpcall"),
+            new UpcallTarget(WASAPI_SHIM, "queryInterfaceUpcall"),
+            new UpcallTarget(WASAPI_SHIM, "refcountUpcall"),
+            new UpcallTarget(WASAPI_SHIM, "onDeviceStateChangedUpcall"),
+            new UpcallTarget(WASAPI_SHIM, "onDeviceAddedOrRemovedUpcall"),
+            new UpcallTarget(WASAPI_SHIM, "onDefaultDeviceChangedUpcall"),
+            new UpcallTarget(WASAPI_SHIM, "onPropertyValueChangedUpcall"),
+            new UpcallTarget(CLAP_HOST, "noOpHostCallback"),
+            new UpcallTarget(CLAP_HOST, "pendingEventsSize"),
+            new UpcallTarget(CLAP_HOST, "pendingEventsGet"),
+            new UpcallTarget(CLAP_HOST, "eventsTryPushFalse"),
+            new UpcallTarget(CLAP_HOST, "ostreamWrite"),
+            new UpcallTarget(CLAP_HOST, "istreamRead"));
+
+    /** The operators that can throw ({@code NullPointerException}, {@code ArithmeticException}). */
+    private static final Set<Opcode> THROWING_OPERATORS = Set.of(
+            Opcode.ARRAYLENGTH, Opcode.IDIV, Opcode.LDIV, Opcode.IREM, Opcode.LREM);
+
+    /**
+     * Story 337, ruling E46 (item 6) — the upcall-guard structural gate. Every
+     * {@link #UPCALL_TARGETS} method is not {@code synchronized}, and every
+     * instruction of its own bytecode that can throw lies inside an
+     * exception-table range whose catch type is {@code java.lang.Throwable}
+     * or catch-any.
+     *
+     * <p>Ruling E46 words this as a catch-all "covering its whole code
+     * range". Read literally that holds for no guarded method: the
+     * instructions before the {@code try} — ruling E5's heartbeat bump — the
+     * handler itself and the trailing {@code return} lie outside every range
+     * by construction, because a handler never covers its own code. The gate
+     * therefore asserts what the wording is for: nothing that CAN throw is
+     * uncovered. The code before a {@code try} is held to own-field access
+     * and primitive arithmetic, every call a handler makes sits in a nested
+     * catch-all (a nested range counts), and a target with no throwing
+     * instruction at all ({@code refcountUpcall}'s {@code return 2}) needs no
+     * handler. See {@link #mayThrow} for what counts as throwing.</p>
+     */
+    @TestFactory
+    Stream<DynamicTest> everyUpcallTargetCatchesEverything() {
+        assertThat(UPCALL_TARGETS).as("the upcall targets must be listed").isNotEmpty();
+        return UPCALL_TARGETS.stream().map(target -> DynamicTest.dynamicTest(
+                target + " must catch everything before the driver's or plugin's native frame",
+                () -> {
+                    Class<?> owner = Class.forName(target.className());
+                    byte[] bytes = readClassBytes(owner);
+                    assertThat(bytes).as("%s class file must be readable", target).isNotNull();
+                    ClassModel model = ClassFile.of().parse(bytes);
+                    List<MethodModel> methods = model.methods().stream()
+                            .filter(named(target.methodName()))
+                            .filter(mm -> codeOf(mm) != null)
+                            .toList();
+                    assertThat(methods)
+                            .as("no method named %s with a Code attribute was found on %s — the upcall "
+                                    + "target was renamed and this gate would pass vacuously; update "
+                                    + "UPCALL_TARGETS", target.methodName(), target.className())
+                            .isNotEmpty();
+                    for (MethodModel method : methods) {
+                        assertThat(method.flags().has(AccessFlag.SYNCHRONIZED))
+                                .as("%s must not be synchronized: a monitor on a native thread can "
+                                        + "block behind a control thread", target)
+                                .isFalse();
+                        assertThat(uncoveredThrowingInstructions(model, method))
+                                .as("%s lets these instructions throw outside a catch (Throwable): the "
+                                        + "JVM would terminate the process. Move them inside the guard's "
+                                        + "try, or into a nested catch-all inside the handler (story 337, "
+                                        + "ruling E46)", target)
+                                .isEmpty();
+                    }
+                }));
+    }
+
+    /**
+     * Every instruction of {@code method} that can throw and lies outside
+     * every catch-all / {@code Throwable} exception-table range, as
+     * {@code name@bci: what}.
+     *
+     * <p>Offsets are accumulated from {@link Instruction#sizeInBytes()} and
+     * cross-checked against every label the code carries and against the
+     * code length, so a miscounted offset fails loudly rather than
+     * attributing an instruction to the wrong range.</p>
+     */
+    private static List<String> uncoveredThrowingInstructions(ClassModel model, MethodModel method) {
+        CodeAttribute code = codeOf(method);
+        String declaringClass = model.thisClass().asInternalName();
+        String name = method.methodName().stringValue();
+        List<int[]> catchAllRanges = new ArrayList<>();
+        for (ExceptionCatch handler : code.exceptionHandlers()) {
+            boolean catchesEverything = handler.catchType()
+                    .map(type -> type.asInternalName().equals("java/lang/Throwable"))
+                    .orElse(true);
+            if (catchesEverything) {
+                catchAllRanges.add(new int[] {
+                        code.labelToBci(handler.tryStart()), code.labelToBci(handler.tryEnd())});
+            }
+        }
+        List<String> uncovered = new ArrayList<>();
+        int bci = 0;
+        for (CodeElement element : code) {
+            if (element instanceof LabelTarget target) {
+                assertThat(code.labelToBci(target.label()))
+                        .as("the gate's offset arithmetic must agree with %s#%s's labels",
+                                declaringClass, name)
+                        .isEqualTo(bci);
+            } else if (element instanceof Instruction instruction) {
+                if (mayThrow(instruction, declaringClass) && !isCovered(catchAllRanges, bci)) {
+                    uncovered.add(name + "@" + bci + ": " + describe(instruction));
+                }
+                bci += instruction.sizeInBytes();
+            }
+        }
+        assertThat(bci)
+                .as("the gate's offset arithmetic must account for all of %s#%s's code",
+                        declaringClass, name)
+                .isEqualTo(code.codeLength());
+        return uncovered;
+    }
+
+    private static boolean isCovered(List<int[]> ranges, int bci) {
+        for (int[] range : ranges) {
+            if (bci >= range[0] && bci < range[1]) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether an instruction can throw: every invocation, allocation,
+     * {@code athrow}, array access, {@code checkcast}, monitor, array length,
+     * integer division or remainder, load of a class, method-type,
+     * method-handle or dynamic constant, and every field access whose owner is
+     * not the method's own class (another class can be uninitialised or its
+     * receiver null). Own-field access and primitive arithmetic are the
+     * only code allowed before a guard's {@code try}.
+     */
+    private static boolean mayThrow(Instruction instruction, String declaringClass) {
+        return switch (instruction) {
+            case InvokeInstruction _, InvokeDynamicInstruction _, NewObjectInstruction _,
+                 NewPrimitiveArrayInstruction _, NewReferenceArrayInstruction _,
+                 NewMultiArrayInstruction _, ThrowInstruction _, ArrayLoadInstruction _,
+                 ArrayStoreInstruction _, MonitorInstruction _ -> true;
+            case TypeCheckInstruction check -> check.opcode() == Opcode.CHECKCAST;
+            case OperatorInstruction operator -> THROWING_OPERATORS.contains(operator.opcode());
+            case ConstantInstruction.LoadConstantInstruction load ->
+                    load.constantEntry() instanceof ClassEntry
+                            || load.constantEntry() instanceof MethodTypeEntry
+                            || load.constantEntry() instanceof MethodHandleEntry
+                            || load.constantEntry() instanceof ConstantDynamicEntry;
+            case FieldInstruction field -> !field.owner().asInternalName().equals(declaringClass);
+            default -> false;
+        };
+    }
+
+    private static String describe(Instruction instruction) {
+        return switch (instruction) {
+            case InvokeInstruction invoke -> invoke.opcode().name() + " "
+                    + invoke.owner().asInternalName() + "#" + invoke.name().stringValue();
+            case FieldInstruction field -> field.opcode().name() + " "
+                    + field.owner().asInternalName() + "#" + field.name().stringValue();
+            default -> instruction.opcode().name();
+        };
+    }
+
+    /**
+     * A {@code Linker.upcallStub} CALL: a receiver, then {@code upcallStub(}
+     * with at least one argument. The shims' own {@code upcallStub()} getters
+     * and their declarations take none, so they never match.
+     */
+    private static final Pattern UPCALL_STUB_CALL = Pattern.compile("\\.upcallStub\\(\\s*[^)\\s]");
+
+    /** A method-handle lookup naming its target by literal: {@code findVirtual(X.class, "name"} or {@code findStatic}. */
+    private static final Pattern UPCALL_LOOKUP_LITERAL =
+            Pattern.compile("find(?:Virtual|Static)\\(\\s*[\\w.]+\\.class\\s*,\\s*\"(\\w+)\"");
+
+    /** PortAudio's ABI-dependent choice of entry point: {@code String entryPoint = … ? "a" : "b";}. */
+    private static final Pattern ENTRY_POINT_DECLARATION = Pattern.compile("String\\s+entryPoint\\s*=\\s*([^;]+);");
+
+    private static final Pattern NAME_LITERAL = Pattern.compile("\"(\\w+)\"");
+
+    /**
+     * Story 337, ruling E46 (item 6) — the source cross-check that keeps
+     * {@link #UPCALL_TARGETS} complete. Every main source file of the
+     * repository that calls {@code upcallStub(…)} names its targets by
+     * literal — a {@code findVirtual}/{@code findStatic} lookup, or
+     * PortAudio's {@code entryPoint} choice — and the set of those
+     * {@code (top-level class, method)} pairs must equal the list. A file
+     * that binds a stub but names no target literally fails too: the gate
+     * could not see what it binds.
+     */
+    @Test
+    void everyUpcallStubTargetIsListed() throws IOException {
+        Path root = repositoryRoot();
+        List<Path> sources = mainSources(root);
+        assertThat(sources).as("the main sources under %s must be found", root).isNotEmpty();
+        Set<String> bound = new TreeSet<>();
+        List<String> stubFilesWithoutLiteralTargets = new ArrayList<>();
+        int stubFiles = 0;
+        for (Path source : sources) {
+            String code = withoutComments(Files.readString(source, StandardCharsets.UTF_8));
+            if (!UPCALL_STUB_CALL.matcher(code).find()) {
+                continue;
+            }
+            stubFiles++;
+            Set<String> names = upcallTargetNames(code);
+            if (names.isEmpty()) {
+                stubFilesWithoutLiteralTargets.add(root.relativize(source).toString());
+            }
+            String topLevel = topLevelClassNameOf(source);
+            names.forEach(n -> bound.add(topLevel + "#" + n));
+        }
+        Set<String> listed = UPCALL_TARGETS.stream()
+                .map(target -> target.topLevelClassName() + "#" + target.methodName())
+                .collect(Collectors.toCollection(TreeSet::new));
+        assertThat(stubFiles).as("no main source calls upcallStub(…) — the scan is broken").isPositive();
+        assertThat(stubFilesWithoutLiteralTargets)
+                .as("these files bind an upcall stub without naming its target in a findVirtual / "
+                        + "findStatic literal, so UPCALL_TARGETS cannot be cross-checked")
+                .isEmpty();
+        assertThat(bound)
+                .as("every method an upcall stub binds must be in UPCALL_TARGETS, and every entry must "
+                        + "still be bound (story 337, ruling E46)")
+                .isNotEmpty()
+                .containsExactlyInAnyOrderElementsOf(listed);
+    }
+
+    private static Set<String> upcallTargetNames(String code) {
+        Set<String> names = new TreeSet<>();
+        Matcher lookup = UPCALL_LOOKUP_LITERAL.matcher(code);
+        while (lookup.find()) {
+            names.add(lookup.group(1));
+        }
+        Matcher entryPoint = ENTRY_POINT_DECLARATION.matcher(code);
+        while (entryPoint.find()) {
+            Matcher literal = NAME_LITERAL.matcher(entryPoint.group(1));
+            while (literal.find()) {
+                names.add(literal.group(1));
+            }
+        }
+        return names;
+    }
+
+    /** The directory holding {@code daw-sdk} and {@code daw-core}, from the module the tests run in. */
+    private static Path repositoryRoot() {
+        Path start = Path.of("").toAbsolutePath();
+        for (Path dir = start; dir != null; dir = dir.getParent()) {
+            if (Files.isDirectory(dir.resolve("daw-sdk")) && Files.isDirectory(dir.resolve("daw-core"))) {
+                return dir;
+            }
+        }
+        throw new AssertionError("no directory holding daw-sdk and daw-core above " + start);
+    }
+
+    /** Every {@code .java} file under {@code daw-*}{@code /src/main/java}. */
+    private static List<Path> mainSources(Path root) throws IOException {
+        List<Path> sources = new ArrayList<>();
+        try (Stream<Path> modules = Files.list(root)) {
+            for (Path module : modules.filter(Files::isDirectory)
+                    .filter(dir -> dir.getFileName().toString().startsWith("daw-"))
+                    .sorted()
+                    .toList()) {
+                Path mainJava = module.resolve("src/main/java");
+                if (!Files.isDirectory(mainJava)) {
+                    continue;
+                }
+                try (Stream<Path> files = Files.walk(mainJava)) {
+                    files.filter(f -> f.getFileName().toString().endsWith(".java"))
+                            .sorted()
+                            .forEach(sources::add);
+                }
+            }
+        }
+        return sources;
+    }
+
+    /** The binary name of the top-level class a source file under {@code src/main/java} declares. */
+    private static String topLevelClassNameOf(Path source) {
+        String path = source.toString().replace('\\', '/');
+        String marker = "/src/main/java/";
+        String relative = path.substring(path.indexOf(marker) + marker.length());
+        return relative.substring(0, relative.length() - ".java".length()).replace('/', '.');
+    }
+
+    /**
+     * Java source with its comments removed — line, block and javadoc — and
+     * string, character and text-block literals kept verbatim, so commented
+     * out code or a javadoc {@code upcallStub(…)} mention never counts.
+     */
+    private static String withoutComments(String source) {
+        StringBuilder out = new StringBuilder(source.length());
+        int n = source.length();
+        int i = 0;
+        while (i < n) {
+            char c = source.charAt(i);
+            if (source.startsWith("\"\"\"", i)) {
+                int end = source.indexOf("\"\"\"", i + 3);
+                int stop = end < 0 ? n : end + 3;
+                out.append(source, i, stop);
+                i = stop;
+            } else if (c == '"' || c == '\'') {
+                int j = i + 1;
+                while (j < n && source.charAt(j) != c && source.charAt(j) != '\n') {
+                    j += source.charAt(j) == '\\' ? 2 : 1;
+                }
+                int stop = Math.min(n, j + 1);
+                out.append(source, i, stop);
+                i = stop;
+            } else if (source.startsWith("//", i)) {
+                int end = source.indexOf('\n', i);
+                i = end < 0 ? n : end;
+            } else if (source.startsWith("/*", i)) {
+                int end = source.indexOf("*/", i + 2);
+                i = end < 0 ? n : end + 2;
+                out.append(' ');
+            } else {
+                out.append(c);
+                i++;
+            }
+        }
+        return out.toString();
+    }
+
+    /**
+     * Story 337, ruling E46 (item 7) — non-vacuity of the guard walk: rooted
+     * at a fixture that is never run, it follows the fixture into a private
+     * helper of the same class and reports every forbidden kind there — the
+     * extraction a maintainer would reach for cannot hide a call — while the
+     * calls the predicate must leave alone are not reported. The clauses
+     * compose: without them the read-modify-write and clock calls are not
+     * findings, so the worker pool and the render drive are held to exactly
+     * what they claim.
+     */
+    @Test
+    void theGuardWalkReportsEveryForbiddenKindFromTheHelper() throws Exception {
+        String self = RealTimeSafeContractTest.class.getName().replace('.', '/');
+        String helper = "RealTimeSafeContractTest#guardPathForbiddenHelper: ";
+        ReachableScan scan = walkReachable(RealTimeSafeContractTest.class, named("guardPathForbiddenFixture"),
+                RT_GUARD_WITH_RMW_AND_CLOCK, owner -> owner.equals(self));
+        assertThat(scan.scannedRoots()).isEqualTo(1);
+        List<String> invokes = scan.invokeFindings().stream().map(Finding::toString).distinct().toList();
+        assertThat(invokes)
+                .as("every finding comes from the helper the fixture calls, not the fixture itself")
+                .isNotEmpty()
+                .allMatch(finding -> finding.startsWith(helper));
+        assertThat(invokes)
+                .as("every forbidden kind is reported, and none of the allowed calls")
+                .containsExactlyInAnyOrder(
+                        helper + "invokes java/util/concurrent/locks/ReentrantLock#lock",
+                        helper + "invokes java/util/logging/Logger#log",
+                        helper + "invokes java/lang/System#getLogger",
+                        helper + "invokes java/lang/System$Logger#log",
+                        helper + "invokes java/lang/Iterable#iterator",
+                        helper + "invokes java/util/List#forEach",
+                        helper + "invokes java/util/Collection#stream",
+                        helper + "invokes java/util/concurrent/SubmissionPublisher#offer",
+                        helper + "invokes java/util/concurrent/atomic/AtomicLong#incrementAndGet",
+                        helper + "invokes java/lang/System#nanoTime",
+                        helper + "invokes java/lang/System#currentTimeMillis",
+                        helper + "invokes java/util/concurrent/locks/LockSupport#parkNanos",
+                        helper + "invokes java/lang/Thread#sleep",
+                        helper + "invokes java/lang/Object#wait");
+        assertThat(scan.monitorFindings().stream().map(Finding::toString).toList())
+                .as("a synchronized block in the helper is reported")
+                .contains(helper + "MONITORENTER/EXIT");
+        assertThat(scan.synchronizedFindings().stream().map(Finding::toString).toList())
+                .as("a synchronized method the helper calls is reported")
+                .containsExactly("RealTimeSafeContractTest#guardPathSynchronizedHelper: declares synchronized");
+
+        List<String> withoutClauses = walkReachable(RealTimeSafeContractTest.class,
+                named("guardPathForbiddenFixture"), RT_GUARD_INVOKE_OFFENDER, owner -> owner.equals(self))
+                .invokeFindings().stream().map(Finding::toString).distinct().toList();
+        assertThat(withoutClauses)
+                .as("the bare guard predicate leaves read-modify-writes and clock reads to its clauses")
+                .doesNotContain(helper + "invokes java/util/concurrent/atomic/AtomicLong#incrementAndGet",
+                        helper + "invokes java/lang/System#nanoTime",
+                        helper + "invokes java/lang/System#currentTimeMillis")
+                .contains(helper + "invokes java/util/concurrent/locks/ReentrantLock#lock",
+                        helper + "invokes java/util/concurrent/locks/LockSupport#parkNanos");
+        List<String> withRmwOnly = walkReachable(RealTimeSafeContractTest.class,
+                named("guardPathForbiddenFixture"), RT_GUARD_WITH_RMW, owner -> owner.equals(self))
+                .invokeFindings().stream().map(Finding::toString).distinct().toList();
+        assertThat(withRmwOnly)
+                .contains(helper + "invokes java/util/concurrent/atomic/AtomicLong#incrementAndGet")
+                .doesNotContain(helper + "invokes java/lang/System#nanoTime");
+    }
+
+    /**
+     * Root of {@link #theGuardWalkReportsEveryForbiddenKindFromTheHelper}:
+     * never called; it only forwards to the helper, so every finding must be
+     * the helper's.
+     */
+    @SuppressWarnings("unused")
+    private static void guardPathForbiddenFixture(
+            Object lock, java.util.concurrent.locks.ReentrantLock reentrant, java.util.logging.Logger logger,
+            Iterable<String> iterable, List<String> list, java.util.Collection<String> collection,
+            java.util.concurrent.SubmissionPublisher<String> publisher,
+            java.util.concurrent.atomic.AtomicLong counter, Thread other, int[] samples)
+            throws InterruptedException {
+        guardPathForbiddenHelper(lock, reentrant, logger, iterable, list, collection, publisher, counter,
+                other, samples);
+    }
+
+    /**
+     * One call or instruction of each kind the guard predicate forbids —
+     * a lock, both loggers, collection iteration, a stream, a publisher, an
+     * atomic read-modify-write, both clock reads, a park, a sleep, a wait, a
+     * synchronized block and a synchronized callee — and the calls it must
+     * leave alone: {@code LockSupport.unpark}, an atomic's plain load and
+     * release store, {@code Arrays.fill}, {@code Objects.requireNonNull},
+     * {@code Thread.currentThread}, {@code Thread.onSpinWait} and
+     * {@code Math.max}. Never called.
+     */
+    @SuppressWarnings({"unused", "SynchronizationOnLocalVariableOrMethodParameter", "ResultOfMethodCallIgnored"})
+    private static void guardPathForbiddenHelper(
+            Object lock, java.util.concurrent.locks.ReentrantLock reentrant, java.util.logging.Logger logger,
+            Iterable<String> iterable, List<String> list, java.util.Collection<String> collection,
+            java.util.concurrent.SubmissionPublisher<String> publisher,
+            java.util.concurrent.atomic.AtomicLong counter, Thread other, int[] samples)
+            throws InterruptedException {
+        reentrant.lock();
+        logger.log(java.util.logging.Level.WARNING, "x");
+        System.getLogger("x").log(System.Logger.Level.WARNING, "x");
+        iterable.iterator();
+        list.forEach(item -> { });
+        collection.stream();
+        publisher.offer("x", null);
+        counter.incrementAndGet();
+        System.nanoTime();
+        System.currentTimeMillis();
+        java.util.concurrent.locks.LockSupport.parkNanos(1L);
+        Thread.sleep(1L);
+        lock.wait(1L);
+        synchronized (lock) {
+            samples[0] = 1;
+        }
+        guardPathSynchronizedHelper();
+
+        // Allowed on a real-time guard: none of these may be reported.
+        java.util.concurrent.locks.LockSupport.unpark(other);
+        counter.get();
+        counter.lazySet(2L);
+        Arrays.fill(samples, 0);
+        java.util.Objects.requireNonNull(lock);
+        Thread.currentThread();
+        Thread.onSpinWait();
+        Math.max(samples[0], 1);
+    }
+
+    @SuppressWarnings("unused")
+    private static synchronized void guardPathSynchronizedHelper() {
+    }
+
+    /**
+     * Story 337, ruling E46 (item 7) — non-vacuity of the upcall gate: a
+     * target that lets a call escape with no catch-all is rejected, naming the
+     * uncovered call, and the same body inside the guard shape — a
+     * catch-all whose handler's own call sits in a nested catch-all — is
+     * accepted.
+     */
+    @Test
+    void theUpcallGateRejectsATargetWithoutACatchAll() throws Exception {
+        ClassModel model = ClassFile.of().parse(readClassBytes(RealTimeSafeContractTest.class));
+        MethodModel unguarded = model.methods().stream()
+                .filter(named("upcallTargetWithoutCatchAllFixture")).findFirst().orElseThrow();
+        MethodModel guarded = model.methods().stream()
+                .filter(named("upcallTargetWithACatchAllFixture")).findFirst().orElseThrow();
+
+        assertThat(uncoveredThrowingInstructions(model, unguarded))
+                .as("the call with no catch-all around it is the one uncovered instruction")
+                .singleElement()
+                .asString()
+                .startsWith("upcallTargetWithoutCatchAllFixture@")
+                .endsWith(": INVOKEINTERFACE java/lang/foreign/MemorySegment#byteSize");
+        assertThat(uncoveredThrowingInstructions(model, guarded))
+                .as("the guard shape — a catch-all, and a nested catch-all around the handler's call — "
+                        + "leaves nothing uncovered")
+                .isEmpty();
+    }
+
+    /** An upcall target with no catch-all; fixture of {@link #theUpcallGateRejectsATargetWithoutACatchAll}. Never called. */
+    @SuppressWarnings("unused")
+    private static int upcallTargetWithoutCatchAllFixture(MemorySegment segment) {
+        return segment.byteSize() > 0 ? 1 : 0;
+    }
+
+    /** The same body in the guard shape; fixture of {@link #theUpcallGateRejectsATargetWithoutACatchAll}. Never called. */
+    @SuppressWarnings("unused")
+    private static int upcallTargetWithACatchAllFixture(MemorySegment segment) {
+        try {
+            return segment.byteSize() > 0 ? 1 : 0;
+        } catch (Throwable fault) {
+            try {
+                fault.getMessage();
+            } catch (Throwable ignored) {
+                // Nothing may reach the native frame.
+            }
+            return 0;
+        }
+    }
+
+    // ------------------------------------------------------------------
     // The capture path: everything the recording callback reaches
     // ------------------------------------------------------------------
 
@@ -1920,6 +2966,292 @@ class RealTimeSafeContractTest {
                     .as("CaptureRing#%s is a word of one take's ring, not a static", word.getKey())
                     .isFalse();
         }
+    }
+
+    private static final String AUDIO_HEALTH_LANE = AUDIO_HEALTH_INTERNAL_PREFIX + "AudioHealthLane";
+    private static final String RECORD_SLOT = AUDIO_HEALTH_INTERNAL_PREFIX + "RecordSlot";
+    private static final List<String> RECORD_SLOT_FIELDS =
+            List.of("category", "failure", "subject", "detail", "stamp");
+
+    /**
+     * The instruction orders the health lane's descriptor ring and the render
+     * drive's honest exit rest on (story 337, rulings E21 and E60), pinned
+     * where they are decided — in the bytecode. Every other lane test is
+     * single-threaded and no test can hold a thread between two adjacent
+     * stores, so a store moved across a release passes them all; its order
+     * can be read. {@code AudioHealthLanePublicationOrderTest} races the real
+     * ring as the live complement and catches such a move only
+     * probabilistically.
+     *
+     * <ul>
+     *   <li>{@code AudioHealthLane.record} writes every field of the slot
+     *       before the {@code GETFIELD tail} that feeds
+     *       {@code AtomicLong.lazySet} — the release store that publishes
+     *       it.</li>
+     *   <li>{@code AudioHealthLane.poll} copies every field of the slot, then
+     *       nulls its two references, and only then releases the slot through
+     *       the {@code GETFIELD head} that feeds {@code AtomicLong.lazySet} —
+     *       never a release-before-read.</li>
+     *   <li>{@code EngineStreamPump.halt} holds exactly one store of
+     *       {@code running}, and it precedes the terminal
+     *       {@code AudioHealthLane.record}, so a reader that sees the record
+     *       already reads the drive as dead (ruling E60).</li>
+     * </ul>
+     *
+     * <p>Each check is proven non-vacuous on
+     * {@link MisorderedPublicationFixture}, which breaks each order once.</p>
+     */
+    @Test
+    void theHealthLaneAndTheHaltKeepTheInstructionOrdersTheirPublicationRestsOn() throws Exception {
+        Map<String, ClassModel> models = new HashMap<>();
+        ClassModel lane = modelOf(AUDIO_HEALTH_LANE, models);
+        assertThat(lane).as("AudioHealthLane's class file is readable").isNotNull();
+
+        List<String> record = ownedFieldAndInvokeSequence(codeOfTheOneMethodNamed(lane, "record"));
+        assertThat(fieldsAccessed(record, Opcode.PUTFIELD, RECORD_SLOT))
+                .as("non-vacuity: AudioHealthLane#record writes every field of the slot")
+                .containsExactlyElementsOf(RECORD_SLOT_FIELDS);
+        assertThat(slotPublicationOrderViolations(record, RECORD_SLOT))
+                .as("AudioHealthLane#record writes the whole slot before the release store of tail publishes it")
+                .isEmpty();
+
+        List<String> poll = ownedFieldAndInvokeSequence(codeOfTheOneMethodNamed(lane, "poll"));
+        assertThat(fieldsAccessed(poll, Opcode.GETFIELD, RECORD_SLOT))
+                .as("non-vacuity: AudioHealthLane#poll copies every field of the slot")
+                .containsExactlyElementsOf(RECORD_SLOT_FIELDS);
+        assertThat(fieldsAccessed(poll, Opcode.PUTFIELD, RECORD_SLOT))
+                .as("AudioHealthLane#poll nulls the slot's two references")
+                .containsExactly("failure", "subject");
+        assertThat(slotReleaseOrderViolations(poll, RECORD_SLOT))
+                .as("AudioHealthLane#poll copies the slot, then nulls it, then releases it through head")
+                .isEmpty();
+
+        ClassModel pump = modelOf(RENDER_DRIVE_CLASS.replace('.', '/'), models);
+        assertThat(pump).as("EngineStreamPump's class file is readable").isNotNull();
+        assertThat(haltOrderViolations(ownedFieldAndInvokeSequence(codeOfTheOneMethodNamed(pump, "halt"))))
+                .as("EngineStreamPump#halt clears running, once, before it writes the terminal record")
+                .isEmpty();
+
+        ClassModel misordered = modelOf(internalNameOf(MisorderedPublicationFixture.class), models);
+        assertThat(misordered).as("the fixture's class file is readable").isNotNull();
+        String fixtureSlot = internalNameOf(FixtureSlot.class);
+        assertThat(slotPublicationOrderViolations(
+                ownedFieldAndInvokeSequence(codeOfTheOneMethodNamed(misordered, "record")), fixtureSlot))
+                .as("non-vacuity: a slot store below the release store of tail is reported")
+                .contains("PUTFIELD " + fixtureSlot + ".category after the release store of tail");
+        assertThat(slotReleaseOrderViolations(
+                ownedFieldAndInvokeSequence(codeOfTheOneMethodNamed(misordered, "poll")), fixtureSlot))
+                .as("non-vacuity: a copy and a null below the release store of head are reported")
+                .contains("GETFIELD " + fixtureSlot + ".failure after the release store of head",
+                        "PUTFIELD " + fixtureSlot + ".failure after the release store of head");
+        assertThat(haltOrderViolations(
+                ownedFieldAndInvokeSequence(codeOfTheOneMethodNamed(misordered, "halt"))))
+                .as("non-vacuity: a record published before running is cleared is reported")
+                .containsExactly("the store of running after the terminal record");
+    }
+
+    /**
+     * The field accesses ({@code OPCODE owner.name}) and calls
+     * ({@code owner#name}) of {@code code}, in order: {@link #fieldAndInvokeSequence}
+     * with each field's owner, so a slot's fields are told from the lane's.
+     */
+    private static List<String> ownedFieldAndInvokeSequence(CodeAttribute code) {
+        List<String> sequence = new ArrayList<>();
+        for (CodeElement element : code) {
+            if (element instanceof FieldInstruction field) {
+                sequence.add(field.opcode() + " " + field.owner().asInternalName() + "."
+                        + field.name().stringValue());
+            } else if (element instanceof InvokeInstruction invoke) {
+                sequence.add(invoke.owner().asInternalName() + "#" + invoke.name().stringValue());
+            }
+        }
+        return sequence;
+    }
+
+    /** The names of the fields of {@code owner} that {@code sequence} accesses with {@code opcode}, in order. */
+    private static List<String> fieldsAccessed(List<String> sequence, Opcode opcode, String owner) {
+        String prefix = opcode + " " + owner + ".";
+        return sequence.stream().filter(entry -> entry.startsWith(prefix))
+                .map(entry -> entry.substring(prefix.length())).toList();
+    }
+
+    /**
+     * The positions in {@code sequence} of a {@code GETFIELD} of {@code counter}
+     * whose next field access or call is {@code AtomicLong#lazySet}: the
+     * release stores of that counter.
+     */
+    private static List<Integer> releaseStoresOf(List<String> sequence, String counter) {
+        List<Integer> releases = new ArrayList<>();
+        for (int i = 0; i + 1 < sequence.size(); i++) {
+            String entry = sequence.get(i);
+            if (entry.startsWith("GETFIELD ") && entry.endsWith("." + counter)
+                    && sequence.get(i + 1).equals(ATOMIC_LONG + "#lazySet")) {
+                releases.add(i);
+            }
+        }
+        return releases;
+    }
+
+    /** The positions in {@code sequence} of the accesses of {@code owner}'s fields with {@code opcode}. */
+    private static List<Integer> positionsOf(List<String> sequence, Opcode opcode, String owner) {
+        String prefix = opcode + " " + owner + ".";
+        List<Integer> positions = new ArrayList<>();
+        for (int i = 0; i < sequence.size(); i++) {
+            if (sequence.get(i).startsWith(prefix)) {
+                positions.add(i);
+            }
+        }
+        return positions;
+    }
+
+    /**
+     * Where a producer's publication order is broken (story 337, ruling
+     * E21): one release store of {@code tail}, and every store into a slot
+     * of {@code slotOwner} before it.
+     */
+    private static List<String> slotPublicationOrderViolations(List<String> sequence, String slotOwner) {
+        List<String> violations = new ArrayList<>();
+        List<Integer> stores = positionsOf(sequence, Opcode.PUTFIELD, slotOwner);
+        List<Integer> releases = releaseStoresOf(sequence, "tail");
+        if (stores.isEmpty()) {
+            violations.add("no store into the slot");
+        }
+        if (releases.size() != 1) {
+            violations.add("expected one release store of tail, found " + releases.size());
+        }
+        for (int release : releases) {
+            for (int store : stores) {
+                if (store > release) {
+                    violations.add(sequence.get(store) + " after the release store of tail");
+                }
+            }
+        }
+        return violations;
+    }
+
+    /**
+     * Where a consumer's release order is broken (story 337, ruling E21):
+     * one release store of {@code head}; every read of a slot field of
+     * {@code slotOwner} before every store into the slot; and both before the
+     * release.
+     */
+    private static List<String> slotReleaseOrderViolations(List<String> sequence, String slotOwner) {
+        List<String> violations = new ArrayList<>();
+        List<Integer> copies = positionsOf(sequence, Opcode.GETFIELD, slotOwner);
+        List<Integer> nulls = positionsOf(sequence, Opcode.PUTFIELD, slotOwner);
+        List<Integer> releases = releaseStoresOf(sequence, "head");
+        if (copies.isEmpty()) {
+            violations.add("no copy of the slot");
+        }
+        if (nulls.isEmpty()) {
+            violations.add("no reference of the slot nulled");
+        }
+        if (releases.size() != 1) {
+            violations.add("expected one release store of head, found " + releases.size());
+        }
+        for (int copy : copies) {
+            for (int cleared : nulls) {
+                if (copy > cleared) {
+                    violations.add(sequence.get(copy) + " after " + sequence.get(cleared));
+                }
+            }
+        }
+        for (int release : releases) {
+            for (int copy : copies) {
+                if (copy > release) {
+                    violations.add(sequence.get(copy) + " after the release store of head");
+                }
+            }
+            for (int cleared : nulls) {
+                if (cleared > release) {
+                    violations.add(sequence.get(cleared) + " after the release store of head");
+                }
+            }
+        }
+        return violations;
+    }
+
+    /**
+     * Where the honest exit's order is broken (story 337, ruling E60): one
+     * store of {@code running}, one call of {@code AudioHealthLane#record},
+     * and the store first.
+     */
+    private static List<String> haltOrderViolations(List<String> sequence) {
+        List<String> violations = new ArrayList<>();
+        List<Integer> stores = new ArrayList<>();
+        List<Integer> records = new ArrayList<>();
+        for (int i = 0; i < sequence.size(); i++) {
+            String entry = sequence.get(i);
+            if (entry.startsWith("PUTFIELD ") && entry.endsWith(".running")) {
+                stores.add(i);
+            } else if (entry.equals(AUDIO_HEALTH_LANE + "#record")) {
+                records.add(i);
+            }
+        }
+        if (stores.size() != 1) {
+            violations.add("expected one store of running, found " + stores.size());
+        }
+        if (records.size() != 1) {
+            violations.add("expected one terminal record, found " + records.size());
+        }
+        for (int store : stores) {
+            for (int written : records) {
+                if (store > written) {
+                    violations.add("the store of running after the terminal record");
+                }
+            }
+        }
+        return violations;
+    }
+
+    private static String internalNameOf(Class<?> type) {
+        return type.getName().replace('.', '/');
+    }
+
+    /**
+     * Each order of {@link #theHealthLaneAndTheHaltKeepTheInstructionOrdersTheirPublicationRestsOn}
+     * broken once: {@code record} releases {@code tail} before it writes the
+     * slot, {@code poll} releases {@code head} before it copies the slot, and
+     * {@code halt} publishes its record before it clears {@code running}.
+     * Never instantiated: only its bytecode is read.
+     */
+    @SuppressWarnings("unused")
+    private static final class MisorderedPublicationFixture {
+
+        private final AtomicLong head = new AtomicLong();
+        private final AtomicLong tail = new AtomicLong();
+        private final FixtureSlot slot = new FixtureSlot();
+        private com.benesquivelmusic.daw.core.audio.health.AudioHealthLane lane;
+        private volatile boolean running;
+
+        private void record(int category, Throwable failure) {
+            long t = tail.get();
+            tail.lazySet(t + 1L);
+            slot.category = category;
+            slot.failure = failure;
+        }
+
+        private Throwable poll() {
+            long h = head.get();
+            head.lazySet(h + 1L);
+            Throwable copy = slot.failure;
+            slot.failure = null;
+            slot.subject = null;
+            return copy;
+        }
+
+        private void halt(Throwable cause) {
+            lane.record(0, cause, null, 0);
+            running = false;
+        }
+    }
+
+    /** The slot {@link MisorderedPublicationFixture} writes and copies. */
+    @SuppressWarnings("unused")
+    private static final class FixtureSlot {
+        private int category;
+        private Throwable failure;
+        private Object subject;
     }
 
     private static final String ATOMIC_LONG = "java/util/concurrent/atomic/AtomicLong";

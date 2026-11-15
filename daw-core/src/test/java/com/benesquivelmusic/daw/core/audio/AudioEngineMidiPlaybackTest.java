@@ -1,5 +1,10 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCategory;
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureSample;
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
+import com.benesquivelmusic.daw.core.audio.health.LaneRole;
+import com.benesquivelmusic.daw.core.audio.health.RenderThread;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
@@ -21,6 +26,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Handler;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.offset;
@@ -137,7 +146,7 @@ class AudioEngineMidiPlaybackTest {
     void shouldRenderMidiTrackViaSoundFontRenderer() {
         StubSoundFontRenderer stubRenderer = new StubSoundFontRenderer(0.5f);
         MidiTrackRenderer midiRenderer = new MidiTrackRenderer(
-                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance);
+                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance, new AudioHealthRecord());
 
         Track midiTrack = new Track("MIDI Track", TrackType.MIDI);
         midiTrack.setSoundFontAssignment(ASSIGNMENT);
@@ -172,7 +181,7 @@ class AudioEngineMidiPlaybackTest {
     void shouldSendNoteOnEventForNotesStartingInSegment() {
         StubSoundFontRenderer stubRenderer = new StubSoundFontRenderer(0.0f);
         MidiTrackRenderer midiRenderer = new MidiTrackRenderer(
-                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance);
+                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance, new AudioHealthRecord());
 
         Track midiTrack = new Track("MIDI Track", TrackType.MIDI);
         midiTrack.setSoundFontAssignment(ASSIGNMENT);
@@ -206,7 +215,7 @@ class AudioEngineMidiPlaybackTest {
     void shouldNotSendNoteOnForNotesOutsideSegment() {
         StubSoundFontRenderer stubRenderer = new StubSoundFontRenderer(0.0f);
         MidiTrackRenderer midiRenderer = new MidiTrackRenderer(
-                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance);
+                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance, new AudioHealthRecord());
 
         Track midiTrack = new Track("MIDI Track", TrackType.MIDI);
         midiTrack.setSoundFontAssignment(ASSIGNMENT);
@@ -260,7 +269,7 @@ class AudioEngineMidiPlaybackTest {
     void shouldProduceSilenceForMidiTrackWithEmptyClip() {
         StubSoundFontRenderer stubRenderer = new StubSoundFontRenderer(0.0f);
         MidiTrackRenderer midiRenderer = new MidiTrackRenderer(
-                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance);
+                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance, new AudioHealthRecord());
 
         Track midiTrack = new Track("MIDI Track", TrackType.MIDI);
         midiTrack.setSoundFontAssignment(ASSIGNMENT);
@@ -289,7 +298,7 @@ class AudioEngineMidiPlaybackTest {
     void shouldRenderBothAudioAndMidiTracksSimultaneously() {
         StubSoundFontRenderer stubRenderer = new StubSoundFontRenderer(0.4f);
         MidiTrackRenderer midiRenderer = new MidiTrackRenderer(
-                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance);
+                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance, new AudioHealthRecord());
 
         // Audio track
         Track audioTrack = new Track("Audio Track", TrackType.AUDIO);
@@ -333,7 +342,7 @@ class AudioEngineMidiPlaybackTest {
     void shouldHandleSoundFontAssignmentChange() {
         StubSoundFontRenderer stubRenderer = new StubSoundFontRenderer(0.3f);
         MidiTrackRenderer midiRenderer = new MidiTrackRenderer(
-                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance);
+                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance, new AudioHealthRecord());
 
         Track midiTrack = new Track("MIDI Track", TrackType.MIDI);
         midiTrack.setSoundFontAssignment(ASSIGNMENT);
@@ -394,7 +403,7 @@ class AudioEngineMidiPlaybackTest {
 
         StubSoundFontRenderer stubRenderer = new StubSoundFontRenderer(0.5f);
         MidiTrackRenderer midiRenderer = new MidiTrackRenderer(
-                SAMPLE_RATE, largeBuffer, stubRenderer::newInstance);
+                SAMPLE_RATE, largeBuffer, stubRenderer::newInstance, new AudioHealthRecord());
 
         Track midiTrack = new Track("MIDI Track", TrackType.MIDI);
         midiTrack.setSoundFontAssignment(ASSIGNMENT);
@@ -453,7 +462,7 @@ class AudioEngineMidiPlaybackTest {
         // Loop end = 0.0002 beats → ~4.4 frames. Transport at beat ~0.0001.
         StubSoundFontRenderer stubRenderer = new StubSoundFontRenderer(0.0f);
         MidiTrackRenderer midiRenderer = new MidiTrackRenderer(
-                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance);
+                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance, new AudioHealthRecord());
 
         Track midiTrack = new Track("MIDI Track", TrackType.MIDI);
         midiTrack.setSoundFontAssignment(ASSIGNMENT);
@@ -1272,7 +1281,7 @@ class AudioEngineMidiPlaybackTest {
         // These tests are about events, not audio — render silence.
         StubSoundFontRenderer stubRenderer = new StubSoundFontRenderer(0.0f);
         MidiTrackRenderer midiRenderer = new MidiTrackRenderer(
-                SAMPLE_RATE, LOOP_BLOCK_FRAMES, stubRenderer::newInstance);
+                SAMPLE_RATE, LOOP_BLOCK_FRAMES, stubRenderer::newInstance, new AudioHealthRecord());
 
         Track midiTrack = new Track("MIDI Track", TrackType.MIDI);
         midiTrack.setSoundFontAssignment(ASSIGNMENT);
@@ -1402,7 +1411,7 @@ class AudioEngineMidiPlaybackTest {
         // These tests are about events, not audio — render silence.
         StubSoundFontRenderer stubRenderer = new StubSoundFontRenderer(0.0f);
         MidiTrackRenderer midiRenderer = new MidiTrackRenderer(
-                sampleRate, blockFrames, stubRenderer::newInstance);
+                sampleRate, blockFrames, stubRenderer::newInstance, new AudioHealthRecord());
 
         Track midiTrack = new Track("MIDI Track", TrackType.MIDI);
         midiTrack.setSoundFontAssignment(ASSIGNMENT);
@@ -1501,11 +1510,144 @@ class AudioEngineMidiPlaybackTest {
 
     // ── MidiTrackRenderer unit tests ────────────────────────────────────────
 
+    /**
+     * Story 337, ruling E30: a renderer that throws from {@code sendEvent},
+     * {@code render} and {@code allNotesOff} is recorded as
+     * {@code audio.midi} into the render thread's lane — never logged on the
+     * render thread, where each WARNING was a disk write per block.
+     */
+    @Test
+    void aFailingSynthesizerIsRecordedOnTheRenderThreadAndNeverLogged() throws Exception {
+        AudioHealthRecord record = new AudioHealthRecord();
+        MidiTrackRenderer renderer = new MidiTrackRenderer(
+                SAMPLE_RATE, BUFFER_SIZE, FailingSoundFontRenderer::new, record);
+        Track playing = new Track("MIDI Track", TrackType.MIDI);
+        playing.setSoundFontAssignment(ASSIGNMENT);
+        playing.getMidiClip().addNote(new MidiNoteData(60, 0, 1, 100, 0));
+        Track silent = new Track("Silent MIDI Track", TrackType.MIDI);
+        silent.setSoundFontAssignment(ASSIGNMENT);
+        renderer.prepareRenderer(playing);
+        renderer.prepareRenderer(silent);
+        float[][] buffer = new float[2][BUFFER_SIZE];
+        double samplesPerBeat = SAMPLE_RATE * 60.0 / TEMPO;
+        double endBeat = BUFFER_SIZE / samplesPerBeat;
+
+        List<LogRecord> logged = captureLog(() -> onRenderThread(record, () -> {
+            renderer.renderMidiTrack(playing, buffer, 0.0, endBeat, 0.0, samplesPerBeat, 0, BUFFER_SIZE);
+            renderer.renderMidiTrack(silent, buffer, 0.0, endBeat, 0.0, samplesPerBeat, 0, BUFFER_SIZE);
+            renderer.allNotesOff();
+        }));
+
+        List<AudioFailureSample> samples = new ArrayList<>();
+        record.drainSamples(samples::add);
+        assertThat(samples).extracting(AudioFailureSample::category).containsOnly(AudioFailureCategory.MIDI);
+        assertThat(samples).extracting(AudioFailureSample::detail)
+                .as("note-on (note 60), the sub-chunk (8 frames), the silence render, two all-notes-off")
+                .contains(60, BUFFER_SIZE);
+        assertThat(record.total(AudioFailureCategory.MIDI))
+                .as("one note-on, one sub-chunk render, one silence render, one all-notes-off per renderer")
+                .isEqualTo(5);
+        assertThat(logged).as("nothing logged on the render thread").isEmpty();
+        renderer.close();
+    }
+
+    /**
+     * Story 337: off a render thread (no lane — an offline render) the same
+     * failures are survived without a record and without a log line.
+     */
+    @Test
+    void aFailingSynthesizerOffARenderThreadRecordsNothingAndLogsNothing() {
+        AudioHealthRecord record = new AudioHealthRecord();
+        MidiTrackRenderer renderer = new MidiTrackRenderer(
+                SAMPLE_RATE, BUFFER_SIZE, FailingSoundFontRenderer::new, record);
+        Track track = new Track("MIDI Track", TrackType.MIDI);
+        track.setSoundFontAssignment(ASSIGNMENT);
+        track.getMidiClip().addNote(new MidiNoteData(60, 0, 1, 100, 0));
+        renderer.prepareRenderer(track);
+        float[][] buffer = new float[2][BUFFER_SIZE];
+        double samplesPerBeat = SAMPLE_RATE * 60.0 / TEMPO;
+
+        List<LogRecord> logged = captureLog(() -> {
+            renderer.renderMidiTrack(track, buffer, 0.0, BUFFER_SIZE / samplesPerBeat, 0.0,
+                    samplesPerBeat, 0, BUFFER_SIZE);
+            renderer.allNotesOff();
+        });
+
+        assertThat(record.totals()).containsOnly(0L);
+        assertThat(logged).isEmpty();
+        renderer.close();
+    }
+
+    /** Collects what {@link MidiTrackRenderer}'s logger records while {@code body} runs. */
+    private static List<LogRecord> captureLog(ThrowingRunnable body) {
+        Logger log = Logger.getLogger(MidiTrackRenderer.class.getName());
+        List<LogRecord> records = new CopyOnWriteArrayList<>();
+        Handler handler = new Handler() {
+            @Override public void publish(LogRecord entry) { records.add(entry); }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        log.addHandler(handler);
+        try {
+            body.run();
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        } finally {
+            log.removeHandler(handler);
+        }
+        return records;
+    }
+
+    /** A body that may throw a checked exception. */
+    @FunctionalInterface
+    private interface ThrowingRunnable {
+        void run() throws Exception;
+    }
+
+    /** Runs {@code body} on a render thread holding a lane of {@code record}; fails on an escape. */
+    private static void onRenderThread(AudioHealthRecord record, Runnable body) throws Exception {
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        RenderThread thread = new RenderThread(record.claimLane(LaneRole.RENDER_DRIVE), () -> {
+            try {
+                body.run();
+            } catch (Throwable t) {
+                failure.set(t);
+            }
+        }, "midi-render-thread");
+        thread.start();
+        thread.join(5_000L);
+        assertThat(thread.isAlive()).as("the render thread finished within the guard budget").isFalse();
+        assertThat(failure.get()).as("nothing escaped the render thread").isNull();
+    }
+
+    /** A synthesizer whose every render-thread call throws. */
+    private static final class FailingSoundFontRenderer extends StubSoundFontRenderer {
+
+        FailingSoundFontRenderer() {
+            super(0.0f);
+        }
+
+        @Override
+        public void sendEvent(MidiEvent event) {
+            throw new IllegalStateException("synth rejected " + event.type());
+        }
+
+        @Override
+        public void render(float[][] outputBuffer, int numFrames) {
+            throw new IllegalStateException("synth render failed");
+        }
+
+        @Override
+        public void allNotesOff() {
+            throw new IllegalStateException("synth all-notes-off failed");
+        }
+    }
+
     @Test
     void midiTrackRendererShouldScheduleNoteOnAndOff() {
         StubSoundFontRenderer stubRenderer = new StubSoundFontRenderer(0.0f);
         MidiTrackRenderer renderer = new MidiTrackRenderer(
-                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance);
+                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance, new AudioHealthRecord());
 
         Track track = new Track("MIDI Track", TrackType.MIDI);
         track.setSoundFontAssignment(ASSIGNMENT);
@@ -1549,7 +1691,7 @@ class AudioEngineMidiPlaybackTest {
     void midiTrackRendererShouldCloseOnDispose() {
         StubSoundFontRenderer stubRenderer = new StubSoundFontRenderer(0.0f);
         MidiTrackRenderer renderer = new MidiTrackRenderer(
-                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance);
+                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance, new AudioHealthRecord());
 
         Track track = new Track("MIDI Track", TrackType.MIDI);
         track.setSoundFontAssignment(ASSIGNMENT);
@@ -1573,7 +1715,7 @@ class AudioEngineMidiPlaybackTest {
     void midiTrackRendererShouldReuseExistingRenderer() {
         StubSoundFontRenderer stubRenderer = new StubSoundFontRenderer(0.0f);
         MidiTrackRenderer renderer = new MidiTrackRenderer(
-                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance);
+                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance, new AudioHealthRecord());
 
         Track track = new Track("MIDI Track", TrackType.MIDI);
         track.setSoundFontAssignment(ASSIGNMENT);
@@ -1654,7 +1796,7 @@ class AudioEngineMidiPlaybackTest {
         // has been prepared via prepareRenderer
         StubSoundFontRenderer stubRenderer = new StubSoundFontRenderer(0.5f);
         MidiTrackRenderer midiRenderer = new MidiTrackRenderer(
-                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance);
+                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance, new AudioHealthRecord());
 
         Track midiTrack = new Track("MIDI Track", TrackType.MIDI);
         midiTrack.setSoundFontAssignment(ASSIGNMENT);

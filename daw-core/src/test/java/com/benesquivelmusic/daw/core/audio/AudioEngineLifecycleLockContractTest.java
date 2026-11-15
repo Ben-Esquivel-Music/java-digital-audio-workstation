@@ -188,6 +188,15 @@ class AudioEngineLifecycleLockContractTest {
             "com/benesquivelmusic/daw/core/audio/SampleRateConversionCache",
             "com/benesquivelmusic/daw/core/audio/StreamState",
             "com/benesquivelmusic/daw/core/audio/StreamingProvision",
+            // Story 337: the engine-owned audio health record. Its backend
+            // counter attach/detach run under the lock and take only the
+            // record's own private monitor, which nothing waiting on this lock
+            // ever holds; the attach reads AudioBackend.threadCounters() for
+            // its baseline (the backend contract, below). The
+            // backend::threadCounters method reference the engine hands it
+            // is linked by an invokedynamic whose target owner is
+            // AudioBackend, already allowed. See the lock's javadoc.
+            "com/benesquivelmusic/daw/core/audio/health/AudioHealthRecord",
             // The SDK backend contract — driver code, not application code.
             // Bounded rather than deferred; see the lock's javadoc.
             "com/benesquivelmusic/daw/sdk/audio/AudioBackend",

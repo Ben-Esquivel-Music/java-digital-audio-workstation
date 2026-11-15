@@ -5,6 +5,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -15,6 +16,7 @@ import java.util.concurrent.Flow;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -160,6 +162,29 @@ public final class AsioBackend implements AudioBackend {
     private volatile AsioDriverShim driverShim;
     private volatile AsioStreamingShim streamingShim;
     private volatile AsioBufferSwitchShim bufferSwitchShim;
+
+    /**
+     * The buffer-switch shims' failure counters, accumulated across this
+     * backend's opens (story 337, rulings E4 and E16). A shim lives for one
+     * open, so its counters would vanish at a reconfigure; the holder folds
+     * the live shim's counts in when it is torn down, so
+     * {@link #threadCounters()} only ever grows. Swapped in one volatile write
+     * of an immutable value on the lifecycle thread (under
+     * {@code DRIVER_LIFECYCLE_LOCK}), so a reader never sees a shim counted
+     * twice or not at all.
+     */
+    private volatile ShimCounters shimCounters = ShimCounters.NONE;
+
+    /**
+     * Device-notification upcalls ({@code asioMessage}) whose handling failed
+     * (story 337, ruling E31) — {@code audio.device}. The driver may call from
+     * more than one thread, so this one counter is an {@link AtomicLong},
+     * incremented on the failure path only.
+     */
+    private final AtomicLong deviceNotificationFaults = new AtomicLong();
+
+    /** The newest fault behind {@link #deviceNotificationFaults}. */
+    private volatile Throwable lastDeviceNotificationFault;
 
     /**
      * Name of the driver {@code ASIOInit} succeeded for, or {@code null} while
@@ -560,6 +585,7 @@ public final class AsioBackend implements AudioBackend {
                     // that window would find nothing to tear down.
                     streamingShim = streaming;
                     bufferSwitchShim = bridge;
+                    shimCounters = shimCounters.withLive(bridge);
                     if (!streaming.start()) {
                         throw new AudioBackendException(
                                 "ASIOStart failed for driver: " + driverName);
@@ -816,6 +842,10 @@ public final class AsioBackend implements AudioBackend {
                 bridge.closeRetainingUpcallStub();
             }
         }
+        // Story 337, ruling E4: fold the torn-down shim's counts once its close
+        // has joined asio-input-drain, whose final sweep can still count a lost
+        // block.
+        shimCounters = shimCounters.retireLive();
         if (streaming != null) {
             streaming.close();
         }
@@ -1370,6 +1400,90 @@ public final class AsioBackend implements AudioBackend {
     /**
      * {@inheritDoc}
      *
+     * <p>ASIO counts its buffer-switch upcall faults ({@code audio.callback}),
+     * the input drain's lost blocks ({@code audio.input}) and failed
+     * {@code asioMessage} notifications ({@code audio.device}), accumulated
+     * across every open of this backend (story 337, rulings E4, E16, E31).
+     * The device heartbeat is always present: zero until a driver has made a
+     * buffer-switch upcall (story 337, ruling E5).</p>
+     */
+    @Override
+    public BackendThreadCounters threadCounters() {
+        ShimCounters totals = shimCounters.view();
+        return new BackendThreadCounters(
+                totals.upcallFaults(),
+                totals.publishDrops(),
+                0L,
+                deviceNotificationFaults.get(),
+                OptionalLong.of(totals.periods()),
+                totals.lastUpcall(),
+                totals.lastPublish(),
+                Optional.ofNullable(lastDeviceNotificationFault));
+    }
+
+    /**
+     * Counts one {@code asioMessage} upcall whose handling failed (story 337,
+     * ruling E31). Called from {@link AsioFormatChangeShim}'s upcall catch on
+     * a driver thread: an {@link AtomicLong} increment and a reference store,
+     * on the failure path only.
+     *
+     * @param fault the fault the shim caught
+     */
+    void noteDeviceNotificationFault(Throwable fault) {
+        deviceNotificationFaults.incrementAndGet();
+        lastDeviceNotificationFault = fault;
+    }
+
+    /**
+     * The buffer-switch shims' counters across this backend's opens: the
+     * folded totals of every torn-down shim plus, optionally, the live one
+     * (story 337, ruling E4). Immutable; swapped whole.
+     */
+    private record ShimCounters(long upcallFaults, long periods, long publishDrops,
+                                Optional<Throwable> lastUpcall,
+                                Optional<Throwable> lastPublish,
+                                Optional<AsioBufferSwitchShim> live) {
+
+        static final ShimCounters NONE = new ShimCounters(0L, 0L, 0L,
+                Optional.empty(), Optional.empty(), Optional.empty());
+
+        ShimCounters {
+            Objects.requireNonNull(lastUpcall, "lastUpcall must not be null");
+            Objects.requireNonNull(lastPublish, "lastPublish must not be null");
+            Objects.requireNonNull(live, "live must not be null");
+        }
+
+        /** Folds any previous live shim, then tracks {@code shim} as live. */
+        ShimCounters withLive(AsioBufferSwitchShim shim) {
+            ShimCounters folded = retireLive();
+            return new ShimCounters(folded.upcallFaults, folded.periods, folded.publishDrops,
+                    folded.lastUpcall, folded.lastPublish, Optional.of(shim));
+        }
+
+        /** Folds the live shim's counts into the totals and drops it; idempotent. */
+        ShimCounters retireLive() {
+            return live.isEmpty() ? this : view();
+        }
+
+        /** The folded totals plus the live shim's current counts, with no live shim. */
+        ShimCounters view() {
+            if (live.isEmpty()) {
+                return this;
+            }
+            AsioBufferSwitchShim shim = live.get();
+            return new ShimCounters(
+                    upcallFaults + shim.upcallFaults(),
+                    periods + shim.deviceCallbackPeriods(),
+                    publishDrops + shim.publishDrops(),
+                    shim.lastUpcallFault().or(() -> lastUpcall),
+                    shim.lastPublishFault().or(() -> lastPublish),
+                    Optional.empty());
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
      * <p>The number of input channels {@code ASIOCreateBuffers} really handed
      * back — <em>not</em> the number
      * {@link #negotiateChannelCounts(int, String)} asked for. The two differ
@@ -1564,6 +1678,10 @@ public final class AsioBackend implements AudioBackend {
                     bridge.closeRetainingUpcallStub();
                 }
             }
+            // Story 337, ruling E4: fold the torn-down shim's counts once its
+            // close has joined asio-input-drain, whose final sweep can still
+            // count a lost block.
+            shimCounters = shimCounters.retireLive();
             if (streaming != null) {
                 streaming.close();
             }

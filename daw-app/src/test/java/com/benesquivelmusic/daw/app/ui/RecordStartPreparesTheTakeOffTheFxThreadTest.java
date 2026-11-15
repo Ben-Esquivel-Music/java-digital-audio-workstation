@@ -65,6 +65,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
@@ -670,6 +671,96 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
             assertThat(backend.isOpen()).isFalse();
             assertThat(onFx(() -> controller.recordCoordinator().recordAvailableProperty().get())).isTrue();
             assertThat(backend.closeOnFx.get()).isFalse();
+        } finally {
+            backend.retain = false;
+            backend.release.countDown();
+            runOnFx(() -> { if (controller.isTakeBeingWritten()) controller.stop(); });
+        }
+    }
+
+    /**
+     * Story 337, ruling E11 step 2: while the record coordinator defers the
+     * input-stream stop — here the failed start's own input cleanup is still
+     * closing the stream it prepared — the halt's close and its retry close
+     * nothing; the stream stays open and the drain asks again later.
+     */
+    @Test
+    void anEngineHaltCloseWaitsWhileTheTakeDefersTheInputStreamStop() throws Exception {
+        HeldCloseBackend backend = new HeldCloseBackend();
+        runOnFx(() -> engine.setStreamingProvision(new StreamingProvision(backend.name(),
+                List.of(new BackendStreamRung(backend, DeviceId.defaultFor(backend.name()))))));
+        makeTheTakesFolderImpossibleToCreate();
+        try {
+            runOnFx(controller::toggleRecord);
+            assertThat(backend.closeEntered.await(10, TimeUnit.SECONDS))
+                    .as("fixture: the failed start's input cleanup holds the stream's close").isTrue();
+            runOnFx(() -> {
+                assertThat(controller.closeStreamAfterEngineHalt())
+                        .as("the take defers the stop: nothing closed, the close is still owed").isFalse();
+                assertThat(controller.retryCloseStreamAfterEngineHalt()).as("and a later frame's retry waits too")
+                        .isFalse();
+                assertThat(engine.isStreamOpen()).as("the stream stays open").isTrue();
+            });
+            assertThat(backend.isOpen()).isTrue();
+            assertThat(backend.closeCalls).as("only the take's own cleanup closes it").hasValue(1);
+        } finally {
+            backend.retain = false;
+            backend.release.countDown();
+            awaitOnFx(() -> !controller.isTakeBeingWritten(), "the failed start's input cleanup settled");
+        }
+    }
+
+    /**
+     * Story 337, ruling E66: once the failed start's input cleanup has failed
+     * on a retained handle and shown its ERROR, the halt's close retries — one
+     * per drain frame — only ask whether the take still defers the stop: they
+     * restart no cleanup, start no close on the device and show nothing. Only
+     * the user's Stop retries the cleanup; after it, the retry closes.
+     */
+    @Test
+    void aHaltCloseRetryWhileTheInputCleanupFailedRestartsNothingAndShowsNothing() throws Exception {
+        HeldCloseBackend backend = new HeldCloseBackend();
+        runOnFx(() -> engine.setStreamingProvision(new StreamingProvision(backend.name(),
+                List.of(new BackendStreamRung(backend, DeviceId.defaultFor(backend.name()))))));
+        makeTheTakesFolderImpossibleToCreate();
+        try {
+            runOnFx(controller::toggleRecord);
+            assertThat(backend.closeEntered.await(10, TimeUnit.SECONDS)).isTrue();
+            backend.release.countDown();
+            awaitOnFx(() -> entries().stream().anyMatch(entry -> entry.message()
+                    .startsWith("Recording input cleanup failed:")), "fixture: the retained handle failed the cleanup");
+            int closesBefore = backend.closeCalls.get();
+            int shownBefore = onFx(() -> entries().size());
+            AtomicInteger deferred = new AtomicInteger();
+
+            runOnFx(() -> {
+                for (int frame = 0; frame < 20; frame++) {
+                    if (!controller.retryCloseStreamAfterEngineHalt()) {
+                        deferred.incrementAndGet();
+                    }
+                }
+            });
+            // A retry that restarted the cleanup would enter the device's close on a virtual thread at once and
+            // toast its failure on a later FX turn: give it that time before asserting that nothing happened.
+            long quiet = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (System.nanoTime() - quiet < 0 && backend.closeCalls.get() == closesBefore) {
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+            }
+            runOnFx(() -> { });
+
+            assertThat(deferred).as("every retry: the take still defers the stop").hasValue(20);
+            assertThat(backend.closeCalls).as("no retry started a close on the device").hasValue(closesBefore);
+            assertThat(onFx(() -> entries().size())).as("and none showed anything").isEqualTo(shownBefore);
+            assertThat(onFx(() -> controller.recordCoordinator().getState())).isEqualTo(RecordState.ABORTED);
+
+            runOnFx(() -> {
+                backend.retain = false;
+                controller.stop();
+            });
+            awaitOnFx(() -> !controller.isTakeBeingWritten(), "the user's Stop retried the cleanup and released it");
+            assertThat(onFx(controller::retryCloseStreamAfterEngineHalt)).as("nothing defers the stop any more")
+                    .isTrue();
+            assertThat(onFx(engine::isStreamOpen)).isFalse();
         } finally {
             backend.retain = false;
             backend.release.countDown();
@@ -1557,6 +1648,8 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         private final MockAudioBackend delegate = new MockAudioBackend();
         final CountDownLatch closeEntered = new CountDownLatch(1), release = new CountDownLatch(1);
         final AtomicBoolean closeOnFx = new AtomicBoolean();
+        /** Every close the engine started on this device. */
+        final AtomicInteger closeCalls = new AtomicInteger();
         volatile boolean retain = true;
         boolean failOpen;
         Thread openThread;
@@ -1575,6 +1668,7 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
         public Flow.Publisher<com.benesquivelmusic.daw.sdk.audio.AudioBlock> inputBlocks() { return delegate.inputBlocks(); }
         public void sink(com.benesquivelmusic.daw.sdk.audio.AudioBlock block) { delegate.sink(block); }
         public void close() {
+            closeCalls.incrementAndGet();
             if (Platform.isFxApplicationThread()) closeOnFx.set(true);
             if (failOpen && Thread.currentThread() == openThread) return;
             closeEntered.countDown();

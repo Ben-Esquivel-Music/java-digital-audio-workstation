@@ -2465,21 +2465,43 @@ final class RecordCoordinator {
     }
 
     boolean deferInputStreamStop() {
+        // One predicate says whether a take defers the stop; this only acts on what it found (story 337,
+        // ruling E68).
+        if (!isInputStreamStopDeferred()) return false;
         if (unannouncedTake != null && !unannouncedStreamClosed) {
             if (unannouncedStart.filesCleanupComplete && !unannouncedCleanupRunning) finishWrittenTake(unannouncedTake);
             return true;
         }
         PendingStart start = pendingStart != null ? pendingStart : abandonedStart;
+        if (start.streamPrepared && !start.inputCleanupRunning
+                && (start.failure == null || start.filesCleanupComplete)) {
+            cleanUpPreparedInputStream(start);
+        }
+        return true;
+    }
+
+    /**
+     * Whether a take still defers the input-stream stop — the answer of
+     * {@link #deferInputStreamStop()} without its side effects: it never
+     * starts the input-stream cleanup and never finishes a written take, so
+     * asking again never restarts a failed cleanup or repeats its toast.
+     * {@link #deferInputStreamStop()} answers through it and only adds its
+     * actions, so the two cannot drift (story 337, ruling E68). The
+     * engine-halt close retries through it (story 337, ruling E66). FX
+     * thread.
+     *
+     * @return {@code true} exactly when {@link #deferInputStreamStop()} would return {@code true}
+     */
+    boolean isInputStreamStopDeferred() {
+        if (unannouncedTake != null && !unannouncedStreamClosed) return true;
+        PendingStart start = pendingStart != null ? pendingStart : abandonedStart;
         if (start == null) return false;
         if (!start.streamPrepared || start.inputCleanupRunning) return true;
         if (start.failure != null && !start.filesCleanupComplete) return true;
-        if (start.inputCleanupFailed || start.failure != null || start.cancelled
-                && (retired || !transport.hasGraphInstruments() && project.getTransport().getState() != TransportState.PLAYING)) {
-            cleanUpPreparedInputStream(start);
-            return true;
-        }
-        return false;
+        return start.inputCleanupFailed || start.failure != null || start.cancelled
+                && (retired || !transport.hasGraphInstruments() && project.getTransport().getState() != TransportState.PLAYING);
     }
+
     private void cleanUpPreparedInputStream(PendingStart start) {
         if (start.inputCleanupRunning || start.inputCleanupComplete) return;
         start.inputCleanupRunning = true;

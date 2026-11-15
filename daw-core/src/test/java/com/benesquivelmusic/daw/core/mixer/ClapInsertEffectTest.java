@@ -1,11 +1,23 @@
 package com.benesquivelmusic.daw.core.mixer;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCategory;
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureSample;
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
+import com.benesquivelmusic.daw.core.audio.health.LaneRole;
+import com.benesquivelmusic.daw.core.audio.health.RenderThread;
 import com.benesquivelmusic.daw.core.plugin.clap.ClapPluginHost;
 import com.benesquivelmusic.daw.sdk.plugin.*;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -62,6 +74,56 @@ class ClapInsertEffectTest {
         // Should have fallen back to pass-through
         assertThat(output[0]).containsExactly(1.0f, 0.5f);
         assertThat(effect.isFaulted()).isTrue();
+    }
+
+    /**
+     * Story 337, ruling E30: a plugin crash on the render thread is an
+     * {@code audio.plugin} record with the plugin host as subject — never the
+     * SEVERE log line, built by string concatenation, it used to be.
+     */
+    @Test
+    void aCrashOnARenderThreadIsRecordedWithThePluginAsSubjectAndNeverLogged() throws Exception {
+        ThrowingPluginHost host = new ThrowingPluginHost();
+        ClapInsertEffect effect = new ClapInsertEffect(host);
+        AudioHealthRecord record = new AudioHealthRecord();
+        float[][] input = {{1.0f, 0.5f}};
+        float[][] output = {{0.0f, 0.0f}};
+        Logger log = Logger.getLogger(ClapInsertEffect.class.getName());
+        List<LogRecord> logged = new CopyOnWriteArrayList<>();
+        Handler handler = new Handler() {
+            @Override public void publish(LogRecord entry) { logged.add(entry); }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        log.addHandler(handler);
+        try {
+            AtomicReference<Throwable> escaped = new AtomicReference<>();
+            RenderThread thread = new RenderThread(record.claimLane(LaneRole.RENDER_DRIVE), () -> {
+                try {
+                    effect.process(input, output, 2);
+                } catch (Throwable t) {
+                    escaped.set(t);
+                }
+            }, "clap-render-thread");
+            thread.start();
+            thread.join(5_000L);
+            assertThat(thread.isAlive()).isFalse();
+            assertThat(escaped.get()).isNull();
+        } finally {
+            log.removeHandler(handler);
+        }
+
+        assertThat(effect.isFaulted()).isTrue();
+        assertThat(output[0]).as("pass-through").containsExactly(1.0f, 0.5f);
+        assertThat(record.total(AudioFailureCategory.PLUGIN)).isEqualTo(1);
+        List<AudioFailureSample> samples = new ArrayList<>();
+        record.drainSamples(samples::add);
+        assertThat(samples).singleElement().satisfies(sample -> {
+            assertThat(sample.subject()).contains(host);
+            assertThat(sample.failure()).get().isInstanceOf(RuntimeException.class);
+        });
+        assertThat(logged).as("no SEVERE record on the render thread")
+                .noneMatch(entry -> entry.getLevel() == Level.SEVERE);
     }
 
     @Test

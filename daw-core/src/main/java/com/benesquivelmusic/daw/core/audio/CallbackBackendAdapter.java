@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.AudioBlock;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.AudioStreamConfig;
+import com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters;
 import com.benesquivelmusic.daw.sdk.audio.BufferSize;
 import com.benesquivelmusic.daw.sdk.audio.CaptureRequirement;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
@@ -16,6 +17,8 @@ import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.Flow;
 import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.atomic.AtomicLong;
@@ -208,6 +211,19 @@ public final class CallbackBackendAdapter implements AudioBackend {
 
     private Thread drainThread;
     private volatile boolean draining;
+
+    /**
+     * Captured input blocks the {@code native-input-drain} thread could not
+     * publish (story 337, ruling E17) — {@code audio.input}. The drain counts
+     * the lost block and continues; it ends only on its stop flag. Single
+     * writer: the one drain thread ({@code stopDrainThread} joins it before
+     * another starts; a join that timed out can leave at worst one lost
+     * increment, never a torn value).
+     */
+    private volatile long inputBlocksLost;
+
+    /** The newest fault behind {@link #inputBlocksLost}; written by the drain thread. */
+    private volatile Throwable lastInputFault;
 
     private volatile SubmissionPublisher<AudioBlock> inputPublisher =
             new SubmissionPublisher<>();
@@ -699,6 +715,21 @@ public final class CallbackBackendAdapter implements AudioBackend {
     @Override
     public RoundTripLatency reportedLatency() {
         return delegate.reportedLatency();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The wrapped backend's own counters (for PortAudio: its callback
+     * guard's faults and the device heartbeat) plus this adapter's
+     * {@code native-input-drain} lost-block count (story 337, rulings E4 and
+     * E17).</p>
+     */
+    @Override
+    public BackendThreadCounters threadCounters() {
+        return delegate.threadCounters().plus(new BackendThreadCounters(
+                0L, inputBlocksLost, 0L, 0L, OptionalLong.empty(),
+                Optional.empty(), Optional.ofNullable(lastInputFault), Optional.empty()));
     }
 
     /**
@@ -1230,6 +1261,12 @@ public final class CallbackBackendAdapter implements AudioBackend {
      * sample array, honouring {@code AudioBlock}'s documented immutability)
      * and publishes it. Non-RT thread: touching the
      * {@link SubmissionPublisher} is legal only here.
+     *
+     * <p>A block that cannot be built or published is counted as lost
+     * ({@code audio.input}) and the loop continues: the drain ends only on
+     * its stop flag, so one bad block is a counted one-block gap, never a
+     * dead drain under a stream that still reports itself open (story 337,
+     * ruling E17).</p>
      */
     private void drainLoop() {
         while (draining) {
@@ -1237,9 +1274,14 @@ public final class CallbackBackendAdapter implements AudioBackend {
             float[] scratch = this.drainScratch;
             if (ring != null && scratch != null) {
                 while (draining && ring.readInto(scratch)) {
-                    AudioBlock block = new AudioBlock(
-                            openedSampleRate, inChannels, bufferFrames, scratch.clone());
-                    inputPublisher.offer(block, (subscriber, dropped) -> false);
+                    try {
+                        AudioBlock block = new AudioBlock(
+                                openedSampleRate, inChannels, bufferFrames, scratch.clone());
+                        inputPublisher.offer(block, (subscriber, dropped) -> false);
+                    } catch (Throwable lostBlock) {
+                        inputBlocksLost++; // single writer: this drain thread
+                        lastInputFault = lostBlock;
+                    }
                 }
             }
             if (draining) {

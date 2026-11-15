@@ -1,5 +1,8 @@
 package com.benesquivelmusic.daw.app.diagnostics;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCategory;
+import com.benesquivelmusic.daw.core.mixer.Mixer;
+
 import java.nio.file.Path;
 import java.text.MessageFormat;
 import java.time.Instant;
@@ -31,7 +34,20 @@ import java.util.regex.Pattern;
  * handles a failure. Each is formatted through {@link MessageFormat} at
  * {@link Locale#ROOT}, as {@code PluginText.text} does; a count is passed as
  * a string without grouping, and a count that chooses a plural form is
- * passed twice (once to choose, once to show).</p>
+ * passed twice (once to choose, once to show). The one exception is story
+ * 337's sustained-fault copy, whose ruled patterns format their count as
+ * {@code {n,number,integer}} and so receive it as a {@link Long}, grouped at
+ * {@link Locale#ROOT} (story 337, ruling E45).</p>
+ *
+ * <p>Story 337 adds the copy of the real-time error channel — one sentence
+ * per audio category for a first occurrence ({@link #audioFirst}), the
+ * sustained fault ({@link #audioSustained}), the halt ({@link #audioHalted},
+ * {@link #audioHaltedFatal}) and the Restart Audio Engine action
+ * ({@link #restartAudioEngineLabel()}) — and of a pulse item or bus
+ * subscriber that keeps failing ({@link #isolatedConsumer}), all ruled
+ * wording (story 337, rulings E45 and E64). Each names the device, the
+ * plugin or the setting when a sample identifies one, never a bare exception
+ * class, and takes its reason from {@link GuardedThrowables#reason}.</p>
  */
 public final class FailureCopy {
 
@@ -53,11 +69,54 @@ public final class FailureCopy {
     static final String LOG_SINK_WRITE_FAILED = "failure.logSink.writeFailed";
     static final String STARTUP = "failure.startup";
     static final String PLUGIN_DISPOSE = "failure.plugin.dispose";
+    static final String ACTION_RESTART_AUDIO_ENGINE = "failure.action.restartAudioEngine";
+    static final String AUDIO_CALLBACK = "failure.audio.callback";
+    static final String AUDIO_RENDER = "failure.audio.render";
+    static final String AUDIO_RENDER_NAMED = "failure.audio.render.named";
+    static final String AUDIO_SINK = "failure.audio.sink";
+    static final String AUDIO_PACING = "failure.audio.pacing";
+    static final String AUDIO_INPUT = "failure.audio.input";
+    static final String AUDIO_WORKER = "failure.audio.worker";
+    static final String AUDIO_DSP = "failure.audio.dsp";
+    static final String AUDIO_DSP_UNNAMED = "failure.audio.dsp.unnamed";
+    static final String AUDIO_MIDI = "failure.audio.midi";
+    static final String AUDIO_PLUGIN = "failure.audio.plugin";
+    static final String AUDIO_PLUGIN_UNNAMED = "failure.audio.plugin.unnamed";
+    static final String AUDIO_AUTOMATION = "failure.audio.automation";
+    static final String AUDIO_AUTOMATION_UNNAMED = "failure.audio.automation.unnamed";
+    static final String AUDIO_CONFIG = "failure.audio.config";
+    static final String AUDIO_CONFIG_UNKNOWN = "failure.audio.config.unknown";
+    static final String AUDIO_DEVICE = "failure.audio.device";
+    static final String AUDIO_FAULT = "failure.audio.fault";
+    static final String AUDIO_FAULT_DEVICE = "failure.audio.fault.device";
+    static final String AUDIO_FAULT_PROCESSING = "failure.audio.fault.processing";
+    static final String AUDIO_FAULT_PROCESSING_NAMED = "failure.audio.fault.processing.named";
+    static final String AUDIO_FAULT_PLUGIN = "failure.audio.fault.plugin";
+    static final String AUDIO_FAULT_WORKER = "failure.audio.fault.worker";
+    static final String AUDIO_FAULT_DSP = "failure.audio.fault.dsp";
+    static final String AUDIO_FAULT_DSP_UNNAMED = "failure.audio.fault.dsp.unnamed";
+    static final String AUDIO_FAULT_MIDI = "failure.audio.fault.midi";
+    static final String AUDIO_FAULT_PLUGIN_UNNAMED = "failure.audio.fault.plugin.unnamed";
+    static final String AUDIO_HALTED = "failure.audio.halted";
+    static final String AUDIO_HALTED_NAMED = "failure.audio.halted.named";
+    static final String AUDIO_HALTED_PLAYBACK = "failure.audio.halted.playback";
+    static final String AUDIO_HALTED_RECORDING = "failure.audio.halted.recording";
+    static final String AUDIO_HALTED_NEXT = "failure.audio.halted.next";
+    static final String AUDIO_HALTED_NEXT_NAMED = "failure.audio.halted.next.named";
+    static final String UI_PULSE = "failure.ui.pulse";
+    static final String BUS_SUBSCRIBER = "failure.bus.subscriber";
 
-    /** The keys of this family, in the bundle's order. */
+    /** The keys of this family, in the bundle's order: story 336's fifteen, then story 337's thirty-six. */
     static final List<String> KEYS = List.of(UI, UI_NAMED, TASK, TASK_UNNAMED, FATAL, FATAL_MEMORY, REPEATED,
             REPEATED_TAIL, ACTION_OPEN_LOG_FOLDER, MENU_OPEN_LOG_FOLDER, LOG_FOLDER_OPEN_FAILED,
-            LOG_SINK_UNAVAILABLE, LOG_SINK_WRITE_FAILED, STARTUP, PLUGIN_DISPOSE);
+            LOG_SINK_UNAVAILABLE, LOG_SINK_WRITE_FAILED, STARTUP, PLUGIN_DISPOSE,
+            ACTION_RESTART_AUDIO_ENGINE, AUDIO_CALLBACK, AUDIO_RENDER, AUDIO_RENDER_NAMED, AUDIO_SINK, AUDIO_PACING,
+            AUDIO_INPUT, AUDIO_WORKER, AUDIO_DSP, AUDIO_DSP_UNNAMED, AUDIO_MIDI, AUDIO_PLUGIN, AUDIO_PLUGIN_UNNAMED,
+            AUDIO_AUTOMATION, AUDIO_AUTOMATION_UNNAMED, AUDIO_CONFIG, AUDIO_CONFIG_UNKNOWN, AUDIO_DEVICE,
+            AUDIO_FAULT, AUDIO_FAULT_DEVICE, AUDIO_FAULT_PROCESSING, AUDIO_FAULT_PROCESSING_NAMED, AUDIO_FAULT_PLUGIN,
+            AUDIO_FAULT_WORKER, AUDIO_FAULT_DSP, AUDIO_FAULT_DSP_UNNAMED, AUDIO_FAULT_MIDI, AUDIO_FAULT_PLUGIN_UNNAMED,
+            AUDIO_HALTED, AUDIO_HALTED_NAMED, AUDIO_HALTED_PLAYBACK, AUDIO_HALTED_RECORDING, AUDIO_HALTED_NEXT,
+            AUDIO_HALTED_NEXT_NAMED, UI_PULSE, BUS_SUBSCRIBER);
 
     /** A JDK thread name that names no purpose, so no task is named after it. */
     private static final Pattern GENERIC_THREAD_NAME =
@@ -119,8 +178,11 @@ public final class FailureCopy {
      *   <li>{@code ui.handler} with a declared subject: {@code failure.ui.named} (story 339 declares it);</li>
      *   <li>{@code ui.handler}: {@code failure.ui};</li>
      *   <li>any other category with a declared subject: {@code failure.task}, the subject as the task.
-     *       The later stages (stories 337–340) give their own categories copy of their own when they
-     *       add them, rather than reusing "background task";</li>
+     *       Story 337's categories do not reach this table: the audio categories have their own copy
+     *       ({@link #audioFirst}, {@link #audioSustained}, {@link #audioHalted}), and so do {@code ui.pulse}
+     *       and {@code bus.subscriber} ({@link #isolatedConsumer}); the later stages (stories 338–340)
+     *       give their categories copy of their own in the same way, rather than reusing
+     *       "background task";</li>
      *   <li>a thread whose name states its purpose ({@link #taskName}): {@code failure.task};</li>
      *   <li>otherwise {@code failure.task.unnamed}.</li>
      * </ol>
@@ -229,6 +291,198 @@ public final class FailureCopy {
      */
     public String openLogFolderLabel() {
         return format(ACTION_OPEN_LOG_FOLDER);
+    }
+
+    /**
+     * The action a notice carries for the audio categories a stream restart
+     * can cure (story 337, rulings E12 and E13).
+     *
+     * @return {@code failure.action.restartAudioEngine}
+     */
+    public String restartAudioEngineLabel() {
+        return format(ACTION_RESTART_AUDIO_ENGINE);
+    }
+
+    /**
+     * The WARNING of a real-time category's first occurrence (story 337,
+     * rulings E44, E45 and E64): what failed, then the reason, then the
+     * consequence, each true for its own category. A category whose ruled
+     * sentence names a component — DSP, PLUGIN, AUTOMATION, and the named
+     * variant of RENDER — takes it from {@code name}; with no name, each uses
+     * the unnamed sentence of its own category ({@code failure.audio.render},
+     * {@code failure.audio.dsp.unnamed}, {@code failure.audio.plugin.unnamed},
+     * {@code failure.audio.automation.unnamed}), never another category's.
+     * CONFIG uses {@code failure.audio.config} with the return-bus count and
+     * the cap when {@code detail} carries a count, else
+     * {@code failure.audio.config.unknown} with the cap alone. RENDER_HALTED,
+     * which never has a first occurrence of its own, reads as the idle halt.
+     *
+     * @param category the category
+     * @param name     the component the failure's sample names — a plugin or processor display name, or a
+     *                 parameter's display name for AUTOMATION — if any
+     * @param device   the open device's display name, or the backend's
+     * @param reason   the newest sampled throwable's reason ({@link GuardedThrowables#reason})
+     * @param detail   the category's detail: for CONFIG the return-bus count, or {@code 0} when no sample
+     *                 carried one; otherwise unused
+     * @return the sentence
+     */
+    public String audioFirst(AudioFailureCategory category, Optional<String> name, String device, String reason,
+                             long detail) {
+        Objects.requireNonNull(category, "category must not be null");
+        Objects.requireNonNull(name, "name must not be null");
+        Objects.requireNonNull(device, "device must not be null");
+        Objects.requireNonNull(reason, "reason must not be null");
+        return switch (category) {
+            case CALLBACK -> format(AUDIO_CALLBACK, device, reason);
+            case RENDER -> namedOrUnnamed(AUDIO_RENDER_NAMED, AUDIO_RENDER, name, reason);
+            case RENDER_HALTED -> audioHalted(name, reason, HaltContext.IDLE);
+            case SINK -> format(AUDIO_SINK, device, reason);
+            case PACING -> format(AUDIO_PACING, device, reason);
+            case INPUT -> format(AUDIO_INPUT, device, reason);
+            case WORKER -> format(AUDIO_WORKER, reason);
+            case DSP -> namedOrUnnamed(AUDIO_DSP, AUDIO_DSP_UNNAMED, name, reason);
+            case MIDI -> format(AUDIO_MIDI, reason);
+            case PLUGIN -> namedOrUnnamed(AUDIO_PLUGIN, AUDIO_PLUGIN_UNNAMED, name, reason);
+            case AUTOMATION -> namedOrUnnamed(AUDIO_AUTOMATION, AUDIO_AUTOMATION_UNNAMED, name, reason);
+            case CONFIG -> detail > 0
+                    ? format(AUDIO_CONFIG, Long.toString(detail), Integer.toString(Mixer.MAX_RETURN_BUSES))
+                    : format(AUDIO_CONFIG_UNKNOWN, Integer.toString(Mixer.MAX_RETURN_BUSES));
+            case DEVICE -> format(AUDIO_DEVICE, device, reason);
+        };
+    }
+
+    /**
+     * The ERROR fact of a sustained real-time fault (story 337, rulings E41,
+     * E44, E45 and E64), a sentence true for its own category:
+     * {@code failure.audio.fault} for CALLBACK;
+     * {@code failure.audio.fault.device} for SINK, PACING, INPUT and DEVICE;
+     * {@code failure.audio.fault.plugin} for a named PLUGIN and
+     * {@code failure.audio.fault.plugin.unnamed} for an unnamed one;
+     * {@code failure.audio.fault.worker} for WORKER, whatever the name;
+     * {@code failure.audio.fault.dsp} for a named DSP and
+     * {@code failure.audio.fault.dsp.unnamed} for an unnamed one;
+     * {@code failure.audio.fault.midi} for MIDI, whatever the name; and for
+     * RENDER {@code failure.audio.fault.processing.named} when named, else
+     * {@code failure.audio.fault.processing}. RENDER_HALTED, AUTOMATION and
+     * CONFIG, which are never sustained, take RENDER's sentence.
+     *
+     * @param category the category
+     * @param name     the component the failure's sample names, if any
+     * @param device   the open device's display name, or the backend's
+     * @param count    the occurrences counted for its fingerprint so far
+     * @param since    when its fingerprint was first seen
+     * @param reason   the newest sampled throwable's reason
+     * @return the sentence
+     */
+    public String audioSustained(AudioFailureCategory category, Optional<String> name, String device, long count,
+                                 Instant since, String reason) {
+        Objects.requireNonNull(category, "category must not be null");
+        Objects.requireNonNull(name, "name must not be null");
+        Objects.requireNonNull(device, "device must not be null");
+        Objects.requireNonNull(since, "since must not be null");
+        Objects.requireNonNull(reason, "reason must not be null");
+        Long total = count;
+        String shownSince = clock(since);
+        return switch (category) {
+            case CALLBACK -> format(AUDIO_FAULT, total, shownSince, reason);
+            case SINK, PACING, INPUT, DEVICE -> format(AUDIO_FAULT_DEVICE, total, device, shownSince, reason);
+            case PLUGIN -> name.map(named -> format(AUDIO_FAULT_PLUGIN, named, total, shownSince, reason))
+                    .orElseGet(() -> format(AUDIO_FAULT_PLUGIN_UNNAMED, total, shownSince, reason));
+            case WORKER -> format(AUDIO_FAULT_WORKER, total, shownSince, reason);
+            case DSP -> name.map(named -> format(AUDIO_FAULT_DSP, named, total, shownSince, reason))
+                    .orElseGet(() -> format(AUDIO_FAULT_DSP_UNNAMED, total, shownSince, reason));
+            case MIDI -> format(AUDIO_FAULT_MIDI, total, shownSince, reason);
+            case RENDER, RENDER_HALTED, AUTOMATION, CONFIG ->
+                    name.map(named -> format(AUDIO_FAULT_PROCESSING_NAMED, named, total, shownSince, reason))
+                            .orElseGet(() -> format(AUDIO_FAULT_PROCESSING, total, shownSince, reason));
+        };
+    }
+
+    /**
+     * The ERROR notice of a render-drive halt (story 337, rulings E11 and
+     * E45): the base sentence, then the context sentence when the transport
+     * was rolling or a take was in flight, then the next step, joined with
+     * single spaces. A name — the plugin the halting failure is anchored in —
+     * picks the named base and next step.
+     *
+     * @param name    the plugin the cause is anchored in, if any
+     * @param reason  the halting throwable's reason
+     * @param context what the transport was doing
+     * @return the notice
+     */
+    public String audioHalted(Optional<String> name, String reason, HaltContext context) {
+        Objects.requireNonNull(name, "name must not be null");
+        Objects.requireNonNull(reason, "reason must not be null");
+        Objects.requireNonNull(context, "context must not be null");
+        String base = name.map(named -> format(AUDIO_HALTED_NAMED, named, reason))
+                .orElseGet(() -> format(AUDIO_HALTED, reason));
+        String next = name.map(named -> format(AUDIO_HALTED_NEXT_NAMED, named))
+                .orElseGet(() -> format(AUDIO_HALTED_NEXT));
+        return joined(base, haltContext(context), Optional.of(next));
+    }
+
+    /**
+     * The FATAL notice of a halt a {@link VirtualMachineError} caused (story
+     * 337, rulings E13 and E45): story 336's {@code failure.fatal}, or
+     * {@code failure.fatal.memory} for an {@link OutOfMemoryError}, then the
+     * same context sentence as {@link #audioHalted}; no restart step.
+     *
+     * @param fatal   the error that halted the drive
+     * @param context what the transport was doing
+     * @return the notice
+     */
+    public String audioHaltedFatal(Throwable fatal, HaltContext context) {
+        Objects.requireNonNull(fatal, "fatal must not be null");
+        Objects.requireNonNull(context, "context must not be null");
+        Throwable unwrapped = GuardedThrowables.unwrapCarriers(fatal);
+        String base = unwrapped instanceof OutOfMemoryError
+                ? fatalMemory
+                : format(FATAL, GuardedThrowables.reason(unwrapped));
+        return joined(base, haltContext(context), Optional.empty());
+    }
+
+    /**
+     * The WARNING of a pulse item or bus subscriber that keeps failing (story
+     * 337, rulings E35 and E45): {@code failure.bus.subscriber} for
+     * {@code bus.subscriber}, naming the event type; {@code failure.ui.pulse}
+     * otherwise.
+     *
+     * @param category  {@code ui.pulse} or {@code bus.subscriber}
+     * @param eventType the simple name of the event type the subscriber failed on, for the bus
+     * @param unwrapped the throwable the carriers held
+     * @return the sentence
+     */
+    public String isolatedConsumer(String category, Optional<String> eventType, Throwable unwrapped) {
+        Objects.requireNonNull(category, "category must not be null");
+        Objects.requireNonNull(eventType, "eventType must not be null");
+        String reason = GuardedThrowables.reason(unwrapped);
+        if (FailureFunnel.BUS_SUBSCRIBER.equals(category)) {
+            return format(BUS_SUBSCRIBER, eventType.orElse(""), reason);
+        }
+        return format(UI_PULSE, reason);
+    }
+
+    /** The named sentence with the name, else its category's own unnamed sentence (story 337, ruling E64). */
+    private String namedOrUnnamed(String namedKey, String unnamedKey, Optional<String> name, String reason) {
+        return name.map(named -> format(namedKey, named, reason)).orElseGet(() -> format(unnamedKey, reason));
+    }
+
+    private Optional<String> haltContext(HaltContext context) {
+        if (context == HaltContext.PLAYBACK) {
+            return Optional.of(format(AUDIO_HALTED_PLAYBACK));
+        }
+        if (context == HaltContext.RECORDING) {
+            return Optional.of(format(AUDIO_HALTED_RECORDING));
+        }
+        return Optional.empty();
+    }
+
+    /** The sentences that apply, joined with single spaces (story 337, ruling E45). */
+    private static String joined(String base, Optional<String> context, Optional<String> next) {
+        StringBuilder text = new StringBuilder(base);
+        context.ifPresent(sentence -> text.append(' ').append(sentence));
+        next.ifPresent(sentence -> text.append(' ').append(sentence));
+        return text.toString();
     }
 
     /**

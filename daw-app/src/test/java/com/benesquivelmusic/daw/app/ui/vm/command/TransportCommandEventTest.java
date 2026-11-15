@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui.vm.command;
 
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.event.DispatchMode;
@@ -45,7 +46,7 @@ class TransportCommandEventTest {
 
     @BeforeEach
     void installBus() {
-        bus = new DefaultEventBus();
+        bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         EventBusPublisher.setDefault(bus);
     }
 

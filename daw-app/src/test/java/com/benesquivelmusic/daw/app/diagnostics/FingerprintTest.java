@@ -100,6 +100,21 @@ class FingerprintTest {
         assertThat(fingerprint.exceptionClass()).isEqualTo(unreadable.getClass().getName());
     }
 
+    @Test
+    void aSiteFingerprintKeysItsCategoryAndSiteWhateverWasThrown() {
+        Fingerprint site = Fingerprint.ofSite("audio.callback", "device-callback");
+
+        assertThat(site.key()).as("story 337, ruling E40: category|site").isEqualTo("audio.callback|device-callback");
+        assertThat(site).hasToString("audio.callback|device-callback");
+        assertThat(site.exceptionClass()).isEmpty();
+        assertThat(site.anchoredInPlugin()).isFalse();
+        assertThat(Fingerprint.ofSite("audio.automation", "plugin-7#cutoff").key())
+                .as("a one-shot subject keys the same way").isEqualTo("audio.automation|plugin-7#cutoff");
+        assertThat(site.key()).as("never the key of a thrown failure in that category")
+                .isNotEqualTo(Fingerprint.of("audio.callback", Optional.empty(),
+                        withFrames(new IllegalStateException(), frame("daw.app", HOST_CLASS, "run", 1))).key());
+    }
+
     private static StackTraceElement frame(String module, String className, String method, int line) {
         return new StackTraceElement(null, module, null, className, method,
                 className.substring(className.lastIndexOf('.') + 1) + ".java", line);

@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCategory;
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureSample;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioBlock;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
@@ -12,8 +14,11 @@ import com.benesquivelmusic.daw.core.project.DawProject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
 import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.TimeUnit;
@@ -22,6 +27,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
+import java.util.logging.Handler;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -232,6 +240,184 @@ class EngineStreamPumpTest {
         awaitCondition(() -> pump.sinkFailures() >= 3,
                 "a throwing sink does not kill the pump — it keeps looping");
         assertThat(pump.isRunning()).isTrue();
+        assertThat(engine.audioHealth().total(AudioFailureCategory.SINK))
+                .as("the sink faults are recorded in the engine's health record")
+                .isGreaterThanOrEqualTo(3);
+        assertThat(pump.lane().beats())
+                .as("a sink that threw does not beat the render-drive heartbeat (story 337, ruling E5)")
+                .isZero();
+    }
+
+    /** Story 337, ruling E5: the render drive beats once per block the backend accepted. */
+    @Test
+    void theRenderDriveBeatsOncePerBlockTheBackendAccepted() {
+        RecordingBackend backend = new RecordingBackend();
+        startPump(backend);
+
+        awaitCondition(() -> pump.lane().beats() >= 3, "the healthy drive beats");
+        assertThat(engine.audioHealth().renderDriveBeats())
+                .as("the record's render-drive heartbeat reads the pump's lane")
+                .isGreaterThanOrEqualTo(3);
+        assertThat(pump.lane().beats())
+                .as("never more beats than blocks sunk")
+                .isLessThanOrEqualTo(backend.sinkCalls.get());
+    }
+
+    /** Story 337, ruling E8: one second of faulted audio counted in frames, at least 8 blocks. */
+    @Test
+    void theHaltThresholdIsOneSecondOfBlocksWithAFloorOfEight() {
+        assertThat(EngineStreamPump.haltThreshold(new AudioFormat(44_100.0, 2, 24, 2048))).isEqualTo(22);
+        assertThat(EngineStreamPump.haltThreshold(new AudioFormat(192_000.0, 2, 24, 32))).isEqualTo(6000);
+        assertThat(EngineStreamPump.haltThreshold(FORMAT)).isEqualTo(375);
+        assertThat(EngineStreamPump.haltThreshold(SLOW_FORMAT)).isEqualTo(12);
+        assertThat(EngineStreamPump.haltThreshold(new AudioFormat(8_000.0, 2, 24, 4096))).isEqualTo(8);
+    }
+
+    /**
+     * Story 337, rulings E8 and E10: a render fault on every block halts the
+     * drive after the threshold, with one terminal record carrying the last
+     * failure, the streak and the stream generation. {@link #SLOW_FORMAT}'s
+     * threshold of 12 fits the lane's 16-slot ring, so every sample survives
+     * without a concurrent drain.
+     */
+    @Test
+    void sustainedRenderFaultsHaltTheDriveWithATerminalRecord() {
+        RecordingBackend backend = new RecordingBackend();
+        AtomicReference<RuntimeException> lastThrown = new AtomicReference<>();
+        engine = new AudioEngine(SLOW_FORMAT);
+        engine.setRecordingCallback((inputBuffer, numFrames) -> {
+            RuntimeException fault = new IllegalStateException("insert keeps failing");
+            lastThrown.set(fault);
+            throw fault;
+        });
+        engine.start();
+        pump = new EngineStreamPump(backend, engine, SLOW_FORMAT, SDK_FORMAT);
+        pump.start();
+        int threshold = EngineStreamPump.haltThreshold(SLOW_FORMAT);
+
+        awaitCondition(() -> !pump.isRunning(), "the drive halts after the threshold");
+
+        assertThat(pump.renderFaults()).isEqualTo(threshold);
+        assertThat(engine.audioHealth().total(AudioFailureCategory.RENDER_HALTED)).isEqualTo(1);
+        assertThat(engine.audioHealth().lastFailure(AudioFailureCategory.RENDER_HALTED))
+                .containsSame(lastThrown.get());
+        List<AudioFailureSample> samples = new java.util.ArrayList<>();
+        engine.audioHealth().drainSamples(samples::add);
+        List<AudioFailureSample> halts = samples.stream()
+                .filter(sample -> sample.category() == AudioFailureCategory.RENDER_HALTED)
+                .toList();
+        assertThat(halts).hasSize(1);
+        AudioFailureSample halt = halts.get(0);
+        assertThat(halt.detail()).as("the streak length").isEqualTo(threshold);
+        assertThat(halt.failure()).containsSame(lastThrown.get());
+        assertThat(halt.subject())
+                .as("the stream generation the halted pump rendered for")
+                .isEqualTo(Optional.ofNullable(engine.getStreamGeneration()));
+        assertThat(samples).filteredOn(sample -> sample.category() == AudioFailureCategory.RENDER)
+                .extracting(AudioFailureSample::detail)
+                .as("each render record carries the streak at that block")
+                .startsWith(1, 2, 3);
+    }
+
+    /** Story 337, ruling E8: one rendered block resets the streak, so bursts below it never halt. */
+    @Test
+    void aTransientRenderFaultBelowTheThresholdLeavesTheDriveRunning() {
+        RecordingBackend backend = new RecordingBackend();
+        int threshold = EngineStreamPump.haltThreshold(SLOW_FORMAT);
+        AtomicInteger processBlockCalls = new AtomicInteger();
+        engine = new AudioEngine(SLOW_FORMAT);
+        engine.setRecordingCallback((inputBuffer, numFrames) -> {
+            int call = processBlockCalls.incrementAndGet();
+            boolean firstBurst = call < threshold;
+            boolean secondBurst = call > threshold && call < 2 * threshold;
+            if (firstBurst || secondBurst) {
+                throw new IllegalStateException("transient fault " + call);
+            }
+        });
+        engine.start();
+        pump = new EngineStreamPump(backend, engine, SLOW_FORMAT, SDK_FORMAT);
+        pump.start();
+
+        awaitCondition(() -> processBlockCalls.get() > 2 * threshold + 2,
+                "the drive renders past both bursts");
+        assertThat(pump.isRunning()).isTrue();
+        assertThat(pump.renderFaults()).isEqualTo(2L * (threshold - 1));
+        assertThat(engine.audioHealth().total(AudioFailureCategory.RENDER_HALTED)).isZero();
+    }
+
+    /** Story 337, ruling E9: a VirtualMachineError from processBlock halts the drive at once. */
+    @Test
+    void aVirtualMachineErrorFromProcessBlockHaltsAtOnce() {
+        RecordingBackend backend = new RecordingBackend();
+        AtomicInteger processBlockCalls = new AtomicInteger();
+        engine = new AudioEngine(FORMAT);
+        engine.setRecordingCallback((inputBuffer, numFrames) -> {
+            if (processBlockCalls.incrementAndGet() == 1) {
+                throw new OutOfMemoryError("test");
+            }
+        });
+        engine.start();
+        try (CapturedPumpLog log = CapturedPumpLog.attach()) {
+            pump = new EngineStreamPump(backend, engine, FORMAT, SDK_FORMAT);
+            pump.start();
+
+            awaitCondition(() -> !pump.isRunning(), "a VirtualMachineError halts the drive");
+            pump.stop();
+
+            assertThat(processBlockCalls.get()).isEqualTo(1);
+            assertThat(pump.renderFaults()).isZero();
+            assertThat(engine.audioHealth().total(AudioFailureCategory.RENDER_HALTED)).isEqualTo(1);
+            assertThat(engine.audioHealth().lastFailure(AudioFailureCategory.RENDER_HALTED))
+                    .get().isInstanceOf(OutOfMemoryError.class);
+            assertThat(log.threadDeaths())
+                    .as("the thread ended by returning, never by unwinding into its handler")
+                    .isZero();
+        }
+    }
+
+    /**
+     * Story 337, ruling E9: a checked throwable smuggled out of processBlock
+     * is an ordinary render fault, not the death of the pump thread.
+     */
+    @Test
+    void aSmuggledCheckedThrowableIsARenderFaultNotADeath() {
+        RecordingBackend backend = new RecordingBackend();
+        AtomicInteger processBlockCalls = new AtomicInteger();
+        engine = new AudioEngine(FORMAT);
+        engine.setRecordingCallback((inputBuffer, numFrames) -> {
+            if (processBlockCalls.incrementAndGet() == 1) {
+                EngineStreamPumpTest.<RuntimeException>sneakyThrow(new IOException("smuggled"));
+            }
+        });
+        engine.start();
+        pump = new EngineStreamPump(backend, engine, FORMAT, SDK_FORMAT);
+        pump.start();
+
+        awaitCondition(() -> pump.renderFaults() >= 1, "the smuggled throwable is counted");
+        int sunkAtFault = backend.sinkCalls.get();
+        awaitCondition(() -> backend.sinkCalls.get() > sunkAtFault + 2,
+                "the drive keeps rendering after it");
+        assertThat(pump.isRunning()).isTrue();
+        assertThat(engine.audioHealth().lastFailure(AudioFailureCategory.RENDER))
+                .get().isInstanceOf(IOException.class);
+        assertThat(engine.audioHealth().total(AudioFailureCategory.RENDER_HALTED)).isZero();
+    }
+
+    /** Story 337, ruling E18: a stopped pump's counts outlive it in the engine's record. */
+    @Test
+    void stoppingThePumpRetiresItsLaneAndKeepsItsCounts() {
+        RecordingBackend backend = new RecordingBackend();
+        backend.failSink = true;
+        startPump(backend);
+        awaitCondition(() -> pump.sinkFailures() >= 2, "sink faults are recorded");
+
+        assertThat(pump.stop()).isTrue();
+        long sinkFaults = pump.sinkFailures();
+
+        assertThat(engine.audioHealth().total(AudioFailureCategory.SINK))
+                .as("the retired lane's counts are folded into the record")
+                .isEqualTo(sinkFaults);
+        assertThat(engine.audioHealth().renderDriveEpoch()).isEqualTo(1);
     }
 
     /**
@@ -305,6 +491,9 @@ class EngineStreamPumpTest {
                 "blocks rendered AFTER the fault still reach the sink");
         assertThat(pump.isRunning()).isTrue();
         assertThat(pump.renderFaults()).isEqualTo(1);
+        assertThat(engine.audioHealth().total(AudioFailureCategory.RENDER))
+                .as("the fault is recorded in the engine's health record (story 337, ruling E14)")
+                .isEqualTo(1);
     }
 
     @Test
@@ -408,7 +597,7 @@ class EngineStreamPumpTest {
         awaitCondition(() -> backend.sinkCalls.get() > sunkAtFault + 2,
                 "blocks rendered AFTER the fault still reach the sink");
         assertThat(pump.isRunning())
-                .as("only a stopped engine (or a stopped pump) ends the render loop")
+                .as("a single fault never ends the render loop")
                 .isTrue();
         assertThat(pump.renderFaults()).isEqualTo(1);
     }
@@ -579,13 +768,84 @@ class EngineStreamPumpTest {
     @Test
     void engineStoppingMidStreamExitsThePumpQuietly() {
         RecordingBackend backend = new RecordingBackend();
-        startPump(backend);
-        awaitCondition(() -> backend.sinkCalls.get() >= 1, "the pump is running");
+        try (CapturedPumpLog log = CapturedPumpLog.attach()) {
+            startPump(backend);
+            awaitCondition(() -> backend.sinkCalls.get() >= 1, "the pump is running");
 
-        engine.stop(); // processBlock now throws IllegalStateException
+            engine.stop(); // processBlock now returns false and renders silence
 
-        awaitCondition(() -> !pump.isRunning(),
-                "the pump exits quietly when the engine stops racing it");
+            awaitCondition(() -> !pump.isRunning(),
+                    "the pump exits quietly when the engine stops racing it");
+            pump.stop();
+
+            assertThat(pump.renderFaults()).as("no failure record").isZero();
+            assertThat(pump.sinkFailures()).as("no failure record").isZero();
+            assertThat(engine.audioHealth().total(AudioFailureCategory.RENDER_HALTED))
+                    .as("a stop is not a halt")
+                    .isZero();
+            assertThat(engine.audioHealth().totals())
+                    .as("a stop records no failure of any category")
+                    .containsOnly(0L);
+            assertThat(log.threadDeaths())
+                    .as("the pump thread ended without reaching its uncaught-exception handler")
+                    .isZero();
+        }
+    }
+
+    /**
+     * Story 337, ruling E7: a stop that lands INSIDE a block, followed by a
+     * throw from that block — a collaborator the stop closed under it — is
+     * teardown, not a render fault. The engine stops between the third
+     * block's entry and its throw, so the pump reaches its catch with the
+     * engine stopped while its own {@code running} is still set, and only
+     * the engine half of the state test sends it out quietly.
+     *
+     * <p>{@code engine.stop()} runs on the test thread, never on the pump
+     * thread: a standalone pump is no engine's own, so the stop does not join
+     * it.</p>
+     */
+    @Test
+    void aThrowAfterTheEngineStoppedMidBlockExitsQuietlyWithNoRecord() throws Exception {
+        RecordingBackend backend = new RecordingBackend();
+        AtomicInteger processBlockCalls = new AtomicInteger();
+        CountDownLatch inside = new CountDownLatch(1);
+        CountDownLatch stopped = new CountDownLatch(1);
+        engine = new AudioEngine(FORMAT);
+        engine.setRecordingCallback((inputBuffer, numFrames) -> {
+            if (processBlockCalls.incrementAndGet() == 3) {
+                inside.countDown();
+                try {
+                    stopped.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+                throw new IllegalStateException("collaborator closed under the block");
+            }
+        });
+        engine.start();
+        try (CapturedPumpLog log = CapturedPumpLog.attach()) {
+            pump = new EngineStreamPump(backend, engine, FORMAT, SDK_FORMAT);
+            pump.start();
+            assertThat(inside.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                    .as("the third block is inside processBlock")
+                    .isTrue();
+
+            engine.stop();
+            stopped.countDown();
+
+            awaitCondition(() -> !pump.isRunning(),
+                    "the pump exits quietly on a throw after the engine stopped");
+            assertThat(processBlockCalls.get())
+                    .as("non-vacuity: the stop landed inside the third block, which threw")
+                    .isEqualTo(3);
+            assertThat(pump.renderFaults()).as("teardown is not a render fault").isZero();
+            assertThat(engine.audioHealth().totals())
+                    .as("a stop mid-block records no failure of any category")
+                    .containsOnly(0L);
+            assertThat(log.threadDeaths())
+                    .as("the pump thread ended without reaching its uncaught-exception handler")
+                    .isZero();
+        }
     }
 
     @Test
@@ -637,6 +897,51 @@ class EngineStreamPumpTest {
         assertThat(subscription.requests.get())
                 .as("and is never requested from — nothing drains the pump's queue now")
                 .isZero();
+    }
+
+    /** Throws {@code throwable} unchecked — the smuggled-checked-throwable idiom. */
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void sneakyThrow(Throwable throwable) throws T {
+        throw (T) throwable;
+    }
+
+    /**
+     * Captures {@link EngineStreamPump}'s logger, so a test can prove the pump
+     * thread ended by returning rather than through its last-resort
+     * uncaught-exception handler (whose record says "thread died").
+     */
+    private static final class CapturedPumpLog extends Handler implements AutoCloseable {
+
+        private static final Logger PUMP_LOG = Logger.getLogger(EngineStreamPump.class.getName());
+
+        private final List<LogRecord> records = new CopyOnWriteArrayList<>();
+
+        static CapturedPumpLog attach() {
+            CapturedPumpLog log = new CapturedPumpLog();
+            PUMP_LOG.addHandler(log);
+            return log;
+        }
+
+        long threadDeaths() {
+            return records.stream()
+                    .filter(entry -> entry.getMessage() != null
+                            && entry.getMessage().contains("thread died"))
+                    .count();
+        }
+
+        @Override
+        public void publish(LogRecord entry) {
+            records.add(entry);
+        }
+
+        @Override
+        public void flush() {
+        }
+
+        @Override
+        public void close() {
+            PUMP_LOG.removeHandler(this);
+        }
     }
 
     // ── Await support ────────────────────────────────────────────────────

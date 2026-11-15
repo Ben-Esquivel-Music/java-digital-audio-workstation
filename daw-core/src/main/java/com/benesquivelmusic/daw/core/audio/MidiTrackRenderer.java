@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCodes;
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
@@ -86,14 +88,20 @@ final class MidiTrackRenderer implements AutoCloseable {
     // Factory for creating SoundFont renderers (overridable for testing)
     private final RendererFactory rendererFactory;
 
+    // The engine's health record: render-thread failures are recorded into
+    // the current render thread's lane as audio.midi (story 337, ruling E30).
+    private final AudioHealthRecord health;
+
     /**
      * Creates a new MIDI track renderer.
      *
      * @param sampleRate the audio sample rate in Hz
      * @param bufferSize the audio buffer size in frames
+     * @param health     the engine's health record (story 337, ruling E20);
+     *                   must not be null
      */
-    MidiTrackRenderer(double sampleRate, int bufferSize) {
-        this(sampleRate, bufferSize, null);
+    MidiTrackRenderer(double sampleRate, int bufferSize, AudioHealthRecord health) {
+        this(sampleRate, bufferSize, null, health);
     }
 
     /**
@@ -104,8 +112,13 @@ final class MidiTrackRenderer implements AutoCloseable {
      * @param bufferSize      the audio buffer size in frames
      * @param rendererFactory custom factory for creating renderers, or {@code null}
      *                        to use the default (FluidSynth with Java Sound fallback)
+     * @param health          the engine's health record render-thread failures are
+     *                        recorded into (story 337, rulings E20 and E30); must
+     *                        not be null
      */
-    MidiTrackRenderer(double sampleRate, int bufferSize, RendererFactory rendererFactory) {
+    MidiTrackRenderer(double sampleRate, int bufferSize, RendererFactory rendererFactory,
+                      AudioHealthRecord health) {
+        this.health = Objects.requireNonNull(health, "health must not be null");
         if (sampleRate <= 0) {
             throw new IllegalArgumentException("sampleRate must be positive: " + sampleRate);
         }
@@ -346,6 +359,8 @@ final class MidiTrackRenderer implements AutoCloseable {
     /**
      * Sends all-notes-off to all active renderers. Call this when the
      * transport loops back to prevent stuck notes spanning the loop boundary.
+     * A renderer that fails is recorded as {@code audio.midi} on the render
+     * thread, never silently ignored (story 337, ruling E30).
      */
     @RealTimeSafe
     void allNotesOff() {
@@ -353,7 +368,7 @@ final class MidiTrackRenderer implements AutoCloseable {
             try {
                 state.renderer.allNotesOff();
             } catch (Exception e) {
-                // Ignore errors on the RT thread
+                health.recordOnCurrentThread(AudioFailureCodes.MIDI, e, null, 0);
             }
         }
     }
@@ -643,10 +658,10 @@ final class MidiTrackRenderer implements AutoCloseable {
      * the two walks agree on every event's frame by construction.</p>
      */
     @RealTimeSafe
-    private static void sendEventsAtFrame(RendererState state, List<MidiNoteData> notes,
-                                          double windowStartBeat, double windowEndBeat,
-                                          double frameOriginBeat, double samplesPerBeat,
-                                          int framesToProcess, int targetFrame) {
+    private void sendEventsAtFrame(RendererState state, List<MidiNoteData> notes,
+                                   double windowStartBeat, double windowEndBeat,
+                                   double frameOriginBeat, double samplesPerBeat,
+                                   int framesToProcess, int targetFrame) {
         for (int i = 0; i < notes.size(); i++) {
             MidiNoteData note = notes.get(i);
             double noteStartBeat = note.startColumn() * BEATS_PER_COLUMN;
@@ -661,7 +676,8 @@ final class MidiTrackRenderer implements AutoCloseable {
                         state.renderer.sendEvent(
                                 MidiEvent.noteOn(note.channel(), note.noteNumber(), note.velocity()));
                     } catch (Exception e) {
-                        LOG.log(Level.WARNING, "Failed to send MIDI note-on", e);
+                        // Story 337, ruling E30: recorded, never logged, on the render thread.
+                        health.recordOnCurrentThread(AudioFailureCodes.MIDI, e, null, note.noteNumber());
                     }
                 }
             }
@@ -676,7 +692,8 @@ final class MidiTrackRenderer implements AutoCloseable {
                         state.renderer.sendEvent(
                                 MidiEvent.noteOff(note.channel(), note.noteNumber()));
                     } catch (Exception e) {
-                        LOG.log(Level.WARNING, "Failed to send MIDI note-off", e);
+                        // Story 337, ruling E30: recorded, never logged, on the render thread.
+                        health.recordOnCurrentThread(AudioFailureCodes.MIDI, e, null, note.noteNumber());
                     }
                 }
             }
@@ -701,7 +718,9 @@ final class MidiTrackRenderer implements AutoCloseable {
         try {
             state.renderer.render(midiRenderBuffer, chunkSize);
         } catch (Exception e) {
-            LOG.log(Level.WARNING, "MIDI render failed", e);
+            // Story 337, ruling E30: recorded, never logged — this ran once per
+            // failed sub-chunk on the render thread.
+            health.recordOnCurrentThread(AudioFailureCodes.MIDI, e, null, chunkSize);
             return toFrame;
         }
 
@@ -779,7 +798,8 @@ final class MidiTrackRenderer implements AutoCloseable {
         try {
             state.renderer.render(midiRenderBuffer, framesToProcess);
         } catch (Exception e) {
-            // Ignore render errors for silence
+            // Story 337, ruling E30: counted, never silently ignored.
+            health.recordOnCurrentThread(AudioFailureCodes.MIDI, e, null, 0);
         }
     }
 

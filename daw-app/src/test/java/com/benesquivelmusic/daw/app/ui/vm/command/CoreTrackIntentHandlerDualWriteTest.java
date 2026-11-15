@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui.vm.command;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -50,7 +51,7 @@ class CoreTrackIntentHandlerDualWriteTest {
 
     @BeforeEach
     void installBus() {
-        bus = new DefaultEventBus();
+        bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         EventBusPublisher.setDefault(bus);
         subscription = bus.on(BusEvent.class, DispatchMode.ON_CALLER_THREAD, event -> {
             if (isRelevant(event) || isMarker(event)) {

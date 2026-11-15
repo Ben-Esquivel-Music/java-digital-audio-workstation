@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.audio;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitor;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.analysis.InputSourceAvailability;
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.mastering.MasteringChain;
@@ -1052,6 +1053,26 @@ public final class AudioEngine {
      *             Only the JOIN is priced as item (1) of the budget below;
      *             the cancel is priced with seam (6)'s publisher contact,
      *             which it is the other half of.</li>
+     *         <li>The engine's {@link AudioHealthRecord} (story 337): its
+     *             {@code attachBackendCounters} at a stream open and at a
+     *             retained failed hop, its {@code detachBackendCounters} in
+     *             {@link #clearOpenStream()}, and — one frame deeper — the
+     *             lane claims and retires of the pump's construction and
+     *             confirmed {@code stop()} and of the worker pool's
+     *             construction and {@code close()}. The record is
+     *             engine-owned and takes a SECOND, private monitor of its own
+     *             for each of these; nothing that holds that monitor ever
+     *             waits for this lock (its only outward call while holding it
+     *             is the attach's and the detach's read of the backend's
+     *             {@link AudioBackend#threadCounters()}, which reads the
+     *             backend's own volatiles and never takes an engine lock; its
+     *             readers — the application's drain — read volatile
+     *             snapshots and never take it), so no inversion
+     *             exists. The attach reads the backend's
+     *             {@link AudioBackend#threadCounters()} once, to baseline the
+     *             new stream's counts: an SDK call like any other in seam (2)
+     *             and priced with it. ALLOWED in
+     *             {@code AudioEngineLifecycleLockContractTest} by type.</li>
      *       </ol></li>
      *   <li><strong>How long it can block — the honest budget.</strong> Not
      *       "no unbounded wait". The general truth first, because it is the
@@ -1273,6 +1294,16 @@ public final class AudioEngine {
     // refreshed by the EngineBinder; closed by shutdown().
     private final MeteringTapBus meteringTapBus = new MeteringTapBus();
 
+    // The engine's audio health record (story 337, ruling E18; book §3.2
+    // channel B): one per engine, never null, never replaced — its counters
+    // only grow for the engine's life and are never reset at a stream open.
+    // The render drive and every pool worker record into lanes claimed from
+    // it; the open backend's own thread counters are attached to it for the
+    // life of each stream. As built, the RECORD is per engine and the LANES
+    // are what is allocated at stream open (the story's "preallocated at
+    // stream open" is met by the lanes).
+    private final AudioHealthRecord audioHealth = new AudioHealthRecord();
+
     // Metronome click-generation pipeline (story 136). All three are
     // published volatilely so the audio thread sees a consistent view
     // without locking. The router writes its side output via
@@ -1443,7 +1474,7 @@ public final class AudioEngine {
         int frames = format.bufferSize();
 
         // Pre-allocate the unified render pipeline (owns mix/track/return buffers)
-        renderPipeline = new RenderPipeline(format, MAX_TRACKS, frames);
+        renderPipeline = new RenderPipeline(format, MAX_TRACKS, frames, audioHealth);
         renderPipeline.setSampleRateConversionCache(srcCache);
         renderPipeline.setSrcQualityTier(srcQualityTier);
 
@@ -1460,7 +1491,7 @@ public final class AudioEngine {
         }
 
         // Pre-allocate MIDI track renderer for SoundFont synthesis
-        midiTrackRenderer = new MidiTrackRenderer(format.sampleRate(), frames);
+        midiTrackRenderer = new MidiTrackRenderer(format.sampleRate(), frames, audioHealth);
 
         // Story 125: spin up the multi-core graph scheduler and install it
         // on the mixer so independent per-channel insert chains run on the
@@ -1471,7 +1502,7 @@ public final class AudioEngine {
         AudioEngineSettings settings = this.engineSettings;
         int poolSize = settings.workerPoolSize();
         if (poolSize > 1) {
-            workerPool = new AudioWorkerPool(poolSize);
+            workerPool = new AudioWorkerPool(poolSize, audioHealth);
             graphScheduler = new AudioGraphScheduler(
                     workerPool, MAX_TRACKS, settings.minParallelBlockSize());
             if (currentMixer != null) {
@@ -1513,9 +1544,10 @@ public final class AudioEngine {
      * PAUSED would instead resume a stream opened at the old format.</p>
      *
      * <p>Clearing {@code running} stays unconditional — it is the documented
-     * mechanism by which an orphaned pump loop exits ({@code renderLoop}
-     * treats an {@link IllegalStateException} raised while
-     * {@code !engine.isRunning()} as a lifecycle race and returns quietly),
+     * mechanism by which an orphaned pump loop exits (an orphaned pump exits
+     * on {@code processBlock}'s {@code false}, story 337, ruling E6, and treats
+     * any throw raised while {@code !engine.isRunning()} as a lifecycle race
+     * and returns quietly, ruling E7),
      * and the {@code RELEASE_PENDING} post-state is what makes the next
      * {@link #startAudioOutput()} fail LOUDLY through
      * {@link #requireQuiescedPump()} instead of wedging into silence. What is
@@ -2164,6 +2196,8 @@ public final class AudioEngine {
 
     /** Forgets the tracked stream's backend, device and negotiated format. */
     private void clearOpenStream() {
+        // Story 337, ruling E4: the close-time fold of the backend's counters.
+        audioHealth.detachBackendCounters();
         this.openBackend = null;
         this.openDevice = null;
         this.openSdkFormat = null;
@@ -2466,8 +2500,11 @@ public final class AudioEngine {
      * succeeding into a stream that could never record. No provision is a
      * failure for both directives: neither playback nor recording may claim a
      * rolling state without a callback. The two
-     * shortcuts above them — the {@link StreamState#RUNNING} early return and
-     * the {@link StreamState#PAUSED} resume — open nothing, so there is
+     * shortcuts above them — the {@link StreamState#RUNNING} early return
+     * (taken only while the render drive is alive — a halted drive is reaped
+     * and reopened through the ladder walk below, story 337, ruling E10; a
+     * reap that cannot close refuses, ruling E61) and the
+     * {@link StreamState#PAUSED} resume — open nothing, so there is
      * nothing for them to verify; they are unreachable under
      * {@code REQUIRED} anyway, because
      * {@link #startAudioInputOutputLocked(PendingAnnouncements)} closes the
@@ -2485,7 +2522,26 @@ public final class AudioEngine {
         ensureNotShutdown();
         StreamState state = this.streamState;
         if (state == StreamState.RUNNING) {
-            return; // already running
+            if (isRenderDriveAlive()) {
+                return; // already running
+            }
+            // Story 337, ruling E10: a render drive that halted honestly
+            // leaves RUNNING behind. Reap it through the existing stop, then
+            // open through the existing path below, so Play is never wedged
+            // on a dead drive. The stop leaves CLOSED, or RELEASE_PENDING when
+            // the handle could not be given back (released further down).
+            stopAudioOutputLocked(announcements);
+            state = this.streamState;
+            if (state == StreamState.RUNNING) {
+                // The reap's join timed out: the previous pump may still be
+                // inside processBlock, and its stream is still open with the RT
+                // clock claimed. Never open over it (story 337, ruling E61).
+                // The refusal names the requested endpoint, as every other refusal of this invocation does.
+                rememberRequestedStreamStartAttempt(this.streamingProvision);
+                throw new AudioBackendException(
+                        "Cannot start audio output: the previous render pump has not exited yet,"
+                                + " so its stream could not be closed; retry once the pump unblocks");
+            }
         }
         StreamingProvision provision = null;
         if (state == StreamState.PAUSED) {
@@ -2544,6 +2600,9 @@ public final class AudioEngine {
                 StreamStartFailure.Operation.START);
         this.streamGeneration = pendingStreamGeneration == null ? new Object() : pendingStreamGeneration;
         this.openBackend = opened.rung().backend();
+        // Story 337, ruling E4: the open backend's own thread counters are
+        // read live by the health record until the stream closes, then folded.
+        audioHealth.attachBackendCounters(opened.rung().backend()::threadCounters);
         this.openDevice = opened.rung().device();
         this.openSdkFormat = opened.negotiatedFormat();
         try {
@@ -3323,6 +3382,8 @@ public final class AudioEngine {
     /** Retains a partial acquisition so its generation-fenced cleanup can retry release. */
     private void retainFailedHop(BackendStreamRung rung, com.benesquivelmusic.daw.sdk.audio.AudioFormat requested) {
         openBackend = rung.backend();
+        // Story 337, ruling E4: the retained handle's counters count until it goes.
+        audioHealth.attachBackendCounters(rung.backend()::threadCounters);
         openDevice = rung.device();
         openSdkFormat = requested;
         streamGeneration = pendingStreamGeneration == null ? new Object() : pendingStreamGeneration;
@@ -4279,6 +4340,25 @@ public final class AudioEngine {
     public boolean isStreamOpen() {
         StreamState state = this.streamState;
         return state == StreamState.RUNNING || state == StreamState.PAUSED;
+    }
+
+    /**
+     * Returns whether the render drive is alive: the stream is
+     * {@link StreamState#RUNNING} and its pump thread is running (story 337,
+     * ruling E10). Read-only; never takes the lifecycle lock.
+     *
+     * <p>Unlike {@link #isStreamOpen()}, this is {@code false} once the drive
+     * has halted honestly after a sustained render fault — the stream still
+     * counts as open (its handle is held and the state is {@code RUNNING})
+     * until the halt is reaped, which the next {@link #startAudioOutput()}
+     * does through the existing stop and open transitions — and while a
+     * stream is paused.</p>
+     *
+     * @return {@code true} only while a running stream's render drive runs
+     */
+    public boolean isRenderDriveAlive() {
+        EngineStreamPump current = this.pump;
+        return streamState == StreamState.RUNNING && current != null && current.isRunning();
     }
 
     /**
@@ -5251,6 +5331,20 @@ public final class AudioEngine {
     }
 
     /**
+     * Story 337 — the engine's audio health record (failure-surfacing book
+     * §3.2 channel B, §4.3; ruling E18): the render drive and every pool
+     * worker record their failures into lanes of it, and the open backend's
+     * own thread counters are attached to it for the life of each stream.
+     * One per engine, for the engine's whole life; its counters only grow.
+     * Never {@code null}.
+     *
+     * @return the health record
+     */
+    public AudioHealthRecord audioHealth() {
+        return audioHealth;
+    }
+
+    /**
      * Story 136 — sets the {@link Metronome} the audio callback uses to
      * generate a click on each scheduled beat (and subdivision) that
      * lands inside the current buffer.
@@ -5467,11 +5561,13 @@ public final class AudioEngine {
      * @param inputBuffer  the input audio data {@code [channel][frame]}
      * @param outputBuffer the output audio data {@code [channel][frame]}
      * @param numFrames    the number of sample frames to process
-     * @throws IllegalStateException if the engine is not running
+     * @return {@code true} when the block was rendered; {@code false} when the
+     *         engine is not running — silence written, nothing rendered, no
+     *         failure recorded (story 337, ruling E6)
      */
     @RealTimeSafe
-    public void processBlock(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
-        processBlock(inputBuffer, outputBuffer, numFrames, null);
+    public boolean processBlock(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
+        return processBlock(inputBuffer, outputBuffer, numFrames, null);
     }
 
     /**
@@ -5481,13 +5577,28 @@ public final class AudioEngine {
      * all direct routes, and published before the bus completes the block.
      * The planar-only overload omits this write and does not publish that tap.
      *
+     * <p>On a stopped engine this writes silence and returns {@code false}
+     * (story 337, ruling E6): it zeroes {@code [0, min(max(numFrames, 0),
+     * plane.length))} of every non-null output plane and all of
+     * {@code interleavedOutput} — the block the stream pump sinks next, which
+     * would otherwise replay the last one — and returns BEFORE the tap
+     * snapshot, so no metering stamp is consumed and nothing is recorded. The
+     * stream pump, the only production caller, exits on that {@code false}:
+     * the exit decision is the same read that rendered silence, so a stop and
+     * restart between a throw and a re-read can no longer leave an orphaned
+     * pump rendering on the restarted engine.</p>
+     *
      * @param interleavedOutput interface samples, or {@code null} for planar-only output
+     * @return {@code true} when the block was rendered; {@code false} when the
+     *         engine is not running — silence written, nothing rendered, no
+     *         failure recorded (story 337, ruling E6)
      */
     @RealTimeSafe
-    public void processBlock(float[][] inputBuffer, float[][] outputBuffer, int numFrames,
-                             float[] interleavedOutput) {
+    public boolean processBlock(float[][] inputBuffer, float[][] outputBuffer, int numFrames,
+                                float[] interleavedOutput) {
         if (!running.get()) {
-            throw new IllegalStateException("Engine is not running");
+            renderStoppedSilence(outputBuffer, numFrames, interleavedOutput);
+            return false;
         }
 
         // Snapshot volatile references once for this block so that the
@@ -5563,6 +5674,27 @@ public final class AudioEngine {
                 // block that the stream pump replaces with silence.
                 meteringTapBus.blockCompleted(taps);
             }
+        }
+        return true;
+    }
+
+    /**
+     * The silence a stopped engine renders (story 337, ruling E6): zeroes
+     * {@code [0, min(max(numFrames, 0), plane.length))} of every non-null
+     * output plane and all of {@code interleaved} when it is non-null.
+     */
+    @RealTimeSafe
+    private static void renderStoppedSilence(float[][] out, int numFrames, float[] interleaved) {
+        if (out != null) {
+            int frames = Math.max(numFrames, 0);
+            for (float[] plane : out) {
+                if (plane != null) {
+                    java.util.Arrays.fill(plane, 0, Math.min(frames, plane.length), 0f);
+                }
+            }
+        }
+        if (interleaved != null) {
+            java.util.Arrays.fill(interleaved, 0f);
         }
     }
 
