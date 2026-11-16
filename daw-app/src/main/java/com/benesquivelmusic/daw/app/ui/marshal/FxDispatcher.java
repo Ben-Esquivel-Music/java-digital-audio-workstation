@@ -800,7 +800,12 @@ public final class FxDispatcher {
         }
     }
 
-    /** Rethrows {@code failure} unchanged, a checked one included, from a method that declares nothing. */
+    /**
+     * Rethrows {@code failure} unchanged, a checked one included, from a
+     * method that declares nothing — its own copy: the marshalling seam
+     * imports nothing from the diagnostics package (story 337, rulings E32
+     * and E91).
+     */
     @SuppressWarnings("unchecked")
     private static <T extends Throwable> void rethrow(Throwable failure) throws T {
         throw (T) failure;

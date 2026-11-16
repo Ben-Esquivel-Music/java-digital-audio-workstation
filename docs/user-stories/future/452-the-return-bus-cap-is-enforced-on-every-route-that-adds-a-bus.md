@@ -12,7 +12,7 @@ The render pipeline preallocates send buffers for at most `Mixer.MAX_RETURN_BUSE
 - **Undo and redo.** `Mixer.addReturnBus(MixerChannel)`, "used by undo operations to re-add a previously removed return bus", adds the bus with no cap check. `RemoveReturnBusAction.undo()` and `AddReturnBusAction.execute()` on redo call it, so removing a bus, adding a new one in its place and then undoing the removal leaves the mixer with more buses than the cap.
 - **Project load.** `ProjectDeserializer.parseMixer` reuses the mixer's existing return buses and adds each further bus in the file through `addReturnBus(String)`, so a file with more buses than the cap does not exceed it; the load throws `IllegalStateException` at the first bus past the cap instead. What the reader then does with the file is this story's to rule.
 
-Story 337 made the overflow visible during playback: the first block a pipeline renders on a render thread with too many buses records one `audio.config` record (subject `RenderPipeline.RETURN_BUS_CAP_SUBJECT`, detail the bus count), and the drain shows the WARNING "This mix has {0} return buses but only {1} can receive sends, so sends to the others are silent. Remove return buses you do not need." (its ruling E25). Preventing the overflow is a mixer feature, so story 337 left it to this story (story 337's Resolution, "Deferred"; `RenderPipelineReturnBusCapTest` says "The undo overload does not enforce the cap (future story 452)").
+Story 337 made the overflow visible during playback: the first block a pipeline renders on a render thread with too many buses records one `audio.config` record (subject `RenderPipeline.RETURN_BUS_CAP_SUBJECT`, detail the bus count), and the drain shows the WARNING "This mix has {0} return buses but only {1} can receive sends, so sends to the others are silent. Remove return buses you do not need." (its ruling E25). The flag latches only when that record was delivered, and an offline render, which runs on no render thread, writes one WARNING log record per pipeline before its first block instead (story 337, ruling E76). Preventing the overflow is a mixer feature, so story 337 left it to this story (story 337's Resolution, "Deferred"; `RenderPipelineReturnBusCapTest` says "The undo overload does not enforce the cap (future story 452)").
 
 ## Goals
 
@@ -46,7 +46,7 @@ These tests are binding acceptance criteria. They run headless, and none of them
 - daw-core, `core.mixer.AddReturnBusAction` (`execute()` re-adds through the unchecked overload on redo) and `RemoveReturnBusAction` (`undo()` re-adds through it).
 - daw-core, `core.persistence.ProjectDeserializer.parseMixer`: reuses `project.getMixer().getReturnBuses()` and adds each further `return-bus` element through `addReturnBus(busName)`.
 - daw-app, `MixerView` adds a bus through `project.getMixer().addReturnBus(busName)`.
-- daw-core, `core.audio.RenderPipeline`: the once-per-pipeline `audio.config` record (`returnBusCapNoticeRaised`, `RETURN_BUS_CAP_SUBJECT`); `RenderPipelineReturnBusCapTest`.
+- daw-core, `core.audio.RenderPipeline`: the once-per-pipeline `audio.config` record (`returnBusCapNoticeRaised`, `RETURN_BUS_CAP_SUBJECT`), the flag set from the record's answer, and `renderOffline`'s one WARNING per pipeline (story 337, ruling E76); `RenderPipelineReturnBusCapTest`. The warning in an export's result is future story 454's.
 - Cross-refs: story 337 (ruling E25 and its Resolution's "Deferred" list), the undo framework's return-bus actions.
 
 ## Status

@@ -354,7 +354,17 @@ final class RecordCoordinator {
         closeCapturePeaks();
     }
 
-    void stopAudioTake() {
+    /**
+     * The take half of a Stop: ends a count-in, a recording take or the
+     * DEVICE_LOST state as the Stop does. FX thread.
+     *
+     * @return whether this Stop ends a take that had started recording — past
+     *         its preparation and any count-in, a count-in that fired before
+     *         this Stop included — rather than cancelling a count-in or
+     *         finding no started take; a render-drive halt's notice tells the
+     *         engineer only this (story 337, ruling E101)
+     */
+    boolean stopAudioTake() {
         requireFxThread();
         CountInSchedule ending = countInSchedule;
         CountInEnd verdict = endCountIn();
@@ -378,14 +388,14 @@ final class RecordCoordinator {
                 // The render thread may still be inside that window: look
                 // again on later FX turns (story 328 review).
                 lookAgainAtTheEndedCountIn(ending);
-                return;
+                return false;
             }
             RecordingPipeline stopping = recordingPipeline;
             recordingPipeline = null;
             CompletionStage<Void> written = requestTakeStop(stopping, TakeManifest.SealedBy.STOP);
             publishWhenWritten(stopping, written);
             stillWritingDelay.after(TAKE_STILL_WRITING_DELAY, () -> warnTakeStillWriting(stopping));
-            return;
+            return false;
         }
         if (verdict == CountInEnd.FIRED && recordingPipeline == null) {
             // A MIDI-only count-in the render thread won: its record start
@@ -408,8 +418,11 @@ final class RecordCoordinator {
             // the machine can never hold an active pipeline with no exit.
             transition(RecordState.FINALIZING);
             settle();
-            return;
+            return false;
         }
+        // DEVICE_LOST is entered only from RECORDING, so an active take it still holds had started too.
+        boolean endsAStartedTake = isRecordingInFlight()
+                && (state.get() == RecordState.RECORDING || state.get() == RecordState.DEVICE_LOST);
         if (isRecordingInFlight() && state.get() != RecordState.ABORTED) transition(RecordState.FINALIZING);
         if (recordingPipeline != null && recordingPipeline.isActive()) {
             RecordingPipeline stopping = recordingPipeline;
@@ -419,6 +432,7 @@ final class RecordCoordinator {
             publishWhenWritten(stopping, written);
             stillWritingDelay.after(TAKE_STILL_WRITING_DELAY, () -> warnTakeStillWriting(stopping));
         }
+        return endsAStartedTake;
     }
 
     /**

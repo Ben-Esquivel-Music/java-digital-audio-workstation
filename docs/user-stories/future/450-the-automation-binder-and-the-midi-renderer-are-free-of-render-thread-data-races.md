@@ -41,7 +41,7 @@ These tests are binding acceptance criteria. They run headless, and none of them
 
 ## Technical Notes
 
-- daw-core, `core.automation.ReflectiveParameterBinder`: `byChannel`; `rebind`, `forget`, `getAutomatablePluginParameters` (writers); `apply` → `applyBindings` (the render-thread read). Story 337 added the per-binding `disabled` flag, read and written only by the applying thread and cleared only by `rebind` replacing the binding objects (ruling E28).
+- daw-core, `core.automation.ReflectiveParameterBinder`: `byChannel`; `rebind`, `forget`, `getAutomatablePluginParameters` (writers); `apply` → `applyBindings` (the render-thread read). Story 337 added the per-binding `disabled` flag, read and written only on a render thread and cleared only by `rebind` replacing the binding objects (ruling E28); an offline thread ignores it and tries the binding again (story 337, ruling E74).
 - daw-core, `core.audio.MidiTrackRenderer`: `rendererStates`; `prepareRenderer` → `ensureRenderer`, `disposeRenderer`, `close` (writers); `renderMidiTrack`, `allNotesOff` (render-thread reads), plus `hasRenderer` and `getRenderer`.
 - daw-core, `core.mixer.Mixer`: `prepareForPlayback` and `recalculateDelayCompensation` call `rebindAllReflectiveParameterBindings`; channel removal calls `reflectiveParameterBinder.forget(channel)`.
 - House shape: a volatile snapshot array read once (`core.concurrent.ChangeNotifier`), never a copy-on-write `get(i)` loop or an enhanced-for over a mutable collection.

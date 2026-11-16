@@ -20,13 +20,27 @@
  * exists per engine and lives as long as the engine: its totals only ever
  * grow. Lanes are claimed off the real-time thread when a render thread is
  * built and retired after it exits, folding their counts into the record so
- * nothing is lost. Counters kept on a backend's own threads (a device
- * callback, an input drain) are PULLED from the backend through
+ * nothing is lost; a retired lane's undrained descriptors stay readable until
+ * the drain takes them (story 337, ruling E81). A lane publishes a failure's
+ * descriptor before its count, so the count is the commit (story 337, ruling
+ * E79). Counters kept on a backend's own threads (a device callback, an input
+ * drain) are PULLED from the backend through
  * {@code AudioBackend.threadCounters()} and attached to the record for the
- * life of a stream (story 337, ruling E4).</p>
+ * life of a stream, together with every input device opened beside it, in
+ * the SDK's {@code BackendCounterLedger}, each source behind a guard that
+ * freezes a failing source at its last good report, so its failure costs a
+ * reader nothing — except a {@code VirtualMachineError}, which still freezes
+ * it and reaches only the one reader that met it (story 337, rulings E4, E78,
+ * E86, E90 and E95).</p>
  *
  * <p>The application's FX-thread drain is the only consumer of the descriptor
- * rings; it reads the record once per frame and decides what the user sees
- * (book §6.2). This package is exported only to {@code daw.app}.</p>
+ * rings; it reads the record once per frame through
+ * {@link com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord#read},
+ * which takes every count, then every sample, then one report of each
+ * attached source — if a source is folded while those reports are being
+ * read, it drops them, reads the still-attached sources once more and uses
+ * only that second read — and decides what the user sees (book §6.2; story
+ * 337, rulings E79, E82 and E98). This package is exported only to
+ * {@code daw.app}.</p>
  */
 package com.benesquivelmusic.daw.core.audio.health;

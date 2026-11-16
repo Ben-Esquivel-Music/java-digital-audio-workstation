@@ -1,8 +1,10 @@
 package com.benesquivelmusic.daw.core.dsp;
 
 import com.benesquivelmusic.daw.core.audio.health.AudioFailureCodes;
+import com.benesquivelmusic.daw.core.audio.health.OffLaneFailureLog;
 import com.benesquivelmusic.daw.core.audio.health.RenderThread;
 import com.benesquivelmusic.daw.core.mixer.InsertEffect;
+import com.benesquivelmusic.daw.core.mixer.ProcessorRegistry;
 
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
@@ -15,6 +17,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
@@ -56,6 +60,17 @@ public final class VelvetNoiseReverbProcessor implements AudioProcessor, Prepare
     private static final int PARALLEL_SEGMENT_THRESHOLD = 4;
     private static final int INITIAL_WORK_BUFFER_SIZE = 4096;
     private static final long BASE_SEED = 42L;
+
+    /** The effect's name in a log record should its declaration be unreadable. */
+    private static final String FALLBACK_DISPLAY_NAME = "Velvet noise reverb";
+
+    /**
+     * Where a failed late-reverb segment is logged when it cannot be recorded
+     * — only on a thread with no lane, rate-bounded per instance (story 337,
+     * ruling E77).
+     */
+    private final OffLaneFailureLog offLaneLog = new OffLaneFailureLog(
+            Logger.getLogger(VelvetNoiseReverbProcessor.class.getName()), Level.WARNING);
 
     private final int channels;
     private final double sampleRate;
@@ -256,6 +271,16 @@ public final class VelvetNoiseReverbProcessor implements AudioProcessor, Prepare
     // --- Private methods ---
 
     /**
+     * This effect's name in an off-render-thread log record: its declared
+     * insert name, as the insert list shows it (story 337, rulings E77 and
+     * E89).
+     */
+    private static String displayName() {
+        return ProcessorRegistry.declaredDisplayName(VelvetNoiseReverbProcessor.class)
+                .orElse(FALLBACK_DISPLAY_NAME);
+    }
+
+    /**
      * Ensures the pre-allocated work buffers are large enough for the given frame count.
      */
     private void ensureWorkBufferSize(int numFrames) {
@@ -300,8 +325,14 @@ public final class VelvetNoiseReverbProcessor implements AudioProcessor, Prepare
                         Throwable cause = segmentFailure instanceof ExecutionException failed
                                 && failed.getCause() != null ? failed.getCause() : segmentFailure;
                         // Recorded as audio.dsp on a render thread; a thread
-                        // with no lane records nothing.
-                        RenderThread.recordOnCurrentThread(AudioFailureCodes.DSP, cause, this, seg);
+                        // with no lane (an offline render) logs a rate-bounded
+                        // WARNING naming the segment instead (story 337,
+                        // ruling E77).
+                        if (!RenderThread.recordOnCurrentThread(AudioFailureCodes.DSP, cause, this, seg)) {
+                            int failedSegment = seg;
+                            offLaneLog.failed(() -> displayName() + ": late-reverb segment " + failedSegment
+                                    + " failed and was left out of this block", cause);
+                        }
                     }
                 }
             }

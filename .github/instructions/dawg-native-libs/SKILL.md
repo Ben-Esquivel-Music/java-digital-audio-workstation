@@ -136,11 +136,19 @@ handle throws, the JVM terminates abruptly. Every target in the tree is guarded
   answer `0`, `MemorySegment.NULL` or `-1`.
 - **Count, never surface.** A fault bumps a `volatile long` with `++` whose only
   writer is the thread the driver calls on, next to a `volatile Throwable` that
-  keeps the last fault (a reference store allocates nothing); the backend reports
-  them through `AudioBackend.threadCounters()` and the engine's health record pulls
-  them. A count that several native threads share (the device-notification shims)
-  takes an `AtomicLong` increment on the failure path only. A CLAP callback on a
-  render thread records into that thread's lane
+  keeps the last fault (a reference store allocates nothing). The fault is stored
+  first, then the count, on every path, so a report that reads the count first
+  carries that fault or a newer one (story 337, ruling E82; pinned by
+  `RealTimeSafeContractTest.everyBackendCounterWriterStoresItsFaultBeforeItsCount`).
+  The backend reports them through `AudioBackend.threadCounters()`, folding each
+  per-stream helper's counts at its close in daw-sdk's shared
+  `BackendCounterLedger` (ruling E90), and the engine's health record pulls them
+  through the same ledger, for the open stream's backend and for every input device
+  opened beside the stream (ruling E86), behind a guard: a report that throws or is
+  `null` counts nothing more from that source until it is closed (rulings E78 and
+  E95). A count that several native threads share (the device-notification shims)
+  takes an `AtomicLong` increment on the failure path only, after the store of its
+  fault. A CLAP callback on a render thread records into that thread's lane
   (`RenderThread.recordOnCurrentThread`).
 - **On the fault path, never log, lock, publish or allocate** beyond the thrown
   object — PortAudio's silencing `reinterpret`, taken only when the body had not

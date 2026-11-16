@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.AudioBlock;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.BackendFallbackEvent;
+import com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 
 import org.junit.jupiter.api.AfterEach;
@@ -25,6 +26,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 import java.util.logging.Handler;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
@@ -2487,6 +2489,15 @@ class AudioEngineOutputTest {
         volatile boolean failOnReleasePendingQuery;
         /** Set by a DEFERRED close, cleared when that release completes. */
         private volatile boolean releaseDeferred;
+        /**
+         * Story 337, ruling E78: an opt-in script for
+         * {@link AudioBackend#threadCounters()}. {@code null} (the default)
+         * reports {@link BackendThreadCounters#NONE}, as the interface's
+         * default does; a script may answer {@code null}, throw a
+         * {@link RuntimeException} or an {@link Error}, to model a backend
+         * whose own failure report cannot be read.
+         */
+        volatile Supplier<BackendThreadCounters> counterReport;
         volatile boolean blockAwait;
         /** Story 316 review: what the engine-side streaming guard sees. */
         volatile boolean streamingSupported = true;
@@ -2654,6 +2665,12 @@ class AudioEngineOutputTest {
         public int openedInputChannels() {
             com.benesquivelmusic.daw.sdk.audio.AudioFormat opened = lastOpenFormat;
             return open && capturesInput && opened != null ? opened.channels() : 0;
+        }
+
+        @Override
+        public BackendThreadCounters threadCounters() {
+            Supplier<BackendThreadCounters> script = counterReport;
+            return script == null ? BackendThreadCounters.NONE : script.get();
         }
 
         @Override

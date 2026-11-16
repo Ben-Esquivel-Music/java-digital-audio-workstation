@@ -198,7 +198,7 @@ class AudioWorkerPoolTest {
                     pool.invokeAll(tasks, tasks.length);
                 }
             });
-            record.drainSamples(samples::add);
+            record.read(samples::add);
 
             assertThat(record.total(AudioFailureCategory.WORKER)).isEqualTo(10);
             assertThat(samples)
@@ -221,7 +221,7 @@ class AudioWorkerPoolTest {
             List<AudioFailureSample> samples = new ArrayList<>();
 
             onCoordinator(record, () -> pool.invokeAll(tasks, tasks.length));
-            record.drainSamples(samples::add);
+            record.read(samples::add);
 
             assertThat(record.total(AudioFailureCategory.WORKER)).isEqualTo(1);
             assertThat(samples).singleElement().satisfies(sample -> {
@@ -303,14 +303,19 @@ class AudioWorkerPoolTest {
             pool.close();
         }
         List<AudioFailureSample> samples = new ArrayList<>();
-        record.drainSamples(samples::add);
+        record.read(samples::add);
 
         assertThat(record.total(AudioFailureCategory.WORKER))
                 .as("the retired worker lanes' counts are folded into the record")
                 .isEqualTo(beforeClose);
         assertThat(samples)
-                .as("retired worker lanes are no longer drained; their slots were cleared")
-                .noneMatch(sample -> sample.lane() == LaneRole.WORKER);
+                .as("a retired worker lane's undrained descriptors are still handed to the reading "
+                        + "(story 337, ruling E81)")
+                .anyMatch(sample -> sample.lane() == LaneRole.WORKER
+                        && sample.failure().filter(IllegalStateException.class::isInstance).isPresent());
+        List<AudioFailureSample> again = new ArrayList<>();
+        record.read(again::add);
+        assertThat(again).as("each descriptor is handed over once").isEmpty();
     }
 
     /**

@@ -24,7 +24,7 @@ The product is not at fault. A rung whose host accepts the format can produce so
 
 ## Acceptance Criteria
 
-1. `JavaxSoundBackendTest` passes 57 of 57 on (a) a Linux host whose ALSA default PCM is served by a sound server, (b) the same host with `ALSA_CONFIG_PATH` pointed at an empty file, (c) Windows and (d) the project's Linux CI.
+1. `JavaxSoundBackendTest` passes every one of its tests (68 since story 337's code review round) on (a) a Linux host whose ALSA default PCM is served by a sound server, (b) the same host with `ALSA_CONFIG_PATH` pointed at an empty file, (c) Windows and (d) the project's Linux CI.
 2. No case leaves a line open on the host's device.
 3. The five cases keep every assertion and message check.
 4. `JavaxSoundBackend` itself is unchanged.

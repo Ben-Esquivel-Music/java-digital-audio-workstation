@@ -319,7 +319,7 @@ class MasteringLatencyCompensationTest {
             mixer.mixDownInstrumented(sources, output, returns, FRAMES, List.of(), enforcer,
                     null, chain, null, false, true);
         } else {
-            mixer.mixDown(sources, output, returns, FRAMES, null, chain, null, false, true);
+            mixer.mixDown(sources, output, returns, FRAMES, null, chain, null, false, true, true);
         }
         mixer.renderDirectOutputs(sources, output, FRAMES);
         return output;

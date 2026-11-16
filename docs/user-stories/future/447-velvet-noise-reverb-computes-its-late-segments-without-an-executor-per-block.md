@@ -45,7 +45,7 @@ These tests are binding acceptance criteria. They run headless, and none of them
 ## Technical Notes
 
 - daw-core, `core.dsp.VelvetNoiseReverbProcessor`: `process` (`@RealTimeSafe`), `processLateSegments` (the executor, the submits and the `get` loop), `computeSegment` (writes one segment's work buffer frame by frame), `PARALLEL_SEGMENT_THRESHOLD`.
-- Story 337's catch in `processLateSegments`: `InterruptedException` restores the flag and records nothing; `ExecutionException | CancellationException` zeroes `segmentWorkBuffers[seg]` over `[0, numFrames)` and calls `RenderThread.recordOnCurrentThread(AudioFailureCodes.DSP, cause, this, seg)` (story 337, ruling E29).
+- Story 337's catch in `processLateSegments`: `InterruptedException` restores the flag and records nothing; `ExecutionException | CancellationException` zeroes `segmentWorkBuffers[seg]` over `[0, numFrames)` and calls `RenderThread.recordOnCurrentThread(AudioFailureCodes.DSP, cause, this, seg)` (story 337, ruling E29). Where that call answers `false`, off a render thread, it writes a rate-bounded WARNING naming the segment instead, through the processor's own `OffLaneFailureLog` (story 337, ruling E77).
 - `AudioWorkerPool` is the engine's render-worker pool: workers are `RenderThread`s built once per engine start, `invokeAll` runs a batch with the coordinator participating, and a task failure is counted as `audio.worker` (story 337, ruling E27). A processor has no reference to it today.
 - Skills: `dawg-annotations-reflection` "### Adding a new `@RealTimeSafe` method"; `research-daw` "### Architectural Patterns (5 Key Lessons)", item 3 (no allocations or locks on the audio thread).
 - Book: `FAILURE_SURFACING_DESIGN_BOOK.md` §2.3 and §6.1 (what the RT thread may not do).

@@ -10,7 +10,7 @@ labels: ["bug", "plugins", "clap", "error-handling", "real-time"]
 A CLAP plugin reaches the insert chain as `ClapInsertEffect`, the `AudioProcessor` that `ClapPluginHost.asAudioProcessor()` returns. Its failures never reach the plugin-fault supervision that every other plugin insert gets (`PluginInvocationSupervisor`: the fault log, the truthful "bypassed" notice, quarantine and, with story 340, eviction):
 
 - **`ClapPluginHost.process` swallows every failure itself.** When the plugin's `process` returns `CLAP_PROCESS_ERROR`, or anything throws inside the call, the host copies the input to the output and returns normally. Since story 337 it records the failure as `audio.plugin` into the render thread's lane (`RenderThread.recordOnCurrentThread(AudioFailureCodes.PLUGIN, …)`; story 337, ruling E30), so the user sees a notice naming the plugin, but nothing is thrown to the slot.
-- **`ClapInsertEffect.process` therefore never sees a failure.** Its own `catch (Exception e)`, which records `audio.plugin` and sets its `faulted` flag for pass-through, is reached only by an exception the host does not catch. The supervisor wrapping the slot sees a normal return, so a CLAP insert that fails on every block is never bypassed, logged in the fault log, quarantined or evicted: it passes its input through, unprocessed, until the user removes it.
+- **`ClapInsertEffect.process` therefore never sees a failure.** Its own `catch (Exception e)`, which records `audio.plugin` and sets its `faulted` flag for pass-through, is reached only by an exception the host does not catch. The supervisor wrapping the slot sees a normal return, so a CLAP insert that fails on every block is never bypassed, logged in the fault log, quarantined or evicted: it passes its input through, unprocessed, until the user removes it. Off a render thread, where nothing can be recorded, `ClapInsertEffect` logs its crash at SEVERE and `ClapPluginHost.process` logs its failure at WARNING, rate-bounded, instead (story 337, ruling E77).
 - **First-use allocations on the render thread.** The host hands per-call state to its static upcall callbacks through `ThreadLocal`s (`CURRENT_EVENT_SEGMENTS`, `CURRENT_EVENT_COUNT`, and `CURRENT_WRITE_TARGET` and `CURRENT_READ_SOURCE` for state streams); the first `set` on a render thread allocates that thread's map and entry there.
 
 Story 337 only counts these failures, and story 340's eviction acts only on faults the supervisor reports, so story 337 left routing them into supervision to this story (story 337's Resolution, "Deferred"; the code comment in `ClapPluginHost.process` names this story).
@@ -34,7 +34,7 @@ These tests are binding acceptance criteria. They run headless, and none of them
 
 - A supervised mixer with a CLAP insert double whose process throws: the slot is bypassed, one fault is published, and the audio health record's `audio.plugin` count stays zero.
 - The same with a `CLAP_PROCESS_ERROR` return.
-- A bytecode or allocation check: the CLAP process path, from `ClapInsertEffect.process`, allocates nothing on its first call on a fresh render thread.
+- A bytecode or allocation check: the CLAP process path, from `ClapInsertEffect.process`, allocates nothing on its first call on a fresh render thread. The off-render-thread log branches (story 337, ruling E77) never run on a render thread, so this check does not cover them.
 - `ClapPluginHostTest.everyGuardedHostCallbackAnswersItsAbiValueOnAFaultAndRecordsIt` and the upcall gate (`RealTimeSafeContractTest.everyUpcallTargetCatchesEverything`) stay green: the host callbacks' own guards are unchanged.
 
 ## Non-Goals
@@ -45,8 +45,8 @@ These tests are binding acceptance criteria. They run headless, and none of them
 
 ## Technical Notes
 
-- daw-core, `core.plugin.clap.ClapPluginHost`: `process` (the `CLAP_PROCESS_ERROR` branch with the preallocated `PROCESS_ERROR_REPORTED`, the `catch (Throwable e)` pass-through, the `finally` that clears the `ThreadLocal`s), the `ThreadLocal` fields, `asAudioProcessor()`.
-- daw-core, `core.mixer.ClapInsertEffect`: `process` (`catch (Exception e)`, the `faulted` flag, `copyBuffer`), `isFaulted()`, `reset()`.
+- daw-core, `core.plugin.clap.ClapPluginHost`: `process` (the `CLAP_PROCESS_ERROR` branch with the preallocated `PROCESS_ERROR_REPORTED`, the `catch (Throwable e)` pass-through, the `finally` that clears the `ThreadLocal`s), the `ThreadLocal` fields, `asAudioProcessor()`; off a render thread both failure branches log through the host's `OffLaneFailureLog`, naming the plugin by `pluginLabel()` (story 337, ruling E77).
+- daw-core, `core.mixer.ClapInsertEffect`: `process` (`catch (Exception e)`, the `faulted` flag, `copyBuffer`), `isFaulted()`, `reset()`; off a render thread the catch logs at SEVERE, naming the plugin by `pluginName()`, and sets `faulted` with that record (story 337, ruling E77). What a freeze does with a CLAP insert that had already faulted when it began is future story 454's.
 - daw-core, `core.plugin.PluginInvocationSupervisor`: the wrapper's catch, `reportAudioFault`, the `plugin-fault-drain` thread (story 337 moved its `Error` SEVERE there, ruling E26).
 - Story 340's Note from Story 334: the supervised wrapper and `InsertSlot.drainParametersToAudio` catch narrower than `Throwable`; widening them is story 340's.
 - Skills: `dawg-native-libs` "## 3. The Java FFM layer — the rules" ("### Upcall guards"); `research-daw` "### Architectural Patterns (5 Key Lessons)", item 3.

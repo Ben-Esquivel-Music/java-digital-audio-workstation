@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.plugin.clap;
 
 import com.benesquivelmusic.daw.core.audio.health.AudioFailureCodes;
+import com.benesquivelmusic.daw.core.audio.health.OffLaneFailureLog;
 import com.benesquivelmusic.daw.core.audio.health.RenderThread;
 import com.benesquivelmusic.daw.core.audio.ringbuffer.LockFreeRingBuffer;
 import com.benesquivelmusic.daw.core.mixer.ClapInsertEffect;
@@ -13,6 +14,8 @@ import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * CLAP plugin host implementation using the Foreign Function &amp; Memory
@@ -36,6 +39,14 @@ import java.util.*;
  * @see <a href="https://github.com/free-audio/clap">CLAP specification</a>
  */
 public final class ClapPluginHost implements ExternalPluginHost {
+
+    private static final Logger LOG = Logger.getLogger(ClapPluginHost.class.getName());
+
+    /**
+     * Where {@link #process} logs a failure it could not record — only on a
+     * thread with no lane, rate-bounded per host (story 337, ruling E77).
+     */
+    private final OffLaneFailureLog offLaneLog = new OffLaneFailureLog(LOG, Level.WARNING);
 
     private final Path libraryPath;
     private final int pluginIndex;
@@ -348,9 +359,15 @@ public final class ClapPluginHost implements ExternalPluginHost {
                 // Story 337, ruling E30: the plugin's own error report is
                 // recorded as audio.plugin on a render thread — a
                 // preallocated stackless constant, so nothing allocates —
-                // and the pass-through audio is unchanged.
-                RenderThread.recordOnCurrentThread(AudioFailureCodes.PLUGIN,
-                        PROCESS_ERROR_REPORTED, this, status);
+                // and the pass-through audio is unchanged. Ruling E77: a
+                // thread with no lane (an offline render) logs it instead,
+                // rate-bounded.
+                if (!RenderThread.recordOnCurrentThread(AudioFailureCodes.PLUGIN,
+                        PROCESS_ERROR_REPORTED, this, status)) {
+                    offLaneLog.failed(() -> pluginLabel()
+                            + " reported a processing error; its input was passed through for this block",
+                            PROCESS_ERROR_REPORTED);
+                }
                 copyBuffer(inputBuffer, outputBuffer, numFrames);
                 return;
             }
@@ -358,13 +375,30 @@ public final class ClapPluginHost implements ExternalPluginHost {
             readOutputFromNative(outputBuffer, numFrames);
         } catch (Throwable e) {
             // On error, pass through — recorded as audio.plugin on a render
-            // thread, never silent (story 337, ruling E30). Routing CLAP
-            // faults into plugin-fault supervision is future story 451.
-            RenderThread.recordOnCurrentThread(AudioFailureCodes.PLUGIN, e, this, 0);
+            // thread, never silent (story 337, ruling E30); on a thread with
+            // no lane, logged rate-bounded (ruling E77). Routing CLAP faults
+            // into plugin-fault supervision is future story 451.
+            if (!RenderThread.recordOnCurrentThread(AudioFailureCodes.PLUGIN, e, this, 0)) {
+                offLaneLog.failed(() -> pluginLabel()
+                        + " failed to process a block; its input was passed through for this block", e);
+            }
             copyBuffer(inputBuffer, outputBuffer, numFrames);
         } finally {
             CURRENT_EVENT_SEGMENTS.set(null);
             CURRENT_EVENT_COUNT.set(null);
+        }
+    }
+
+    /**
+     * Names this plugin in an off-render-thread log record by its descriptor
+     * name. A name that cannot be read yields a generic subject, so logging a
+     * failure throws nothing new (story 337, ruling E77).
+     */
+    private String pluginLabel() {
+        try {
+            return "CLAP plugin “" + getDescriptor().name() + "”";
+        } catch (RuntimeException unreadable) {
+            return "An unnamed CLAP plugin";
         }
     }
 

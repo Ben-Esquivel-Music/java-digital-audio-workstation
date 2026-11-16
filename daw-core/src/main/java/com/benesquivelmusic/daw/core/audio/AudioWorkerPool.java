@@ -173,9 +173,11 @@ public final class AudioWorkerPool implements AutoCloseable {
      * after {@link #close()} is called.
      *
      * <p>Each worker that exited has its lane retired into the health record,
-     * folding its counts in (story 337, ruling E18). A worker that did not
-     * join within the bound keeps its lane live — it may still write it — and
-     * its counts stay visible through the record.</p>
+     * folding its counts in (story 337, ruling E18); the lane's undrained
+     * descriptors stay readable until the drain takes them (story 337, ruling
+     * E81). A worker that did not join within the bound keeps its lane live —
+     * it may still write it — and its counts stay visible through the
+     * record.</p>
      */
     @Override
     public void close() {

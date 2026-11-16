@@ -399,15 +399,17 @@ public final class FailureCopy {
     }
 
     /**
-     * The ERROR notice of a render-drive halt (story 337, rulings E11 and
-     * E45): the base sentence, then the context sentence when the transport
-     * was rolling or a take was in flight, then the next step, joined with
-     * single spaces. A name — the plugin the halting failure is anchored in —
+     * The ERROR notice of a render-drive halt (story 337, rulings E11, E45
+     * and E101): the base sentence, then the context sentence when the halt's
+     * Stop stopped playback or ended a started take, then the next step, joined
+     * with single spaces. A name — the plugin the halting failure is anchored in —
      * picks the named base and next step.
      *
      * @param name    the plugin the cause is anchored in, if any
      * @param reason  the halting throwable's reason
-     * @param context what the transport was doing
+     * @param context what the halt's Stop did, or that the halted stream
+     *                was already replaced ({@link HaltContext#STREAM_REPLACED}),
+     *                which gets no context sentence
      * @return the notice
      */
     public String audioHalted(Optional<String> name, String reason, HaltContext context) {
@@ -428,7 +430,9 @@ public final class FailureCopy {
      * same context sentence as {@link #audioHalted}; no restart step.
      *
      * @param fatal   the error that halted the drive
-     * @param context what the transport was doing
+     * @param context what the halt's Stop did, or that the halted stream
+     *                was already replaced ({@link HaltContext#STREAM_REPLACED}),
+     *                which gets no context sentence
      * @return the notice
      */
     public String audioHaltedFatal(Throwable fatal, HaltContext context) {

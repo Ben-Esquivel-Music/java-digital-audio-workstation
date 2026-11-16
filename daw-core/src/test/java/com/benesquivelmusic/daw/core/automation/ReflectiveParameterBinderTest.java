@@ -256,7 +256,7 @@ class ReflectiveParameterBinderTest {
         assertThat(record.total(AudioFailureCategory.AUTOMATION)).isEqualTo(1);
         assertThat(processor.getMix()).as("the sibling binding still applied").isEqualTo(0.25);
         List<AudioFailureSample> samples = new ArrayList<>();
-        record.drainSamples(samples::add);
+        record.read(samples::add);
         assertThat(samples).singleElement().satisfies(sample -> {
             assertThat(sample.category()).isEqualTo(AudioFailureCategory.AUTOMATION);
             assertThat(sample.failure()).containsSame(RejectingProcessor.REJECTION);
@@ -313,6 +313,37 @@ class ReflectiveParameterBinderTest {
         assertThat(processor.driveCalls)
                 .as("the binding is still live for the next render-thread block")
                 .isEqualTo(3);
+        assertThat(record.total(AudioFailureCategory.AUTOMATION)).isEqualTo(1);
+    }
+
+    /**
+     * Ruling E74: a binding playback disabled is tried again off a render
+     * thread — an offline render never silently drops an automated value —
+     * and a second rejection throws E57's exception. The flag is neither read
+     * nor cleared there, so the next render-thread block still skips it.
+     */
+    @Test
+    void aBindingDisabledOnARenderThreadIsAppliedAgainOffARenderThread() throws Exception {
+        RejectingProcessor processor = new RejectingProcessor();
+        AudioHealthRecord record = new AudioHealthRecord();
+        AutomationData automation = automateDriveAndMix(processor, 0.25);
+        PluginParameterTarget drive = target(0);
+        onRenderThread(record, () -> binder.apply(channel, automation, 0.0));
+        assertThat(processor.driveCalls).as("playback tried the value once and disabled it").isEqualTo(1);
+
+        assertThatThrownBy(() -> binder.apply(channel, automation, 0.0))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("automation setter for parameter " + drive + " failed")
+                .hasCause(RejectingProcessor.REJECTION);
+
+        assertThat(processor.driveCalls).as("the offline apply tried the disabled binding").isEqualTo(2);
+        assertThat(record.total(AudioFailureCategory.AUTOMATION))
+                .as("nothing recorded off a render thread").isEqualTo(1);
+
+        onRenderThread(record, () -> binder.apply(channel, automation, 0.0));
+
+        assertThat(processor.driveCalls)
+                .as("the binding is still disabled for playback").isEqualTo(2);
         assertThat(record.total(AudioFailureCategory.AUTOMATION)).isEqualTo(1);
     }
 

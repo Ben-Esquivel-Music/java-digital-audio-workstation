@@ -19,7 +19,12 @@ import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -63,10 +68,53 @@ class ClapPluginHostTest {
         assertThat(event.get()).isEqualTo(MemorySegment.NULL);
         assertThat(record.total(AudioFailureCategory.PLUGIN)).isEqualTo(4);
         List<AudioFailureSample> samples = new ArrayList<>();
-        record.drainSamples(samples::add);
+        record.read(samples::add);
         assertThat(samples).extracting(AudioFailureSample::detail)
                 .as("the events-get fault carries the index it was asked for")
                 .contains(2);
+    }
+
+    /**
+     * Story 337, ruling E77: off a render thread — an offline render — a
+     * block the plugin failed to process cannot be recorded, so it is logged
+     * at WARNING naming the plugin, rate-bounded per host (three failing
+     * blocks inside the window write one record), and the input is passed
+     * through. The host is marked processing with no native state, so its
+     * first native write throws and the catch runs.
+     */
+    @Test
+    void aProcessingFailureOffARenderThreadIsLoggedAndPassesTheInputThrough() throws Exception {
+        ClapPluginHost host = new ClapPluginHost(Path.of("/plugins/broken.clap"));
+        java.lang.reflect.Field processing = ClapPluginHost.class.getDeclaredField("processing");
+        processing.setAccessible(true);
+        processing.setBoolean(host, true);
+        Logger hostLog = Logger.getLogger(ClapPluginHost.class.getName());
+        List<LogRecord> logged = new CopyOnWriteArrayList<>();
+        Handler handler = new Handler() {
+            @Override public void publish(LogRecord entry) { logged.add(entry); }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        float[][] input = {{0.25f, -0.75f}, {0.5f, 1.0f}};
+        float[][] output = new float[2][2];
+
+        hostLog.addHandler(handler);
+        try {
+            for (int block = 0; block < 3; block++) {
+                host.process(input, output, 2);
+            }
+        } finally {
+            hostLog.removeHandler(handler);
+        }
+
+        assertThat(output[0]).as("pass-through").containsExactly(0.25f, -0.75f);
+        assertThat(output[1]).as("pass-through").containsExactly(0.5f, 1.0f);
+        assertThat(logged).singleElement().satisfies(entry -> {
+            assertThat(entry.getLevel()).isEqualTo(Level.WARNING);
+            assertThat(entry.getMessage()).isEqualTo("CLAP plugin “broken.clap” failed to process a block; "
+                    + "its input was passed through for this block");
+            assertThat(entry.getThrown()).isInstanceOf(NullPointerException.class);
+        });
     }
 
     @SuppressWarnings("unchecked")

@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.diagnostics.HaltContext;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.recording.RecordState;
 import com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress;
@@ -108,7 +109,10 @@ import static org.mockito.Mockito.spy;
  * the one that replaced it over the same engine, status bar and REC
  * indicator — keeps its stream and begins. A cancelled start's readiness
  * turn does nothing for it, whether its readiness failed or had completed
- * normally.
+ * normally. A render-drive halt's Stop while a take Record started over
+ * playback is being prepared — with or without a post-roll configured, or
+ * inside a tail — cancels the take, stops the playback at once, closes no
+ * stream and answers that playback was stopped (story 337, ruling E101).
  *
  * <p>The take is real: a {@link TransportController} over a real
  * {@link AudioEngine} on a {@link MockAudioBackend}, recording into a real
@@ -118,13 +122,14 @@ import static org.mockito.Mockito.spy;
  * released by every test that arms it, in a {@code finally}. A test that
  * pins what a cancelled start's readiness turn did waits, bounded, for the
  * held capture thread to end — that thread posts the turn before it ends —
- * and then runs one FX turn behind it. Seven tests hold storage work
+ * and then runs one FX turn behind it. Eight tests hold storage work
  * through the controller's storage executor seam — the allocation; the
  * allocation of a second take; the allocation of a take over a paused
  * transport; the allocation of a take started inside a post-roll's tail;
  * the allocation of a take started after a tail ended; the allocation of
  * the take of the controller that replaced a retired one; the allocation
- * and then the removal of a failed start's directory — and every other
+ * and then the removal of a failed start's directory; the allocation of a
+ * take over playback whose start a halt's Stop cancels — and every other
  * take runs the production executor, which one test pins from a failed
  * allocation's stack. The four tests that fire a post-roll's timer stop its
  * {@code PauseTransition} — the controller's {@code postRollTimer}, read
@@ -676,6 +681,62 @@ class RecordStartPreparesTheTakeOffTheFxThreadTest {
             backend.release.countDown();
             runOnFx(() -> { if (controller.isTakeBeingWritten()) controller.stop(); });
         }
+    }
+
+    /**
+     * Story 337, rulings E67 and E101: Record pressed over playback — with no
+     * post-roll configured, with one configured, or inside the tail a Stop
+     * left playing — and a render-drive halt while that take is being
+     * prepared. The halt's Stop cancels the take, stops the playback, ends a
+     * tail at once and closes no stream. No take was started, but playback
+     * was stopped, so it answers "Playback was stopped.".
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"over playback", "over playback with a post-roll configured", "inside a post-roll tail"})
+    void aHaltWhileATakeIsPreparedOverPlaybackCancelsItAndAnswersThatPlaybackWasStopped(String where)
+            throws Exception {
+        assertThatNoGraphInstrumentKeepsTheStreamOpenWhileStopped();
+        HeldExecutor storage = new HeldExecutor();
+        runOnFx(() -> controller.setStorageExecutorForTest(storage));
+        Transport transport = project.getTransport();
+        switch (where) {
+            case "over playback" -> runOnFx(controller::start);
+            case "over playback with a post-roll configured" -> {
+                runOnFx(() -> transport.setPreRollPostRoll(PreRollPostRoll.enabled(0, 2)));
+                runOnFx(controller::start);
+            }
+            default -> stopIntoAPostRollTheTestEnds();
+        }
+        assertThat(onFx(transport::getState)).as("fixture: playing").isEqualTo(TransportState.PLAYING);
+        assertThat(onFx(transport::isInPostRoll)).as("fixture: in a tail only when Record is pressed inside one")
+                .isEqualTo(where.equals("inside a post-roll tail"));
+        announced.clear(); // only what follows Record is pinned
+        runOnFx(controller::toggleRecord);
+        try {
+            assertThat(onFx(controller::isPreparingTake)).as("fixture: a take is being prepared over playback")
+                    .isTrue();
+            awaitOnFx(() -> storage.pending() == 1, "input re-open finished before the held allocation");
+            AtomicReference<HaltContext> answered = new AtomicReference<>();
+            AtomicReference<Boolean> streamOpenAfterTheStop = new AtomicReference<>();
+
+            runOnFx(() -> {
+                answered.set(controller.stopForEngineHalt());
+                streamOpenAfterTheStop.set(engine.isStreamOpen());
+            });
+
+            assertThat(answered.get()).as("a cancelled start, and playback stopped").isEqualTo(HaltContext.PLAYBACK);
+            assertThat(onFx(controller::isPreparingTake)).as("the Stop cancelled the take").isFalse();
+            assertThat(onFx(transport::getState)).isEqualTo(TransportState.STOPPED);
+            assertThat(onFx(transport::isInPostRoll)).as("no tail on a dead drive").isFalse();
+            assertThat(announced).as("the Stop ran once: the playback's one stop, and nothing started")
+                    .filteredOn(TransportEvent.Stopped.class::isInstance).hasSize(1);
+            assertThat(announced).noneMatch(TransportEvent.Started.class::isInstance);
+            assertThat(streamOpenAfterTheStop.get()).as("the halt's Stop closed no stream").isTrue();
+            assertThat(onFx(engine::getRecordingCallback)).as("capture never began").isNull();
+        } finally {
+            runHeldStorageUntilNothingIsBeingWritten(storage); // the allocation, then the removal of what it allocated
+        }
+        assertThat(takeDirectories()).as("the cancelled start left no take directory").isEmpty();
     }
 
     /**

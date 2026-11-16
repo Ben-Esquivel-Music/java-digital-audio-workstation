@@ -56,17 +56,11 @@ public record DeclaredSubject(String category, String subject) {
             } catch (Throwable failure) {
                 Optional<FailureFunnel> funnel = FailureFunnel.installed();
                 if (funnel.isEmpty()) {
-                    DeclaredSubject.<RuntimeException>rethrow(failure);
+                    GuardedThrowables.<RuntimeException>rethrow(failure);
                     return;
                 }
                 funnel.get().reportDeclared(this, failure);
             }
         };
-    }
-
-    /** Rethrows {@code failure} unchanged, a checked one included, from a method that declares nothing. */
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
     }
 }

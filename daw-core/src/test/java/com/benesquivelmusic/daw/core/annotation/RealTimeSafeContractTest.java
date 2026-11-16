@@ -13,6 +13,7 @@ import java.lang.classfile.Attributes;
 import java.lang.classfile.ClassModel;
 import java.lang.classfile.CodeElement;
 import java.lang.classfile.Instruction;
+import java.lang.classfile.Label;
 import java.lang.classfile.MethodModel;
 import java.lang.classfile.Opcode;
 import java.lang.classfile.attribute.CodeAttribute;
@@ -24,18 +25,21 @@ import java.lang.classfile.constantpool.MethodHandleEntry;
 import java.lang.classfile.constantpool.MethodTypeEntry;
 import java.lang.classfile.instruction.ArrayLoadInstruction;
 import java.lang.classfile.instruction.ArrayStoreInstruction;
+import java.lang.classfile.instruction.BranchInstruction;
 import java.lang.classfile.instruction.ConstantInstruction;
 import java.lang.classfile.instruction.ExceptionCatch;
 import java.lang.classfile.instruction.FieldInstruction;
 import java.lang.classfile.instruction.InvokeDynamicInstruction;
 import java.lang.classfile.instruction.InvokeInstruction;
 import java.lang.classfile.instruction.LabelTarget;
+import java.lang.classfile.instruction.LookupSwitchInstruction;
 import java.lang.classfile.instruction.MonitorInstruction;
 import java.lang.classfile.instruction.NewMultiArrayInstruction;
 import java.lang.classfile.instruction.NewObjectInstruction;
 import java.lang.classfile.instruction.NewPrimitiveArrayInstruction;
 import java.lang.classfile.instruction.NewReferenceArrayInstruction;
 import java.lang.classfile.instruction.OperatorInstruction;
+import java.lang.classfile.instruction.TableSwitchInstruction;
 import java.lang.classfile.instruction.ThrowInstruction;
 import java.lang.classfile.instruction.TypeCheckInstruction;
 import java.lang.foreign.MemorySegment;
@@ -51,6 +55,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -71,7 +76,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Reflection-based verification of the {@link RealTimeSafe} contract.
  *
  * <p>This suite discovers every class under {@code com.benesquivelmusic.daw}
- * at test time and enforces thirteen invariants:</p>
+ * at test time and enforces fourteen invariants:</p>
  * <ol>
  *   <li>Critical-path methods carry {@code @RealTimeSafe}
  *       ({@code Mixer.mixDown}, {@code EffectsChain.process},
@@ -179,9 +184,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       lifecycle and drain-side method does not. The instruction orders
  *       the lane's descriptor ring rests on (the slot stores before the
  *       release of {@code tail}; the copy, then the nulling, before the
- *       release of {@code head}) and the honest exit's one store of
- *       {@code running} before its terminal record are pinned (story 337,
- *       rulings E21 and E60).</li>
+ *       release of {@code head}; the count's release store last, ruling
+ *       E79) and the honest exit's one store of {@code running} before its
+ *       terminal record are pinned (story 337, rulings E21, E60 and
+ *       E79).</li>
  *   <li>Story 337 — every method an FFM upcall stub binds
  *       ({@link #UPCALL_TARGETS}) catches everything: each of its
  *       potentially-throwing instructions lies inside an exception-table
@@ -189,6 +195,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       not {@code synchronized}; a scan of the main sources cross-checks
  *       that every {@code upcallStub(…)} target in the tree is on that
  *       list.</li>
+ *   <li>Story 337, ruling E82 — every backend-owned failure counter
+ *       ({@link #BACKEND_COUNTER_WRITERS}: the device-callback, input-drain,
+ *       capture and device-notification counters of the backends) is
+ *       written after the store of its fault on every path: in every method
+ *       of its class but the constructor, lambda bodies included, each write
+ *       of the count — a store of the field, or an {@code AtomicLong}
+ *       increment — has a store of the fault before it and after the previous
+ *       write of the same count, with no branch and no branch target between
+ *       the two, so a reader that reads the count first sees that fault or a
+ *       newer one.</li>
  * </ol>
  *
  * <p>These checks run as part of {@code mvn test} and fail the build if
@@ -1910,9 +1926,10 @@ class RealTimeSafeContractTest {
     private static final Map<String, Set<String>> AUDIO_HEALTH_DRAIN_SIDE_METHODS = Map.of(
             AUDIO_HEALTH_PACKAGE + ".AudioHealthLane", Set.of("count", "beats", "lostRecords", "role"),
             AUDIO_HEALTH_PACKAGE + ".AudioHealthRecord", Set.of("claimLane", "retireLane",
-                    "attachBackendCounters", "detachBackendCounters", "totals", "total", "lastFailure",
-                    "drainSamples", "lostSamples", "renderDriveBeats", "renderDriveEpoch",
-                    "deviceCallbackPeriods", "inputHalts", "backendCounters"),
+                    "attachBackendCounters", "detachBackendCounters", "attachInputCounters",
+                    "detachInputCounters", "totals", "total", "lastFailure", "read", "lostSamples",
+                    "renderDriveBeats", "renderDriveEpoch", "deviceCallbackPeriods", "inputHalts",
+                    "backendCounters"),
             AUDIO_HEALTH_PACKAGE + ".RenderThread", Set.of());
 
     /**
@@ -2975,7 +2992,7 @@ class RealTimeSafeContractTest {
 
     /**
      * The instruction orders the health lane's descriptor ring and the render
-     * drive's honest exit rest on (story 337, rulings E21 and E60), pinned
+     * drive's honest exit rest on (story 337, rulings E21, E60 and E79), pinned
      * where they are decided — in the bytecode. Every other lane test is
      * single-threaded and no test can hold a thread between two adjacent
      * stores, so a store moved across a release passes them all; its order
@@ -2988,6 +3005,12 @@ class RealTimeSafeContractTest {
      *       before the {@code GETFIELD tail} that feeds
      *       {@code AtomicLong.lazySet} — the release store that publishes
      *       it.</li>
+     *   <li>{@code AudioHealthLane.record} publishes the category's count
+     *       last: its one {@code AtomicLongArray.lazySet} follows the release
+     *       store of {@code tail}, every store of {@code lostRecords} and the
+     *       release store of the last failure, so the count is the commit of
+     *       the record and a reader that sees it already sees the descriptor
+     *       or its loss (ruling E79).</li>
      *   <li>{@code AudioHealthLane.poll} copies every field of the slot, then
      *       nulls its two references, and only then releases the slot through
      *       the {@code GETFIELD head} that feeds {@code AtomicLong.lazySet} —
@@ -3014,6 +3037,10 @@ class RealTimeSafeContractTest {
         assertThat(slotPublicationOrderViolations(record, RECORD_SLOT))
                 .as("AudioHealthLane#record writes the whole slot before the release store of tail publishes it")
                 .isEmpty();
+        assertThat(commitOrderViolations(record))
+                .as("AudioHealthLane#record publishes the count last: the count is the commit of the record "
+                        + "(story 337, ruling E79)")
+                .isEmpty();
 
         List<String> poll = ownedFieldAndInvokeSequence(codeOfTheOneMethodNamed(lane, "poll"));
         assertThat(fieldsAccessed(poll, Opcode.GETFIELD, RECORD_SLOT))
@@ -3039,6 +3066,10 @@ class RealTimeSafeContractTest {
                 ownedFieldAndInvokeSequence(codeOfTheOneMethodNamed(misordered, "record")), fixtureSlot))
                 .as("non-vacuity: a slot store below the release store of tail is reported")
                 .contains("PUTFIELD " + fixtureSlot + ".category after the release store of tail");
+        assertThat(commitOrderViolations(
+                ownedFieldAndInvokeSequence(codeOfTheOneMethodNamed(misordered, "record"))))
+                .as("non-vacuity: a count released before the release store of tail is reported")
+                .contains("the release store of the count before the release store of tail");
         assertThat(slotReleaseOrderViolations(
                 ownedFieldAndInvokeSequence(codeOfTheOneMethodNamed(misordered, "poll")), fixtureSlot))
                 .as("non-vacuity: a copy and a null below the release store of head are reported")
@@ -3172,6 +3203,42 @@ class RealTimeSafeContractTest {
     }
 
     /**
+     * Where a lane's commit order is broken (story 337, ruling E79): one
+     * release store of the count ({@code AtomicLongArray#lazySet}), and after
+     * it no release store of {@code tail}, no store of {@code lostRecords} and
+     * no release store of the last failure
+     * ({@code AtomicReferenceArray#lazySet}) — the count is published last.
+     */
+    private static List<String> commitOrderViolations(List<String> sequence) {
+        List<String> violations = new ArrayList<>();
+        List<Integer> counts = new ArrayList<>();
+        for (int i = 0; i < sequence.size(); i++) {
+            if (sequence.get(i).equals(ATOMIC_LONG_ARRAY + "#lazySet")) {
+                counts.add(i);
+            }
+        }
+        if (counts.size() != 1) {
+            violations.add("expected one release store of the count, found " + counts.size());
+        }
+        for (int count : counts) {
+            for (int release : releaseStoresOf(sequence, "tail")) {
+                if (release > count) {
+                    violations.add("the release store of the count before the release store of tail");
+                }
+            }
+            for (int i = count + 1; i < sequence.size(); i++) {
+                String entry = sequence.get(i);
+                if (entry.startsWith("PUTFIELD ") && entry.endsWith(".lostRecords")) {
+                    violations.add("the release store of the count before the store of lostRecords");
+                } else if (entry.equals(ATOMIC_REFERENCE_ARRAY + "#lazySet")) {
+                    violations.add("the release store of the count before the release store of the last failure");
+                }
+            }
+        }
+        return violations;
+    }
+
+    /**
      * Where the honest exit's order is broken (story 337, ruling E60): one
      * store of {@code running}, one call of {@code AudioHealthLane#record},
      * and the store first.
@@ -3211,20 +3278,24 @@ class RealTimeSafeContractTest {
     /**
      * Each order of {@link #theHealthLaneAndTheHaltKeepTheInstructionOrdersTheirPublicationRestsOn}
      * broken once: {@code record} releases {@code tail} before it writes the
-     * slot, {@code poll} releases {@code head} before it copies the slot, and
-     * {@code halt} publishes its record before it clears {@code running}.
-     * Never instantiated: only its bytecode is read.
+     * slot, and releases the count before {@code tail}; {@code poll} releases
+     * {@code head} before it copies the slot; and {@code halt} publishes its
+     * record before it clears {@code running}. Never instantiated: only its
+     * bytecode is read.
      */
     @SuppressWarnings("unused")
     private static final class MisorderedPublicationFixture {
 
         private final AtomicLong head = new AtomicLong();
         private final AtomicLong tail = new AtomicLong();
+        private final java.util.concurrent.atomic.AtomicLongArray counts =
+                new java.util.concurrent.atomic.AtomicLongArray(1);
         private final FixtureSlot slot = new FixtureSlot();
         private com.benesquivelmusic.daw.core.audio.health.AudioHealthLane lane;
         private volatile boolean running;
 
         private void record(int category, Throwable failure) {
+            counts.lazySet(0, counts.get(0) + 1L);
             long t = tail.get();
             tail.lazySet(t + 1L);
             slot.category = category;
@@ -3254,7 +3325,246 @@ class RealTimeSafeContractTest {
         private Object subject;
     }
 
+    /**
+     * One backend-owned failure counter and the fault its writer stores
+     * before it (story 337, ruling E82).
+     *
+     * @param className binary name of the class that declares both fields
+     * @param count     the count field: a {@code volatile long} bumped with
+     *                  {@code ++}, or an {@code AtomicLong} incremented
+     * @param fault     the {@code volatile Throwable} that keeps the newest
+     *                  fault behind the count
+     */
+    private record BackendCounterWriter(String className, String count, String fault) {
+
+        String internalName() {
+            return className.replace('.', '/');
+        }
+    }
+
+    /**
+     * Story 337, ruling E82 — every backend-owned failure count and the fault
+     * stored before it: the Java Sound capture thread's lost blocks and input
+     * halts, the native input drain's lost blocks, the ASIO buffer-switch
+     * upcall's faults and its input drain's drops, the PortAudio callback
+     * guard's faults, and the three device-notification counters. A writer
+     * added later joins this list.
+     */
+    private static final List<BackendCounterWriter> BACKEND_COUNTER_WRITERS = List.of(
+            new BackendCounterWriter("com.benesquivelmusic.daw.sdk.audio.JavaxSoundBackend",
+                    "inputBlocksLost", "lastInputFault"),
+            new BackendCounterWriter("com.benesquivelmusic.daw.sdk.audio.JavaxSoundBackend",
+                    "inputHalts", "lastInputFault"),
+            new BackendCounterWriter("com.benesquivelmusic.daw.core.audio.CallbackBackendAdapter",
+                    "inputBlocksLost", "lastInputFault"),
+            new BackendCounterWriter(ASIO_BRIDGE_CLASS, "upcallFaults", "lastUpcallFault"),
+            new BackendCounterWriter(ASIO_BRIDGE_CLASS, "publishDrops", "lastPublishFault"),
+            new BackendCounterWriter("com.benesquivelmusic.daw.core.audio.portaudio.PortAudioBackend$CallbackInvoker",
+                    "callbackFaults", "lastCallbackFault"),
+            new BackendCounterWriter("com.benesquivelmusic.daw.sdk.audio.AsioBackend",
+                    "deviceNotificationFaults", "lastDeviceNotificationFault"),
+            new BackendCounterWriter("com.benesquivelmusic.daw.sdk.audio.WasapiBackend",
+                    "deviceNotificationFaults", "lastDeviceNotificationFault"),
+            new BackendCounterWriter("com.benesquivelmusic.daw.sdk.audio.CoreAudioBackend",
+                    "deviceNotificationFaults", "lastDeviceNotificationFault"));
+
+    /**
+     * Story 337, ruling E82 (invariant 14) — every backend counter writer
+     * stores the fault before its count, so a reader that reads the count
+     * first (every {@code threadCounters()} builds its report counts first)
+     * sees the fault behind it or a newer one, never an older one. No
+     * behavioural test can hold a writer between two adjacent stores, so the
+     * order is read from the bytecode: in every method of the declaring class
+     * but the constructor (a lambda body is a method of its class), each
+     * write of the count needs a store of the fault after the previous write
+     * of that count, on every path to it — no branch and no branch target
+     * lies between the last such store and the write. Every listed count must
+     * be written at least once, so a renamed field fails instead of passing
+     * vacuously, and {@link MisorderedCounterWriterFixture} proves the check
+     * reports.
+     */
+    @Test
+    void everyBackendCounterWriterStoresItsFaultBeforeItsCount() throws Exception {
+        Map<String, ClassModel> models = new HashMap<>();
+        List<String> violations = new ArrayList<>();
+        for (BackendCounterWriter writer : BACKEND_COUNTER_WRITERS) {
+            ClassModel model = modelOf(writer.internalName(), models);
+            assertThat(model).as("%s's class file is readable", writer.className()).isNotNull();
+            int writes = 0;
+            for (MethodModel method : model.methods()) {
+                CodeAttribute code = codeOf(method);
+                if (code == null || method.methodName().stringValue().equals("<init>")) {
+                    continue;
+                }
+                List<String> sequence = ownedFieldInvokeAndBranchSequence(code);
+                writes += countWritePositions(sequence, writer.internalName(), writer.count()).size();
+                for (String violation : faultBeforeCountViolations(sequence, writer.internalName(),
+                        writer.count(), writer.fault())) {
+                    violations.add(writer.className() + "#" + method.methodName().stringValue() + ": " + violation);
+                }
+            }
+            assertThat(writes)
+                    .as("non-vacuity: %s writes %s somewhere outside its constructor — a renamed field "
+                            + "or a moved writer must update BACKEND_COUNTER_WRITERS", writer.className(),
+                            writer.count())
+                    .isPositive();
+        }
+        assertThat(violations)
+                .as("every backend counter writer stores its fault before its count (story 337, ruling E82)")
+                .isEmpty();
+
+        String fixture = internalNameOf(MisorderedCounterWriterFixture.class);
+        ClassModel misordered = modelOf(fixture, models);
+        assertThat(misordered).as("the fixture's class file is readable").isNotNull();
+        assertThat(faultBeforeCountViolations(
+                ownedFieldInvokeAndBranchSequence(codeOfTheOneMethodNamed(misordered, "countFault")),
+                fixture, "faults", "lastFault"))
+                .as("non-vacuity: a count written before its fault is reported")
+                .containsExactly("PUTFIELD " + fixture + ".faults without a store of lastFault before it");
+        assertThat(faultBeforeCountViolations(
+                ownedFieldInvokeAndBranchSequence(codeOfTheOneMethodNamed(misordered, "countNotification")),
+                fixture, "notifications", "lastFault"))
+                .as("non-vacuity: an AtomicLong increment before its fault is reported")
+                .containsExactly(fixture + ".notifications incremented without a store of lastFault before it");
+        assertThat(faultBeforeCountViolations(
+                ownedFieldInvokeAndBranchSequence(codeOfTheOneMethodNamed(misordered, "countAfterAOneBranchStore")),
+                fixture, "faults", "lastFault"))
+                .as("non-vacuity: a count written after a fault stored on one branch only is reported")
+                .containsExactly("PUTFIELD " + fixture + ".faults on a path with no store of lastFault before it");
+    }
+
+    /**
+     * {@link #ownedFieldAndInvokeSequence} with control flow marked: a
+     * {@link #BRANCH} entry for each branch or switch instruction, and a
+     * {@link #BRANCH_TARGET} entry where a label some branch, switch or
+     * exception handler jumps to is bound. A label that only bounds line
+     * numbers, local-variable ranges or a protected range is no target.
+     */
+    private static List<String> ownedFieldInvokeAndBranchSequence(CodeAttribute code) {
+        Set<Label> targets = new HashSet<>();
+        for (CodeElement element : code) {
+            if (element instanceof BranchInstruction branch) {
+                targets.add(branch.target());
+            } else if (element instanceof TableSwitchInstruction table) {
+                targets.add(table.defaultTarget());
+                table.cases().forEach(switchCase -> targets.add(switchCase.target()));
+            } else if (element instanceof LookupSwitchInstruction lookup) {
+                targets.add(lookup.defaultTarget());
+                lookup.cases().forEach(switchCase -> targets.add(switchCase.target()));
+            }
+        }
+        code.exceptionHandlers().forEach(handler -> targets.add(handler.handler()));
+        List<String> sequence = new ArrayList<>();
+        for (CodeElement element : code) {
+            if (element instanceof FieldInstruction field) {
+                sequence.add(field.opcode() + " " + field.owner().asInternalName() + "."
+                        + field.name().stringValue());
+            } else if (element instanceof InvokeInstruction invoke) {
+                sequence.add(invoke.owner().asInternalName() + "#" + invoke.name().stringValue());
+            } else if (element instanceof BranchInstruction || element instanceof TableSwitchInstruction
+                    || element instanceof LookupSwitchInstruction) {
+                sequence.add(BRANCH);
+            } else if (element instanceof LabelTarget bound && targets.contains(bound.label())) {
+                sequence.add(BRANCH_TARGET);
+            }
+        }
+        return sequence;
+    }
+
+    /** A branch or switch instruction in {@link #ownedFieldInvokeAndBranchSequence}. */
+    private static final String BRANCH = "BRANCH";
+
+    /** A bound branch, switch or exception-handler target in {@link #ownedFieldInvokeAndBranchSequence}. */
+    private static final String BRANCH_TARGET = "BRANCH_TARGET";
+
+    /**
+     * The positions in {@code sequence} of the writes of {@code owner.count}:
+     * a {@code PUTFIELD} of it, or a {@code GETFIELD} of it whose next access
+     * or call is {@code AtomicLong#incrementAndGet}.
+     */
+    private static List<Integer> countWritePositions(List<String> sequence, String owner, String count) {
+        List<Integer> writes = new ArrayList<>();
+        String field = owner + "." + count;
+        for (int i = 0; i < sequence.size(); i++) {
+            String entry = sequence.get(i);
+            if (entry.equals("PUTFIELD " + field)
+                    || entry.equals("GETFIELD " + field) && i + 1 < sequence.size()
+                            && sequence.get(i + 1).equals(ATOMIC_LONG + "#incrementAndGet")) {
+                writes.add(i);
+            }
+        }
+        return writes;
+    }
+
+    /**
+     * Where a backend counter writer's order is broken (story 337, ruling
+     * E82): a write of {@code owner.count} with no {@code PUTFIELD} of
+     * {@code owner.fault} between the previous write of the count (or the
+     * method's start) and it, or with a {@link #BRANCH} or a
+     * {@link #BRANCH_TARGET} between the last such store and it — a path
+     * reaches the write that never ran the store.
+     *
+     * @param sequence the method's {@link #ownedFieldInvokeAndBranchSequence}
+     */
+    private static List<String> faultBeforeCountViolations(List<String> sequence, String owner,
+                                                           String count, String fault) {
+        List<String> violations = new ArrayList<>();
+        String faultStore = "PUTFIELD " + owner + "." + fault;
+        int from = 0;
+        for (int write : countWritePositions(sequence, owner, count)) {
+            List<String> before = sequence.subList(from, write);
+            int store = before.lastIndexOf(faultStore);
+            String written = sequence.get(write).startsWith("PUTFIELD ")
+                    ? sequence.get(write)
+                    : owner + "." + count + " incremented";
+            if (store < 0) {
+                violations.add(written + " without a store of " + fault + " before it");
+            } else {
+                List<String> between = before.subList(store + 1, before.size());
+                if (between.contains(BRANCH) || between.contains(BRANCH_TARGET)) {
+                    violations.add(written + " on a path with no store of " + fault + " before it");
+                }
+            }
+            from = write + 1;
+        }
+        return violations;
+    }
+
+    /**
+     * Each order of {@link #everyBackendCounterWriterStoresItsFaultBeforeItsCount}
+     * broken once: a {@code volatile long} count bumped before its fault, an
+     * {@code AtomicLong} count incremented before its fault, and a count
+     * bumped after a join that a path without the fault's store reaches.
+     * Never instantiated: only its bytecode is read.
+     */
+    @SuppressWarnings("unused")
+    private static final class MisorderedCounterWriterFixture {
+
+        private final AtomicLong notifications = new AtomicLong();
+        private volatile long faults;
+        private volatile Throwable lastFault;
+
+        private void countFault(Throwable fault) {
+            faults++;
+            lastFault = fault;
+        }
+
+        private void countNotification(Throwable fault) {
+            notifications.incrementAndGet();
+            lastFault = fault;
+        }
+
+        private void countAfterAOneBranchStore(Throwable fault, boolean keep) {
+            if (keep) {
+                lastFault = fault;
+            }
+            faults++;
+        }
+    }
+
     private static final String ATOMIC_LONG = "java/util/concurrent/atomic/AtomicLong";
+    private static final String ATOMIC_LONG_ARRAY = "java/util/concurrent/atomic/AtomicLongArray";
+    private static final String ATOMIC_REFERENCE_ARRAY = "java/util/concurrent/atomic/AtomicReferenceArray";
     private static final String CAPTURE_START_GATE = CAPTURE_CALLBACK + "$StartGate";
     private static final String CAPTURE_HALT_CHECK = "requireNoCaptureHaltSinceBaseline";
 

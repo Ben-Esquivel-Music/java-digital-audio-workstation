@@ -18,9 +18,19 @@ import java.util.OptionalLong;
  * ruling E31). A plain store allocates nothing, so the writer can be a
  * real-time driver thread. A backend folds
  * the counts of each per-stream helper (an upcall invoker, an ASIO shim)
- * into its own totals when the helper is torn down, so every count only ever
- * grows for the life of the backend instance and a quick reconfigure after a
- * burst loses nothing (failure-surfacing book §2.1).</p>
+ * into its own totals when the helper is torn down, through the shared
+ * {@link BackendCounterLedger} (story 337, ruling E90), so every count only
+ * ever grows for the life of the backend instance and a quick reconfigure
+ * after a burst loses nothing (failure-surfacing book §2.1).</p>
+ *
+ * <p>Every writer stores the fault first and bumps its count second, and
+ * every {@link AudioBackend#threadCounters()} reads the counts before the
+ * faults — the constructor's argument order. A source's report whose count
+ * includes a failure therefore carries that failure's fault or a newer one,
+ * never an older one (story 337, ruling E82). That does not hold for a sum of
+ * several reports ({@link #plus}, a ledger's view): each of its last faults is
+ * the first one present in sum order, so it need not be the fault behind the
+ * growth of the sum's count.</p>
  *
  * <p>This is a value, not a sink (book §2.7): the backend reports counts, it
  * never swallows a failure on the strength of a default. Building one
@@ -32,8 +42,11 @@ import java.util.OptionalLong;
  * @param inputBlocksLost           captured input blocks lost on a backend
  *                                  input thread ({@code audio.input}); {@code >= 0}
  * @param inputHalts                backend input threads that ended on a fault
- *                                  they could not continue past (a broken line,
- *                                  a {@link VirtualMachineError}); {@code >= 0}
+ *                                  they could not continue past: a capture
+ *                                  source that stops delivering — a throwing
+ *                                  or an empty read — while its stream is
+ *                                  open, or a {@link VirtualMachineError}
+ *                                  (story 337, rulings E17 and E83); {@code >= 0}
  * @param deviceNotificationFaults  device-notification upcalls whose handling
  *                                  failed ({@code audio.device}); {@code >= 0}
  * @param deviceCallbackPeriods     the device-callback heartbeat: periods the

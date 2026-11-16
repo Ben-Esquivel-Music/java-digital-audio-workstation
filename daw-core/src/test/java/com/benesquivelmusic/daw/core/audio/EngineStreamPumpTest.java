@@ -302,7 +302,7 @@ class EngineStreamPumpTest {
         assertThat(engine.audioHealth().lastFailure(AudioFailureCategory.RENDER_HALTED))
                 .containsSame(lastThrown.get());
         List<AudioFailureSample> samples = new java.util.ArrayList<>();
-        engine.audioHealth().drainSamples(samples::add);
+        engine.audioHealth().read(samples::add);
         List<AudioFailureSample> halts = samples.stream()
                 .filter(sample -> sample.category() == AudioFailureCategory.RENDER_HALTED)
                 .toList();

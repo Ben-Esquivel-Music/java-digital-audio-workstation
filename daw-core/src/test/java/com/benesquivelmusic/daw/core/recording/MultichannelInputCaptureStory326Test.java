@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.core.recording;
 
 import com.benesquivelmusic.daw.core.audio.*;
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCategory;
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.track.*;
 import com.benesquivelmusic.daw.core.transport.Transport;
@@ -946,6 +948,111 @@ class MultichannelInputCaptureStory326Test {
         } finally {engine.stopAudioOutput();engine.shutdown();}
     }
 
+    /**
+     * Story 337, ruling E86: a second input device's own-thread failures reach the engine's health record
+     * as input failures while it is open, are folded when it closes, and a reopen never counts them twice.
+     */
+    @Test void aSecondInputDevicesThreadCountersReachTheHealthRecordAsInputAndFoldWhenItCloses() {
+        PatternBackend backend = new PatternBackend();
+        AudioEngine engine = engine(backend, 2);
+        List<Track> tracks = List.of(track("Near", 0, 1, 0), track("Far", 0, 1, 1));
+        AudioHealthRecord health = engine.audioHealth();
+        IllegalStateException callbackFault = new IllegalStateException("the second interface's callback threw");
+        AudioBackendException inputFault = new AudioBackendException("input from “Interface B” stopped delivering audio");
+        BackendThreadCounters history = new BackendThreadCounters(2, 3, 1, 0, OptionalLong.of(480),
+                Optional.of(callbackFault), Optional.of(inputFault), Optional.empty());
+        try {
+            engine.startAudioInputOutput(tracks);
+            PatternBackend sibling = backend.sibling;
+            sibling.counters = history;
+
+            assertThat(health.total(AudioFailureCategory.INPUT))
+                    .as("its callback faults, lost blocks and halt count as lost input").isEqualTo(6);
+            assertThat(health.total(AudioFailureCategory.CALLBACK)).as("never audio.callback").isZero();
+            assertThat(health.inputHalts()).isEqualTo(1);
+            assertThat(health.lastFailure(AudioFailureCategory.INPUT)).containsSame(inputFault);
+            assertThat(health.deviceCallbackPeriods()).as("its device heartbeat is not the stream's").isEmpty();
+
+            engine.stopAudioOutput();
+            sibling.counters = new BackendThreadCounters(20, 30, 4, 0, OptionalLong.of(900),
+                    Optional.of(callbackFault), Optional.of(inputFault), Optional.empty());
+            assertThat(health.total(AudioFailureCategory.INPUT))
+                    .as("folded at the close, and a closed device is no longer read").isEqualTo(6);
+            assertThat(health.inputHalts()).isEqualTo(1);
+
+            backend.siblingCounters = history;
+            engine.startAudioInputOutput(tracks);
+            assertThat(backend.sibling).isNotSameAs(sibling);
+            assertThat(health.total(AudioFailureCategory.INPUT))
+                    .as("a reopened device's history is its baseline, never counted twice").isEqualTo(6);
+            backend.sibling.counters = new BackendThreadCounters(2, 4, 1, 0, OptionalLong.empty(),
+                    Optional.empty(), Optional.empty(), Optional.empty());
+            assertThat(health.total(AudioFailureCategory.INPUT)).as("only its growth counts").isEqualTo(7);
+        } finally { engine.stopAudioOutput(); engine.shutdown(); }
+    }
+
+    /**
+     * Story 337, ruling E95: a {@link VirtualMachineError} from a second input device's counter report at its
+     * close costs the one Stop that met it — the device is already closed — and nothing later: the next Stop
+     * closes the stream, and the next start opens and counts the new device's failures.
+     */
+    @Test void aVirtualMachineErrorFromAnInputDevicesReportAtItsCloseCostsOnlyTheStopThatMetIt() {
+        PatternBackend backend = new PatternBackend();
+        AudioEngine engine = engine(backend, 2);
+        List<Track> tracks = List.of(track("Near", 0, 1, 0), track("Far", 0, 1, 1));
+        AudioHealthRecord health = engine.audioHealth();
+        InternalError fatal = new InternalError("the second interface's counter page is gone");
+        PatternBackend failing = null;
+        try {
+            engine.startAudioInputOutput(tracks);
+            failing = backend.sibling;
+            failing.reportFailure = fatal;
+
+            assertThatThrownBy(engine::stopAudioOutput).as("the input device's close met it").isSameAs(fatal);
+            assertThat(failing.open).as("the input device was closed before its fold").isFalse();
+            assertThatCode(engine::stopAudioOutput).as("the next Stop folds the frozen device without calling it")
+                    .doesNotThrowAnyException();
+            assertThat(engine.isStreamOpen()).isFalse();
+            assertThat(backend.open).as("the stream's own device was closed").isFalse();
+
+            engine.startAudioInputOutput(tracks);
+            assertThat(backend.sibling).isNotSameAs(failing);
+            long input = health.read(sample -> { }).total(AudioFailureCategory.INPUT);
+            backend.sibling.counters = new BackendThreadCounters(0, 2, 0, 0, OptionalLong.empty(), Optional.empty(),
+                    Optional.of(new IllegalStateException("two blocks of Interface B were dropped")), Optional.empty());
+            assertThat(health.read(sample -> { }).total(AudioFailureCategory.INPUT))
+                    .as("the new input device is counted: the health channel is not blind").isEqualTo(input + 2);
+        } finally {
+            if (failing != null) failing.reportFailure = null;
+            engine.stopAudioOutput(); engine.shutdown();
+        }
+    }
+
+    /** Story 337, ruling E95: Play directly after that failed Stop reaps the half-stopped stream and opens. */
+    @Test void aStartDirectlyAfterAStopThatMetAVirtualMachineErrorAtAnInputDevicesCloseOpens() {
+        PatternBackend backend = new PatternBackend();
+        AudioEngine engine = engine(backend, 2);
+        InternalError fatal = new InternalError("the second interface's counter page is gone");
+        PatternBackend failing = null;
+        try {
+            engine.startAudioInputOutput(List.of(track("Near", 0, 1, 0), track("Far", 0, 1, 1)));
+            failing = backend.sibling;
+            failing.reportFailure = fatal;
+            assertThatThrownBy(engine::stopAudioOutput).as("fixture: the input device's close met it").isSameAs(fatal);
+            int opens = backend.opens;
+
+            assertThatCode(engine::startAudioOutput).as("the frozen device costs the start nothing")
+                    .doesNotThrowAnyException();
+
+            assertThat(engine.isStreamOpen()).isTrue();
+            assertThat(engine.isRenderDriveAlive()).isTrue();
+            assertThat(backend.opens).as("the half-stopped stream was closed and opened again").isEqualTo(opens + 1);
+        } finally {
+            if (failing != null) failing.reportFailure = null;
+            engine.stopAudioOutput(); engine.shutdown();
+        }
+    }
+
     @Test void retainedSiblingCannotSkipPrimaryCloseOrBeReopenedOver() {
         PatternBackend backend=new PatternBackend(); AudioEngine engine=engine(backend,2);
         engine.startAudioInputOutput(List.of(track("A",0,1,0),track("B",0,1,1)));
@@ -1008,6 +1115,10 @@ class MultichannelInputCaptureStory326Test {
         double openedRate=48000,siblingRate=48000;
         RoundTripLatency primaryLatency = RoundTripLatency.UNKNOWN;
         PatternBackend sibling;
+        /** What {@link #threadCounters()} reports; a sibling starts with {@link #siblingCounters}. */
+        volatile BackendThreadCounters counters = BackendThreadCounters.NONE, siblingCounters = BackendThreadCounters.NONE;
+        /** What {@link #threadCounters()} throws on every call instead, while set. */
+        volatile Error reportFailure;
         RenderGate renderGate;
         final List<Flow.Subscriber<? super AudioBlock>> subscribers=new CopyOnWriteArrayList<>();
         String name="Pattern ASIO";
@@ -1034,7 +1145,8 @@ class MultichannelInputCaptureStory326Test {
             if(failOpen)throw new AudioBackendException("second input refused");
             openedWidth=openedWidthOverride >= 0 ? openedWidthOverride : Math.min(maximum,width);outputWidth=format.channels();this.input=input.name();
         }
-        @Override public AudioBackend createInputBackend(){sibling=new PatternBackend();sibling.name=name;sibling.maximum=siblingMaximum >= 0 ? siblingMaximum : maximum;sibling.openedWidthOverride=siblingOpenedWidth;sibling.failOpen=failSiblingOpen;sibling.openedRate=siblingRate;sibling.terminatesOnSubscribe=siblingTerminatesOnSubscribe;return sibling;}
+        @Override public AudioBackend createInputBackend(){sibling=new PatternBackend();sibling.name=name;sibling.maximum=siblingMaximum >= 0 ? siblingMaximum : maximum;sibling.openedWidthOverride=siblingOpenedWidth;sibling.failOpen=failSiblingOpen;sibling.openedRate=siblingRate;sibling.terminatesOnSubscribe=siblingTerminatesOnSubscribe;sibling.counters=siblingCounters;return sibling;}
+        @Override public BackendThreadCounters threadCounters(){Error failure=reportFailure;if(failure!=null)throw failure;return counters;}
         @Override public void openInput(DeviceId input,com.benesquivelmusic.daw.sdk.audio.AudioFormat format,int frames,int width){
             open(input,format,frames,CaptureRequirement.REQUIRED,input,width);
         }

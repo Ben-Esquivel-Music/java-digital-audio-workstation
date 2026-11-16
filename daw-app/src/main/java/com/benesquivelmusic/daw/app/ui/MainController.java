@@ -641,10 +641,20 @@ public final class MainController {
      * ({@link #attachAudioHealthDrain}), so what the engine's real-time
      * threads record reaches this window's notifications.</p>
      *
+     * <p>Set once: a second call is refused before anything is touched, so
+     * the window keeps its one drain and the engine's history is reported
+     * once (story 337, ruling E73).</p>
+     *
      * @param funnel the installed failure funnel; must not be {@code null}
+     * @throws IllegalStateException if a funnel is already attached
      */
     public void attachFailureFunnel(FailureFunnel funnel) {
-        this.failureFunnel = Objects.requireNonNull(funnel, "funnel must not be null");
+        Objects.requireNonNull(funnel, "funnel must not be null");
+        if (failureFunnel != null) {
+            throw new IllegalStateException("The failure funnel is already attached to this window: one audio health"
+                    + " drain reports the engine's record once, for the window's life");
+        }
+        this.failureFunnel = funnel;
         if (notificationBar == null || fxDispatcher == null) {
             LOG.warning("The window has no notification bar or FX dispatcher yet, so failure toasts stay off;"
                     + " failures are logged only");
@@ -658,19 +668,18 @@ public final class MainController {
      * Story 337 (ruling E42) — registers the audio health drain over the
      * window engine's health record as a pulse participant of the window's
      * dispatcher; its baselines start at zero, so what the engine recorded
-     * before is reported on the first frame. A context with no engine — one
-     * that never ran {@link #initialize()} — has nothing to drain. A second
-     * call replaces the drain. FX thread.
+     * before is reported on the first frame. The drain is built once and
+     * lives until the window's disposal ({@link #attachFailureFunnel} is
+     * set-once), which is why its zero baselines report the record's history
+     * exactly once (story 337, rulings E42 and E73). A context with no engine
+     * — one that never ran {@link #initialize()} — has nothing to drain. FX
+     * thread.
      *
      * @param funnel the armed failure funnel
      */
     private void attachAudioHealthDrain(FailureFunnel funnel) {
         if (audioEngine == null) {
             return;
-        }
-        if (audioHealthDrainRemoval != null) {
-            audioHealthDrainRemoval.run();
-            audioHealthDrainRemoval = null;
         }
         audioHealthDrain = new AudioHealthDrain(new AudioHealthDrain.Collaborators(audioEngine.audioHealth(),
                 funnel, System::nanoTime, InstantSource.system(), this::audioDeviceDisplayName,
@@ -730,36 +739,48 @@ public final class MainController {
      * the take ends through its normal finalization and keeps what it
      * captured; it also ends a post-roll at once
      * ({@link TransportController#stopForEngineHalt()}, story 337, ruling
-     * E67), because no tail can play on a dead drive. FX thread.
+     * E67), because no tail can play on a dead drive. The Stop closes no
+     * stream; the halt's own close follows. The transport answers what its
+     * Stop did, which picks the notice's context sentence (story 337, ruling
+     * E101). FX thread.
      *
-     * @return what the transport was doing
+     * <p>Only while the open stream's render drive is the drive that halted
+     * itself ({@link AudioEngine#isRenderDriveHalted()}): a halt whose stream
+     * was already reaped and reopened by Play, replaced by a restart or a
+     * reopen, paused, closed, or is being reopened on another thread, stops
+     * nothing, touches no take, and answers
+     * {@link HaltContext#STREAM_REPLACED} (story 337, rulings E69, E70 and
+     * E72).</p>
+     *
+     * @return what the halt's Stop did, or {@link HaltContext#STREAM_REPLACED}
      */
     private HaltContext stopTransportForEngineHalt() {
+        AudioEngine engine = audioEngine;
+        if (engine == null || !engine.isRenderDriveHalted()) {
+            return HaltContext.STREAM_REPLACED;
+        }
         TransportController transport = transportController;
-        DawProject current = project;
-        if (transport == null || current == null) {
+        if (transport == null || project == null) {
             return HaltContext.IDLE;
         }
-        boolean recording = transport.isRecordingInFlight();
-        boolean rolling = current.getTransport().getState() != TransportState.STOPPED;
-        if (recording || rolling) {
-            transport.stopForEngineHalt();
-        }
-        return recording ? HaltContext.RECORDING : rolling ? HaltContext.PLAYBACK : HaltContext.IDLE;
+        return transport.stopForEngineHalt();
     }
 
     /**
      * Story 337, ruling E11 step 2 — closes the halted stream once the take
-     * allows it ({@link TransportController#closeStreamAfterEngineHalt()}).
-     * A render drive that is alive again — the stream was reopened since the
-     * halt, by Play (story 337, ruling E10) or a restart — is left alone. FX
-     * thread.
+     * allows it ({@link TransportController#closeStreamAfterEngineHalt()}),
+     * only while the open stream's render drive is the drive that halted
+     * itself ({@link AudioEngine#isRenderDriveHalted()}): a stream reaped and
+     * reopened by Play (story 337, ruling E10), replaced by a restart or a
+     * reopen, paused or closed since the halt is left alone, and nothing more
+     * is owed (story 337, ruling E69). FX thread; never waits for the
+     * engine's lifecycle lock.
      *
      * @return {@code true} when nothing more is owed
      */
     private boolean closeStreamForEngineHalt() {
         AudioEngine engine = audioEngine;
-        if (engine != null && engine.isRenderDriveAlive()) {
+        if (engine == null || !engine.isRenderDriveHalted()) {
             return true;
         }
         TransportController transport = transportController;
@@ -770,15 +791,16 @@ public final class MainController {
      * Story 337, ruling E66 — a later frame's retry of the halted stream's
      * close ({@link TransportController#retryCloseStreamAfterEngineHalt()}),
      * which only asks whether the take still defers it, so a retry never
-     * restarts a failed input cleanup or repeats its toast. A render drive
-     * that is alive again is left alone, as in
-     * {@link #closeStreamForEngineHalt()}. FX thread.
+     * restarts a failed input cleanup or repeats its toast. Only while the
+     * open stream's render drive is still the drive that halted itself, as in
+     * {@link #closeStreamForEngineHalt()} (story 337, ruling E69). FX thread;
+     * never waits for the engine's lifecycle lock.
      *
      * @return {@code true} when nothing more is owed
      */
     private boolean retryCloseStreamForEngineHalt() {
         AudioEngine engine = audioEngine;
-        if (engine != null && engine.isRenderDriveAlive()) {
+        if (engine == null || !engine.isRenderDriveHalted()) {
             return true;
         }
         TransportController transport = transportController;

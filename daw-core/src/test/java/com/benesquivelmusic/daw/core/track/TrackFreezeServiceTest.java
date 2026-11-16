@@ -1,13 +1,25 @@
 package com.benesquivelmusic.daw.core.track;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.mixer.ClapInsertEffect;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.plugin.ExternalPluginFormat;
+import com.benesquivelmusic.daw.sdk.plugin.ExternalPluginHost;
+import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
+import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
+import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
+import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.*;
 
@@ -290,6 +302,45 @@ class TrackFreezeServiceTest {
                 .isInstanceOf(NullPointerException.class);
     }
 
+    /**
+     * Story 337, ruling E77, on the production offline path: a freeze renders
+     * on an ordinary thread, so a CLAP insert's crash cannot be recorded; the
+     * freeze still completes with the crashed insert passing its input
+     * through, and the crash is logged once at SEVERE with the plugin's name
+     * and the thrown exception, as before story 337.
+     */
+    @Test
+    void aFreezeWhoseClapInsertCrashesCompletesAndLogsTheCrash() {
+        Track track = createTrackWithAudio();
+        MixerChannel channel = new MixerChannel("Crashing CLAP insert");
+        CrashingPluginHost host = new CrashingPluginHost();
+        channel.getEffectsChain().addProcessor(new ClapInsertEffect(host));
+        Logger insertLog = Logger.getLogger(ClapInsertEffect.class.getName());
+        List<LogRecord> logged = new CopyOnWriteArrayList<>();
+        Handler handler = new Handler() {
+            @Override public void publish(LogRecord entry) { logged.add(entry); }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+
+        insertLog.addHandler(handler);
+        try {
+            TrackFreezeService.freeze(track, channel, SAMPLE_RATE, TEMPO, CHANNELS);
+        } finally {
+            insertLog.removeHandler(handler);
+        }
+
+        assertThat(track.isFrozen()).as("the freeze completes").isTrue();
+        assertThat(track.getFrozenAudioData()[0]).as("the crashed insert passed its input through")
+                .hasSize(beatsToFrames(1.0)).containsOnly(0.25f);
+        assertThat(logged).singleElement().satisfies(entry -> {
+            assertThat(entry.getLevel()).isEqualTo(Level.SEVERE);
+            assertThat(entry.getMessage())
+                    .isEqualTo("CLAP plugin processing failed, falling back to pass-through: Crashing Synth FX");
+            assertThat(entry.getThrown()).isSameAs(host.crash);
+        });
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     private Track createTrackWithAudio() {
@@ -313,6 +364,85 @@ class TrackFreezeServiceTest {
     private static int beatsToFrames(double beats) {
         double seconds = beats * 60.0 / TEMPO;
         return (int) Math.round(seconds * SAMPLE_RATE);
+    }
+
+    /** A plugin host whose every block throws: a CLAP plugin that crashes in processing. */
+    private static final class CrashingPluginHost implements ExternalPluginHost {
+
+        final RuntimeException crash = new IllegalStateException("plugin crashed in process");
+
+        @Override
+        public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
+            throw crash;
+        }
+
+        @Override
+        public void reset() {
+        }
+
+        @Override
+        public int getInputChannelCount() {
+            return 2;
+        }
+
+        @Override
+        public int getOutputChannelCount() {
+            return 2;
+        }
+
+        @Override
+        public ExternalPluginFormat getFormat() {
+            return ExternalPluginFormat.CLAP;
+        }
+
+        @Override
+        public List<PluginParameter> getParameters() {
+            return List.of();
+        }
+
+        @Override
+        public double getParameterValue(int parameterId) {
+            return 0;
+        }
+
+        @Override
+        public void setParameterValue(int parameterId, double value) {
+        }
+
+        @Override
+        public int getLatencySamples() {
+            return 0;
+        }
+
+        @Override
+        public byte[] saveState() {
+            return new byte[0];
+        }
+
+        @Override
+        public void loadState(byte[] state) {
+        }
+
+        @Override
+        public PluginDescriptor getDescriptor() {
+            return new PluginDescriptor("test.crashing", "Crashing Synth FX", "1.0", "Test", PluginType.EFFECT);
+        }
+
+        @Override
+        public void initialize(PluginContext context) {
+        }
+
+        @Override
+        public void activate() {
+        }
+
+        @Override
+        public void deactivate() {
+        }
+
+        @Override
+        public void dispose() {
+        }
     }
 
     /**

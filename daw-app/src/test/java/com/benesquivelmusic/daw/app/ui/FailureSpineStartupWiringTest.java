@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.diagnostics.AudioHealthDrain;
 import com.benesquivelmusic.daw.app.diagnostics.DeclaredSubject;
 import com.benesquivelmusic.daw.app.diagnostics.FailureFunnel;
 import com.benesquivelmusic.daw.app.diagnostics.LogLineFormatter;
@@ -8,11 +9,15 @@ import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.plugin.fixtures.JarOnlyExceptions;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
+import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.audio.health.AudioFailureCategory;
 import com.benesquivelmusic.daw.core.audio.health.AudioFailureCodes;
 import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.audio.health.LaneRole;
 import com.benesquivelmusic.daw.core.audio.health.RenderThread;
+import com.benesquivelmusic.daw.sdk.audio.DeviceId;
+import com.benesquivelmusic.daw.sdk.audio.MockAudioBackend;
 
 import javafx.application.Platform;
 
@@ -48,6 +53,7 @@ import static com.benesquivelmusic.daw.app.ui.FailureSpineFixture.GUARD;
 import static com.benesquivelmusic.daw.app.ui.FailureSpineFixture.onFx;
 import static com.benesquivelmusic.daw.app.ui.FailureSpineFixture.runOnFx;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Story 336, Goals — Tests bullet 1 (the Failure Surfacing book §6.3 gate-4
@@ -87,7 +93,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * assertion on the bar or the history concerns the test's own toasts, read
  * from the history entries filtered by their messages.</p>
  *
- * <p>Two cases run the window's own {@code attachFailureFunnel} and
+ * <p>Three cases run the window's own {@code attachFailureFunnel} and
  * {@code onOpenLogFolder} on a {@code new MainController()} that is never
  * FXML-loaded nor initialized: given the notification bar
  * {@code initializeNotificationBar} would have built, it arms the toasts on
@@ -97,7 +103,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * drain on the same dispatcher (story 337, ruling E42), and a failure a render
  * thread of that engine records reaches the window's bar on the next pulse —
  * the drain's one real-wiring test; {@code AudioHealthDrainTest} drives the
- * drain itself.</p>
+ * drain itself. A halt recorded while no stream is open is the real wiring of
+ * a halt whose stream was already replaced: the window's own response stops
+ * and closes nothing (story 337, rulings E69 and E70). A second attach is
+ * refused, and the window keeps its one drain (story 337, ruling E73).</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class FailureSpineStartupWiringTest {
@@ -482,9 +491,17 @@ class FailureSpineStartupWiringTest {
                             assertThat(entry.actionLabel()).contains(OPEN_LOG_FOLDER);
                         });
 
-                // Story 337, ruling E11 — a halt of the window engine's render drive reaches the window's bar as the
-                // halt notice with Restart Audio Engine, through the window's own halt response, and latches the
-                // drain's engine fault.
+                // Story 337, rulings E11 and E70 — a halt of the window engine's render drive reaches the window's bar
+                // as the halt notice with Restart Audio Engine, through the window's own halt response, and latches
+                // the drain's engine fault. The engine's open stream renders on a live drive, so its drive is not the
+                // one that halted: the response stops and closes nothing, and the notice has no context sentence
+                // (ruling E69).
+                MockAudioBackend backend = new MockAudioBackend();
+                engine.setStreamingProvision(new StreamingProvision(backend.name(),
+                        List.of(new BackendStreamRung(backend, DeviceId.defaultFor(backend.name())))));
+                engine.startAudioOutput();
+                assertThat(engine.isRenderDriveAlive()).as("fixture: a stream is open on a live render drive")
+                        .isTrue();
                 assertThat(recordOnARenderThreadOf(engine, AudioFailureCodes.RENDER_HALTED,
                         new IllegalStateException("the mixer lost its master bus")))
                         .as("the halt recorded into the window engine's own record").isTrue();
@@ -506,6 +523,67 @@ class FailureSpineStartupWiringTest {
                             assertThat(fact.category()).isEqualTo(AudioFailureCategory.RENDER_HALTED);
                             assertThat(fact.action().label()).isEqualTo("Restart Audio Engine");
                         });
+                assertThat(engine.isStreamOpen()).as("the response closed nothing: the stream is still open")
+                        .isTrue();
+                assertThat(engine.isRenderDriveAlive()).as("and its drive still renders").isTrue();
+            } finally {
+                spine.funnel().disarmToasts();
+                runOnFx(() -> {
+                    bar.dismiss();
+                    dispatcher.dispose();
+                });
+                engine.stopAudioOutput();
+                engine.stop();
+            }
+        }
+    }
+
+    /**
+     * Story 337, ruling E73: the window's failure funnel is set once, so the
+     * window keeps the one audio health drain it built, and the engine's
+     * history — here one halt — is reported once.
+     */
+    @Test
+    void aSecondAttachOfTheFailureFunnelIsRefusedAndTheWindowKeepsItsOneDrain(@TempDir Path settings)
+            throws Exception {
+        try (FailureSpineFixture spine = detached(settings)) {
+            FxDispatcher dispatcher = new FxDispatcher();
+            NotificationHistoryService history = new NotificationHistoryService();
+            NotificationBar bar = onFx(() -> {
+                NotificationBar made = new NotificationBar();
+                made.setAnimated(false);
+                made.setAutoDismissMillis(600_000);
+                made.setHistoryService(history);
+                return made;
+            });
+            AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+            MainController window = onFx(() -> {
+                MainController made = new MainController();
+                made.setFxDispatcher(dispatcher);
+                setField(made, "notificationBar", bar);
+                setField(made, "audioEngine", engine);
+                made.attachFailureFunnel(spine.funnel());
+                return made;
+            });
+            try {
+                AudioHealthDrain drain = onFx(() -> window.audioHealthDrain().orElseThrow());
+                assertThat(recordOnARenderThreadOf(engine, AudioFailureCodes.RENDER_HALTED,
+                        new IllegalStateException("the mixer lost its master bus")))
+                        .as("fixture: the halt recorded into the window engine's own record").isTrue();
+                runOnFx(dispatcher::pulse);
+                FailureSpineFixture.await("the halt notice on the window's bar", () -> !haltEntries(history).isEmpty());
+                assertThat(onFx(drain::engineFault)).as("fixture: the fact latched").isPresent();
+
+                assertThatThrownBy(() -> runOnFx(() -> window.attachFailureFunnel(spine.funnel())))
+                        .as("a second attach is refused").isInstanceOf(IllegalStateException.class)
+                        .hasMessageContaining("already attached");
+
+                assertThat(onFx(window::audioHealthDrain)).as("the window keeps its one drain").containsSame(drain);
+                assertThat(dispatcher.pulseParticipantCount()).as("the funnel's tail check and that drain")
+                        .isEqualTo(2);
+                runOnFx(dispatcher::pulse);
+                settleAFewTurns();
+                assertThat(haltEntries(history)).as("the record's history is reported once").hasSize(1);
             } finally {
                 spine.funnel().disarmToasts();
                 runOnFx(() -> {
@@ -617,6 +695,12 @@ class FailureSpineStartupWiringTest {
     /** The history entries whose messages {@code which} accepts, oldest first. */
     private static List<NotificationEntry> entries(FailureSpineFixture spine, Predicate<String> which) {
         return spine.history().getEntries().stream().filter(entry -> which.test(entry.message())).toList();
+    }
+
+    /** The halt notices in {@code history}, oldest first. */
+    private static List<NotificationEntry> haltEntries(NotificationHistoryService history) {
+        return history.getEntries().stream().filter(entry -> entry.message().startsWith("The audio engine stopped"))
+                .toList();
     }
 
     /** A few FX turns: anything posted twice would have shown by then. */

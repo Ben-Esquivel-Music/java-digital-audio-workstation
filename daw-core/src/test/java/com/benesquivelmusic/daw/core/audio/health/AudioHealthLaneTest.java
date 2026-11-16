@@ -11,8 +11,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Unit contract of one render thread's {@link AudioHealthLane} (story 337,
- * rulings E19, E21 and E22): exact single-writer counters, a FIFO descriptor
- * ring that drops the newest when full and counts the loss, the drain's
+ * rulings E19, E21, E22 and E80): exact single-writer counters, a FIFO
+ * descriptor ring that drops the newest when full and counts the loss, the
+ * last four slots kept for one-shot and halt records, the drain's
  * copy-null-advance order, and an out-of-range category ignored rather than
  * thrown on the real-time path.
  */
@@ -46,20 +47,59 @@ class AudioHealthLaneTest {
         assertThat(drain()).as("a drained ring is empty").isEmpty();
     }
 
+    /**
+     * A one-shot category may fill every slot, so the ring's own bound is
+     * {@link AudioHealthLane#SLOTS}: past it the newest is dropped and
+     * counted, and the counts stay exact (story 337, rulings E21 and E80).
+     */
     @Test
     void aFullRingDropsTheNewestAndCountsTheLossWhileTheCountsStayExact() {
         for (int i = 0; i < AudioHealthLane.SLOTS + 4; i++) {
-            lane.record(AudioFailureCodes.WORKER, new IllegalStateException("task " + i), null, i);
+            lane.record(AudioFailureCodes.AUTOMATION, new IllegalStateException("setter " + i), null, i);
         }
 
         List<AudioFailureSample> samples = drain();
 
-        assertThat(lane.count(AudioFailureCategory.WORKER)).isEqualTo(AudioHealthLane.SLOTS + 4);
+        assertThat(lane.count(AudioFailureCategory.AUTOMATION)).isEqualTo(AudioHealthLane.SLOTS + 4);
         assertThat(lane.lostRecords()).isEqualTo(4L);
         assertThat(samples).extracting(AudioFailureSample::detail)
                 .as("the first occurrences survive; the newest were dropped")
                 .containsExactly(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
         assertThat(record.lostSamples()).isEqualTo(4L);
+    }
+
+    /**
+     * Story 337, ruling E80: a streaming category fills at most
+     * {@link AudioHealthLane#STREAMING_SLOTS} slots and is counted lost past
+     * them, while {@code audio.automation}, {@code audio.config} and
+     * {@code audio.render.halted} still take the last four; past the ring's
+     * own bound every category is lost. The counts stay exact throughout.
+     */
+    @Test
+    void streamingRecordsLeaveFourSlotsForOneShotAndHaltRecords() {
+        for (int i = 0; i < AudioHealthLane.SLOTS; i++) {
+            lane.record(AudioFailureCodes.WORKER, new IllegalStateException("task " + i), null, i);
+        }
+        lane.record(AudioFailureCodes.AUTOMATION, new IllegalStateException("setter"), "cutoff", 100);
+        lane.record(AudioFailureCodes.CONFIG, null, "return buses", 101);
+        lane.record(AudioFailureCodes.RENDER_HALTED, new IllegalStateException("halt"), "stream", 102);
+        lane.record(AudioFailureCodes.AUTOMATION, new IllegalStateException("setter"), "resonance", 103);
+        lane.record(AudioFailureCodes.AUTOMATION, new IllegalStateException("setter"), "drive", 104);
+        lane.record(AudioFailureCodes.RENDER_HALTED, new IllegalStateException("halt"), "stream", 105);
+        lane.record(AudioFailureCodes.WORKER, new IllegalStateException("task"), null, 106);
+
+        List<AudioFailureSample> samples = drain();
+
+        assertThat(samples).extracting(AudioFailureSample::detail)
+                .as("twelve streaming descriptors, then the four one-shot and halt records")
+                .containsExactly(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 100, 101, 102, 103);
+        assertThat(lane.lostRecords())
+                .as("four streaming records past twelve, then one of each kind past sixteen")
+                .isEqualTo(7L);
+        assertThat(lane.count(AudioFailureCategory.WORKER)).isEqualTo(AudioHealthLane.SLOTS + 1);
+        assertThat(lane.count(AudioFailureCategory.AUTOMATION)).isEqualTo(3);
+        assertThat(lane.count(AudioFailureCategory.CONFIG)).isEqualTo(1);
+        assertThat(lane.count(AudioFailureCategory.RENDER_HALTED)).isEqualTo(2);
     }
 
     @Test
@@ -73,7 +113,7 @@ class AudioHealthLaneTest {
         assertThat(slot.subject).as("the subject reference is released").isNull();
 
         for (int i = 0; i < AudioHealthLane.SLOTS; i++) {
-            lane.record(AudioFailureCodes.DSP, null, null, i);
+            lane.record(AudioFailureCodes.CONFIG, null, null, i);
         }
         assertThat(drain()).as("every slot is reusable after a drain").hasSize(AudioHealthLane.SLOTS);
         assertThat(lane.lostRecords()).isZero();
@@ -129,7 +169,7 @@ class AudioHealthLaneTest {
 
     private List<AudioFailureSample> drain() {
         List<AudioFailureSample> samples = new ArrayList<>();
-        record.drainSamples(samples::add);
+        record.read(samples::add);
         return samples;
     }
 

@@ -114,6 +114,29 @@ class ProcessorRegistryTest {
         }
     }
 
+    /**
+     * Story 337, ruling E89: the name a failure notice gives an effect is the
+     * one its insert slot shows — the {@code @InsertEffect(displayName)} of
+     * its class, read for any class; a class with no declaration has none.
+     */
+    @Test
+    void everyKnownProcessorDeclaresTheNameItsInsertSlotShows() {
+        for (InsertEffectType type : registry.availableTypes()) {
+            assertThat(ProcessorRegistry.declaredDisplayName(registry.processorClassFor(type)))
+                    .as("the declared name of %s", type)
+                    .contains(type.getDisplayName());
+        }
+        AudioProcessor undeclared = new AudioProcessor() {
+            @Override public int getInputChannelCount() { return 2; }
+            @Override public int getOutputChannelCount() { return 2; }
+            @Override public void process(float[][] in, float[][] out, int frames) { }
+            @Override public void reset() { }
+        };
+        assertThat(ProcessorRegistry.declaredDisplayName(undeclared.getClass()))
+                .as("a class with no @InsertEffect declares no name")
+                .isEmpty();
+    }
+
     @Test
     void shouldCreateGainStagingWithZeroDefaultGain() {
         AudioProcessor processor = registry.createProcessor(

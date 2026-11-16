@@ -95,9 +95,11 @@ final class OfflineStemRenderer implements AutoCloseable {
             mixer.prepareForPlayback(audioChannels, blockSize);
         }
         this.allTracks = project.getTracks();
-        // Story 337, ruling E20: an offline render runs on no render thread,
-        // so nothing is recorded; the record is explicit, never defaulted
-        // (failure-surfacing book §2.7).
+        // Story 337, ruling E20: an offline render runs on no render thread —
+        // the pipeline keeps its blocks, inserts included, off the engine's
+        // worker pool (ruling E75) — so nothing is recorded; the record is
+        // explicit, never defaulted (failure-surfacing book §2.7). A site that
+        // cannot record logs instead (rulings E76 and E77).
         this.pipeline = new RenderPipeline(format,
                 Math.max(1, allTracks.size()), blockSize, new AudioHealthRecord());
 

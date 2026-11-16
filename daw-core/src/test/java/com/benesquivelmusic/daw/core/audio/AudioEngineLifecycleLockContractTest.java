@@ -44,12 +44,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <ol>
  *   <li><strong>Derives the root set from the CODE, not from a naming
  *       convention.</strong> A method is a root because its bytecode calls
- *       {@link ReentrantLock#lock()}, not because it is called
- *       {@code …Locked}. That matters: {@code setFormat} and
+ *       {@link ReentrantLock#lock()} — or {@link ReentrantLock#tryLock()},
+ *       as {@code closeHaltedStream} does (story 337, ruling E69) — not
+ *       because it is called {@code …Locked}. One predicate,
+ *       {@link #isAcquisition(String)}, tells an acquisition for the root
+ *       derivation, the region scan and the pairing check alike, so a body
+ *       that acquires through {@code tryLock} cannot fall outside the
+ *       sentinel. That matters: {@code setFormat} and
  *       {@code setEngineSettings} hold the lock around an INLINE body and
  *       have no {@code …Locked} method at all, so a name-based root set
  *       silently excluded them — and would exclude the next method written
- *       the same way. Within a root, only the calls between {@code lock()}
+ *       the same way. Within a root, only the calls between the acquisition
  *       and {@code unlock()} are attributed to the critical section, which is
  *       what keeps the public wrappers' post-unlock
  *       {@code announcements.deliver()} out of it.</li>
@@ -106,9 +111,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li><strong>Regions are read in bytecode order, not over a CFG.</strong>
  *       The lock/unlock toggle assumes the shape javac emits for
  *       {@code lock(); try { … } finally { unlock(); … }} — the shape every
- *       acquirer uses, and the shape
- *       {@link #everyLockAcquisitionIsPairedWithAnUnlock()} asserts. Code
- *       that acquired the lock inside a loop or a branch could be
+ *       waiting acquirer uses — or for
+ *       {@code if (!tryLock()) return …; try { … } finally { unlock(); … }},
+ *       the shape of the one acquirer that never waits; both are the shape
+ *       {@link #everyLockAcquisitionIsPairedWithAnUnlock()} asserts. In the
+ *       {@code tryLock} shape the refused branch's early return falls inside
+ *       the linear region although the lock is not held there, which can only
+ *       attribute MORE to the critical section, never less. A {@code return}
+ *       inside the try that is not its last statement ends the linear region
+ *       early: javac copies the {@code finally} before every {@code return},
+ *       so whatever follows the first copy's {@code unlock()} reads as outside
+ *       the lock. {@code closeHaltedStream} therefore hands its whole body to
+ *       {@code closeHaltedStreamLocked}, which {@link #REQUIRED_ROOTS} names.
+ *       Code that acquired the lock inside a loop or a branch could be
  *       mis-attributed.</li>
  *   <li><strong>The cross-lock field scan sees only DIRECT reads on the
  *       graphLock side.</strong>
@@ -190,7 +205,7 @@ class AudioEngineLifecycleLockContractTest {
             "com/benesquivelmusic/daw/core/audio/StreamingProvision",
             // Story 337: the engine-owned audio health record. Its backend
             // counter attach/detach run under the lock and take only the
-            // record's own private monitor, which nothing waiting on this lock
+            // record's own private monitors, which nothing waiting on this lock
             // ever holds; the attach reads AudioBackend.threadCounters() for
             // its baseline (the backend contract, below). The
             // backend::threadCounters method reference the engine hands it
@@ -270,7 +285,10 @@ class AudioEngineLifecycleLockContractTest {
             "startAudioInputOutput", "stopAudioOutput", "pauseAudioOutput",
             // The two with no …Locked body — the hole a name-derived root set
             // had, and the reason this test reads lock acquisitions instead.
-            "setFormat", "setEngineSettings");
+            "setFormat", "setEngineSettings",
+            // The one that acquires with tryLock and never waits (story 337,
+            // ruling E69) — the hole a lock()-only derivation had.
+            "closeHaltedStream");
 
     /**
      * Lock-held bodies the closure MUST contain. Naming them documents which
@@ -281,7 +299,10 @@ class AudioEngineLifecycleLockContractTest {
             "startLocked", "stopLocked", "startAudioOutputLocked",
             "startAudioInputOutputLocked", "stopAudioOutputLocked",
             "pauseAudioOutputLocked", "resumeAudioOutputLocked",
-            "setStreamingProvisionLocked");
+            "setStreamingProvisionLocked",
+            // Reached only from closeHaltedStream's tryLock region, so it
+            // proves the region scan opens on tryLock too.
+            "closeHaltedStreamLocked");
 
     /**
      * The bodies that run inside {@code synchronized (graphLock)} — the OTHER
@@ -407,7 +428,7 @@ class AudioEngineLifecycleLockContractTest {
         Map<String, MethodModel> engineMethods = engineMethodsByKey();
         List<String> unbalanced = new ArrayList<>();
         for (Map.Entry<String, MethodModel> entry : engineMethods.entrySet()) {
-            int acquires = countCalls(entry.getValue(), REENTRANT_LOCK, "lock");
+            int acquires = countAcquisitions(entry.getValue());
             int releases = countCalls(entry.getValue(), REENTRANT_LOCK, "unlock");
             // javac duplicates the finally block, so releases >= acquires.
             if (acquires > 0 && releases < acquires) {
@@ -430,7 +451,7 @@ class AudioEngineLifecycleLockContractTest {
                 .toList();
 
         assertThat(locks)
-                .as("the region scan toggles on ANY ReentrantLock#lock call in"
+                .as("the region scan toggles on ANY ReentrantLock acquisition in"
                         + " AudioEngine's bytecode, which is only sound while there is one"
                         + " such lock. A second one means the scan must start"
                         + " distinguishing receivers")
@@ -643,7 +664,7 @@ class AudioEngineLifecycleLockContractTest {
     private static List<String> acquirerNames() throws IOException {
         List<String> names = new ArrayList<>();
         for (Map.Entry<String, MethodModel> entry : engineMethodsByKey().entrySet()) {
-            if (countCalls(entry.getValue(), REENTRANT_LOCK, "lock") > 0) {
+            if (countAcquisitions(entry.getValue()) > 0) {
                 names.add(simpleName(entry.getKey()));
             }
         }
@@ -651,8 +672,37 @@ class AudioEngineLifecycleLockContractTest {
     }
 
     /**
-     * The instructions that appear between a {@code lifecycleLock.lock()} and
-     * its matching {@code unlock()}, in bytecode order. The lock/unlock calls
+     * Whether a {@link ReentrantLock} method of this name acquires the lock:
+     * {@code lock}, {@code lockInterruptibly} or {@code tryLock} (either
+     * overload). The root derivation, the region scan and the pairing check
+     * all ask this one predicate, so they cannot disagree about which bodies
+     * hold the lock.
+     */
+    private static boolean isAcquisition(String name) {
+        return name.equals("lock") || name.equals("lockInterruptibly") || name.equals("tryLock");
+    }
+
+    /** How many {@link ReentrantLock} acquisitions ({@link #isAcquisition}) {@code method} makes. */
+    private static int countAcquisitions(MethodModel method) {
+        CodeAttribute code = codeOf(method);
+        if (code == null) {
+            return 0;
+        }
+        int count = 0;
+        for (CodeElement element : code) {
+            if (element instanceof InvokeInstruction invoke
+                    && invoke.owner().asInternalName().equals(REENTRANT_LOCK)
+                    && isAcquisition(invoke.name().stringValue())) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * The instructions that appear between a {@code lifecycleLock} acquisition
+     * ({@link #isAcquisition}) and its matching {@code unlock()}, in bytecode
+     * order. The acquisition and unlock calls
      * themselves are excluded, so a wrapper's post-unlock
      * {@code announcements.deliver()} — emitted after the {@code finally}'s
      * unlock in both the normal and the exceptional copy — is correctly
@@ -669,7 +719,7 @@ class AudioEngineLifecycleLockContractTest {
             if (element instanceof InvokeInstruction invoke
                     && invoke.owner().asInternalName().equals(REENTRANT_LOCK)) {
                 String name = invoke.name().stringValue();
-                if (name.equals("lock") || name.equals("lockInterruptibly")) {
+                if (isAcquisition(name)) {
                     depth++;
                     continue;
                 }

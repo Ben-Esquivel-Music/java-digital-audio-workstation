@@ -72,8 +72,10 @@ import java.util.logging.Logger;
  *       (the last throwable, the streak length and the stream generation) and
  *       returns. It never touches the engine's lifecycle lock, its stream
  *       state, the transport or the backend; the engine reports the dead drive
- *       through {@code AudioEngine.isRenderDriveAlive()} and the next open
- *       reaps it. A {@link VirtualMachineError} from anywhere in the iteration
+ *       through {@code AudioEngine.isRenderDriveAlive()}, tells the drive that
+ *       halted itself apart through {@code AudioEngine.isRenderDriveHalted()}
+ *       (story 337, ruling E69), and the next open reaps it. A
+ *       {@link VirtualMachineError} from anywhere in the iteration
  *       halts at once, and an outer catch-all turns anything the specific
  *       catches miss into the same terminal exit, so the thread never dies by
  *       unwinding (story 337, ruling E9).</li>
@@ -319,7 +321,9 @@ final class EngineStreamPump {
      * {@code sink}), cancels the capture subscription, and joins the thread
      * with a bounded wait. Idempotent; never throws. A confirmed exit retires
      * the pump's lane into the engine's health record, folding its counts in
-     * (story 337, ruling E18); a timed-out join keeps the lane live.
+     * (story 337, ruling E18); its undrained descriptors stay readable until
+     * the drain takes them (story 337, ruling E81). A timed-out join keeps
+     * the lane live.
      *
      * @return {@code true} when the pump thread is confirmed exited (or was
      *         never started) — only then can the caller know nothing will
@@ -363,6 +367,17 @@ final class EngineStreamPump {
     /** Number of captured input blocks dropped because the queue was full. */
     long droppedInputBlocks() {
         return droppedInputBlocks.get();
+    }
+
+    /**
+     * Returns {@code true} once this pump ended itself through the honest
+     * exit — its terminal {@code audio.render.halted} record is counted in
+     * its own lane (story 337, rulings E10 and E69); never after a plain
+     * {@link #stop()}, which records nothing. Monotonic: once {@code true},
+     * it stays {@code true} for this pump. Any non-real-time reader.
+     */
+    boolean hasHalted() {
+        return lane.count(AudioFailureCategory.RENDER_HALTED) > 0;
     }
 
     /** Number of {@code sink} calls that threw and were survived — this pump's lane. */
@@ -553,9 +568,10 @@ final class EngineStreamPump {
      * the engine's lifecycle lock, stream state, transport or backend.
      */
     private void halt(Throwable cause) {
-        // running FIRST: the drain reacts to this record by asking
-        // AudioEngine.isRenderDriveAlive(), so the record's release store must
-        // publish a drive that already reads as dead (story 337, ruling E60).
+        // running FIRST: a thread that has seen this record and then asks
+        // AudioEngine.isRenderDriveAlive() — Play's reap, story 338's watchdog —
+        // must find the drive already dead (story 337, ruling E60);
+        // isRenderDriveHalted() reads this record itself.
         running = false;
         lane.record(AudioFailureCodes.RENDER_HALTED, cause, streamGeneration, renderFaultStreak);
     }

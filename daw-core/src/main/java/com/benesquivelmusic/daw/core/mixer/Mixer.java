@@ -704,15 +704,29 @@ public final class Mixer {
     @RealTimeSafe
     public void mixDown(float[][][] channelBuffers, float[][] outputBuffer,
                         float[][][] returnBuffers, int numFrames, TapSnapshot taps) {
-        mixDown(channelBuffers, outputBuffer, returnBuffers, numFrames, taps, masteringChain, null, false, true);
+        mixDown(channelBuffers, outputBuffer, returnBuffers, numFrames, taps, masteringChain, null, false, true,
+                true);
     }
 
-    /** Engine render entry: extra monitor/click audio joins the sum before the master stages. */
+    /**
+     * Engine render entry: extra monitor/click audio joins the sum before the
+     * master stages.
+     *
+     * <p>{@code parallelInserts} admits the installed
+     * {@link AudioGraphScheduler}: when {@code false}, every insert chain runs
+     * on the calling thread, the scheduler's own bit-exact sequential path.
+     * The render pipeline passes {@code false} for every offline block, so an
+     * offline render never runs on the engine's worker pool (story 337,
+     * ruling E75).</p>
+     *
+     * @param parallelInserts whether the installed scheduler may run insert
+     *                        chains on its worker threads for this block
+     */
     @RealTimeSafe
     public void mixDown(float[][][] channelBuffers, float[][] outputBuffer,
                         float[][][] returnBuffers, int numFrames, TapSnapshot taps,
                         MasteringChain masteringChain, float[][] masterInput, boolean bypassMaster,
-                        boolean stageMetersActive) {
+                        boolean stageMetersActive, boolean parallelInserts) {
         boolean useDouble = mixPrecision == MixPrecision.DOUBLE_64;
         double[][] acc = useDouble ? ensureAccumulator(outputBuffer.length, numFrames) : null;
         long tapEpoch = taps != null ? taps.epoch() : 0L;
@@ -753,7 +767,7 @@ public final class Mixer {
         // the single-threaded path in both cases.
         boolean[] insertsDone = ensureInsertsProcessedFlags(channelCount);
         AudioGraphScheduler scheduler = this.graphScheduler;
-        if (scheduler != null && channelCount >= 2) {
+        if (parallelInserts && scheduler != null && channelCount >= 2) {
             scheduler.processInsertsParallel(channels, channelBuffers, numFrames,
                     anySolo, Mixer::hasSidechainRouting, insertsDone, taps);
         }
@@ -2094,6 +2108,10 @@ public final class Mixer {
      * sidechain routing run their inserts on worker threads; the summing,
      * send-routing, and delay-compensation phases remain sequential so
      * the output is bit-exact with the single-threaded path.</p>
+     *
+     * <p>An offline block never uses it: the render pipeline renders every
+     * offline block's inserts on its own thread, so the engine's worker pool
+     * runs only the live render drive's blocks (story 337, ruling E75).</p>
      *
      * @param scheduler the scheduler, or {@code null} to disable parallelism
      */

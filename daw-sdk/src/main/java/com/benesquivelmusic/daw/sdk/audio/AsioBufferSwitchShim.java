@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.locks.LockSupport;
 
 /**
@@ -482,8 +483,9 @@ final class AsioBufferSwitchShim implements AutoCloseable {
      * reaches native code — the JVM would terminate the process. On a fault
      * the output half is silenced first, because {@link #bufferSwitch} writes
      * the outputs last and a half left holding the previous cycle's samples
-     * would replay as a buzz at the buffer rate; then the fault is counted and
-     * its reference stored. Nothing here logs, locks or allocates beyond the
+     * would replay as a buzz at the buffer rate; then the fault's reference is
+     * stored and it is counted, in that order (story 337, ruling E82). Nothing
+     * here logs, locks or allocates beyond the
      * already-thrown object (failure-surfacing book §2.3, §4.3); the call made
      * from the handler sits in a nested catch-all so the count still lands.</p>
      *
@@ -501,8 +503,10 @@ final class AsioBufferSwitchShim implements AutoCloseable {
             } catch (Throwable ignored) {
                 // The count below still lands; nothing may escape to native code.
             }
-            upcallFaults++;
+            // The fault first, then its count: a reader that sees the count
+            // sees this fault or a newer one (story 337, ruling E82).
             lastUpcallFault = fault;
+            upcallFaults++;
         }
     }
 
@@ -676,9 +680,10 @@ final class AsioBufferSwitchShim implements AutoCloseable {
             // misbehaving drop handler, must never kill the drain thread —
             // the next callback still has to be delivered. The lost block is
             // counted, never silent (story 337, ruling E16): this drain
-            // thread is the counter's only writer.
-            publishDrops++;
+            // thread is the counter's only writer. The fault is stored
+            // before its count (story 337, ruling E82).
             lastPublishFault = lost;
+            publishDrops++;
         }
     }
 
@@ -815,6 +820,26 @@ final class AsioBufferSwitchShim implements AutoCloseable {
     /** The newest fault behind {@link #publishDrops()}, if any. */
     Optional<Throwable> lastPublishFault() {
         return Optional.ofNullable(lastPublishFault);
+    }
+
+    /**
+     * This shim's counters as one report — the counter source
+     * {@link AsioBackend} attaches to its {@link BackendCounterLedger} for the
+     * open this shim serves (story 337, ruling E90). Upcall faults are
+     * {@code audio.callback}, publish drops are lost input blocks
+     * ({@code audio.input}), and the heartbeat is always present.
+     *
+     * <p>The counts are read before the faults: every writer here stores the
+     * fault before its count, so a count read here comes with its fault or a
+     * newer one (story 337, ruling E82). Building the report allocates, so it
+     * runs on the caller's thread, never on the driver's callback thread.</p>
+     *
+     * @return the report; never {@code null}
+     */
+    BackendThreadCounters counters() {
+        return new BackendThreadCounters(upcallFaults(), publishDrops(), 0L, 0L,
+                OptionalLong.of(deviceCallbackPeriods()),
+                lastUpcallFault(), lastPublishFault(), Optional.empty());
     }
 
     /**

@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.core.audio.portaudio;
 
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
+import com.benesquivelmusic.daw.sdk.audio.BackendCounterLedger;
+import com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters;
 
 import org.junit.jupiter.api.Test;
 
@@ -66,12 +68,14 @@ class PortAudioBackendTest {
     }
 
     /**
-     * Story 337, ruling E4: an invoker lives for one stream, so its counts are
-     * folded into the backend's totals when the stream closes — a reopen
-     * never loses them, and the retired invoker is no longer read.
+     * Story 337, rulings E4 and E90: an invoker lives for one stream, so the
+     * backend attaches its counters to the shared SDK ledger and folds them in
+     * when the stream closes — a reopen never loses them, and the retired
+     * invoker is no longer read.
      */
     @Test
     void retiringTheLiveInvokerKeepsItsCounts() {
+        Object backend = new Object();
         IllegalStateException fault = new IllegalStateException("callback failed");
         java.util.concurrent.atomic.AtomicBoolean failing =
                 new java.util.concurrent.atomic.AtomicBoolean(true);
@@ -86,31 +90,32 @@ class PortAudioBackendTest {
 
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment output = arena.allocate(16L * Float.BYTES, Float.BYTES);
-            PortAudioBackend.InvokerCounters counters =
-                    PortAudioBackend.InvokerCounters.NONE.withLive(first);
+            BackendCounterLedger counters = BackendCounterLedger.EMPTY.attached(
+                    backend, first::counters, BackendThreadCounters.NONE);
             first.invoke(MemorySegment.NULL, output, 16, MemorySegment.NULL, 0L, MemorySegment.NULL);
             failing.set(false);
             first.invoke(MemorySegment.NULL, output, 16, MemorySegment.NULL, 0L, MemorySegment.NULL);
 
-            assertThat(counters.view().faults()).isEqualTo(1L);
-            assertThat(counters.view().periods()).isEqualTo(2L);
+            assertThat(counters.view().callbackFaults()).isEqualTo(1L);
+            assertThat(counters.view().deviceCallbackPeriods()).hasValue(2L);
 
-            PortAudioBackend.InvokerCounters retired = counters.retireLive();
+            BackendCounterLedger retired = counters.detached(backend);
             failing.set(true);
             first.invoke(MemorySegment.NULL, output, 16, MemorySegment.NULL, 0L, MemorySegment.NULL);
 
             assertThat(retired.live()).isEmpty();
-            assertThat(retired.faults()).as("a retired invoker is no longer read").isEqualTo(1L);
-            assertThat(retired.periods()).isEqualTo(2L);
-            assertThat(retired.lastFault()).containsSame(fault);
-            assertThat(retired.retireLive()).as("retiring again is a no-op").isEqualTo(retired);
+            assertThat(retired.view().callbackFaults()).as("a retired invoker is no longer read").isEqualTo(1L);
+            assertThat(retired.view().deviceCallbackPeriods()).hasValue(2L);
+            assertThat(retired.view().lastCallbackFault()).containsSame(fault);
+            assertThat(retired.detached(backend)).as("retiring again is a no-op").isSameAs(retired);
 
-            PortAudioBackend.InvokerCounters reopened = retired.withLive(second);
+            BackendCounterLedger reopened = retired.attached(
+                    backend, second::counters, BackendThreadCounters.NONE);
             second.invoke(MemorySegment.NULL, output, 16, MemorySegment.NULL, 0L, MemorySegment.NULL);
 
-            assertThat(reopened.view().faults()).isEqualTo(1L);
-            assertThat(reopened.view().periods()).as("folded plus the live invoker").isEqualTo(3L);
-            assertThat(reopened.view().lastFault()).containsSame(fault);
+            assertThat(reopened.view().callbackFaults()).isEqualTo(1L);
+            assertThat(reopened.view().deviceCallbackPeriods()).as("folded plus the live invoker").hasValue(3L);
+            assertThat(reopened.view().lastCallbackFault()).containsSame(fault);
         }
     }
 

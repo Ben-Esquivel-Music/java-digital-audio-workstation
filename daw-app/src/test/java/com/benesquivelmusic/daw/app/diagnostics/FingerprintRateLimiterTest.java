@@ -317,9 +317,9 @@ class FingerprintRateLimiterTest {
         assertThat(limiter.occur(fingerprint, "device gone", 1)).as("the window rule again, anchored at the escalation")
                 .isInstanceOf(FingerprintRateLimiter.Verdict.Surface.class);
 
-        limiter.escalate(fingerprint);
+        limiter.occurEscalating(fingerprint, "device gone", 1);
         advance(31);
-        assertThat(limiter.occur(fingerprint, "device gone", 1)).as("escalate latches too")
+        assertThat(limiter.occur(fingerprint, "device gone", 1)).as("a later escalation latches again")
                 .isInstanceOf(FingerprintRateLimiter.Verdict.Counted.class);
         assertThat(limiter.occurEscalating(fingerprint("never seen"), "first", 4).total())
                 .as("an escalation may be its fingerprint's first occurrence").isEqualTo(4);
@@ -339,6 +339,80 @@ class FingerprintRateLimiterTest {
         limiter.occur(fingerprint("newcomer"), "new");
 
         assertThat(limiter.hasSeen(oldest)).as("evicted as the least recently seen").isFalse();
+    }
+
+    /** Story 337, ruling E88: only an occurrence refreshes a fingerprint's age; a query never does. */
+    @Test
+    void askingWhetherAFingerprintIsEscalatedDoesNotRefreshItsAge() {
+        Fingerprint oldest = oldestOfAFullLimiter();
+
+        assertThat(limiter.isEscalated(oldest)).isFalse();
+        limiter.occur(fingerprint("newcomer"), "new");
+
+        assertThat(limiter.hasSeen(oldest)).as("still the least recently seen, so evicted").isFalse();
+    }
+
+    @Test
+    void clearingAnEscalationDoesNotRefreshItsFingerprintsAge() {
+        Fingerprint oldest = oldestOfAFullLimiter();
+
+        limiter.clearEscalation(oldest);
+        limiter.occur(fingerprint("newcomer"), "new");
+
+        assertThat(limiter.hasSeen(oldest)).as("still the least recently seen, so evicted").isFalse();
+    }
+
+    @Test
+    void keepingANoticeDoesNotRefreshItsFingerprintsAge() {
+        Fingerprint oldest = oldestOfAFullLimiter();
+
+        limiter.noticeShown(oldest, "The oldest notice.");
+        limiter.occur(fingerprint("newcomer"), "new");
+
+        assertThat(limiter.hasSeen(oldest)).as("still the least recently seen, so evicted").isFalse();
+    }
+
+    @Test
+    void anOccurrenceRefreshesItsFingerprintsAge() {
+        Fingerprint oldest = oldestOfAFullLimiter();
+
+        limiter.occur(oldest, "again");
+        limiter.occur(fingerprint("newcomer"), "new");
+
+        assertThat(limiter.hasSeen(oldest)).as("seen again, so no longer the least recently seen").isTrue();
+        assertThat(limiter.hasSeen(fingerprint("filler-0"))).as("the next least recently seen was evicted")
+                .isFalse();
+    }
+
+    /**
+     * Story 337, ruling E88: an escalating occurrence refreshes its age too.
+     * Its escalation is cleared before the newcomer arrives, because an
+     * escalated fingerprint is never evicted (ruling E44) whatever its age.
+     */
+    @Test
+    void anEscalatingOccurrenceRefreshesItsFingerprintsAge() {
+        Fingerprint oldest = oldestOfAFullLimiter();
+
+        limiter.occurEscalating(oldest, "again", 1);
+        limiter.clearEscalation(oldest);
+        limiter.occur(fingerprint("newcomer"), "new");
+
+        assertThat(limiter.hasSeen(oldest)).as("seen again, so no longer the least recently seen").isTrue();
+        assertThat(limiter.hasSeen(fingerprint("filler-0"))).as("the next least recently seen was evicted")
+                .isFalse();
+    }
+
+    /** Story 337, ruling E88: an isolated consumer's occurrence refreshes its age too. */
+    @Test
+    void anIsolatedConsumersOccurrenceRefreshesItsFingerprintsAge() {
+        Fingerprint oldest = oldestOfAFullLimiter();
+
+        limiter.occurIsolatedConsumer(oldest, "again");
+        limiter.occur(fingerprint("newcomer"), "new");
+
+        assertThat(limiter.hasSeen(oldest)).as("seen again, so no longer the least recently seen").isTrue();
+        assertThat(limiter.hasSeen(fingerprint("filler-0"))).as("the next least recently seen was evicted")
+                .isFalse();
     }
 
     @Test
@@ -365,6 +439,20 @@ class FingerprintRateLimiterTest {
         nanos.set(123_456_789L);
 
         assertThat(limiter.nanoTime()).isEqualTo(123_456_789L);
+    }
+
+    /**
+     * Fills the limiter to its capacity: one fingerprint, then fillers seen after it, so the first is the least
+     * recently seen and the next new fingerprint evicts it.
+     */
+    private Fingerprint oldestOfAFullLimiter() {
+        Fingerprint oldest = fingerprint("oldest");
+        limiter.occur(oldest, "boom");
+        for (int i = 0; i < FingerprintRateLimiter.MAX_FINGERPRINTS - 1; i++) {
+            limiter.occur(fingerprint("filler-" + i), "filler");
+        }
+        assertThat(limiter.hasSeen(oldest)).as("fixture: kept while the limiter is just full").isTrue();
+        return oldest;
     }
 
     private void advance(long seconds) {

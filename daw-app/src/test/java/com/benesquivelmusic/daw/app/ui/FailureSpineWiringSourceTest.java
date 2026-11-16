@@ -133,8 +133,11 @@ class FailureSpineWiringSourceTest {
         String main = flat(code(UI.resolve("MainController.java")));
 
         String attach = body(main, "public void attachFailureFunnel(FailureFunnel funnel)");
-        assertThat(attach).startsWith("{ this.failureFunnel = Objects.requireNonNull(funnel, \"\");")
-                .contains("if (notificationBar == null || fxDispatcher == null) { LOG.warning(")
+        assertThat(attach).as("set once, a second attach refused before anything is touched (story 337, ruling E73)")
+                .startsWith("{ Objects.requireNonNull(funnel, \"\"); if (failureFunnel != null) {"
+                        + " throw new IllegalStateException(")
+                .contains("this.failureFunnel = funnel; if (notificationBar == null || fxDispatcher == null) {"
+                        + " LOG.warning(")
                 .as("the toasts armed, then the audio health drain registered (story 337, ruling E42)")
                 .endsWith("funnel.armToasts(fxDispatcher, notificationBar); attachAudioHealthDrain(funnel); }");
         assertThat(body(main, "} void onOpenLogFolder()"))
@@ -159,11 +162,20 @@ class FailureSpineWiringSourceTest {
     /**
      * Story 337, rulings E11, E12 and E42: the window registers its audio
      * health drain over its engine's record as a pulse participant of its own
-     * dispatcher, removes it in its disposal next to the meters, stops and
-     * closes through the Stop gesture's paths when the render drive halts, and
-     * restarts the engine through the controller on the restart's own thread.
+     * dispatcher, once (ruling E73), removes it in its disposal next to the
+     * meters, stops and closes through the Stop gesture's paths when the
+     * render drive halts — only while the open stream's drive is the halted
+     * one, the Stop closing nothing and the close never waiting for the
+     * engine's lifecycle lock (ruling E69) — and restarts the engine through
+     * the controller on the restart's own thread.
      * {@code FailureSpineStartupWiringTest} runs the registration;
-     * {@code MainControllerRestartAudioEngineTest} the restart's helper.
+     * {@code MainControllerRestartAudioEngineTest} the restart's helper. The
+     * window is never FXML-loaded in a test, so its halt fence is pinned here;
+     * {@code AudioEngineRenderDriveHaltTest} and {@code TransportControllerTest}
+     * run the engine's and the transport's halves on real objects, the
+     * transport answering what its halt Stop did (ruling E101), and
+     * {@code CountInRecordStartTest} runs the window's halt response over a
+     * real halt.
      */
     @Test
     void theWindowRegistersTheAudioHealthDrainRemovesItOnDisposalAndRestartsThroughTheController()
@@ -172,6 +184,8 @@ class FailureSpineWiringSourceTest {
 
         assertThat(body(main, "private void attachAudioHealthDrain(FailureFunnel funnel)"))
                 .startsWith("{ if (audioEngine == null) { return; }")
+                .as("one drain for the window's life: no replacement removes an earlier one (ruling E73)")
+                .doesNotContain("audioHealthDrainRemoval.run();")
                 .contains("audioHealthDrain = new AudioHealthDrain(new AudioHealthDrain.Collaborators("
                         + "audioEngine.audioHealth(), funnel, System::nanoTime, InstantSource.system(),"
                         + " this::audioDeviceDisplayName, () -> restartAudioEngine(),")
@@ -190,30 +204,46 @@ class FailureSpineWiringSourceTest {
                         "meterFeed.dispose();");
 
         assertThat(body(main, "private HaltContext stopTransportForEngineHalt()"))
-                .as("the halt's Stop is the transport's normal Stop, ending a post-roll at once (rulings E11 step 1"
-                        + " and E67)")
-                .contains("if (recording || rolling) { transport.stopForEngineHalt(); }");
+                .as("a halt whose stream is no longer the halted one stops nothing (rulings E69, E70 and E72)")
+                .startsWith("{ AudioEngine engine = audioEngine; if (engine == null || !engine.isRenderDriveHalted())"
+                        + " { return HaltContext.STREAM_REPLACED; }")
+                .as("then the transport's halt Stop runs and answers what it did, which the window hands over"
+                        + " (rulings E11 step 1, E67 and E101)")
+                .isEqualTo("{ AudioEngine engine = audioEngine; if (engine == null || !engine.isRenderDriveHalted())"
+                        + " { return HaltContext.STREAM_REPLACED; } TransportController transport = transportController;"
+                        + " if (transport == null || project == null) { return HaltContext.IDLE; }"
+                        + " return transport.stopForEngineHalt(); }");
         String transport = flat(code(UI.resolve("TransportController.java")));
-        assertThat(body(transport, "void stopForEngineHalt()"))
-                .as("the normal Stop, then the end of any post-roll on the same turn (ruling E67)")
-                .isEqualTo("{ stop(); if (project.getTransport().isInPostRoll()) { if (postRollTimer != null) {"
-                        + " postRollTimer.stop(); } finishPostRoll(); } }");
+        assertThat(body(transport, "HaltContext stopForEngineHalt()"))
+                .as("only while the transport rolls or a take is in flight, the normal Stop, then the end of any"
+                        + " post-roll on the same turn (ruling E67), neither closing the stream: the halt's own close"
+                        + " follows (ruling E69); it answers what that Stop did (ruling E101)")
+                .isEqualTo("{ Transport transport = project.getTransport(); boolean wasRolling = transport.getState()"
+                        + " != TransportState.STOPPED; if (!wasRolling && !isRecordingInFlight()) {"
+                        + " return HaltContext.IDLE; } boolean countingIn = recordCoordinator.isCountingIn();"
+                        + " boolean endedAStartedTake = stopTransport(NO_CLOSE); if (transport.isInPostRoll()) {"
+                        + " if (postRollTimer != null) { postRollTimer.stop(); } endPostRoll(NO_CLOSE); }"
+                        + " if (endedAStartedTake) { return HaltContext.RECORDING; }"
+                        + " return wasRolling && !countingIn ? HaltContext.PLAYBACK : HaltContext.IDLE; }");
         assertThat(body(main, "private boolean closeStreamForEngineHalt()"))
-                .as("a drive alive again is left alone; else the transport closes the stream (ruling E11 step 2)")
-                .contains("if (engine != null && engine.isRenderDriveAlive()) { return true; }")
+                .as("only the halted drive's stream is closed; else the transport closes it (rulings E11 step 2 and"
+                        + " E69)")
+                .contains("if (engine == null || !engine.isRenderDriveHalted()) { return true; }")
                 .endsWith("return transport == null || transport.closeStreamAfterEngineHalt(); }");
         assertThat(body(transport, "boolean closeStreamAfterEngineHalt()"))
-                .as("closes even with graph instruments, once the take no longer defers the stop")
+                .as("closes even with graph instruments, once the take no longer defers the stop, only the halted"
+                        + " stream and never waiting for the lifecycle lock (ruling E69)")
                 .isEqualTo("{ if (recordCoordinator.deferInputStreamStop()) return false;"
-                        + " audioEngine.stopAudioOutput(); return true; }");
+                        + " return audioEngine.closeHaltedStream() != AudioEngine.HaltedStreamClose.LIFECYCLE_BUSY; }");
         assertThat(body(main, "private boolean retryCloseStreamForEngineHalt()"))
-                .as("a later frame's retry leaves a live drive alone too, and retries through the transport (E66)")
-                .contains("if (engine != null && engine.isRenderDriveAlive()) { return true; }")
+                .as("a later frame's retry closes only the halted drive's stream too, through the transport (E66,"
+                        + " E69)")
+                .contains("if (engine == null || !engine.isRenderDriveHalted()) { return true; }")
                 .endsWith("return transport == null || transport.retryCloseStreamAfterEngineHalt(); }");
         assertThat(body(transport, "boolean retryCloseStreamAfterEngineHalt()"))
                 .as("the retry only asks whether the take defers the stop; it never restarts its cleanup (E66)")
                 .isEqualTo("{ if (recordCoordinator.isInputStreamStopDeferred()) return false;"
-                        + " audioEngine.stopAudioOutput(); return true; }");
+                        + " return audioEngine.closeHaltedStream() != AudioEngine.HaltedStreamClose.LIFECYCLE_BUSY; }");
 
         assertThat(body(main, "static Thread restartAudioEngine(SettingsModel settings,"
                 + " AudioEngineController controller, BooleanSupplier streamOpen, Runnable onRestarted)"))
@@ -323,6 +353,37 @@ class FailureSpineWiringSourceTest {
                 .hasEntrySatisfying("GuardedThrowables.java", calls -> assertThat(calls).isGreaterThanOrEqualTo(6))
                 .hasEntrySatisfying("LastResortLog.java", calls -> assertThat(calls).isGreaterThanOrEqualTo(3))
                 .hasEntrySatisfying("LogLineFormatter.java", calls -> assertThat(calls).isGreaterThanOrEqualTo(3));
+    }
+
+    /**
+     * Story 337, ruling E91: the undeclared rethrow is written twice in the
+     * application — once for the diagnostics package, in
+     * {@code GuardedThrowables}, which the audio health drain and
+     * {@code DeclaredSubject} share, and once in {@code FxDispatcher}, whose
+     * marshalling seam imports nothing from diagnostics (ruling E32). Read
+     * with comments stripped.
+     */
+    @Test
+    void theUndeclaredRethrowIsWrittenOnceForDiagnosticsAndOnceForTheMarshallingSeam() throws IOException {
+        Path sources = SourceScanSupport.locateDawAppModule().resolve("src/main/java");
+        Map<String, Integer> rethrows = new LinkedHashMap<>();
+        List<String> scanned = new ArrayList<>();
+        try (Stream<Path> files = Files.walk(sources)) {
+            for (Path file : files.filter(path -> path.toString().endsWith(".java")).sorted().toList()) {
+                scanned.add(file.getFileName().toString());
+                int found = occurrences(SourceScanSupport.stripComments(
+                        Files.readString(file, StandardCharsets.UTF_8)), "throw (T) ");
+                if (found > 0) {
+                    rethrows.put(file.getFileName().toString(), found);
+                }
+            }
+        }
+
+        assertThat(scanned).as("non-vacuity: the application's sources were read")
+                .contains("AudioHealthDrain.java", "DeclaredSubject.java", "GuardedThrowables.java",
+                        "FxDispatcher.java");
+        assertThat(rethrows).as("by path: diagnostics, then ui/marshal")
+                .containsExactly(entry("GuardedThrowables.java", 1), entry("FxDispatcher.java", 1));
     }
 
     private static String read(Path file) throws IOException {

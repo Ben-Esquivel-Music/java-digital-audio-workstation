@@ -7,6 +7,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
+import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.UndeclaredThrowableException;
 import java.nio.charset.StandardCharsets;
@@ -29,6 +30,7 @@ import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The guarded reading of a throwable that the funnel fingerprints and logs
@@ -221,6 +223,46 @@ class GuardedThrowablesTest {
         GuardedThrowables.endLine(out, lineStart, "<end>");
 
         assertThat(out.toString()).isEqualTo("an earlier line\n\tat loader" + lineBreak.escape() + "name<end>");
+    }
+
+    /**
+     * The diagnostics package's one undeclared rethrow (story 337, ruling
+     * E91), which the audio health drain and {@link DeclaredSubject} share:
+     * a checked throwable leaves a method that declares nothing, unwrapped.
+     */
+    @Test
+    void rethrowThrowsTheVeryThrowableACheckedOneIncluded() {
+        IOException checked = new IOException("the disk is gone");
+        Runnable declaresNothing = () -> GuardedThrowables.<RuntimeException>rethrow(checked);
+
+        assertThatThrownBy(declaresNothing::run).isSameAs(checked);
+    }
+
+    /**
+     * Story 337, ruling E91: with no funnel installed, {@link DeclaredSubject}'s
+     * guard rethrows the very throwable its work threw — a checked one
+     * included — as the work would without the guard. The process-wide
+     * default handler is the funnel's registry, so it is put back as it was.
+     */
+    @Test
+    void aDeclaredSubjectsGuardRethrowsTheVeryThrowableWhenNoFunnelIsInstalled() {
+        Thread.UncaughtExceptionHandler previous = Thread.getDefaultUncaughtExceptionHandler();
+        try {
+            Thread.setDefaultUncaughtExceptionHandler(null);
+            assertThat(FailureFunnel.installed()).as("fixture: no funnel installed").isEmpty();
+            DeclaredSubject subject = DeclaredSubject.pluginDisposal("Vintage Reverb");
+            IOException checked = new IOException("the plugin's file is gone");
+            IllegalStateException unchecked = new IllegalStateException("dispose failed");
+            Runnable throwsChecked = subject.guard(() -> GuardedThrowables.<RuntimeException>rethrow(checked));
+            Runnable throwsUnchecked = subject.guard(() -> {
+                throw unchecked;
+            });
+
+            assertThatThrownBy(throwsChecked::run).as("a checked throwable, unwrapped").isSameAs(checked);
+            assertThatThrownBy(throwsUnchecked::run).as("an unchecked one, unwrapped").isSameAs(unchecked);
+        } finally {
+            Thread.setDefaultUncaughtExceptionHandler(previous);
+        }
     }
 
     private static Throwable wrapInCompletions(Throwable held, int carriers) {

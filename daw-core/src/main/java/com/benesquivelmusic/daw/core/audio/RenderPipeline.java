@@ -39,6 +39,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.logging.Logger;
 
 /**
  * Unified per-block audio render pipeline shared by live playback and
@@ -80,11 +81,19 @@ import java.util.UUID;
  * (WYHIWYG) principle. The only difference between live and offline is
  * the output destination and the pace of consumption: live rendering is
  * driven by the audio callback at real time, offline rendering runs as
- * fast as the CPU allows.</p>
+ * fast as its calling thread allows. An offline block runs every insert on
+ * that thread, never on the engine's worker pool — the scheduler's own
+ * bit-exact sequential path (story 337, ruling E75).</p>
  *
  * @see AudioEngine#processBlock(float[][], float[][], int)
  */
 public final class RenderPipeline {
+
+    /**
+     * Written to only off a render thread: {@link #renderOffline}'s return-bus
+     * cap notice (story 337, ruling E76). The render path never reaches it.
+     */
+    private static final Logger LOG = Logger.getLogger(RenderPipeline.class.getName());
 
     /**
      * The subject of the {@code audio.config} record raised when the mixer has
@@ -99,7 +108,13 @@ public final class RenderPipeline {
 
     /** Audio format describing channel count and sample rate. */
     private final AudioFormat format;
-    private boolean offlineAutomationPrepared;
+
+    /**
+     * True while {@link #renderOffline} renders a block: its automation was
+     * already applied and its inserts run on this thread, never on the
+     * engine's worker pool (story 337, ruling E75).
+     */
+    private boolean renderingOffline;
 
     // Pre-allocated mix buffer. [channel][frame]
     private final float[][] mixBuffer;
@@ -263,13 +278,16 @@ public final class RenderPipeline {
      */
     private double trackPreviousSegmentEndBeat = Double.NaN;
 
-    // Once-per-pipeline gate of the return-bus cap notice (story 337, ruling E25).
+    // Once-per-pipeline gate of the return-bus cap notice (story 337, ruling
+    // E25), set only once the notice was delivered: a record on a render
+    // thread, or renderOffline's log record (ruling E76).
     private boolean returnBusCapNoticeRaised;
 
     /**
      * The engine's health record the render thread records into (story 337,
-     * ruling E20). An offline pipeline gets a record of its own; it runs on
-     * no render thread, so nothing is recorded there.
+     * ruling E20). An offline pipeline gets a record of its own; it renders
+     * on its caller's thread and its blocks never reach the engine's worker
+     * pool (ruling E75), so nothing is recorded there.
      */
     private final AudioHealthRecord health;
 
@@ -817,7 +835,7 @@ public final class RenderPipeline {
 
             // Apply automation lane values to mixer channel parameters
             List<MixerChannel> mixerChannels = mixer.getChannels();
-            if (!offlineAutomationPrepared) {
+            if (!renderingOffline) {
                 applyAutomation(tracks, trackCount, mixerChannels, transport, mixer);
             }
 
@@ -825,11 +843,13 @@ public final class RenderPipeline {
             // pre-allocated: an audio.config record with no throwable, the
             // bus count as detail — no logger, no formatting, no allocation on
             // the render thread (story 337, ruling E25). The plain flag stays
-            // the once-per-pipeline gate.
+            // the once-per-pipeline gate and takes the record's answer, so a
+            // block that could not record never uses the notice up (ruling
+            // E76); an offline render writes its notice before its first
+            // block (renderOffline).
             if (!returnBusCapNoticeRaised
                     && mixer.getReturnBusCount() > Mixer.MAX_RETURN_BUSES) {
-                returnBusCapNoticeRaised = true;
-                health.recordOnCurrentThread(AudioFailureCodes.CONFIG, null,
+                returnBusCapNoticeRaised = health.recordOnCurrentThread(AudioFailureCodes.CONFIG, null,
                         RETURN_BUS_CAP_SUBJECT, mixer.getReturnBusCount());
             }
 
@@ -837,15 +857,18 @@ public final class RenderPipeline {
             // measures around each track's mixer processing (insert chain
             // application, delay compensation, and summing). When not
             // present, the mixer processes all channels in one call with
-            // no instrumentation overhead.
-            if (cpuBudgetEnforcer != null) {
+            // no instrumentation overhead. An offline block takes neither the
+            // instrumented entry nor the worker pool: its inserts run on this
+            // thread (story 337, ruling E75).
+            if (cpuBudgetEnforcer != null && !renderingOffline) {
                 mixer.mixDownInstrumented(trackBuffers, mixBuffer, returnBuffers,
                         numFrames, tracks, cpuBudgetEnforcer, taps, masteringChain, masterInputBuffer, bypassMasterProcessing, playbackActive);
             } else {
                 // Mix through the mixer into the mix buffer, routing sends to
                 // return buses which are summed into the main output.
                 mixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames, taps,
-                        masteringChain, masterInputBuffer, bypassMasterProcessing, playbackActive);
+                        masteringChain, masterInputBuffer, bypassMasterProcessing, playbackActive,
+                        !renderingOffline);
             }
         } else if (mixerActive) {
             // Instrument audition remains audible while the playhead is stopped.
@@ -855,7 +878,8 @@ public final class RenderPipeline {
                 }
             }
             mixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames, taps,
-                        masteringChain, masterInputBuffer, bypassMasterProcessing, playbackActive);
+                        masteringChain, masterInputBuffer, bypassMasterProcessing, playbackActive,
+                        !renderingOffline);
         }
         if (!mixerActive) {
             if (mixer != null && !bypassMasterProcessing) {
@@ -1676,6 +1700,12 @@ public final class RenderPipeline {
      * safe — it is intended for offline export contexts where allocations
      * and blocking I/O are acceptable.</p>
      *
+     * <p>Every block runs on the calling thread, its inserts included — never
+     * on the engine's worker pool (story 337, ruling E75). A mixer with more
+     * return buses than {@link Mixer#MAX_RETURN_BUSES} is logged once per
+     * pipeline at WARNING before the first block, and the render goes on
+     * (story 337, ruling E76).</p>
+     *
      * @param transport     the transport positioned at the render start
      * @param mixer         the mixer (non-null)
      * @param tracks        the tracks to render (non-null)
@@ -1735,6 +1765,17 @@ public final class RenderPipeline {
             }
         }
 
+        // Story 337, ruling E76: an offline render runs on no render thread,
+        // so the return-bus cap cannot be recorded; it is logged once per
+        // pipeline before the first block, and the render goes on (the file
+        // matches what playback plays).
+        if (!returnBusCapNoticeRaised && mixer.getReturnBusCount() > Mixer.MAX_RETURN_BUSES) {
+            LOG.warning("Mixer has " + mixer.getReturnBusCount()
+                    + " return buses but only " + Mixer.MAX_RETURN_BUSES
+                    + " are supported; extra buses will not receive send audio");
+            returnBusCapNoticeRaised = true;
+        }
+
         // Scratch block-sized output that the pipeline writes into; we copy
         // each block into the correct offset of the caller's buffer.
         float[][] blockOut = new float[channels][blockSize];
@@ -1781,14 +1822,14 @@ public final class RenderPipeline {
                 Arrays.fill(blockOut[ch], 0, framesThisBlock, 0.0f);
             }
 
-            offlineAutomationPrepared = true;
+            renderingOffline = true;
             bypassMasterProcessing = !applyMasterProcessing;
             try {
                 renderBlock(null, blockOut, framesThisBlock,
                         transport, mixer, tracks, midiRenderer, masteringChain,
                         null, null);
             } finally {
-                offlineAutomationPrepared = false;
+                renderingOffline = false;
                 bypassMasterProcessing = false;
             }
 

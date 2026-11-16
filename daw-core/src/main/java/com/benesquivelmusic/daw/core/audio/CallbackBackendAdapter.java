@@ -723,7 +723,8 @@ public final class CallbackBackendAdapter implements AudioBackend {
      * <p>The wrapped backend's own counters (for PortAudio: its callback
      * guard's faults and the device heartbeat) plus this adapter's
      * {@code native-input-drain} lost-block count (story 337, rulings E4 and
-     * E17).</p>
+     * E17). The count is read before its fault, the reverse of the order the
+     * drain stores them in (story 337, ruling E82).</p>
      */
     @Override
     public BackendThreadCounters threadCounters() {
@@ -1279,8 +1280,11 @@ public final class CallbackBackendAdapter implements AudioBackend {
                                 openedSampleRate, inChannels, bufferFrames, scratch.clone());
                         inputPublisher.offer(block, (subscriber, dropped) -> false);
                     } catch (Throwable lostBlock) {
-                        inputBlocksLost++; // single writer: this drain thread
+                        // The fault first, then its count: a reader that sees
+                        // the count sees this fault or a newer one (story 337,
+                        // ruling E82).
                         lastInputFault = lostBlock;
+                        inputBlocksLost++; // single writer: this drain thread
                     }
                 }
             }

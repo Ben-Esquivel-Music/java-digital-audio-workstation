@@ -2,9 +2,9 @@ package com.benesquivelmusic.daw.app.diagnostics;
 
 import com.benesquivelmusic.daw.core.audio.health.AudioFailureCategory;
 import com.benesquivelmusic.daw.core.audio.health.AudioFailureSample;
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthReading;
 import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.automation.PluginParameterTarget;
-import com.benesquivelmusic.daw.sdk.plugin.ExternalPluginHost;
 
 import javafx.beans.property.ReadOnlyObjectProperty;
 import javafx.beans.property.ReadOnlyObjectWrapper;
@@ -35,20 +35,33 @@ import java.util.function.Supplier;
  *
  * <p><strong>One frame</strong>, in this order:</p>
  * <ol>
- *   <li><em>Samples.</em> Every sampled descriptor is drained; per category the
- *       drain keeps the newest throwable and subject, and the distinct anchors
- *       sampled since that category's last notice (story 337, ruling E40).</li>
- *   <li><em>Deltas.</em> Each category's total is read and compared with its
- *       baseline; baselines start at zero, so nothing counted before the drain
- *       existed is lost (story 337, ruling E42), and a delta is never negative.</li>
+ *   <li><em>One reading.</em> {@link AudioHealthRecord#read}: every count, then
+ *       every sampled descriptor, then one counter report of each attached
+ *       device, read again if a device is closed or reopened while they are
+ *       read (story 337, rulings E79, E82 and E98). A sample is kept until a
+ *       report of its category uses it, so a sample that arrives a frame
+ *       before its count still names its subject; per category the drain
+ *       keeps the distinct anchors sampled since that category's last notice
+ *       (story 337, ruling E40).</li>
+ *   <li><em>Deltas.</em> Each category's total in the reading is compared with
+ *       its baseline; baselines start at zero, so nothing counted before the
+ *       drain existed is lost (story 337, ruling E42) — the window builds one
+ *       drain for its engine, for the window's life, so the record's history is
+ *       reported once (story 337, ruling E73) — and a delta is never
+ *       negative.</li>
  *   <li><em>Halt.</em> A terminal {@code audio.render.halted} record is reacted
- *       to at once (story 337, ruling E11): the transport is stopped through the
- *       Stop gesture's path, the stream is closed once the take allows it —
- *       retried on every later frame until it is, through a query that never
- *       restarts the take's own input cleanup (story 337, ruling E66) — and one
- *       notice is escalated and latched: the halt copy with Restart Audio Engine, or, for a
+ *       to at once (story 337, ruling E11), and acted on only while the open
+ *       stream's render drive is the drive that halted itself (story 337,
+ *       ruling E69): the transport is stopped through the Stop gesture's path,
+ *       the stream is closed once the take allows it — retried on every later
+ *       frame until it is, through a query that never restarts the take's own
+ *       input cleanup (story 337, ruling E66) — and one notice is escalated and
+ *       latched: the halt copy with Restart Audio Engine, or, for a
  *       {@link VirtualMachineError}, the FATAL copy with Open Log Folder (story
- *       337, rulings E13 and E45).</li>
+ *       337, rulings E13 and E45). A halt whose stream was already reaped,
+ *       replaced, paused, closed or being reopened stops and closes nothing,
+ *       and its notice has no context sentence (story 337, rulings E70 and
+ *       E72).</li>
  *   <li><em>Input halt.</em> A backend input thread that ended on a fault
  *       escalates at once with the device-fault copy and Restart.</li>
  *   <li><em>Fold.</em> A first worker failure in the same frame as a first render
@@ -63,31 +76,35 @@ import java.util.function.Supplier;
  *       consecutive one-second buckets of the drain's monotonic clock escalates
  *       once to the ERROR fact (story 337, ruling E44).</li>
  *   <li><em>One-shot categories</em> ({@code audio.automation},
- *       {@code audio.config}) are reported once per sampled subject and are never
- *       sustained (story 337, ruling E40).</li>
+ *       {@code audio.config}) are reported once per sampled subject, each
+ *       report using as many of its subject's samples as it counted (story 337,
+ *       ruling E79), and are never sustained (story 337, ruling E40).</li>
  *   <li><em>The engine fault.</em> An escalation latches the
  *       {@linkplain #engineFaultProperty() engine-fault fact} (story 337, ruling
  *       E41); while it is latched its count and last time follow the
  *       fingerprint, and it clears on a successful restart
  *       ({@link #clearEngineFault()}) or after one fault-free second of
  *       render-drive heartbeats on a render drive started after the latch (a
- *       reopened or resumed stream), with no delta in a restart-eligible
- *       category, {@code audio.render} or any latched category (story 337,
- *       rulings E59 and E63).</li>
+ *       reopened or resumed stream; for a halt, any drive started after the
+ *       halted one, story 337, ruling E71; for an input halt, only on a stream
+ *       opened after it, story 337, ruling E87), with no delta in a
+ *       restart-eligible category, {@code audio.render} or any latched category
+ *       (story 337, rulings E59 and E63).</li>
  * </ol>
  *
  * <p>Restart Audio Engine is offered only for what a stream restart can cure —
  * the device-side categories and the halt — and Open Log Folder for the
  * render-pipeline categories (story 337, ruling E13). A notice names the
- * device, the plugin or the setting when a sample identifies one.</p>
+ * device, the plugin, the effect or the setting when a sample identifies one
+ * ({@link FailureComponentName}, story 337, ruling E89).</p>
  *
  * <p><strong>Threading.</strong> FX thread only: {@link #pulse()} is a pulse
  * participant of the window's dispatcher, and {@link #clearEngineFault()} is
- * posted to the FX thread by the restart. The drain is the record's one sample
- * consumer. A failure of a collaborator it calls — the halt response, the
- * device name — never costs the frame its reports: it is held and rethrown at
- * the end of the frame, where the dispatcher's per-participant guard reports it
- * (story 337, ruling E33).</p>
+ * posted to the FX thread by the restart. The drain is the record's one
+ * reader of {@link AudioHealthRecord#read}. A failure of a collaborator it
+ * calls — the halt response, the device name — never costs the frame its
+ * reports: it is held and rethrown at the end of the frame, where the
+ * dispatcher's per-participant guard reports it (story 337, ruling E33).</p>
  */
 public final class AudioHealthDrain {
 
@@ -126,39 +143,49 @@ public final class AudioHealthDrain {
 
     /**
      * What the window does when the render drive halts (story 337, ruling E11):
-     * the Stop gesture's paths, on the FX thread.
+     * the Stop gesture's paths, on the FX thread, acting only on the stream
+     * whose render drive halted (story 337, ruling E69).
      */
     public interface HaltResponse {
 
         /**
          * Stops the transport through the normal Stop when it is rolling or a
-         * take is in flight; the take ends through its normal finalization and
-         * keeps every block captured before the halt.
+         * take is in flight, while the open stream's render drive is the one
+         * that halted itself; the take ends through its normal finalization
+         * and keeps every block captured before the halt. The Stop closes no
+         * stream: the halt's own close follows on the same frame.
          *
-         * @return what the transport was doing, which picks the notice's context sentence
+         * @return what the halt's Stop did, which picks the notice's context sentence (ruling E101); or
+         *         {@link HaltContext#STREAM_REPLACED} when the halted stream was no longer the open one, in
+         *         which case nothing was stopped and neither close method is called for this halt (story 337,
+         *         rulings E69, E70 and E72)
          */
         HaltContext stopTransportForHalt();
 
         /**
          * The halt frame's own attempt: closes the engine's stream, even with
          * graph instruments, once the record coordinator no longer defers the
-         * input-stream stop; never reopens it. Only this attempt may act on
-         * the take's input-stream stop (story 337, ruling E66).
+         * input-stream stop — only while its render drive is the one that
+         * halted, and without waiting for the engine's lifecycle lock; never
+         * reopens it. Only this attempt may act on the take's input-stream
+         * stop (story 337, rulings E66 and E69).
          *
          * @return {@code true} when nothing more is owed; {@code false} while the take still defers the
-         *         stop, and the drain retries on its next frame through {@link #retryCloseStreamForHalt()}
+         *         stop or another lifecycle step holds the engine's lifecycle lock, and the drain retries on its
+         *         next frame through {@link #retryCloseStreamForHalt()}
          */
         boolean closeStreamForHalt();
 
         /**
          * A later frame's retry of the halted stream's close: asks the record
          * coordinator, without side effects, whether the take still defers the
-         * input-stream stop, and closes the stream once it does not — so a
-         * retry never restarts a failed input cleanup or repeats its toast
-         * (story 337, ruling E66).
+         * input-stream stop, and closes the stream once it does not — still
+         * only while its render drive is the one that halted, and without
+         * waiting for the lifecycle lock — so a retry never restarts a failed
+         * input cleanup or repeats its toast (story 337, rulings E66 and E69).
          *
          * @return {@code true} when nothing more is owed; {@code false} while the take still defers the
-         *         stop, and the drain asks again on its next frame
+         *         stop or the lifecycle lock is held, and the drain asks again on its next frame
          */
         boolean retryCloseStreamForHalt();
     }
@@ -207,6 +234,8 @@ public final class AudioHealthDrain {
     /** Each category's total as last read; starts at zero (story 337, ruling E42). */
     private final long[] baselines = new long[AudioFailureCategory.values().length];
     private final Map<AudioFailureCategory, Track> tracks = new EnumMap<>(AudioFailureCategory.class);
+    /** The samples taken from the record and not yet used in a report (story 337, ruling E79). */
+    private final UnreportedSamples unreported = new UnreportedSamples();
     private long inputHaltBaseline;
     private long beatsBaseline;
     /**
@@ -225,6 +254,11 @@ public final class AudioHealthDrain {
     private Optional<Latch> latch = Optional.empty();
     /** When the current fault-free stretch on a render drive started after the latch began. */
     private OptionalLong faultFreeSince = OptionalLong.empty();
+    /**
+     * The stream opens counted when the newest input halt escalated, while its fact is latched: the fact clears only
+     * on a stream opened after that halt, or a successful restart (story 337, ruling E87).
+     */
+    private OptionalLong inputHaltStreamOpens = OptionalLong.empty();
 
     /**
      * A drain over {@code collaborators}; nothing is read until the first
@@ -258,17 +292,18 @@ public final class AudioHealthDrain {
      */
     public void pulse() {
         Frame frame = new Frame(clockNanos.getAsLong(), wallClock.instant());
-        record.drainSamples(frame::take);
-        long[] totals = record.totals();
+        frame.reading = record.read(frame::take);
         long[] delta = new long[baselines.length];
-        for (int code = 0; code < baselines.length; code++) {
-            delta[code] = Math.max(0L, totals[code] - baselines[code]);
-            baselines[code] = Math.max(baselines[code], totals[code]);
+        for (AudioFailureCategory category : AudioFailureCategory.values()) {
+            int code = category.code();
+            long total = frame.reading.total(category);
+            delta[code] = Math.max(0L, total - baselines[code]);
+            baselines[code] = Math.max(baselines[code], total);
         }
-        long inputHalts = record.inputHalts();
+        long inputHalts = frame.reading.inputHalts();
         long inputHaltDelta = Math.max(0L, inputHalts - inputHaltBaseline);
         inputHaltBaseline = Math.max(inputHaltBaseline, inputHalts);
-        long beats = record.renderDriveBeats();
+        long beats = frame.reading.renderDriveBeats();
         boolean beatsAdvanced = beats > beatsBaseline;
         beatsBaseline = Math.max(beatsBaseline, beats);
 
@@ -339,17 +374,21 @@ public final class AudioHealthDrain {
 
     private void reactToHalt(Frame frame, long[] delta) {
         Track track = track(AudioFailureCategory.RENDER_HALTED);
-        Optional<Throwable> cause = frame.newestFailure(AudioFailureCategory.RENDER_HALTED)
-                .or(() -> record.lastFailure(AudioFailureCategory.RENDER_HALTED));
+        Optional<Throwable> cause = unreported.newestFailure(AudioFailureCategory.RENDER_HALTED)
+                .or(() -> frame.reading.lastFailure(AudioFailureCategory.RENDER_HALTED));
         HaltContext context = HaltContext.IDLE;
-        closeOwed = true;
         try {
             HaltContext answered = haltResponse.stopTransportForHalt();
             context = answered == null ? HaltContext.IDLE : answered;
         } catch (Throwable failure) {
             frame.defer(failure);
         }
-        closeTheHaltedStream(frame);
+        // A halt whose stream was already replaced stopped nothing and owes no close (story 337, rulings E70, E72).
+        boolean replaced = context == HaltContext.STREAM_REPLACED;
+        if (!replaced) {
+            closeOwed = true;
+            closeTheHaltedStream(frame);
+        }
         // The notice is posted and the fact latched whatever the response did (story 337, ruling E11, step 3).
         long weight = delta(delta, AudioFailureCategory.RENDER_HALTED);
         track.occurred(weight, frame);
@@ -357,7 +396,8 @@ public final class AudioHealthDrain {
         boolean fatal = unwrapped.filter(VirtualMachineError.class::isInstance).isPresent();
         String base = fatal
                 ? copy.audioHaltedFatal(cause.orElseThrow(), context)
-                : copy.audioHalted(pluginAnchorName(track.category, unwrapped), reason(cause, track.site), context);
+                : copy.audioHalted(FailureComponentName.pluginAnchorName(track.category, unwrapped),
+                        reason(cause, track.site), context);
         List<String> anchors = new ArrayList<>(track.anchors);
         // The render failures that led to the halt are named in its record too.
         for (String anchor : track(AudioFailureCategory.RENDER).anchors) {
@@ -365,9 +405,13 @@ public final class AudioHealthDrain {
                 anchors.add(anchor);
             }
         }
+        // A replaced halt's drive never beats again; the drive running now, or the next one, started after it, so
+        // its fact clears on that drive (story 337, ruling E71).
+        long epoch = frame.reading.renderDriveEpoch() - (replaced ? 1L : 0L);
         escalate(track, new RealTimeReport(FailureFact.Origin.RT_GUARD,
                 fatal ? FailureFact.Severity.FATAL : FailureFact.Severity.ERROR, track.fingerprint, weight, cause,
-                anchors, track.site, base, fatal ? openLogFolderAction : restartAction), frame, true);
+                anchors, track.site, base, fatal ? openLogFolderAction : restartAction), frame, true, epoch);
+        unreported.clear(AudioFailureCategory.RENDER_HALTED);
     }
 
     private void closeTheHaltedStream(Frame frame) {
@@ -390,12 +434,18 @@ public final class AudioHealthDrain {
     private void escalateInputHalt(Frame frame, long weight) {
         Track track = track(AudioFailureCategory.INPUT);
         track.occurred(weight, frame);
-        Optional<Throwable> newest = frame.newestFailure(AudioFailureCategory.INPUT)
-                .or(() -> record.lastFailure(AudioFailureCategory.INPUT));
+        // The halted input's own fault, never a lost block's or an input's whose halts did not grow (story 337,
+        // ruling E94).
+        Optional<Throwable> newest = unreported.newestFailure(AudioFailureCategory.INPUT)
+                .or(() -> frame.reading.inputHaltFault());
         String base = copy.audioSustained(AudioFailureCategory.INPUT, Optional.empty(), frame.device(),
                 track.total, track.firstSeen.orElse(frame.wall), reason(newest, track.site));
+        // A resume restarts the drive, not the input: only a stream opened after the newest input halt clears its
+        // fact (story 337, ruling E87).
+        inputHaltStreamOpens = OptionalLong.of(frame.reading.streamOpens());
         escalate(track, report(track, FailureFact.Severity.ERROR, weight, newest, List.copyOf(track.anchors), base,
-                restartAction), frame, false);
+                restartAction), frame, false, frame.reading.renderDriveEpoch());
+        unreported.clear(AudioFailureCategory.INPUT);
     }
 
     // ── the streaming categories ────────────────────────────────────────────
@@ -404,8 +454,11 @@ public final class AudioHealthDrain {
                                  boolean fold) {
         Track track = track(category);
         boolean sustained = track.occurred(weight, frame);
-        Optional<Throwable> newest = frame.newestFailure(category).or(() -> record.lastFailure(category));
-        Optional<String> name = componentName(category, frame.newestSubject(category), newest);
+        Optional<Throwable> newest = unreported.newestFailure(category)
+                .or(() -> frame.reading.lastFailure(category));
+        Optional<String> name = FailureComponentName.of(category, unreported.newestSubject(category), newest);
+        // Every branch below reports this category, so its kept samples are used (story 337, ruling E79).
+        unreported.clear(category);
         String reason = reason(newest, track.site);
         NoticeAction action = actionOf(category);
         if (halted && category == AudioFailureCategory.RENDER || fold && category == AudioFailureCategory.WORKER) {
@@ -425,7 +478,7 @@ public final class AudioHealthDrain {
             String base = copy.audioSustained(category, name, deviceFor(category, frame), track.total,
                     track.firstSeen.orElse(frame.wall), reason);
             escalate(track, report(track, FailureFact.Severity.ERROR, weight, newest, List.copyOf(track.anchors), base,
-                    action), frame, false);
+                    action), frame, false, frame.reading.renderDriveEpoch());
             return;
         }
         List<String> anchors = new ArrayList<>(track.anchors);
@@ -462,15 +515,18 @@ public final class AudioHealthDrain {
     // ── the one-shot categories ─────────────────────────────────────────────
 
     /**
-     * One report per distinct sampled subject: each counts its own samples,
-     * the last one also the unsampled remainder of the delta; with no sample
-     * at all the whole delta goes to {@link #UNKNOWN_SUBJECT} (story 337,
-     * ruling E40).
+     * One report per distinct kept subject, oldest first, until the delta is
+     * spent: each counts its own samples, the last one also the unsampled
+     * remainder of the delta; with no sample at all the whole delta goes to
+     * {@link #UNKNOWN_SUBJECT} (story 337, ruling E40). A report uses as many
+     * of its subject's samples as it counted, oldest first; every other sample
+     * stays for the next delta, so a sample that arrived before its count is
+     * named when the count arrives (story 337, ruling E79).
      */
     private void reportOneShot(Frame frame, AudioFailureCategory category, long weight) {
         Map<String, OneShot> subjects = new LinkedHashMap<>();
-        for (AudioFailureSample sample : frame.samples(category)) {
-            subjects.computeIfAbsent(subjectKey(category, sample.subject()), OneShot::new).add(sample);
+        for (AudioFailureSample sample : unreported.of(category)) {
+            subjects.computeIfAbsent(subjectKey(category, sample.subject()), OneShot::new).samples.add(sample);
         }
         if (subjects.isEmpty()) {
             subjects.put(UNKNOWN_SUBJECT, new OneShot(UNKNOWN_SUBJECT));
@@ -479,7 +535,8 @@ public final class AudioHealthDrain {
         List<OneShot> ordered = List.copyOf(subjects.values());
         for (int i = 0; i < ordered.size() && remaining > 0; i++) {
             OneShot subject = ordered.get(i);
-            long counted = i == ordered.size() - 1 ? remaining : Math.min(Math.max(1L, subject.samples), remaining);
+            long sampled = subject.samples.size();
+            long counted = i == ordered.size() - 1 ? remaining : Math.min(Math.max(1L, sampled), remaining);
             remaining -= counted;
             reportOneSubject(frame, category, subject, counted);
         }
@@ -488,21 +545,24 @@ public final class AudioHealthDrain {
     private void reportOneSubject(Frame frame, AudioFailureCategory category, OneShot subject, long weight) {
         String site = siteOf(category);
         Fingerprint fingerprint = Fingerprint.ofSite(category.slug(), subject.key);
-        Optional<Throwable> newest = subject.newest.flatMap(AudioFailureSample::failure)
-                .or(() -> subject.newest.isEmpty() ? record.lastFailure(category) : Optional.empty());
+        List<AudioFailureSample> used = subject.used(weight);
+        Optional<AudioFailureSample> newestSample = used.isEmpty() ? Optional.empty() : Optional.of(used.getLast());
+        Optional<Throwable> newest = newestSample.flatMap(AudioFailureSample::failure)
+                .or(() -> newestSample.isEmpty() ? frame.reading.lastFailure(category) : Optional.empty());
         String base;
         if (category == AudioFailureCategory.CONFIG) {
             // Only this subject's own sample states a bus count; with none, the count-free sentence (story 337,
             // ruling E64).
             base = copy.audioFirst(category, Optional.empty(), "", "",
-                    subject.newest.map(AudioFailureSample::detail).orElse(0));
+                    newestSample.map(AudioFailureSample::detail).orElse(0));
         } else {
-            Optional<String> name = componentName(category,
-                    subject.newest.flatMap(AudioFailureSample::subject), newest);
+            Optional<String> name = FailureComponentName.of(category,
+                    newestSample.flatMap(AudioFailureSample::subject), newest);
             base = copy.audioFirst(category, name, "", reason(newest, site), 0L);
         }
         funnel.reportRealTime(new RealTimeReport(FailureFact.Origin.RT_GUARD, FailureFact.Severity.WARNING,
-                fingerprint, weight, newest, List.copyOf(subject.anchors), site, base, openLogFolderAction));
+                fingerprint, weight, newest, anchorsOf(category, used), site, base, openLogFolderAction));
+        unreported.remove(category, used);
     }
 
     private static String subjectKey(AudioFailureCategory category, Optional<Object> subject) {
@@ -519,20 +579,38 @@ public final class AudioHealthDrain {
         return category == AudioFailureCategory.CONFIG ? UNKNOWN_SUBJECT : present.getClass().getName();
     }
 
+    /** The distinct anchors of the samples a one-shot report used, at most {@link #MAX_ANCHORS}. */
+    private static List<String> anchorsOf(AudioFailureCategory category, List<AudioFailureSample> used) {
+        Set<String> anchors = new LinkedHashSet<>();
+        for (AudioFailureSample sample : used) {
+            sample.failure().ifPresent(failure -> {
+                if (anchors.size() < MAX_ANCHORS) {
+                    anchors.add(anchorOf(category, failure));
+                }
+            });
+        }
+        return List.copyOf(anchors);
+    }
+
     // ── the engine fault ────────────────────────────────────────────────────
 
     /**
      * Escalates {@code report} — always shown, latched in the funnel — and
      * latches the engine fault: a halt replaces any fact, a sustained fault
-     * replaces any fact but a halt (story 337, ruling E41).
+     * replaces any fact but a halt (story 337, ruling E41). The fact clears on
+     * a render drive whose epoch is above {@code epoch}: the frame's reading's,
+     * read at the frame's start (story 337, ruling E79), or, for a halt whose
+     * stream was already replaced, one below the reading's: the halted drive
+     * never beats again, and the drive running now, or the next one, was
+     * started after it (story 337, ruling E71).
      */
-    private void escalate(Track track, RealTimeReport report, Frame frame, boolean halt) {
+    private void escalate(Track track, RealTimeReport report, Frame frame, boolean halt, long epoch) {
         funnel.escalateRealTime(report);
         track.noticeShown(frame.now);
         latched.add(track.fingerprint);
         latchedCategories.add(track.category);
         if (halt || latch.isEmpty() || !latch.get().halt()) {
-            latch = Optional.of(new Latch(track.category, record.renderDriveEpoch(), halt, report.action()));
+            latch = Optional.of(new Latch(track.category, epoch, halt, report.action()));
             faultFreeSince = OptionalLong.empty();
         }
         publishTheFault();
@@ -553,7 +631,11 @@ public final class AudioHealthDrain {
         for (AudioFailureCategory category : latchedCategories) {
             faulted |= delta(delta, category) > 0;
         }
-        boolean newerStream = record.renderDriveEpoch() > latch.get().epoch();
+        boolean newerDrive = frame.reading.renderDriveEpoch() > latch.get().epoch();
+        // An input halt's fact also waits for a stream opened after it (story 337, ruling E87).
+        boolean reopened = inputHaltStreamOpens.isEmpty()
+                || frame.reading.streamOpens() > inputHaltStreamOpens.getAsLong();
+        boolean newerStream = newerDrive && reopened;
         if (faulted || !newerStream) {
             faultFreeSince = OptionalLong.empty();
             return;
@@ -587,10 +669,11 @@ public final class AudioHealthDrain {
         tracks.values().forEach(Track::restartTheBuckets);
         latch = Optional.empty();
         faultFreeSince = OptionalLong.empty();
+        inputHaltStreamOpens = OptionalLong.empty();
         engineFault.set(Optional.empty());
     }
 
-    // ── names, reasons, sites ───────────────────────────────────────────────
+    // ── reasons, sites ──────────────────────────────────────────────────────
 
     private RealTimeReport report(Track track, FailureFact.Severity severity, long weight,
                                   Optional<Throwable> newest, List<String> anchors, String base, NoticeAction action) {
@@ -653,69 +736,6 @@ public final class AudioHealthDrain {
                 .orElse(site);
     }
 
-    /**
-     * The component a notice names, when a sample identifies one: the plugin
-     * a render failure or a halt is anchored in, a DSP or plugin sample's
-     * plugin or processor, an automation sample's parameter.
-     */
-    private static Optional<String> componentName(AudioFailureCategory category, Optional<Object> subject,
-                                                  Optional<Throwable> newest) {
-        return switch (category) {
-            case RENDER, RENDER_HALTED ->
-                    pluginAnchorName(category, newest.map(GuardedThrowables::unwrapCarriers));
-            case DSP, PLUGIN -> subject.flatMap(AudioHealthDrain::processorName);
-            case AUTOMATION -> subject.filter(PluginParameterTarget.class::isInstance)
-                    .map(target -> ((PluginParameterTarget) target).displayName());
-            default -> Optional.empty();
-        };
-    }
-
-    /** The simple class name of the plugin frame a failure is anchored in, if it is anchored in a plugin. */
-    private static Optional<String> pluginAnchorName(AudioFailureCategory category, Optional<Throwable> unwrapped) {
-        return unwrapped.map(failure -> Fingerprint.of(category.slug(), Optional.empty(), failure))
-                .filter(Fingerprint::anchoredInPlugin)
-                .map(fingerprint -> simpleClassName(fingerprint.anchor()));
-    }
-
-    /**
-     * An anchor's simple class name: {@code com.example.Fuzz$Voice.render:42}
-     * names {@code Fuzz}.
-     */
-    static String simpleClassName(String anchor) {
-        int line = anchor.lastIndexOf(':');
-        String frame = line < 0 ? anchor : anchor.substring(0, line);
-        int method = frame.lastIndexOf('.');
-        String className = method < 0 ? frame : frame.substring(0, method);
-        String simple = className.substring(className.lastIndexOf('.') + 1);
-        int nested = simple.indexOf('$');
-        return nested > 0 ? simple.substring(0, nested) : simple;
-    }
-
-    /**
-     * A plugin host's display name, or a processor's class name in words
-     * without its {@code Processor} suffix: {@code VelvetNoiseReverbProcessor}
-     * is {@code Velvet Noise Reverb}. Reading a plugin's descriptor never
-     * throws into the drain.
-     */
-    static Optional<String> processorName(Object subject) {
-        if (subject instanceof ExternalPluginHost host) {
-            try {
-                String name = host.getDescriptor().name();
-                if (name != null && !name.isBlank()) {
-                    return Optional.of(name);
-                }
-            } catch (Throwable unreadable) {
-                // The class name below names it instead.
-            }
-        }
-        String simple = subject.getClass().getSimpleName();
-        if (simple.endsWith("Processor") && simple.length() > "Processor".length()) {
-            simple = simple.substring(0, simple.length() - "Processor".length());
-        }
-        String words = simple.replaceAll("(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", " ").strip();
-        return words.isEmpty() ? Optional.empty() : Optional.of(words);
-    }
-
     private Track track(AudioFailureCategory category) {
         return tracks.get(category);
     }
@@ -724,12 +744,10 @@ public final class AudioHealthDrain {
         return delta[category.code()];
     }
 
-    @SuppressWarnings("unchecked")
-    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
-        throw (T) failure;
-    }
-
-    /** The latched fact's category, the render-drive epoch when it latched, whether it is a halt, and its action. */
+    /**
+     * The latched fact's category, the render-drive epoch a newer drive must be above to clear it, whether it is a
+     * halt, and its action.
+     */
     private record Latch(AudioFailureCategory category, long epoch, boolean halt, NoticeAction action) {
         Latch {
             Objects.requireNonNull(category, "category must not be null");
@@ -798,25 +816,18 @@ public final class AudioHealthDrain {
         }
     }
 
-    /** One sampled subject of a one-shot category in one frame. */
+    /** One kept subject of a one-shot category, with its kept samples, oldest first. */
     private static final class OneShot {
         final String key;
-        final Set<String> anchors = new LinkedHashSet<>();
-        Optional<AudioFailureSample> newest = Optional.empty();
-        long samples;
+        final List<AudioFailureSample> samples = new ArrayList<>();
 
         OneShot(String key) {
             this.key = key;
         }
 
-        void add(AudioFailureSample sample) {
-            samples++;
-            newest = Optional.of(sample);
-            sample.failure().ifPresent(failure -> {
-                if (anchors.size() < MAX_ANCHORS) {
-                    anchors.add(anchorOf(sample.category(), failure));
-                }
-            });
+        /** The samples a report that counted {@code counted} occurrences of this subject uses: the oldest ones. */
+        List<AudioFailureSample> used(long counted) {
+            return List.copyOf(samples.subList(0, (int) Math.min(counted, samples.size())));
         }
     }
 
@@ -824,12 +835,12 @@ public final class AudioHealthDrain {
         return Fingerprint.of(category.slug(), Optional.empty(), GuardedThrowables.unwrapCarriers(failure)).anchor();
     }
 
-    /** What one frame read: its clock readings, the drained samples, the device name, and any deferred failure. */
+    /** What one frame read: its clock readings, the record's reading, the device name, and any deferred failure. */
     private final class Frame {
         final long now;
         final Instant wall;
-        final Map<AudioFailureCategory, List<AudioFailureSample>> samples =
-                new EnumMap<>(AudioFailureCategory.class);
+        /** The record's one reading of this frame (story 337, rulings E79 and E82); set before any report. */
+        AudioHealthReading reading;
         Optional<String> device = Optional.empty();
         Optional<Throwable> deferred = Optional.empty();
 
@@ -838,36 +849,13 @@ public final class AudioHealthDrain {
             this.wall = Objects.requireNonNull(wall, "wall must not be null");
         }
 
+        /** Keeps a sample the reading hands over until a report of its category uses it, and notes its anchor. */
         void take(AudioFailureSample sample) {
-            samples.computeIfAbsent(sample.category(), category -> new ArrayList<>()).add(sample);
+            unreported.add(sample);
             Track track = tracks.get(sample.category());
             if (track != null) {
                 sample.failure().ifPresent(failure -> track.addAnchor(anchorOf(sample.category(), failure)));
             }
-        }
-
-        List<AudioFailureSample> samples(AudioFailureCategory category) {
-            return samples.getOrDefault(category, List.of());
-        }
-
-        Optional<Throwable> newestFailure(AudioFailureCategory category) {
-            List<AudioFailureSample> taken = samples(category);
-            for (int i = taken.size() - 1; i >= 0; i--) {
-                if (taken.get(i).failure().isPresent()) {
-                    return taken.get(i).failure();
-                }
-            }
-            return Optional.empty();
-        }
-
-        Optional<Object> newestSubject(AudioFailureCategory category) {
-            List<AudioFailureSample> taken = samples(category);
-            for (int i = taken.size() - 1; i >= 0; i--) {
-                if (taken.get(i).subject().isPresent()) {
-                    return taken.get(i).subject();
-                }
-            }
-            return Optional.empty();
         }
 
         /** The device's display name, read once per frame; a supplier that throws names none. */
@@ -895,7 +883,7 @@ public final class AudioHealthDrain {
 
         void rethrowDeferred() {
             if (deferred.isPresent()) {
-                AudioHealthDrain.<RuntimeException>rethrow(deferred.get());
+                GuardedThrowables.<RuntimeException>rethrow(deferred.get());
             }
         }
     }

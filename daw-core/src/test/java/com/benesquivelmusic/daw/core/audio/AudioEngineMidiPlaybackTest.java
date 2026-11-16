@@ -1539,7 +1539,7 @@ class AudioEngineMidiPlaybackTest {
         }));
 
         List<AudioFailureSample> samples = new ArrayList<>();
-        record.drainSamples(samples::add);
+        record.read(samples::add);
         assertThat(samples).extracting(AudioFailureSample::category).containsOnly(AudioFailureCategory.MIDI);
         assertThat(samples).extracting(AudioFailureSample::detail)
                 .as("note-on (note 60), the sub-chunk (8 frames), the silence render, two all-notes-off")

@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.diagnostics.HaltContext;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.recording.RecordState;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
@@ -31,14 +32,18 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import javax.sound.midi.Receiver;
 import javax.sound.midi.ShortMessage;
 import javax.sound.midi.Transmitter;
 
+import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.InstantSource;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -62,6 +67,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * count-in cancels it — a count-in that fired first is a recording take and
  * is stopped as one. A rolling transport skips the count-in and records at
  * once.
+ *
+ * <p>The Stop a render-drive halt runs (story 337, ruling E101) answers what
+ * it did: a count-in it cancelled, audio, mixed or MIDI-only, gets no context
+ * sentence; a take whose count-in fired, and a MIDI-only or mixed take
+ * recording with no count-in, get the recording sentence. One case halts the
+ * render drive for real and reads the halt notice's whole text from the
+ * window's audio health drain.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class CountInRecordStartTest {
@@ -278,6 +290,310 @@ class CountInRecordStartTest {
         });
         assertThat(startedCount()).as("the take is announced once, as the fire's turn would have").isEqualTo(1);
         assertThat(stoppedCount()).isEqualTo(1);
+    }
+
+    /**
+     * Story 337, ruling E101: a render-drive halt while an audio or a mixed
+     * take counts in. The halt's Stop cancels the count-in as the user's Stop
+     * does — no take was started, the notes are discarded, the status bar
+     * says so — and closes no stream. It cancelled a count-in, over a
+     * transport that never rolled, so it answers no context sentence.
+     */
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void aStopForAnEngineHaltDuringAnAudioCountInCancelsItAndAnswersNoContextSentence(boolean mixed)
+            throws Exception {
+        hookTheBus();
+        audioRig = DeviceLossRecordingFixture.withoutEngineBridge(tempDir, CountInMode.TWO_BARS);
+        audioRig.project().getTransport().setTempo(60);
+        Track keys = mixed ? armedMidiTrack(audioRig.project()) : null;
+        RecordingInFlightFixture.StubMidiInput midiInput = new RecordingInFlightFixture.StubMidiInput();
+        DeviceLossRecordingFixture.runOnFx(() -> {
+            audioRig.controller().setMidiInputDeviceResolverForTest(
+                    name -> RecordingInFlightFixture.STUB_MIDI_INPUT.equals(name) ? midiInput : null);
+            audioRig.controller().toggleRecord();
+        });
+        DeviceLossRecordingFixture.awaitOnFx(() -> audioRig.coordinator().getState() == RecordState.COUNT_IN,
+                "the take counts in");
+        CountInSchedule schedule = DeviceLossRecordingFixture.onFx(
+                () -> audioRig.pipeline().countInSchedule().orElseThrow());
+        if (keys != null) {
+            assertThat(DeviceLossRecordingFixture.onFx(keys::isRecording)).as("fixture: a mixed take").isTrue();
+        }
+        AtomicReference<HaltContext> answered = new AtomicReference<>();
+        AtomicReference<Boolean> streamOpenAfterTheStop = new AtomicReference<>();
+
+        DeviceLossRecordingFixture.runOnFx(() -> {
+            answered.set(audioRig.controller().stopForEngineHalt());
+            streamOpenAfterTheStop.set(audioRig.engine().isStreamOpen());
+        });
+
+        assertThat(answered.get()).as("the Stop cancelled a count-in").isEqualTo(HaltContext.IDLE);
+        assertThat(schedule.phase()).isEqualTo(CountInSchedule.Phase.CANCELLED);
+        assertThat(streamOpenAfterTheStop.get()).as("the halt's Stop closed no stream").isTrue();
+        DeviceLossRecordingFixture.runOnFx(() -> {
+            assertThat(audioRig.statusBar().getText()).isEqualTo(RecordCoordinator.COUNT_IN_CANCELLED_MESSAGE);
+            assertThat(audioRig.project().getTransport().getState()).isEqualTo(TransportState.STOPPED);
+            if (keys != null) {
+                assertThat(keys.isRecording()).as("the notes are discarded").isFalse();
+                assertThat(keys.getMidiClip().getNotes()).isEmpty();
+            }
+        });
+        audioRig.awaitPublished();
+        DeviceLossRecordingFixture.awaitOnFx(() -> audioRig.coordinator().getState() == RecordState.IDLE,
+                "the machine settled");
+        DeviceLossRecordingFixture.runOnFx(() -> assertThat(audioRig.guitar().getClips()).isEmpty());
+        assertThat(startedCount()).as("no take was started").isZero();
+        assertThat(stoppedCount()).as("the transport never rolled, so nothing stopped").isZero();
+    }
+
+    /**
+     * Story 337, ruling E101: a render-drive halt while a MIDI-only take counts
+     * in — over a stopped transport, and over a paused one, which a count-in
+     * runs over too. The halt's Stop cancels the count-in, discards the notes
+     * and closes no stream; over the paused transport it also stops that
+     * transport, which was not playing. It cancelled a count-in, so it
+     * answers no context sentence, and never "Playback was stopped.".
+     */
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void aStopForAnEngineHaltDuringAMidiOnlyCountInCancelsItAndAnswersNoContextSentence(boolean overAPause)
+            throws Exception {
+        hookTheBus();
+        midiRig = new MidiOnlyRig(CountInMode.TWO_BARS, 60);
+        if (overAPause) {
+            runOnFx(midiRig.controller::start);
+            runOnFx(midiRig.controller::pause);
+            runOnFx(() -> assertThat(midiRig.transport().getState()).as("fixture: paused")
+                    .isEqualTo(TransportState.PAUSED));
+        }
+        published.clear();
+        runOnFx(midiRig.controller::toggleRecord);
+        CountInSchedule schedule = onFx(() -> {
+            assertThat(midiRig.controller.recordCoordinator().getState()).as("fixture: counting in")
+                    .isEqualTo(RecordState.COUNT_IN);
+            return midiRig.engine.pendingCountIn().orElseThrow();
+        });
+        AtomicReference<HaltContext> answered = new AtomicReference<>();
+        AtomicReference<Boolean> streamOpenAfterTheStop = new AtomicReference<>();
+
+        runOnFx(() -> {
+            answered.set(midiRig.controller.stopForEngineHalt());
+            streamOpenAfterTheStop.set(midiRig.engine.isStreamOpen());
+        });
+
+        assertThat(answered.get()).as("the Stop cancelled a count-in").isEqualTo(HaltContext.IDLE);
+        assertThat(schedule.phase()).isEqualTo(CountInSchedule.Phase.CANCELLED);
+        assertThat(streamOpenAfterTheStop.get()).as("the halt's Stop closed no stream").isTrue();
+        awaitOnFx(() -> midiRig.controller.recordCoordinator().getState() == RecordState.IDLE, "the machine settled");
+        runOnFx(() -> {
+            assertThat(midiRig.transport().getState()).isEqualTo(TransportState.STOPPED);
+            assertThat(midiRig.statusBar.getText()).isEqualTo(RecordCoordinator.COUNT_IN_CANCELLED_MESSAGE);
+            assertThat(midiRig.keys.isRecording()).isFalse();
+            assertThat(midiRig.keys.getMidiClip().getNotes()).isEmpty();
+        });
+        assertThat(startedCount()).as("no take was started").isZero();
+        assertThat(stoppedCount()).as("the Stop ran once: only a paused transport had anything to stop")
+                .isEqualTo(overAPause ? 1 : 0);
+    }
+
+    /**
+     * Story 337, ruling E101: a count-in that fired before the halt's Stop
+     * started its take. The Stop finds the fire, announces the take as the
+     * fire's turn would have and ends it as a recording take, its notes kept,
+     * so it answers that recording was stopped.
+     */
+    @Test
+    void aStopForAnEngineHaltAfterTheCountInFiredEndsTheTakeAndAnswersThatRecordingWasStopped() throws Exception {
+        hookTheBus();
+        midiRig = new MidiOnlyRig(CountInMode.ONE_BAR, 120);
+        runOnFx(midiRig.controller::toggleRecord);
+        CountInSchedule schedule = onFx(() -> midiRig.engine.pendingCountIn().orElseThrow());
+        AtomicReference<HaltContext> answered = new AtomicReference<>();
+
+        // One FX turn: wait for the render thread's fire — its hop is queued
+        // behind this turn — play a note, then the halt's Stop before the hop
+        // can run.
+        runOnFx(() -> {
+            long deadline = System.nanoTime() + WAIT_BUDGET_NANOS;
+            while (!schedule.isFired()) {
+                assertThat(System.nanoTime() - deadline < 0).as("the count-in fired within 30 s").isTrue();
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+            }
+            assertThat(midiRig.controller.isCountingIn()).as("fixture: the coordinator still counts in")
+                    .isTrue();
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(100));
+            midiRig.playNoteOn();
+            answered.set(midiRig.controller.stopForEngineHalt());
+        }, WAIT_BUDGET_NANOS + TimeUnit.SECONDS.toNanos(5));
+
+        assertThat(answered.get()).as("the take had started").isEqualTo(HaltContext.RECORDING);
+        awaitOnFx(() -> midiRig.controller.recordCoordinator().getState() == RecordState.IDLE, "the machine settled");
+        runOnFx(() -> {
+            assertThat(midiRig.transport().getState()).isEqualTo(TransportState.STOPPED);
+            assertThat(midiRig.keys.getMidiClip().getNotes()).as("the note played after the fire is kept").hasSize(1);
+            assertThat(midiRig.statusBar.getText()).startsWith("Recording stopped — 1 MIDI note");
+        });
+        assertThat(startedCount()).as("the take is announced once").isEqualTo(1);
+        assertThat(stoppedCount()).as("the Stop ran once").isEqualTo(1);
+    }
+
+    /**
+     * Story 337, ruling E101: a halt's Stop ends a MIDI-only take recording
+     * with no count-in, its notes kept, closes no stream, and answers that
+     * recording was stopped.
+     */
+    @Test
+    void aStopForAnEngineHaltEndsARecordingMidiOnlyTakeAndAnswersThatRecordingWasStopped() throws Exception {
+        hookTheBus();
+        midiRig = new MidiOnlyRig(CountInMode.OFF, 120);
+        runOnFx(midiRig.controller::toggleRecord);
+        runOnFx(() -> assertThat(midiRig.controller.recordCoordinator().getState()).as("fixture: recording")
+                .isEqualTo(RecordState.RECORDING));
+        midiRig.playNoteOn();
+        AtomicReference<HaltContext> answered = new AtomicReference<>();
+        AtomicReference<Boolean> streamOpenAfterTheStop = new AtomicReference<>();
+
+        runOnFx(() -> {
+            answered.set(midiRig.controller.stopForEngineHalt());
+            streamOpenAfterTheStop.set(midiRig.engine.isStreamOpen());
+        });
+
+        assertThat(answered.get()).as("the take had started").isEqualTo(HaltContext.RECORDING);
+        assertThat(streamOpenAfterTheStop.get()).as("the halt's Stop closed no stream").isTrue();
+        awaitOnFx(() -> midiRig.controller.recordCoordinator().getState() == RecordState.IDLE, "the machine settled");
+        runOnFx(() -> {
+            assertThat(midiRig.transport().getState()).isEqualTo(TransportState.STOPPED);
+            assertThat(midiRig.keys.getMidiClip().getNotes()).as("the notes are kept").hasSize(1);
+            assertThat(midiRig.statusBar.getText()).startsWith("Recording stopped — 1 MIDI note");
+        });
+        assertThat(stoppedCount()).as("the Stop ran once").isEqualTo(1);
+    }
+
+    /**
+     * Story 337, ruling E101: a halt's Stop ends a mixed take recording with
+     * audio on disk through its normal finalization, closes no stream, and
+     * answers that recording was stopped; the take keeps its audio.
+     */
+    @Test
+    void aStopForAnEngineHaltEndsARecordingMixedTakeAndAnswersThatRecordingWasStopped() throws Exception {
+        hookTheBus();
+        audioRig = DeviceLossRecordingFixture.withoutEngineBridge(tempDir);
+        Track keys = armedMidiTrack(audioRig.project());
+        RecordingInFlightFixture.StubMidiInput midiInput = new RecordingInFlightFixture.StubMidiInput();
+        DeviceLossRecordingFixture.runOnFx(() -> audioRig.controller().setMidiInputDeviceResolverForTest(
+                name -> RecordingInFlightFixture.STUB_MIDI_INPUT.equals(name) ? midiInput : null));
+        audioRig.recordUntilABlockIsOnDisk();
+        assertThat(DeviceLossRecordingFixture.onFx(keys::isRecording)).as("fixture: a mixed take").isTrue();
+        AtomicReference<HaltContext> answered = new AtomicReference<>();
+        AtomicReference<Boolean> streamOpenAfterTheStop = new AtomicReference<>();
+
+        DeviceLossRecordingFixture.runOnFx(() -> {
+            answered.set(audioRig.controller().stopForEngineHalt());
+            streamOpenAfterTheStop.set(audioRig.engine().isStreamOpen());
+        });
+
+        assertThat(answered.get()).as("the take had started").isEqualTo(HaltContext.RECORDING);
+        assertThat(streamOpenAfterTheStop.get()).as("the halt's Stop closed no stream").isTrue();
+        DeviceLossRecordingFixture.runOnFx(() -> {
+            assertThat(audioRig.controller().isRecordingInFlight()).as("the take was ended").isFalse();
+            assertThat(keys.isRecording()).isFalse();
+        });
+        audioRig.awaitPublished();
+        DeviceLossRecordingFixture.runOnFx(() -> assertThat(audioRig.guitar().getClips()).as("it keeps its audio")
+                .hasSize(1));
+        assertThat(stoppedCount()).as("the Stop ran once").isEqualTo(1);
+    }
+
+    /**
+     * Story 337, ruling E101, on the real wiring: the render drive really
+     * halts while a MIDI-only take counts in, and the window's audio health
+     * drain reads the halt from the engine's own record on its next frame.
+     * The window is never FXML-loaded: it is given what its initialize()
+     * builds and the project's transport controller, as
+     * {@code FailureSpineStartupWiringTest} gives it its engine. Its halt
+     * response runs the transport's halt Stop, which cancels the count-in,
+     * and the halt's own close closes the halted stream. The one notice says
+     * only what that Stop did: it cancelled a count-in, so it has no context
+     * sentence — in the ERROR copy, with Restart Audio Engine, and in the
+     * FATAL copy of a {@link VirtualMachineError} halt, with Open Log Folder.
+     */
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void aRealHaltDuringACountInShowsTheHaltNoticeWithNoContextSentence(boolean fatal) throws Exception {
+        midiRig = new MidiOnlyRig(CountInMode.TWO_BARS, 60);
+        List<RecordState> states = new CopyOnWriteArrayList<>();
+        runOnFx(midiRig.controller::toggleRecord);
+        CountInSchedule schedule = onFx(() -> {
+            midiRig.controller.recordCoordinator().stateProperty().addListener((_, _, next) -> states.add(next));
+            return midiRig.engine.pendingCountIn().orElseThrow();
+        });
+        try (FailureSpineFixture spine = FailureSpineFixture.detached(tempDir.resolve("settings"), System::nanoTime,
+                InstantSource.system(), folder -> { })) {
+            FxDispatcher dispatcher = new FxDispatcher();
+            NotificationHistoryService history = new NotificationHistoryService();
+            NotificationBar bar = onFx(() -> {
+                NotificationBar made = new NotificationBar();
+                made.setAnimated(false);
+                made.setAutoDismissMillis(600_000);
+                made.setHistoryService(history);
+                return made;
+            });
+            runOnFx(() -> {
+                MainController window = new MainController();
+                window.setFxDispatcher(dispatcher);
+                setField(window, "notificationBar", bar);
+                setField(window, "audioEngine", midiRig.engine);
+                setField(window, "project", midiRig.project);
+                setField(window, "transportController", midiRig.controller);
+                window.attachFailureFunnel(spine.funnel());
+            });
+            try {
+                haltTheRenderDrive(midiRig.engine, fatal);
+                assertThat(onFx(midiRig.controller::isCountingIn)).as("fixture: the take still counts in").isTrue();
+                assertThat(schedule.isPending()).as("fixture: the count-in never fired").isTrue();
+
+                runOnFx(dispatcher::pulse);
+
+                String base = fatal ? "Serious internal error" : "The audio engine stopped";
+                String notice = fatal
+                        ? "Serious internal error: the application may not work correctly from now on. When you can,"
+                                + " save a copy with File ▸ Save As… and restart. Reason: the render graph recursed."
+                        : "The audio engine stopped because audio processing failed for a full second without"
+                                + " recovering: an insert fails every block. Restart the audio engine to continue.";
+                FailureSpineFixture.await("the halt notice on the window's bar", () -> history.getEntries().stream()
+                        .anyMatch(entry -> entry.message().startsWith(base)));
+                assertThat(schedule.phase()).as("the halt's Stop cancelled the count-in")
+                        .isEqualTo(CountInSchedule.Phase.CANCELLED);
+                awaitOnFx(() -> midiRig.controller.recordCoordinator().getState() == RecordState.IDLE,
+                        "the machine settled");
+                runOnFx(dispatcher::pulse);
+                for (int turn = 0; turn < 5; turn++) {
+                    runOnFx(() -> { });
+                }
+                assertThat(history.getEntries()).filteredOn(entry -> entry.message().startsWith(base))
+                        .as("one notice, its whole text").singleElement().satisfies(entry -> {
+                            assertThat(entry.message()).isEqualTo(notice);
+                            assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
+                            assertThat(entry.actionLabel()).contains(fatal ? "Open Log Folder"
+                                    : "Restart Audio Engine");
+                        });
+                assertThat(states).as("the Stop ran once").containsExactly(RecordState.FINALIZING, RecordState.IDLE);
+                runOnFx(() -> {
+                    assertThat(midiRig.statusBar.getText()).isEqualTo(RecordCoordinator.COUNT_IN_CANCELLED_MESSAGE);
+                    assertThat(midiRig.keys.getMidiClip().getNotes()).isEmpty();
+                    assertThat(midiRig.transport().getState()).isEqualTo(TransportState.STOPPED);
+                });
+                assertThat(midiRig.engine.isStreamOpen()).as("the halt's own close closed the halted stream")
+                        .isFalse();
+            } finally {
+                spine.funnel().disarmToasts();
+                runOnFx(() -> {
+                    bar.dismiss();
+                    dispatcher.dispose();
+                });
+            }
+        }
     }
 
     @Test
@@ -595,6 +911,38 @@ class CountInRecordStartTest {
         keys.setMidiInputDeviceName(RecordingInFlightFixture.STUB_MIDI_INPUT);
         project.addTrack(keys);
         return keys;
+    }
+
+    /**
+     * Halts {@code engine}'s render drive as a failing render does (story
+     * 337, rulings E8 and E9): every block's recording callback throws, after
+     * the mix and before the count-in's walk, until the drive ends itself — at
+     * once for a {@link VirtualMachineError}, after about a second of blocks
+     * otherwise. A count-in does not advance meanwhile, so it cannot fire.
+     */
+    private static void haltTheRenderDrive(AudioEngine engine, boolean fatal) {
+        engine.setRecordingCallback((inputBuffer, numFrames) -> {
+            if (fatal) {
+                throw new StackOverflowError("the render graph recursed");
+            }
+            throw new IllegalStateException("an insert fails every block");
+        });
+        long deadline = System.nanoTime() + WAIT_BUDGET_NANOS;
+        while (!engine.isRenderDriveHalted()) {
+            assertThat(System.nanoTime() - deadline < 0).as("the render drive halted itself within 30 s").isTrue();
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(2));
+        }
+    }
+
+    /** Sets a field of a window that was never FXML-loaded, as {@code FailureSpineStartupWiringTest} does. */
+    private static void setField(MainController window, String name, Object value) {
+        try {
+            Field field = MainController.class.getDeclaredField(name);
+            field.setAccessible(true);
+            field.set(window, value);
+        } catch (ReflectiveOperationException failure) {
+            throw new AssertionError(failure);
+        }
     }
 
     /**

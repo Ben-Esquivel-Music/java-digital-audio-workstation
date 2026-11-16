@@ -10,8 +10,13 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -68,7 +73,7 @@ class VelvetNoiseReverbProcessorTest {
         }
         assertThat(record.total(AudioFailureCategory.DSP)).isEqualTo(1);
         List<AudioFailureSample> samples = new ArrayList<>();
-        record.drainSamples(samples::add);
+        record.read(samples::add);
         assertThat(samples).singleElement().satisfies(sample -> {
             assertThat(sample.detail()).as("the failed segment").isEqualTo(2);
             assertThat(sample.subject()).contains(reverb);
@@ -82,6 +87,50 @@ class VelvetNoiseReverbProcessorTest {
         assertThat(record.total(AudioFailureCategory.DSP))
                 .as("off a render thread the same failure is survived and not recorded")
                 .isEqualTo(1);
+    }
+
+    /**
+     * Story 337, ruling E77: off a render thread — an offline render — the
+     * failed segment is zeroed exactly as on a render thread, and since it
+     * cannot be recorded it is logged at WARNING, naming the effect by its
+     * declared insert name and the segment it left out of the block.
+     */
+    @Test
+    void aFailedLateSegmentOffARenderThreadIsZeroedAndLoggedNamingTheSegment() throws Exception {
+        VelvetNoiseReverbProcessor reverb = new VelvetNoiseReverbProcessor(1, 44100.0);
+        reverb.process(impulse(512), new float[1][512], 512);
+        breakLateSegmentMidway(reverb, 2);
+        float[][] output = new float[1][512];
+        Logger reverbLog = Logger.getLogger(VelvetNoiseReverbProcessor.class.getName());
+        List<LogRecord> logged = new CopyOnWriteArrayList<>();
+        Handler handler = new Handler() {
+            @Override public void publish(LogRecord entry) { logged.add(entry); }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+
+        reverbLog.addHandler(handler);
+        try {
+            reverb.process(constant(512, 0.5f), output, 512);
+        } finally {
+            reverbLog.removeHandler(handler);
+        }
+
+        float[] failedSegment = ((float[][]) privateField(reverb, "segmentWorkBuffers"))[2];
+        for (int frame = 0; frame < 512; frame++) {
+            assertThat(failedSegment[frame])
+                    .as("frame %d of the failed segment, written before the fault, is zeroed", frame)
+                    .isEqualTo(0.0f);
+        }
+        assertThat(logged).singleElement().satisfies(entry -> {
+            assertThat(entry.getLevel()).isEqualTo(Level.WARNING);
+            assertThat(entry.getMessage()).isEqualTo(
+                    "Velvet Noise Reverb: late-reverb segment 2 failed and was left out of this block");
+            assertThat(entry.getThrown()).isInstanceOf(ArrayIndexOutOfBoundsException.class);
+        });
+        for (float value : output[0]) {
+            assertThat(Float.isFinite(value)).isTrue();
+        }
     }
 
     private static float[][] impulse(int frames) {

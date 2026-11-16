@@ -141,14 +141,16 @@ public final class WasapiBackend implements AudioBackend {
     /**
      * Counts one notification upcall whose handling failed (story 337, ruling
      * E31). Called from {@link WasapiFormatChangeShim}'s upcall catch,
-     * inside its own catch-all: an {@link AtomicLong} increment and a
-     * reference store, on the failure path only.
+     * inside its own catch-all: a reference store, then an
+     * {@link AtomicLong} increment, on the failure path only. The fault is
+     * stored before its count, so a reader that sees the count sees this
+     * fault or a newer one (story 337, ruling E82).
      *
      * @param fault the fault the shim caught
      */
     void noteDeviceNotificationFault(Throwable fault) {
-        deviceNotificationFaults.incrementAndGet();
         lastDeviceNotificationFault = fault;
+        deviceNotificationFaults.incrementAndGet();
     }
 
     /**

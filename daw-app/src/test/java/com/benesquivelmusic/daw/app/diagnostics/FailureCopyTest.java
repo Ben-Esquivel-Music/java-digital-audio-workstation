@@ -339,6 +339,10 @@ class FailureCopyTest {
         assertThat(copy.audioHaltedFatal(new OutOfMemoryError("Java heap space"), HaltContext.PLAYBACK))
                 .isEqualTo("The application ran out of memory. When you can, save a copy with File ▸ Save As… and"
                         + " restart. Playback was stopped.");
+        assertThat(copy.audioHaltedFatal(new StackOverflowError(), HaltContext.IDLE))
+                .as("idle: the FATAL copy carries no context sentence either (story 337, ruling E101)")
+                .isEqualTo("Serious internal error: the application may not work correctly from now on. When you can,"
+                        + " save a copy with File ▸ Save As… and restart. Reason: StackOverflowError.");
     }
 
     @Test

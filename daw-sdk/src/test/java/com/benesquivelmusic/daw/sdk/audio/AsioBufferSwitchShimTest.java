@@ -465,6 +465,49 @@ class AsioBufferSwitchShimTest {
         assertThat(shim.upcallFaults()).as("the driver thread never saw the drain's fault").isZero();
     }
 
+    /**
+     * Story 337, ruling E90: the report a backend's ledger reads from a live
+     * shim names each count by its category — upcall faults are
+     * {@code audio.callback}, publish drops are lost input blocks — with its
+     * last fault, and the heartbeat always present. Two lost blocks and one
+     * upcall fault, so a swap of the two counts cannot pass.
+     */
+    @Test
+    void countersReportTheShimsFaultsDropsAndHeartbeat() throws Exception {
+        IllegalStateException publishFailure = new IllegalStateException("subscriber pipeline failed");
+        support.close();
+        support = new AudioBackendSupport(new SubmissionPublisher<>() {
+            @Override
+            public int offer(AudioBlock item,
+                             java.util.function.BiPredicate<Flow.Subscriber<? super AudioBlock>,
+                                     ? super AudioBlock> onDrop) {
+                throw publishFailure;
+            }
+        }, new SubmissionPublisher<>());
+        support.markOpen(format, frames);
+        buildShim(FLOAT32_LSB);
+
+        shim.bufferSwitchUpcall(0, 1);
+        shim.bufferSwitchUpcall(1, 1);
+        shimArray("inputBuffers")[0][0] = arena.allocate(1);
+        shim.bufferSwitchUpcall(0, 1);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(AWAIT_SECONDS);
+        while (shim.publishDrops() < 2 && System.nanoTime() - deadline < 0L) {
+            java.util.concurrent.locks.LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(2));
+        }
+
+        BackendThreadCounters counters = shim.counters();
+
+        assertThat(counters.callbackFaults()).as("upcall faults are audio.callback").isEqualTo(1L);
+        assertThat(counters.inputBlocksLost()).as("publish drops are lost input blocks").isEqualTo(2L);
+        assertThat(counters.inputHalts()).isZero();
+        assertThat(counters.deviceNotificationFaults()).isZero();
+        assertThat(counters.deviceCallbackPeriods()).as("every upcall is one period").hasValue(3L);
+        assertThat(counters.lastCallbackFault()).get().isInstanceOf(IndexOutOfBoundsException.class);
+        assertThat(counters.lastInputFault()).containsSame(publishFailure);
+        assertThat(counters.lastDeviceNotificationFault()).isEmpty();
+    }
+
     /** Rulings E4 and E5: a backend with no stream has nothing counted and a heartbeat at zero. */
     @Test
     void anAsioBackendWithNoStreamReportsZeroCountsAndAHeartbeatOfZero() {

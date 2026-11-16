@@ -1,6 +1,9 @@
 package com.benesquivelmusic.daw.sdk.audio;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import javax.sound.sampled.Control;
 import javax.sound.sampled.DataLine;
@@ -1880,7 +1883,8 @@ class JavaxSoundBackendTest {
     /**
      * A block that cannot be published is counted as lost and the loop reads
      * on: one bad block is a counted gap, never a dead capture thread under a
-     * stream that still reports itself open.
+     * stream that still reports itself open. The counts are read while the
+     * thread is parked in its fourth read, which only the close releases.
      */
     @Test
     void aFailingPublishLosesOneBlockAndTheCaptureContinues() throws Exception {
@@ -1900,9 +1904,11 @@ class JavaxSoundBackendTest {
 
         backend.startCapture(STREAM_FORMAT, STREAM_FRAMES);
         Thread thread = captureThread(backend);
-        thread.join(WAIT_MILLIS);
+        assertThat(script.awaitParkedRead(WAIT_MILLIS))
+                .as("the capture read on past three lost blocks into a fourth read")
+                .isTrue();
 
-        assertThat(thread.isAlive()).as("the capture loop ended on the line's end of data").isFalse();
+        assertThat(thread.isAlive()).as("a lost block never ends the capture").isTrue();
         assertThat(script.reads()).as("every lost block was followed by another read").isEqualTo(4);
         BackendThreadCounters counters = backend.threadCounters();
         assertThat(counters.inputBlocksLost()).isEqualTo(3);
@@ -1911,7 +1917,13 @@ class JavaxSoundBackendTest {
         assertThat(counters.deviceCallbackPeriods())
                 .as("Java Sound has no device callback thread of its own")
                 .isEmpty();
+
         backend.close();
+        thread.join(WAIT_MILLIS);
+        assertThat(thread.isAlive()).isFalse();
+        assertThat(backend.threadCounters().inputHalts())
+                .as("the close released the parked read: teardown, not a halt")
+                .isZero();
     }
 
     /**
@@ -1948,7 +1960,11 @@ class JavaxSoundBackendTest {
         backend.close();
     }
 
-    /** A throwing read means a broken line: the loop ends with one halt instead of spinning. */
+    /**
+     * A throwing read means a broken line: the loop ends with one halt instead
+     * of spinning, and the halt's fault carries the read's throwable as its
+     * cause (story 337, ruling E85).
+     */
     @Test
     void aThrowingReadEndsTheCaptureWithOneHalt() throws Exception {
         JavaxSoundBackend backend = new JavaxSoundBackend();
@@ -1966,7 +1982,9 @@ class JavaxSoundBackendTest {
         BackendThreadCounters counters = backend.threadCounters();
         assertThat(counters.inputHalts()).isEqualTo(1);
         assertThat(counters.inputBlocksLost()).isZero();
-        assertThat(counters.lastInputFault()).containsSame(broken);
+        Throwable fault = counters.lastInputFault().orElseThrow();
+        assertThat(fault).isInstanceOf(AudioBackendException.class);
+        assertThat(fault.getCause()).as("the read's own throwable is the cause").isSameAs(broken);
         backend.close();
     }
 
@@ -1987,6 +2005,229 @@ class JavaxSoundBackendTest {
 
         assertThat(thread.isAlive()).isFalse();
         assertThat(backend.threadCounters()).isEqualTo(BackendThreadCounters.NONE);
+    }
+
+    // ── Capture-thread terminal exit (story 337, rulings E83 to E85) ──────
+
+    /**
+     * On the JDK's line a read blocks through "no data yet", so a read that
+     * returns no data on an open stream is a line that stopped delivering: it
+     * ends the capture at once with one halt, never a retry that would spin
+     * (story 337, ruling E83).
+     */
+    @ParameterizedTest(name = "a read that returns {0}")
+    @ValueSource(ints = {0, -1})
+    void aReadThatReturnsNoDataOnAnOpenStreamEndsTheCaptureWithOneHalt(int emptyRead) throws Exception {
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        markStreamOpen(backend);
+        ScriptedCaptureLine script = new ScriptedCaptureLine(2).endingWith(emptyRead);
+        plantCaptureLine(backend, script.line());
+
+        backend.startCapture(STREAM_FORMAT, STREAM_FRAMES);
+        Thread thread = captureThread(backend);
+        thread.join(WAIT_MILLIS);
+
+        assertThat(thread.isAlive()).as("the empty read ended the capture").isFalse();
+        assertThat(script.reads())
+                .as("two full reads, then the empty one, never retried")
+                .isEqualTo(3);
+        BackendThreadCounters counters = backend.threadCounters();
+        assertThat(counters.inputHalts()).isEqualTo(1);
+        assertThat(counters.inputBlocksLost()).isZero();
+        Throwable fault = counters.lastInputFault().orElseThrow();
+        assertThat(fault)
+                .as("no mixer was resolved, so the fault names no device")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessage("the audio input stopped delivering audio")
+                .hasNoCause();
+        backend.close();
+    }
+
+    /**
+     * The guard against a false ERROR on every Stop: a close stops and closes
+     * the line under the capture thread, and the read it releases returns no
+     * data. The close completed the stream and interrupted the thread first,
+     * so that empty read is teardown: nothing is counted and the stream's
+     * subscriber is completed, never failed (story 337, ruling E83).
+     */
+    @Test
+    void aCloseThatReleasesTheReadWithNoDataRecordsNothing() throws Exception {
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        markStreamOpen(backend);
+        ScriptedCaptureLine script = new ScriptedCaptureLine(0);
+        plantCaptureLine(backend, script.line());
+        CollectingSubscriber subscriber = new CollectingSubscriber();
+        backend.inputBlocks().subscribe(subscriber);
+
+        backend.startCapture(STREAM_FORMAT, STREAM_FRAMES);
+        Thread thread = captureThread(backend);
+        assertThat(script.awaitParkedRead(WAIT_MILLIS)).isTrue();
+
+        backend.close();
+        thread.join(WAIT_MILLIS);
+
+        assertThat(thread.isAlive()).isFalse();
+        assertThat(script.reads()).as("the read the close released was the last").isEqualTo(1);
+        assertThat(backend.threadCounters()).isEqualTo(BackendThreadCounters.NONE);
+        assertThat(subscriber.awaitCompleted(WAIT_MILLIS)).isTrue();
+        assertThat(subscriber.completedNormally()).as("the close completed the stream").isTrue();
+        assertThat(subscriber.error()).as("and nothing failed it").isNull();
+    }
+
+    /** How a capture halt is provoked in {@link #aCaptureHaltFailsTheStreamsInputPublisher}. */
+    enum CaptureEnd {
+        /** One full read, then a read that returns no data. */
+        EMPTY_READ,
+        /** A read that throws. */
+        THROWING_READ
+    }
+
+    /**
+     * An input halt also fails the stream's input publisher with the halt's
+     * own fault, so the engine's subscriber runs its terminal-input path, and
+     * a subscriber that attaches later — a take started on the same stream
+     * before a reopen — is failed at once (story 337, ruling E84). The stream
+     * itself stays open: playback goes on.
+     */
+    @ParameterizedTest
+    @EnumSource(CaptureEnd.class)
+    void aCaptureHaltFailsTheStreamsInputPublisher(CaptureEnd end) throws Exception {
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        markStreamOpen(backend);
+        ScriptedCaptureLine script = switch (end) {
+            case EMPTY_READ -> new ScriptedCaptureLine(1).endingWith(0);
+            case THROWING_READ -> new ScriptedCaptureLine(0)
+                    .failingReadsWith(new IllegalStateException("device unplugged"));
+        };
+        plantCaptureLine(backend, script.line());
+        CollectingSubscriber subscribed = new CollectingSubscriber();
+        backend.inputBlocks().subscribe(subscribed);
+
+        backend.startCapture(STREAM_FORMAT, STREAM_FRAMES);
+        Thread thread = captureThread(backend);
+        thread.join(WAIT_MILLIS);
+        assertThat(thread.isAlive()).isFalse();
+        Throwable fault = backend.threadCounters().lastInputFault().orElseThrow();
+
+        assertThat(subscribed.awaitError(WAIT_MILLIS))
+                .as("the subscriber attached before the halt is failed")
+                .isTrue();
+        assertThat(subscribed.error()).as("with the fault the halt counted").isSameAs(fault);
+        CollectingSubscriber later = new CollectingSubscriber();
+        backend.inputBlocks().subscribe(later);
+        assertThat(later.awaitError(WAIT_MILLIS))
+                .as("a subscriber attached after the halt is failed at once")
+                .isTrue();
+        assertThat(later.error()).isSameAs(fault);
+        assertThat(backend.isOpen()).as("an input halt never closes the stream").isTrue();
+        backend.close();
+    }
+
+    /**
+     * Every input halt's fault names the input that stopped delivering, in
+     * one line a failure notice can quote whole (story 337, ruling E85): the
+     * capture mixer's name, cut with "…" when it is long; a sentence with no
+     * name for the default capture line; a throwing read's throwable as the
+     * cause; a {@link VirtualMachineError} kept as the fault itself. Each
+     * halt is provoked on a stream opened through {@link JavaSoundAccess}, so
+     * the name is the one the open resolved.
+     */
+    @Test
+    void anInputHaltsFaultNamesTheInputThatStoppedDelivering() throws Exception {
+        Throwable named = inputHaltFaultThroughAnOpen("USB Audio CODEC", null);
+        assertThat(named)
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessage("input from “USB Audio CODEC” stopped delivering audio")
+                .hasNoCause();
+
+        String longName = "Multichannel USB Interface ".repeat(8).substring(0, 200);
+        String cut = inputHaltFaultThroughAnOpen(longName, null).getMessage();
+        assertThat(cut.length())
+                .as("the line stays within what a notice shows whole")
+                .isLessThanOrEqualTo(JavaxSoundBackend.MAX_HALT_LINE_LENGTH);
+        assertThat(cut)
+                .as("the name is cut and marked, the words after it kept")
+                .startsWith("input from “" + longName.substring(0, 60))
+                .endsWith("…” stopped delivering audio");
+
+        assertThat(inputHaltFaultThroughAnOpen("", null))
+                .as("the default capture line has no mixer to name")
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessage("the audio input stopped delivering audio");
+
+        IllegalStateException broken = new IllegalStateException("device unplugged");
+        Throwable thrown = inputHaltFaultThroughAnOpen("USB Audio CODEC", broken);
+        assertThat(thrown)
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessage("input from “USB Audio CODEC” stopped delivering audio");
+        assertThat(thrown.getCause()).as("the read's own throwable is the cause").isSameAs(broken);
+
+        StackOverflowError fatal = new StackOverflowError("driver stack exhausted");
+        assertThat(inputHaltFaultThroughAnOpen("USB Audio CODEC", fatal))
+                .as("a VirtualMachineError is kept as the fault itself")
+                .isSameAs(fatal);
+    }
+
+    /**
+     * A long input name whose cut would fall between the two halves of a
+     * character outside the Basic Multilingual Plane is cut before that
+     * character, never through it: the halt line stays within what a notice
+     * shows whole and holds no half of a character (story 337, ruling E85).
+     */
+    @Test
+    void aLongInputNameIsCutBeforeACharacterOutsideTheBasicPlaneNeverThroughIt() throws Exception {
+        // U+1D11E MUSICAL SYMBOL G CLEF: one character, two chars of a String.
+        int clef = 0x1D11E;
+        String prefix = "input from “";
+        String suffix = "” stopped delivering audio";
+        int kept = JavaxSoundBackend.MAX_HALT_LINE_LENGTH - prefix.length() - suffix.length() - 2;
+        String name = "A".repeat(kept) + Character.toString(clef) + "B".repeat(20);
+        assertThat(Character.isHighSurrogate(name.charAt(kept))).as("fixture: the cut falls inside the clef")
+                .isTrue();
+
+        String line = inputHaltFaultThroughAnOpen(name, null).getMessage();
+
+        assertThat(line.length()).isLessThanOrEqualTo(JavaxSoundBackend.MAX_HALT_LINE_LENGTH);
+        assertThat(line.codePoints().filter(point -> point >= Character.MIN_SURROGATE
+                && point <= Character.MAX_SURROGATE).toArray())
+                .as("no half of a character is left in the line")
+                .isEmpty();
+        assertThat(line).isEqualTo(prefix + "A".repeat(kept) + "…" + suffix);
+    }
+
+    /**
+     * Opens a stream that plays to "Speakers" and captures from
+     * {@code inputMixerName} (the default capture line when blank), ends its
+     * capture — the capture line stopped under the blocked read, or that
+     * read failed with {@code readFailure} — and returns the one input
+     * halt's fault.
+     */
+    private static Throwable inputHaltFaultThroughAnOpen(String inputMixerName, Throwable readFailure)
+            throws InterruptedException {
+        javax.sound.sampled.AudioFormat signed = javaFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 16, 2, true);
+        String captureMixer = inputMixerName.isBlank() ? "Microphone" : inputMixerName;
+        TestJavaSoundAccess access = new TestJavaSoundAccess(new Mixer.Info[] {
+                new TestMixerInfo("Speakers"), new TestMixerInfo(captureMixer)}, signed, signed);
+        JavaxSoundBackend backend = new JavaxSoundBackend(access, inputMixerName);
+        backend.open(new DeviceId(JavaxSoundBackend.NAME, "Speakers [Java Sound]"),
+                STREAM_FORMAT, STREAM_FRAMES, CaptureRequirement.REQUIRED);
+        try {
+            Thread thread = captureThread(backend);
+            MemoryLine capture = access.lastTargetLine;
+            if (readFailure == null) {
+                capture.stop();
+            } else {
+                capture.failBlockedRead(readFailure);
+            }
+            thread.join(WAIT_MILLIS);
+            assertThat(thread.isAlive()).as("the capture of %s ended", captureMixer).isFalse();
+            BackendThreadCounters counters = backend.threadCounters();
+            assertThat(counters.inputHalts()).isEqualTo(1);
+            return counters.lastInputFault().orElseThrow();
+        } finally {
+            backend.close();
+        }
     }
 
     /** Replaces the open stream's input publisher through the support's own field. */
@@ -2010,9 +2251,12 @@ class JavaxSoundBackendTest {
 
     /**
      * A capture line scripted for the guard tests: {@code fullReads} full
-     * blocks of non-zero PCM, then end of data ({@code 0}) — or, when told, a
-     * throw on every read, or a read that blocks until the line is closed and
-     * then throws. Built as a {@link java.lang.reflect.Proxy} so the many
+     * blocks of non-zero PCM, then a read that blocks until the line is
+     * closed and returns no data, as the JDK's line does when a close
+     * releases it — or, when told, an empty result returned at once by every
+     * read after the full ones (a line that stopped delivering), a throw on
+     * every read, or a read that blocks until the line is closed and then
+     * throws. Built as a {@link java.lang.reflect.Proxy} so the many
      * {@link TargetDataLine} members the capture path never calls answer
      * neutral defaults.
      */
@@ -2021,9 +2265,12 @@ class JavaxSoundBackendTest {
         private final int fullReads;
         private final AtomicInteger reads = new AtomicInteger();
         private final CountDownLatch firstRead = new CountDownLatch(1);
+        private final CountDownLatch parkedRead = new CountDownLatch(1);
         private final CountDownLatch closed = new CountDownLatch(1);
         private RuntimeException readFailure;
         private boolean blockUntilClosed;
+        private boolean endsAtOnce;
+        private int emptyResult;
 
         ScriptedCaptureLine(int fullReads) {
             this.fullReads = fullReads;
@@ -2039,12 +2286,24 @@ class JavaxSoundBackendTest {
             return this;
         }
 
+        /** Every read after the full ones returns {@code result} (0 or negative) at once. */
+        ScriptedCaptureLine endingWith(int result) {
+            this.endsAtOnce = true;
+            this.emptyResult = result;
+            return this;
+        }
+
         int reads() {
             return reads.get();
         }
 
         boolean awaitFirstRead(long millis) throws InterruptedException {
             return firstRead.await(millis, TimeUnit.MILLISECONDS);
+        }
+
+        /** Waits for a read past the full ones to be blocked until the line's close. */
+        boolean awaitParkedRead(long millis) throws InterruptedException {
+            return parkedRead.await(millis, TimeUnit.MILLISECONDS);
         }
 
         TargetDataLine line() {
@@ -2076,10 +2335,35 @@ class JavaxSoundBackendTest {
                 throw readFailure;
             }
             if (call > fullReads) {
+                if (endsAtOnce) {
+                    return emptyResult;
+                }
+                parkedRead.countDown();
+                awaitClosedUninterruptibly();
                 return 0;
             }
             java.util.Arrays.fill(buffer, offset, offset + length, (byte) 0x21);
             return length;
+        }
+
+        /**
+         * Blocks until the line is closed, as the JDK's read does: an
+         * interrupt does not release it, and the interrupt status is left set
+         * for the capture loop to see.
+         */
+        private void awaitClosedUninterruptibly() {
+            boolean interrupted = false;
+            while (true) {
+                try {
+                    closed.await();
+                    break;
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
 
         private static Object neutral(Class<?> type) {
@@ -2362,7 +2646,13 @@ class JavaxSoundBackendTest {
         }
     }
 
-    /** In-memory line implementing both directions for deterministic open tests. */
+    /**
+     * In-memory line implementing both directions for deterministic open
+     * tests. Its {@code read} models the JDK's capture line: it blocks while
+     * the line is open and started, and returns no data once the line is
+     * stopped or closed; {@link #failBlockedRead(Throwable)} makes it throw
+     * instead, as a line whose device failed.
+     */
     private static final class MemoryLine implements SourceDataLine, TargetDataLine {
 
         private final javax.sound.sampled.AudioFormat actualFormat;
@@ -2370,8 +2660,9 @@ class JavaxSoundBackendTest {
         private javax.sound.sampled.AudioFormat openedFormat;
         private int openedBufferBytes;
         private int closeCalls;
-        private boolean open;
-        private boolean running;
+        private volatile boolean open;
+        private volatile boolean running;
+        private Throwable readFailure;
 
         private final boolean failClose;
 
@@ -2394,6 +2685,12 @@ class JavaxSoundBackendTest {
 
         int closeCalls() {
             return closeCalls;
+        }
+
+        /** Makes the read the capture thread is blocked in, or its next one, throw {@code failure}. */
+        synchronized void failBlockedRead(Throwable failure) {
+            this.readFailure = failure;
+            notifyAll();
         }
 
         @Override
@@ -2419,13 +2716,39 @@ class JavaxSoundBackendTest {
             return length;
         }
 
+        /**
+         * Blocks while the line is open and started, as the JDK's line does
+         * through "no data yet", and returns no data once it is stopped or
+         * closed. An interrupt does not release it; the status is left set.
+         */
         @Override
-        public int read(byte[] bytes, int offset, int length) {
-            return -1;
+        public synchronized int read(byte[] bytes, int offset, int length) {
+            boolean interrupted = false;
+            while (open && running && readFailure == null) {
+                try {
+                    wait();
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            if (readFailure instanceof RuntimeException unchecked) {
+                throw unchecked;
+            }
+            if (readFailure instanceof Error error) {
+                throw error;
+            }
+            return 0;
         }
 
-        @Override public void start() { running = true; }
-        @Override public void stop() { running = false; }
+        @Override public synchronized void start() { running = true; }
+        @Override
+        public synchronized void stop() {
+            running = false;
+            notifyAll();
+        }
         @Override public boolean isRunning() { return running; }
         @Override public boolean isActive() { return running; }
         @Override public javax.sound.sampled.AudioFormat getFormat() { return actualFormat; }
@@ -2441,13 +2764,14 @@ class JavaxSoundBackendTest {
             return new DataLine.Info(SourceDataLine.class, actualFormat);
         }
         @Override
-        public void close() {
+        public synchronized void close() {
             closeCalls++;
             if (failClose) {
                 throw new IllegalStateException("test line refuses to close");
             }
             open = false;
             running = false;
+            notifyAll();
         }
         @Override public boolean isOpen() { return open; }
         @Override public Control[] getControls() { return new Control[0]; }
@@ -2462,13 +2786,17 @@ class JavaxSoundBackendTest {
     /**
      * A {@link Flow.Subscriber} that requests everything and records what it
      * was given, so a test can assert a block did — or, with a bounded grace
-     * wait, did NOT — arrive.
+     * wait, did NOT — arrive, and how the stream ended: completed, or failed
+     * with which throwable.
      */
     private static final class CollectingSubscriber implements Flow.Subscriber<AudioBlock> {
 
         private final List<AudioBlock> received = new CopyOnWriteArrayList<>();
         private final CountDownLatch anyBlock = new CountDownLatch(1);
         private final CountDownLatch completed = new CountDownLatch(1);
+        private final CountDownLatch failed = new CountDownLatch(1);
+        private final AtomicReference<Throwable> error = new AtomicReference<>();
+        private volatile boolean completedNormally;
 
         @Override
         public void onSubscribe(Flow.Subscription subscription) {
@@ -2483,16 +2811,33 @@ class JavaxSoundBackendTest {
 
         @Override
         public void onError(Throwable throwable) {
+            error.set(throwable);
+            failed.countDown();
             completed.countDown();
         }
 
         @Override
         public void onComplete() {
+            completedNormally = true;
             completed.countDown();
         }
 
         List<AudioBlock> received() {
             return received;
+        }
+
+        /** The throwable {@code onError} delivered, or {@code null} if none was. */
+        Throwable error() {
+            return error.get();
+        }
+
+        /** Whether the stream ended through {@code onComplete}. */
+        boolean completedNormally() {
+            return completedNormally;
+        }
+
+        boolean awaitError(long millis) throws InterruptedException {
+            return failed.await(millis, TimeUnit.MILLISECONDS);
         }
 
         boolean awaitAnyBlock(long millis) throws InterruptedException {

@@ -20,6 +20,7 @@ import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ClapInsertEffectTest {
@@ -117,13 +118,82 @@ class ClapInsertEffectTest {
         assertThat(output[0]).as("pass-through").containsExactly(1.0f, 0.5f);
         assertThat(record.total(AudioFailureCategory.PLUGIN)).isEqualTo(1);
         List<AudioFailureSample> samples = new ArrayList<>();
-        record.drainSamples(samples::add);
+        record.read(samples::add);
         assertThat(samples).singleElement().satisfies(sample -> {
             assertThat(sample.subject()).contains(host);
             assertThat(sample.failure()).get().isInstanceOf(RuntimeException.class);
         });
         assertThat(logged).as("no SEVERE record on the render thread")
                 .noneMatch(entry -> entry.getLevel() == Level.SEVERE);
+    }
+
+    /**
+     * Story 337, ruling E77: off a render thread — an offline render — the
+     * crash cannot be recorded, so it is logged at SEVERE with the plugin's
+     * name and the thrown exception, as before story 337; the audio passes
+     * through and the latch is set together with that log record.
+     */
+    @Test
+    void aCrashOffARenderThreadIsLoggedAtSevereWithThePluginNameAndPassesThrough() {
+        ThrowingPluginHost host = new ThrowingPluginHost();
+        ClapInsertEffect effect = new ClapInsertEffect(host);
+        float[][] input = {{1.0f, 0.5f}};
+        float[][] output = {{0.0f, 0.0f}};
+
+        List<LogRecord> logged = loggedWhile(() -> effect.process(input, output, 2));
+
+        assertThat(logged).singleElement().satisfies(entry -> {
+            assertThat(entry.getLevel()).isEqualTo(Level.SEVERE);
+            assertThat(entry.getMessage())
+                    .isEqualTo("CLAP plugin processing failed, falling back to pass-through: ThrowingPlugin");
+            assertThat(entry.getThrown()).isSameAs(host.crash);
+        });
+        assertThat(output[0]).as("pass-through").containsExactly(1.0f, 0.5f);
+        assertThat(effect.isFaulted()).isTrue();
+    }
+
+    /**
+     * Story 337, ruling E77: no new throw — a plugin whose descriptor cannot
+     * be read is still logged, under a fallback name, and the block passes
+     * through.
+     */
+    @Test
+    void aCrashWhoseDescriptorCannotBeReadIsStillLoggedAndThrowsNothing() {
+        ThrowingPluginHost host = ThrowingPluginHost.withUnreadableDescriptor();
+        ClapInsertEffect effect = new ClapInsertEffect(host);
+        float[][] input = {{1.0f, 0.5f}};
+        float[][] output = {{0.0f, 0.0f}};
+        List<LogRecord> logged = new ArrayList<>();
+
+        assertThatCode(() -> logged.addAll(loggedWhile(() -> effect.process(input, output, 2))))
+                .as("reading the plugin's name throws nothing into the render")
+                .doesNotThrowAnyException();
+
+        assertThat(logged).singleElement().satisfies(entry -> {
+            assertThat(entry.getLevel()).isEqualTo(Level.SEVERE);
+            assertThat(entry.getMessage()).endsWith(": an unnamed CLAP plugin");
+            assertThat(entry.getThrown()).isSameAs(host.crash);
+        });
+        assertThat(output[0]).as("pass-through").containsExactly(1.0f, 0.5f);
+        assertThat(effect.isFaulted()).isTrue();
+    }
+
+    /** Runs {@code body} on this thread and returns what {@link ClapInsertEffect}'s logger received. */
+    private static List<LogRecord> loggedWhile(Runnable body) {
+        Logger log = Logger.getLogger(ClapInsertEffect.class.getName());
+        List<LogRecord> logged = new CopyOnWriteArrayList<>();
+        Handler handler = new Handler() {
+            @Override public void publish(LogRecord entry) { logged.add(entry); }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        log.addHandler(handler);
+        try {
+            body.run();
+        } finally {
+            log.removeHandler(handler);
+        }
+        return List.copyOf(logged);
     }
 
     @Test
@@ -184,9 +254,25 @@ class ClapInsertEffectTest {
 
     private static final class ThrowingPluginHost implements ExternalPluginHost {
 
+        final RuntimeException crash = new RuntimeException("Simulated plugin crash");
+        private final boolean descriptorReadable;
+
+        ThrowingPluginHost() {
+            this(true);
+        }
+
+        private ThrowingPluginHost(boolean descriptorReadable) {
+            this.descriptorReadable = descriptorReadable;
+        }
+
+        /** A crashing host whose {@link #getDescriptor()} throws as well. */
+        static ThrowingPluginHost withUnreadableDescriptor() {
+            return new ThrowingPluginHost(false);
+        }
+
         @Override
         public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
-            throw new RuntimeException("Simulated plugin crash");
+            throw crash;
         }
 
         @Override
@@ -238,6 +324,9 @@ class ClapInsertEffectTest {
 
         @Override
         public PluginDescriptor getDescriptor() {
+            if (!descriptorReadable) {
+                throw new IllegalStateException("descriptor unavailable");
+            }
             return new PluginDescriptor("test.throwing", "ThrowingPlugin", "1.0", "Test", PluginType.EFFECT);
         }
 

@@ -76,7 +76,7 @@ import java.util.function.LongSupplier;
  *       after that the window rule above applies. A fingerprint that never
  *       surfaced owes a log-only tail ({@link Tail#surfaced()}).</li>
  *   <li><em>The escalation latch</em> ({@link #occurEscalating},
- *       {@link #escalate}, {@link #clearEscalation}, story 337, ruling E44): a
+ *       {@link #clearEscalation}, story 337, ruling E44): a
  *       sustained real-time fault or a halt surfaces at once, whatever the
  *       window, and from then on its fingerprint's occurrences are only
  *       counted — no re-show — until the latch is cleared.</li>
@@ -117,8 +117,12 @@ public final class FingerprintRateLimiter {
     private final LongSupplier clockNanos;
     private final InstantSource wallClock;
     private final Object lock = new Object();
-    /** Access-ordered: the eldest entry is the least recently seen. Guarded by {@link #lock}. */
-    private final LinkedHashMap<String, State> states = new LinkedHashMap<>(64, 0.75f, true);
+    /**
+     * Kept in the order last seen: an occurrence moves its fingerprint to the
+     * end, a lookup never does (story 337, ruling E88), so the eldest entry is
+     * the least recently seen. Guarded by {@link #lock}.
+     */
+    private final LinkedHashMap<String, State> states = new LinkedHashMap<>(64);
     /**
      * No tail is due before this {@link #clockNanos} reading. A lower bound,
      * never later than the true due time; {@link #takeDueTails()} recomputes it
@@ -161,7 +165,7 @@ public final class FingerprintRateLimiter {
      * Decides {@code weight} occurrences of {@code fingerprint} at once — one
      * audio drain frame's counter delta (story 337, ruling E39). They count
      * as {@code weight} in the total, in a re-show's running total and in a
-     * tail. While the fingerprint's {@linkplain #escalate escalation} is
+     * tail. While the fingerprint's escalation ({@link #occurEscalating}) is
      * latched they are only counted (story 337, ruling E44).
      *
      * @param fingerprint    the occurrences' fingerprint
@@ -187,7 +191,7 @@ public final class FingerprintRateLimiter {
                 Optional<Tail> evicted = evictBeyondCapacity();
                 return new Verdict.Surface(weight, wall, wall, 0, evicted);
             }
-            state.seen(weight, now, wall, guardedMessage);
+            seen(key, state, weight, now, wall, guardedMessage);
             if (!state.escalated && now - state.shownAtNanos >= WINDOW_NANOS) {
                 return state.surface(now, wall);
             }
@@ -224,7 +228,7 @@ public final class FingerprintRateLimiter {
                 states.put(key, state);
                 return new Verdict.LogOnly(wall, evictBeyondCapacity());
             }
-            state.seen(1, now, wall, guardedMessage);
+            seen(key, state, 1, now, wall, guardedMessage);
             if (!state.surfaced) {
                 return state.total >= ISOLATED_CONSUMER_THRESHOLD
                         ? state.surface(now, wall)
@@ -265,33 +269,27 @@ public final class FingerprintRateLimiter {
                 states.put(key, state);
                 return new Verdict.Surface(weight, wall, wall, 0, evictBeyondCapacity());
             }
-            state.seen(weight, now, wall, guardedMessage);
+            seen(key, state, weight, now, wall, guardedMessage);
             state.escalated = true;
             return state.surface(now, wall);
         }
     }
 
     /**
-     * Latches {@code fingerprint}'s escalation: until {@link #clearEscalation}
-     * its occurrences are only counted, never re-shown (story 337, ruling E44).
-     * Nothing happens for a fingerprint that is not kept.
-     *
-     * @param fingerprint the fingerprint
+     * Records {@code weight} more occurrences of a kept fingerprint and moves
+     * it to the end of the eviction order: only an occurrence refreshes a
+     * fingerprint's age (story 337, ruling E88). Caller holds {@link #lock}.
      */
-    public void escalate(Fingerprint fingerprint) {
-        Objects.requireNonNull(fingerprint, "fingerprint must not be null");
-        synchronized (lock) {
-            State state = states.get(fingerprint.key());
-            if (state != null) {
-                state.escalated = true;
-            }
-        }
+    private void seen(String key, State state, long weight, long now, Instant wall, String guardedMessage) {
+        state.seen(weight, now, wall, guardedMessage);
+        states.putLast(key, state);
     }
 
     /**
      * Clears {@code fingerprint}'s escalation once its fault has cleared
      * (story 337, rulings E41 and E44): its next occurrence follows the window
-     * rule again, anchored at its last notice.
+     * rule again, anchored at its last notice. Does not count as seeing the
+     * fingerprint for the eviction order (story 337, ruling E88).
      *
      * @param fingerprint the fingerprint
      */
@@ -306,10 +304,11 @@ public final class FingerprintRateLimiter {
     }
 
     /**
-     * Whether {@code fingerprint}'s escalation is latched.
+     * Whether {@code fingerprint}'s escalation is latched. Does not count as
+     * seeing the fingerprint for the eviction order (story 337, ruling E88).
      *
      * @param fingerprint the fingerprint
-     * @return {@code true} between {@link #occurEscalating} or {@link #escalate} and {@link #clearEscalation}
+     * @return {@code true} between {@link #occurEscalating} and {@link #clearEscalation}
      */
     public boolean isEscalated(Fingerprint fingerprint) {
         Objects.requireNonNull(fingerprint, "fingerprint must not be null");
@@ -340,7 +339,8 @@ public final class FingerprintRateLimiter {
      * which its tail repeats; the tail is recorded at ERROR with the funnel's
      * Open Log Folder action. The base sentence is formatted only for a
      * surfaced occurrence, after this limiter's decision and outside its
-     * monitor.
+     * monitor. Does not count as seeing the fingerprint for the eviction
+     * order (story 337, ruling E88).
      *
      * @param fingerprint the fingerprint that surfaced
      * @param baseMessage its base sentence
@@ -354,6 +354,8 @@ public final class FingerprintRateLimiter {
      * Keeps the base sentence, severity and action of the notice just shown
      * for {@code fingerprint}: its tail repeats the sentence, is recorded at
      * that severity's level and carries that action (story 337, ruling E43).
+     * Does not count as seeing the fingerprint for the eviction order (story
+     * 337, ruling E88).
      *
      * @param fingerprint the fingerprint that surfaced
      * @param baseMessage its base sentence

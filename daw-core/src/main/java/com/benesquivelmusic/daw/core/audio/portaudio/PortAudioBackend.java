@@ -53,14 +53,17 @@ public final class PortAudioBackend implements NativeAudioBackend {
 
     /**
      * The callback invokers' failure counters and device heartbeat,
-     * accumulated across this backend's streams (story 337, rulings E4 and
-     * E5). An invoker lives for one stream, so its counters would vanish at a
-     * reopen; the holder folds the live invoker's counts in when its stream
-     * is closed, so {@link #threadCounters()} only ever grows. Swapped in one
-     * volatile write of an immutable value, so a reader never sees an invoker
-     * counted twice or not at all.
+     * accumulated across this backend's streams in the shared SDK ledger
+     * (story 337, rulings E4, E5 and E90). An invoker lives for one stream,
+     * so its counters would vanish at a reopen; the stream's callback stub
+     * attaches the live invoker with this backend as owner, and its close —
+     * or a failed open — detaches it, folding its counts in, so
+     * {@link #threadCounters()} only ever grows. A fresh invoker counts from
+     * zero, so it is attached at {@link BackendThreadCounters#NONE}. Swapped
+     * in one volatile write of an immutable value, so a reader never sees an
+     * invoker counted twice or not at all.
      */
-    private volatile InvokerCounters invokerCounters = InvokerCounters.NONE;
+    private volatile BackendCounterLedger invokerCounters = BackendCounterLedger.EMPTY;
     private MemorySegment streamHandle;
     private Arena streamArena;
 
@@ -217,8 +220,8 @@ public final class PortAudioBackend implements NativeAudioBackend {
             // failed; it belongs to a stream that never existed, so it must not
             // survive into the next open's clamp report. Its counters (if the
             // driver ever entered it) are folded, never dropped (story 337,
-            // ruling E4).
-            invokerCounters = invokerCounters.retireLive();
+            // rulings E4 and E90).
+            invokerCounters = invokerCounters.detached(this);
             currentInvoker = null;
             throw e;
         }
@@ -391,8 +394,8 @@ public final class PortAudioBackend implements NativeAudioBackend {
                     + " channel planes would have thrown out of an upcall on the"
                     + " driver's real-time thread");
         }
-        // Story 337, ruling E4: fold the closed stream's callback counters.
-        invokerCounters = invokerCounters.retireLive();
+        // Story 337, rulings E4 and E90: fold the closed stream's callback counters.
+        invokerCounters = invokerCounters.detached(this);
         this.currentInvoker = null;
     }
 
@@ -403,61 +406,16 @@ public final class PortAudioBackend implements NativeAudioBackend {
      * ({@code audio.callback}; story 337, rulings E1 to E4) and reports a
      * device heartbeat at all times: the callback periods the driver entered,
      * across every stream of this backend, zero before the first (story 337,
-     * ruling E5).</p>
+     * ruling E5). The counts come from the shared SDK ledger (story 337,
+     * ruling E90), each invoker's read counts first, so a count comes with
+     * its fault or a newer one (story 337, ruling E82).</p>
      */
     @Override
     public BackendThreadCounters threadCounters() {
-        InvokerCounters totals = invokerCounters.view();
-        return new BackendThreadCounters(totals.faults(), 0L, 0L, 0L,
-                OptionalLong.of(totals.periods()), totals.lastFault(),
-                Optional.empty(), Optional.empty());
-    }
-
-    /**
-     * The callback invokers' counters across this backend's streams: the
-     * folded totals of every closed stream plus, optionally, the live
-     * invoker (story 337, ruling E4). Immutable; swapped whole.
-     *
-     * @param faults    callback faults the guard caught
-     * @param periods   callback periods the driver entered
-     * @param lastFault the newest caught fault
-     * @param live      the open stream's invoker, when one is open
-     */
-    record InvokerCounters(long faults, long periods, Optional<Throwable> lastFault,
-                           Optional<CallbackInvoker> live) {
-
-        static final InvokerCounters NONE =
-                new InvokerCounters(0L, 0L, Optional.empty(), Optional.empty());
-
-        InvokerCounters {
-            Objects.requireNonNull(lastFault, "lastFault must not be null");
-            Objects.requireNonNull(live, "live must not be null");
-        }
-
-        /** Folds any previous live invoker, then tracks {@code invoker} as live. */
-        InvokerCounters withLive(CallbackInvoker invoker) {
-            InvokerCounters folded = retireLive();
-            return new InvokerCounters(folded.faults, folded.periods, folded.lastFault,
-                    Optional.of(invoker));
-        }
-
-        /** Folds the live invoker's counts into the totals and drops it; idempotent. */
-        InvokerCounters retireLive() {
-            return live.isEmpty() ? this : view();
-        }
-
-        /** The folded totals plus the live invoker's current counts, with no live invoker. */
-        InvokerCounters view() {
-            if (live.isEmpty()) {
-                return this;
-            }
-            CallbackInvoker invoker = live.get();
-            return new InvokerCounters(
-                    faults + invoker.callbackFaults(),
-                    periods + invoker.deviceCallbackPeriods(),
-                    invoker.lastCallbackFault().or(() -> lastFault),
-                    Optional.empty());
-        }
+        BackendThreadCounters invokers = invokerCounters.view();
+        return new BackendThreadCounters(invokers.callbackFaults(), 0L, 0L, 0L,
+                OptionalLong.of(invokers.deviceCallbackPeriods().orElse(0L)),
+                invokers.lastCallbackFault(), Optional.empty(), Optional.empty());
     }
 
     private void ensureInitialized() {
@@ -740,7 +698,7 @@ public final class PortAudioBackend implements NativeAudioBackend {
         CallbackInvoker invoker = CallbackInvoker.forStream(
                 callback, inputChannels, outputChannels, framesPerBuffer);
         this.currentInvoker = invoker;
-        invokerCounters = invokerCounters.withLive(invoker);
+        invokerCounters = invokerCounters.attached(this, invoker::counters, BackendThreadCounters.NONE);
 
         // Create an upcall stub that bridges the C callback to the Java callback
         return Linker.nativeLinker().upcallStub(
@@ -1032,8 +990,10 @@ public final class PortAudioBackend implements NativeAudioBackend {
                     // The reinterpret on this path can itself fail; the count
                     // below still lands and nothing reaches the driver.
                 }
-                callbackFaults++; // single writer: the driver's callback thread
+                // The fault first, then its count: a reader that sees the
+                // count sees this fault or a newer one (story 337, ruling E82).
                 lastCallbackFault = fault;
+                callbackFaults++; // single writer: the driver's callback thread
             }
             return PortAudioBindings.PA_CONTINUE;
         }
@@ -1184,6 +1144,26 @@ public final class PortAudioBackend implements NativeAudioBackend {
         /** The newest fault the callback guard caught, if any. */
         Optional<Throwable> lastCallbackFault() {
             return Optional.ofNullable(lastCallbackFault);
+        }
+
+        /**
+         * This invoker's counters as one report — the counter source the
+         * backend attaches to its {@link BackendCounterLedger} for the stream
+         * this invoker serves (story 337, ruling E90): the guard's faults
+         * ({@code audio.callback}) and the device heartbeat, always present.
+         *
+         * <p>The counts are read before the fault: {@link #invoke} stores the
+         * fault before its count, so a count read here comes with its fault or
+         * a newer one (story 337, ruling E82). Building the report allocates,
+         * so it runs on the caller's thread, never on the driver's callback
+         * thread.</p>
+         *
+         * @return the report; never {@code null}
+         */
+        BackendThreadCounters counters() {
+            return new BackendThreadCounters(callbackFaults(), 0L, 0L, 0L,
+                    OptionalLong.of(deviceCallbackPeriods()), lastCallbackFault(),
+                    Optional.empty(), Optional.empty());
         }
 
         /**

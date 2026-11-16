@@ -75,7 +75,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * callees from the FX entry points — {@code toggleRecord} and {@code stop}
  * (the gestures), the end of a post-roll ({@code finishPostRoll}, run by the
  * {@code PauseTransition} a Stop schedules; it cancels a take being
- * prepared), the allocation and readiness turns
+ * prepared), the render-drive halt's Stop and closes, which the audio health
+ * drain calls on its FX pulse ({@code stopForEngineHalt},
+ * {@code closeStreamAfterEngineHalt}, {@code retryCloseStreamAfterEngineHalt};
+ * story 337), the allocation and readiness turns
  * ({@code onTakeDirectoryAllocated}, {@code onTakeReady}), the cancels
  * ({@code cancelPendingStartByUser}, {@code cancelPendingStart},
  * {@code abandonStart}), the turn that follows a stopped take's capture
@@ -265,8 +268,11 @@ final class TransportControllerFxThreadBytecodeSentinelTest {
      */
     @Test
     void theTransportFacadeAlsoTouchesNoStorageAndNeverWaits() throws IOException {
-        Walk walk = walk(parse(TransportController.class), List.of("toggleRecord", "stop", "finishPostRoll", "retire", "stopForClose"), Set.of());
-        for (String root : List.of("toggleRecord", "stop", "finishPostRoll", "retire", "stopForClose")) {
+        Walk walk = walk(parse(TransportController.class), List.of("toggleRecord", "stop", "finishPostRoll", "retire",
+                "stopForClose", "stopForEngineHalt", "closeStreamAfterEngineHalt", "retryCloseStreamAfterEngineHalt"),
+                Set.of());
+        for (String root : List.of("toggleRecord", "stop", "finishPostRoll", "retire", "stopForClose",
+                "stopForEngineHalt", "closeStreamAfterEngineHalt", "retryCloseStreamAfterEngineHalt")) {
             assertThat(walk.roots().get(root)).as("facade root %s", root).isEqualTo(1);
         }
         assertThat(walk.findings()).isEmpty();

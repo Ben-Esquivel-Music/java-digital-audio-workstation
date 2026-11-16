@@ -152,7 +152,11 @@ public final class ReflectiveParameterBinder {
      * insert-chain change. Off a render thread — an offline export, bounce or
      * freeze — the failure is thrown as an {@link IllegalStateException}
      * exactly as before and nothing is disabled or recorded, so that render
-     * fails visibly (story 337, ruling E57).</p>
+     * fails visibly (story 337, ruling E57). A thread with no lane also
+     * ignores the disabled flag: it tries every binding a render thread
+     * disabled, so an offline render applies each automated value playback
+     * gave up on, and throws that exception if the value is rejected again
+     * (story 337, ruling E74).</p>
      *
      * @param channel     the channel to apply automation to
      * @param automation  the track's automation data
@@ -176,9 +180,13 @@ public final class ReflectiveParameterBinder {
             return;
         }
         ParameterBinding[] array = bindings.bindings;
+        // Story 337, ruling E74: only a render thread reads the disabled flag.
+        // An offline render tries every binding playback disabled, so its
+        // output never silently lacks an automated value.
+        boolean onRenderThread = Thread.currentThread() instanceof RenderThread;
         for (int i = 0, n = array.length; i < n; i++) {
             ParameterBinding b = array[i];
-            if (b.disabled) {
+            if (onRenderThread && b.disabled) {
                 continue;
             }
             AutomationLane lane = automation.getPluginLane(b.target);
@@ -193,11 +201,11 @@ public final class ReflectiveParameterBinder {
                 // Story 337, ruling E28: on a render thread a rejected value is
                 // recorded as audio.automation (the binding's target is the
                 // subject) and disables only this binding; the parameter keeps
-                // its last value and the mix keeps playing. Ruling E57: on a
-                // thread with no lane (offline export, bounce, freeze) nothing
-                // is recorded and nothing is disabled — the binder is the
-                // mixer's shared one — and today's failure is thrown, so that
-                // render still fails visibly.
+                // its last value and the mix keeps playing. Rulings E57 and
+                // E74: on a thread with no lane (offline export, bounce,
+                // freeze) nothing is recorded and the disabled flag is neither
+                // read nor written — the binder is the mixer's shared one — and
+                // the failure is thrown, so that render fails visibly.
                 if (!RenderThread.recordOnCurrentThread(
                         AudioFailureCodes.AUTOMATION, t, b.target, b.paramId)) {
                     throw new IllegalStateException(
@@ -327,8 +335,9 @@ public final class ReflectiveParameterBinder {
         final PluginParameterTarget target;
         /**
          * Set when the setter threw on a render thread (story 337, ruling
-         * E28); read and written only by the thread applying automation. Only
-         * {@code rebind} clears it — by replacing the binding objects.
+         * E28); read and written only on a render thread — a thread with no
+         * lane neither reads nor writes it (story 337, rulings E57 and E74).
+         * Only {@code rebind} clears it — by replacing the binding objects.
          */
         boolean disabled;
 

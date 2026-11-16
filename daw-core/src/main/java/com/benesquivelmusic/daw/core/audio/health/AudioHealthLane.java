@@ -35,6 +35,20 @@ import java.util.function.Consumer;
  * it through {@code head} — the {@code InterleavedBlockRing} order, never a
  * release-before-read.</p>
  *
+ * <p>The streaming categories may fill at most {@value #STREAMING_SLOTS} of
+ * the slots; {@code audio.automation}, {@code audio.config} and
+ * {@code audio.render.halted} may use all {@value #SLOTS}, so a fault storm
+ * never takes the room a one-shot or a halt record needs to keep its subject
+ * (story 337, ruling E80).</p>
+ *
+ * <h2>The count is the commit</h2>
+ * <p>{@link #record} publishes the descriptor (or its loss) and the last
+ * failure first and the category's count last (story 337, ruling E79). A
+ * reader that sees a count therefore already sees the descriptor it announces,
+ * or the lost-record count that replaced it: the drain reads every count
+ * first and polls the rings after, so it is never handed a count whose sample
+ * is still to come.</p>
+ *
  * <p>A descriptor holds the already-thrown {@link Throwable} reference: a
  * reference store allocates nothing (story 337, ruling E22).</p>
  */
@@ -45,6 +59,14 @@ public final class AudioHealthLane {
 
     /** Index mask for {@link #SLOTS}. */
     static final int MASK = SLOTS - 1;
+
+    /**
+     * The undrained descriptors a streaming category may leave in the ring
+     * (story 337, ruling E80): every category but {@code audio.automation},
+     * {@code audio.config} and {@code audio.render.halted}, which keep the
+     * last {@code SLOTS - STREAMING_SLOTS} slots for themselves.
+     */
+    static final int STREAMING_SLOTS = 12;
 
     private final AudioHealthRecord owner;
     private final LaneRole role;
@@ -69,11 +91,16 @@ public final class AudioHealthLane {
     /**
      * Records one failure. Owner thread only.
      *
-     * <p>Counts the category, keeps {@code failure} as the category's last
-     * failure when present, and samples a descriptor into the ring unless the
-     * ring is full (then the lost-record count grows instead). An
-     * out-of-range category is ignored rather than thrown on the real-time
-     * path. Allocation-free, lock-free, CAS-free and log-free.</p>
+     * <p>Samples a descriptor into the ring unless its category has no room
+     * left (then the lost-record count grows instead: a streaming category
+     * past {@link #STREAMING_SLOTS} undrained descriptors, any category in a
+     * full ring; story 337, ruling E80), keeps {@code failure} as the
+     * category's last failure when present, and counts the category last — the
+     * count is the commit (story 337, ruling E79). An out-of-range category is
+     * ignored rather than thrown on the real-time path. Allocation-free,
+     * lock-free, CAS-free and log-free; the category test is an identity
+     * {@code if} chain on {@code int} constants, never an enum
+     * {@code switch}.</p>
      *
      * @param category an {@link AudioFailureCodes} constant
      * @param failure  the thrown object, or {@code null} when the site has
@@ -87,23 +114,27 @@ public final class AudioHealthLane {
         if (category < 0 || category >= AudioFailureCodes.COUNT) {
             return;
         }
-        // Single writer: a load plus a release store loses nothing (ruling E19).
-        counts.lazySet(category, counts.get(category) + 1L);
+        long t = tail.get();
+        long undrained = t - head.get();
+        if (undrained >= SLOTS || undrained >= STREAMING_SLOTS && category != AudioFailureCodes.AUTOMATION
+                && category != AudioFailureCodes.CONFIG && category != AudioFailureCodes.RENDER_HALTED) {
+            lostRecords++;
+        } else {
+            RecordSlot slot = slots[(int) (t & MASK)];
+            slot.category = category;
+            slot.failure = failure;
+            slot.subject = subject;
+            slot.detail = detail;
+            slot.stamp = beats;
+            tail.lazySet(t + 1L);
+        }
         if (failure != null) {
             lastFailures.lazySet(category, failure);
         }
-        long t = tail.get();
-        if (t - head.get() >= SLOTS) {
-            lostRecords++;
-            return;
-        }
-        RecordSlot slot = slots[(int) (t & MASK)];
-        slot.category = category;
-        slot.failure = failure;
-        slot.subject = subject;
-        slot.detail = detail;
-        slot.stamp = beats;
-        tail.lazySet(t + 1L);
+        // The count is the commit (story 337, ruling E79): a reader that sees
+        // it already sees what it announces. Single writer: a load plus a
+        // release store loses nothing (ruling E19).
+        counts.lazySet(category, counts.get(category) + 1L);
     }
 
     /**
@@ -172,7 +203,7 @@ public final class AudioHealthLane {
 
     /**
      * Drains one descriptor to {@code sink}. The drain's thread only — the
-     * ring has exactly one consumer.
+     * ring has exactly one consumer, live or retired.
      *
      * @return {@code true} when a descriptor was delivered
      */
@@ -211,11 +242,31 @@ public final class AudioHealthLane {
     }
 
     /**
-     * Releases every reference the ring still holds (story 337, ruling E21).
-     * Only after the owner thread has exited or never started, so nothing
-     * writes a slot concurrently; the indices are left alone, so a drain
-     * still iterating a snapshot that contained this lane reads emptied
-     * slots, never out-of-order ones.
+     * How many published descriptors the drain has not taken yet. The
+     * record's lifecycle thread reads it to decide whether a retired lane is
+     * still owed to the drain (story 337, ruling E81). A stale lower
+     * {@code head} only keeps a drained lane one lifecycle event longer:
+     * {@link #poll} releases {@code head} only after its copy, so
+     * {@code head == tail} proves every descriptor was taken.
+     *
+     * @return {@code tail - head}, never negative
+     */
+    long undrained() {
+        return tail.get() - head.get();
+    }
+
+    /**
+     * Releases every reference the ring still holds. It runs only when the
+     * record evicts a retired lane the drain never emptied, beyond the bound
+     * of retired lanes it keeps readable (story 337, rulings E21 and E81),
+     * so only after the owner thread has exited or never started: no
+     * producer writes a slot concurrently. The indices are left alone, so a
+     * drain still iterating a snapshot that contained this lane reads
+     * emptied slots, never out-of-order ones. An eviction can race a drain
+     * that is polling this lane: the drain may then be handed a descriptor
+     * whose throwable or subject is already cleared, and that descriptor is
+     * also counted lost. That is accepted because it needs more than 32
+     * undrained retired lanes (story 337, ruling E81).
      */
     void clearSlots() {
         for (RecordSlot slot : slots) {

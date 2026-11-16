@@ -34,6 +34,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Annotation-driven registry of built-in {@link AudioProcessor} implementations
@@ -272,6 +273,28 @@ public final class ProcessorRegistry {
                             + " (CLAP plugins must be loaded via ClapPluginManager)");
         }
         return entry.category;
+    }
+
+    /**
+     * Returns the display name a processor class declares through its
+     * {@link InsertEffect#displayName() @InsertEffect(displayName)} — the
+     * name its insert slot shows — for any class, registered here or not. A
+     * failure notice names an effect by it first (story 337, ruling E89).
+     *
+     * <p>Reads the annotation each call and keeps no cache of its own:
+     * {@link Class#getAnnotation} caches inside the {@code Class}, so nothing
+     * here keeps a plugin's class alive.</p>
+     *
+     * @param processorClass the processor class; never {@code null}
+     * @return the declared name, or empty when the class carries no
+     *         {@code @InsertEffect} or declares a blank name
+     */
+    public static Optional<String> declaredDisplayName(Class<?> processorClass) {
+        Objects.requireNonNull(processorClass, "processorClass must not be null");
+        InsertEffect annotation = processorClass.getAnnotation(InsertEffect.class);
+        return annotation == null || annotation.displayName().isBlank()
+                ? Optional.empty()
+                : Optional.of(annotation.displayName());
     }
 
     // ── Constructor resolution ──────────────────────────────────────────────
