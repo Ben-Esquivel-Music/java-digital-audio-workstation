@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.diagnostics.HaltContext;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
@@ -697,17 +698,32 @@ final class TransportController implements TransportIntentHandler {
      */
     @Override
     public void stop() {
+        stopTransport(this::stopAudioOutputWhenIdle);
+    }
+
+    /**
+     * The whole of {@link #stop()}, with the stream's idle close it runs at
+     * each of its ends handed in: the user's Stop closes through
+     * {@link #stopAudioOutputWhenIdle}, a render-drive halt's Stop through
+     * nothing, because the halt's own close follows on the same frame (story
+     * 337, ruling E69).
+     *
+     * @param closeWhenIdle what closes the output stream where the Stop is done with it
+     * @return whether this Stop ended a take that had started recording
+     *         ({@link RecordCoordinator#stopAudioTake()})
+     */
+    private boolean stopTransport(Runnable closeWhenIdle) {
         Transport transport = project.getTransport();
         boolean wasRolling = transport.getState() != TransportState.STOPPED;
         if (recordCoordinator.isPreparingTake()) {
             recordCoordinator.cancelPendingStartByUser();
             if (!wasRolling) {
-                stopAudioOutputWhenIdle();
-                return;
+                closeWhenIdle.run();
+                return false;
             }
         }
         if (!wasRolling && !isRecordingInFlight()) {
-            stopAudioOutputWhenIdle();
+            closeWhenIdle.run();
             if (recordCoordinator.getState() == RecordState.DEVICE_LOST) {
                 // Story 327: the first Stop after a device loss leaves
                 // DEVICE_LOST (RecordCoordinator.stopAudioTake); it is not a
@@ -715,7 +731,7 @@ final class TransportController implements TransportIntentHandler {
                 // ended.
                 recordCoordinator.stopAudioTake();
                 updateStatus();
-                return;
+                return false;
             }
             // Double-stop: second Stop returns to zero, if the preference says
             // so. Immediate while stopped — fires POSITION so the VM/playhead/
@@ -725,7 +741,7 @@ final class TransportController implements TransportIntentHandler {
                 statusBarLabel.setText("Returned to start");
                 statusBarLabel.setGraphic(IconNode.of(DawIcon.SKIP_BACK, 12));
             }
-            return;
+            return false;
         }
 
         // Captured before the rewind-to-anchor inside any stop() below.
@@ -734,7 +750,7 @@ final class TransportController implements TransportIntentHandler {
         // Stop the audio take, if one is recording: the seal is requested and
         // the take is published on a later FX turn, once its capture thread
         // has terminated. Nothing here waits for that thread.
-        recordCoordinator.stopAudioTake();
+        boolean endedAStartedTake = recordCoordinator.stopAudioTake();
 
         // Finalize MIDI recording if any MIDI recorders are active. Its toast
         // comes before the audio take's SUCCESS or report, which the later
@@ -769,7 +785,7 @@ final class TransportController implements TransportIntentHandler {
             });
             postRollTimer.play();
             updateStatus();
-            return;
+            return endedAStartedTake;
         }
 
         // ANNOUNCE (story 315): the transport actually stopped on this path —
@@ -781,7 +797,7 @@ final class TransportController implements TransportIntentHandler {
         if (wasRolling) {
             EventBusPublisher.publish(new TransportEvent.Stopped(stoppedAtFrames, Instant.now()));
         }
-        stopAudioOutputWhenIdle();
+        closeWhenIdle.run();
         updateStatus();
         if (!statusShowsARecordingOutcome()) {
             statusBarLabel.setText("Stopped");
@@ -791,6 +807,60 @@ final class TransportController implements TransportIntentHandler {
         recordButton.setOpacity(1.0);
         recordButton.setStyle("");
         // Hide the REC indicator
+        return endedAStartedTake;
+    }
+
+    /** The idle close of a render-drive halt's Stop: none, the halt's own close follows (story 337, ruling E69). */
+    private static final Runnable NO_CLOSE = () -> { };
+
+    /**
+     * Story 337, rulings E67 and E101 — the Stop of a render-drive halt, run
+     * only when the transport is rolling or a take is in flight: the normal
+     * Stop ({@link #stopTransport}), which cancels a take still being prepared
+     * or counting in and ends a recording take through its normal
+     * finalization, and then the end of any post-roll at once
+     * ({@link #endPostRoll(Runnable)}, its timer stopped first), because no
+     * tail can play on a dead drive — so on this turn the transport is STOPPED
+     * and out of post-roll, and the post-roll's deferred half (its Stopped
+     * announce and status) has run. Neither closes the stream through the idle
+     * close: the halt's own close ({@link #closeStreamAfterEngineHalt()})
+     * follows on the same frame and closes only the halted stream (story 337,
+     * ruling E69). FX thread; the audio health drain's halt response calls it.
+     *
+     * <p>It answers what this Stop did, which is all the halt notice's context
+     * sentence says (ruling E101): {@link HaltContext#RECORDING} "exactly when
+     * that Stop ended a take that had started recording, meaning the take was
+     * past its preparation and any count-in", as the Stop reports it — a
+     * count-in that fired before this Stop started its take; otherwise
+     * {@link HaltContext#PLAYBACK} "when that Stop stopped a playing transport,
+     * a post-roll tail included, and that holds when the same Stop also
+     * cancelled a take still being prepared"; otherwise {@link HaltContext#IDLE},
+     * "when that Stop only cancelled a take still being prepared over a stopped
+     * transport, or cancelled a count-in (audio, mixed or MIDI-only), or when no
+     * Stop ran". The count-in is read before the Stop, on this FX turn, which
+     * is the only thread that writes it: a count-in can run over a paused
+     * transport, which this Stop also stops, and that is no playback.</p>
+     *
+     * @return what this Stop did, for the halt notice's context sentence
+     */
+    HaltContext stopForEngineHalt() {
+        Transport transport = project.getTransport();
+        boolean wasRolling = transport.getState() != TransportState.STOPPED;
+        if (!wasRolling && !isRecordingInFlight()) {
+            return HaltContext.IDLE;
+        }
+        boolean countingIn = recordCoordinator.isCountingIn();
+        boolean endedAStartedTake = stopTransport(NO_CLOSE);
+        if (transport.isInPostRoll()) {
+            if (postRollTimer != null) {
+                postRollTimer.stop();
+            }
+            endPostRoll(NO_CLOSE);
+        }
+        if (endedAStartedTake) {
+            return HaltContext.RECORDING;
+        }
+        return wasRolling && !countingIn ? HaltContext.PLAYBACK : HaltContext.IDLE;
     }
 
     /**
@@ -863,6 +933,55 @@ final class TransportController implements TransportIntentHandler {
     void stopAudioOutputWhenIdle() {
         if (recordCoordinator.deferInputStreamStop()) return;
         if (!hasGraphInstruments()) audioEngine.stopAudioOutput();
+    }
+
+    /**
+     * Story 337, ruling E11 step 2 — closes the engine's stream after its
+     * render drive halted, once the record coordinator no longer defers the
+     * input-stream stop: unlike {@link #stopAudioOutputWhenIdle()}, also with
+     * graph instruments, because a stream left open behind a dead drive keeps
+     * its clock claim and every queued seek waits on it. It closes only the
+     * halted stream and never waits: {@link AudioEngine#closeHaltedStream()}
+     * takes the engine's lifecycle lock without waiting, re-checks under it
+     * that the open stream's drive is still the one that halted, and closes
+     * nothing otherwise — a stream reopened, resumed or replaced since the
+     * halt stays open (story 337, ruling E69). The halted pump has already
+     * ended, so the stop joins it at once. Never reopens the stream. FX
+     * thread; the audio health drain calls it once, on the halt's frame,
+     * after the halt's Stop ({@link #stopForEngineHalt()}); each later frame
+     * that still owes the close retries through
+     * {@link #retryCloseStreamAfterEngineHalt()} instead (story 337, ruling
+     * E66).
+     *
+     * @return {@code true} when nothing more is owed — the halted stream was
+     *         closed, or is no longer the open one; {@code false} while the
+     *         take still defers the stop, or while another lifecycle step holds
+     *         the engine's lifecycle lock ("busy" keeps the close owed)
+     */
+    boolean closeStreamAfterEngineHalt() {
+        if (recordCoordinator.deferInputStreamStop()) return false;
+        return audioEngine.closeHaltedStream() != AudioEngine.HaltedStreamClose.LIFECYCLE_BUSY;
+    }
+
+    /**
+     * Story 337, ruling E66 — a later frame's retry of
+     * {@link #closeStreamAfterEngineHalt()}: it only asks the record
+     * coordinator whether the take still defers the input-stream stop
+     * ({@link RecordCoordinator#isInputStreamStopDeferred()}), so a retry
+     * never restarts a failed input cleanup or repeats its ERROR toast; after
+     * the halt frame's own attempt, only the user's Stop retries that cleanup.
+     * Closes the stream, also with graph instruments, once the take no longer
+     * defers it — only the halted stream, through
+     * {@link AudioEngine#closeHaltedStream()}, which never waits for the
+     * lifecycle lock (story 337, ruling E69). Never reopens the stream. FX
+     * thread.
+     *
+     * @return {@code true} when nothing more is owed; {@code false} while the
+     *         take still defers the stop, or while the lifecycle lock is held
+     */
+    boolean retryCloseStreamAfterEngineHalt() {
+        if (recordCoordinator.isInputStreamStopDeferred()) return false;
+        return audioEngine.closeHaltedStream() != AudioEngine.HaltedStreamClose.LIFECYCLE_BUSY;
     }
 
     /**
@@ -1221,6 +1340,19 @@ final class TransportController implements TransportIntentHandler {
      * dropped.</p>
      */
     private void finishPostRoll() {
+        endPostRoll(this::stopAudioOutputWhenIdle);
+    }
+
+    /**
+     * The whole of {@link #finishPostRoll()}, with the stream's idle close
+     * handed in: the post-roll timer, a Stop and a close end the tail through
+     * {@link #stopAudioOutputWhenIdle}, a render-drive halt's Stop through
+     * nothing, because the halt's own close follows on the same frame (story
+     * 337, ruling E69).
+     *
+     * @param closeWhenIdle what closes the output stream once the tail has stopped
+     */
+    private void endPostRoll(Runnable closeWhenIdle) {
         postRollTimer = null;
         Transport transport = project.getTransport();
         if (retired || !transport.isInPostRoll()) {
@@ -1235,7 +1367,7 @@ final class TransportController implements TransportIntentHandler {
         if (wasRolling) {
             EventBusPublisher.publish(new TransportEvent.Stopped(stoppedAtFrames, Instant.now()));
         }
-        stopAudioOutputWhenIdle();
+        closeWhenIdle.run();
         updateStatus();
         if (!statusShowsARecordingOutcome()) {
             statusBarLabel.setText("Stopped");

@@ -54,11 +54,24 @@ import java.util.logging.Logger;
  *
  * <p>This class is thread-safe; {@link #publish} may be called from any
  * thread including the audio thread.</p>
+ *
+ * <h2>Consumer failures</h2>
+ * <p>Every consumer is isolated: a handler, a {@link Flow.Subscriber} or a
+ * publication observer that throws — any {@link Throwable} — is reported to the
+ * bus's {@link SubscriberFailureSink} with a {@link SubscriberDescription} of
+ * the consumer and its {@link DeliveryPath}, and delivery to every other
+ * consumer, and of later events to the same one, continues (story 337, rulings
+ * E37 and E38; failure-surfacing book §2.9). The sink is required at build
+ * time and never defaulted (book §2.7): the bus keeps no dedupe state and does
+ * not log a consumer failure itself — what to log and when to surface a
+ * consumer that keeps failing is the sink's decision. A sink that throws is
+ * contained and logged at {@link Level#WARNING} here.</p>
  */
 public final class DefaultEventBus implements EventBus {
 
     private static final Logger LOG = Logger.getLogger(DefaultEventBus.class.getName());
 
+    private final SubscriberFailureSink failureSink;
     private final int bufferCapacity;
     private final Executor uiExecutor;
     private final Map<Class<? extends BusEvent>, OverflowStrategy> strategyByType;
@@ -71,10 +84,15 @@ public final class DefaultEventBus implements EventBus {
 
     /** Builder for {@link DefaultEventBus}. */
     public static final class Builder {
+        private final SubscriberFailureSink failureSink;
         private int bufferCapacity = DEFAULT_BUFFER_CAPACITY;
         private Executor uiExecutor;
         private OverflowStrategy defaultStrategy = OverflowStrategy.DROP_OLDEST;
         private final Map<Class<? extends BusEvent>, OverflowStrategy> strategies = new HashMap<>();
+
+        private Builder(SubscriberFailureSink failureSink) {
+            this.failureSink = Objects.requireNonNull(failureSink, "failureSink must not be null");
+        }
 
         /** Sets the per-subscription bounded-buffer capacity (default {@value #DEFAULT_BUFFER_CAPACITY}). */
         public Builder bufferCapacity(int capacity) {
@@ -113,11 +131,23 @@ public final class DefaultEventBus implements EventBus {
         }
     }
 
-    public static Builder builder() {
-        return new Builder();
+    /**
+     * Starts a builder for a bus that reports every consumer failure to
+     * {@code failureSink} (story 337, ruling E37).
+     *
+     * @param failureSink receives every handler, Flow-subscriber and
+     *                    publication-observer failure; required — pass
+     *                    {@link SubscriberFailureSink#LOG_ONLY} explicitly
+     *                    where nothing surfaces failures (tests, headless
+     *                    tools)
+     * @return a new builder
+     */
+    public static Builder builder(SubscriberFailureSink failureSink) {
+        return new Builder(failureSink);
     }
 
     private DefaultEventBus(Builder b) {
+        this.failureSink = b.failureSink;
         this.bufferCapacity = b.bufferCapacity;
         this.uiExecutor = b.uiExecutor;
         this.defaultStrategy = b.defaultStrategy;
@@ -130,9 +160,15 @@ public final class DefaultEventBus implements EventBus {
         });
     }
 
-    /** Convenience constructor — default buffer, DROP_OLDEST default, no UI executor. */
-    public DefaultEventBus() {
-        this(builder());
+    /**
+     * Convenience constructor — default buffer, DROP_OLDEST default, no UI
+     * executor.
+     *
+     * @param failureSink receives every consumer failure (story 337, ruling
+     *                    E37); required
+     */
+    public DefaultEventBus(SubscriberFailureSink failureSink) {
+        this(builder(failureSink));
     }
 
     @Override
@@ -143,8 +179,14 @@ public final class DefaultEventBus implements EventBus {
         }
         metrics.recordPublished(event.getClass());
         for (PublicationObserver<?> observer : publicationObservers) {
-            try { observer.accept(event); }
-            catch (RuntimeException failure) { LOG.log(Level.WARNING, "Publication observer failed", failure); }
+            try {
+                observer.accept(event);
+            } catch (Throwable failure) {
+                // Story 337, ruling E38: widened to Throwable and reported to the
+                // bus's one sink; later observers still run.
+                report(failureSink, new SubscriberDescription(event.getClass().getSimpleName(),
+                        observer.consumerName(), DeliveryPath.PUBLICATION_OBSERVER), failure);
+            }
         }
         OverflowStrategy strategy = strategyFor(event.getClass());
         for (Sub<?> sub : subs) {
@@ -196,6 +238,30 @@ public final class DefaultEventBus implements EventBus {
         void accept(BusEvent event) {
             if (type.isInstance(event)) handler.accept(type.cast(event));
         }
+
+        /** The observer's class name: the consumer a failure report names. */
+        String consumerName() {
+            return handler.getClass().getName();
+        }
+    }
+
+    /**
+     * Hands one consumer failure to {@code sink}, containing a sink that
+     * throws (story 337, ruling E37; failure-surfacing book §2.1): the sink's
+     * own failure is logged at {@link Level#WARNING} with the consumer's
+     * failure attached as suppressed, so neither is lost and delivery
+     * continues.
+     */
+    private static void report(SubscriberFailureSink sink, SubscriberDescription subscriber,
+                               Throwable failure) {
+        try {
+            sink.subscriberFailed(subscriber, failure);
+        } catch (Throwable sinkFailure) {
+            if (sinkFailure != failure) {
+                sinkFailure.addSuppressed(failure);
+            }
+            LOG.log(Level.WARNING, "The subscriber failure sink failed for " + subscriber, sinkFailure);
+        }
     }
 
     @Override
@@ -218,15 +284,21 @@ public final class DefaultEventBus implements EventBus {
             downstream.onComplete();
             return;
         }
+        SubscriberDescription description = new SubscriberDescription(type.getSimpleName(),
+                downstream.getClass().getName(), DeliveryPath.FLOW_SUBSCRIBER);
         Consumer<E> bridge = ev -> {
             try {
                 downstream.onNext(ev);
             } catch (Throwable t) {
-                LOG.log(Level.WARNING, "Subscriber threw from onNext", t);
+                // Story 337, ruling E38: the Flow bridge reports to the same sink
+                // as handler delivery; the subscription keeps receiving.
+                report(failureSink, description, t);
             }
         };
+        // The bridge reports its own failures, so the subscription's worker
+        // never sees one from it.
         Sub<E> sub = new Sub<>(type, bufferCapacity, DispatchMode.ON_CALLER_THREAD,
-                uiExecutor, dispatcher, metrics, bridge);
+                uiExecutor, dispatcher, metrics, bridge, failureSink);
         subs.add(sub);
         // Note: this publisher does not implement Reactive Streams demand
         // tracking (request(n) is a no-op). Backpressure is enforced by the
@@ -252,7 +324,8 @@ public final class DefaultEventBus implements EventBus {
             throw new IllegalStateException(
                     "DispatchMode.ON_UI_THREAD requires uiExecutor on the EventBus builder");
         }
-        Sub<E> sub = new Sub<>(type, bufferCapacity, mode, uiExecutor, dispatcher, metrics, handler);
+        Sub<E> sub = new Sub<>(type, bufferCapacity, mode, uiExecutor, dispatcher, metrics, handler,
+                failureSink);
         subs.add(sub);
         sub.start();
         return () -> {
@@ -302,11 +375,13 @@ public final class DefaultEventBus implements EventBus {
         private final java.util.concurrent.locks.Condition notEmpty = lock.newCondition();
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
         private final String id;
+        private final SubscriberFailureSink failureSink;
+        private final SubscriberDescription description;
 
         @SuppressWarnings({"rawtypes", "unchecked"})
         Sub(Class<E> type, int capacity, DispatchMode mode,
             Executor uiExecutor, ExecutorService dispatcher, Metrics metrics,
-            Consumer handler) {
+            Consumer handler, SubscriberFailureSink failureSink) {
             this.type = type;
             this.capacity = capacity;
             this.mode = mode;
@@ -314,9 +389,14 @@ public final class DefaultEventBus implements EventBus {
             this.dispatcher = dispatcher;
             this.metrics = metrics;
             this.handler = handler;
+            this.failureSink = failureSink;
             this.id = type.getSimpleName() + "@"
                     + Integer.toHexString(System.identityHashCode(this))
                     + " [" + mode + "]";
+            // The subscription id plus the handler's class: the offender text
+            // of a failure report names the consumer (story 337, ruling E36).
+            this.description = new SubscriberDescription(type.getSimpleName(),
+                    id + " " + handler.getClass().getName(), DeliveryPath.HANDLER);
             metrics.registerSubscription(id);
         }
 
@@ -384,7 +464,9 @@ public final class DefaultEventBus implements EventBus {
                     try {
                         handler.accept(typed);
                     } catch (Throwable t) {
-                        LOG.log(Level.WARNING, "Subscriber " + id + " threw", t);
+                        // Story 337, ruling E37: reported to the bus's sink, never
+                        // logged here; this subscription keeps receiving.
+                        report(failureSink, description, t);
                     } finally {
                         metrics.recordDispatch(id, System.nanoTime() - start);
                     }

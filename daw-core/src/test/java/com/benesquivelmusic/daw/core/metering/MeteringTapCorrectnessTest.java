@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.metering;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 import com.benesquivelmusic.daw.core.audio.RenderPipeline;
 import com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer;
@@ -82,7 +83,7 @@ class MeteringTapCorrectnessTest {
         final MixerChannel returnBus;
         final List<Track> tracks;
         final MasteringChain masteringChain = new MasteringChain();
-        final RenderPipeline pipeline = new RenderPipeline(FORMAT, 8, BLOCK);
+        final RenderPipeline pipeline = new RenderPipeline(FORMAT, 8, BLOCK, new AudioHealthRecord());
         final MeteringTapBus bus = new MeteringTapBus();
         final float[][] output;
         final float[] interleaved = new float[CHANNELS * BLOCK];

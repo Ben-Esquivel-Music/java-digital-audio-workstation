@@ -39,6 +39,10 @@ import java.util.concurrent.ExecutionException;
  * {@link LastResortLog}, which uses no {@code java.util.logging} (story 336,
  * studio-engineer ruling E11), ends its lines here too: this class uses none
  * either.</p>
+ *
+ * <p>It also holds the diagnostics package's one undeclared rethrow
+ * ({@link #rethrow}), which the audio health drain and
+ * {@link DeclaredSubject} share (story 337, ruling E91).</p>
  */
 public final class GuardedThrowables {
 
@@ -58,6 +62,12 @@ public final class GuardedThrowables {
     private static final String HEX_DIGITS = "0123456789ABCDEF";
 
     private GuardedThrowables() {
+    }
+
+    /** Rethrows {@code failure} unchanged, a checked one included, from a method that declares nothing. */
+    @SuppressWarnings("unchecked")
+    static <T extends Throwable> void rethrow(Throwable failure) throws T {
+        throw (T) failure;
     }
 
     /**

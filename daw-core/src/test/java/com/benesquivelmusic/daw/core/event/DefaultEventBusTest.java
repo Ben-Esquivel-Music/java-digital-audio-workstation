@@ -55,7 +55,7 @@ class DefaultEventBusTest {
 
     @Test
     void deliversAllEventsForSlowConsumerWithDefaultBuffer() throws Exception {
-        bus = DefaultEventBus.builder()
+        bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY)
                 .bufferCapacity(2048)
                 .defaultOverflowStrategy(OverflowStrategy.BLOCK)
                 .build();
@@ -79,7 +79,7 @@ class DefaultEventBusTest {
 
     @Test
     void dropOldestDiscardsHeadOfQueueWhenSubscriberIsSlow() throws Exception {
-        bus = DefaultEventBus.builder()
+        bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY)
                 .bufferCapacity(8)
                 .defaultOverflowStrategy(OverflowStrategy.DROP_OLDEST)
                 .build();
@@ -133,7 +133,7 @@ class DefaultEventBusTest {
                 });
         Executor uiExecutor = fxExec::execute;
 
-        bus = DefaultEventBus.builder()
+        bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY)
                 .bufferCapacity(32)
                 .uiExecutor(uiExecutor)
                 .build();
@@ -158,7 +158,7 @@ class DefaultEventBusTest {
 
     @Test
     void onUiThreadWithoutUiExecutorThrows() {
-        bus = DefaultEventBus.builder().build();
+        bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).build();
         assertThatThrownBy(() -> bus.on(TransportEvent.Started.class,
                 DispatchMode.ON_UI_THREAD, ev -> {}))
                 .isInstanceOf(IllegalStateException.class);
@@ -166,7 +166,7 @@ class DefaultEventBusTest {
 
     @Test
     void onVirtualThreadRunsOnVirtualThread() throws Exception {
-        bus = DefaultEventBus.builder().bufferCapacity(8).build();
+        bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).bufferCapacity(8).build();
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<Boolean> isVirtual = new AtomicReference<>();
         bus.on(TransportEvent.Started.class, DispatchMode.ON_VIRTUAL_THREAD, ev -> {
@@ -180,7 +180,7 @@ class DefaultEventBusTest {
 
     @Test
     void typedSubscriptionFiltersToRequestedSubtype() throws Exception {
-        bus = DefaultEventBus.builder().bufferCapacity(64).build();
+        bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).bufferCapacity(64).build();
         CountDownLatch latch = new CountDownLatch(1);
         AtomicInteger startedSeen = new AtomicInteger();
         AtomicInteger stoppedSeen = new AtomicInteger();
@@ -199,7 +199,7 @@ class DefaultEventBusTest {
 
     @Test
     void supertypeSubscriptionReceivesAllPermittedSubtypes() throws Exception {
-        bus = DefaultEventBus.builder().bufferCapacity(64).build();
+        bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).bufferCapacity(64).build();
         CountDownLatch latch = new CountDownLatch(2);
         AtomicInteger n = new AtomicInteger();
         bus.on(TransportEvent.class, ev -> {
@@ -215,7 +215,7 @@ class DefaultEventBusTest {
 
     @Test
     void slowSubscriberFlaggedInMetrics() throws Exception {
-        bus = DefaultEventBus.builder().bufferCapacity(8).build();
+        bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).bufferCapacity(8).build();
         CountDownLatch latch = new CountDownLatch(2);
         bus.on(TransportEvent.Started.class, ev -> {
             try { Thread.sleep(3); } catch (InterruptedException ignored) {}
@@ -231,7 +231,7 @@ class DefaultEventBusTest {
 
     @Test
     void closedBusSilentlyDropsPublishes() {
-        bus = DefaultEventBus.builder().build();
+        bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).build();
         AtomicInteger count = new AtomicInteger();
         bus.on(TransportEvent.Started.class, ev -> count.incrementAndGet());
         bus.close();
@@ -241,7 +241,7 @@ class DefaultEventBusTest {
 
     @Test
     void closedBusRejectsNewSubscriptions() {
-        bus = DefaultEventBus.builder().build();
+        bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).build();
         bus.close();
         assertThatThrownBy(() -> bus.on(TransportEvent.Started.class, ev -> {}))
                 .isInstanceOf(IllegalStateException.class);
@@ -251,7 +251,7 @@ class DefaultEventBusTest {
 
     @Test
     void cancellingSubscriptionStopsDelivery() throws Exception {
-        bus = DefaultEventBus.builder().bufferCapacity(8).build();
+        bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).bufferCapacity(8).build();
         CountDownLatch first = new CountDownLatch(1);
         AtomicInteger received = new AtomicInteger();
         EventBus.Subscription handle = bus.on(TransportEvent.Started.class, ev -> {
@@ -269,7 +269,7 @@ class DefaultEventBusTest {
 
     @Test
     void publishOfNullThrows() {
-        bus = DefaultEventBus.builder().build();
+        bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).build();
         assertThatThrownBy(() -> bus.publish(null))
                 .isInstanceOf(NullPointerException.class);
     }
@@ -279,7 +279,7 @@ class DefaultEventBusTest {
 
     @Test
     void closingOneOfTwoEqualPublicationRegistrationsTwiceLeavesTheOtherDelivering() {
-        bus = DefaultEventBus.builder().build();
+        bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).build();
         AtomicInteger deliveries = new AtomicInteger();
         Consumer<TransportEvent.Started> handler = ev -> deliveries.incrementAndGet();
         EventBus.Subscription first = bus.onPublication(TransportEvent.Started.class, handler);
@@ -302,7 +302,7 @@ class DefaultEventBusTest {
 
     @Test
     void closingAPublicationHandleRemovesExactlyItsOwnRegistration() {
-        bus = DefaultEventBus.builder().build();
+        bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).build();
         List<String> calls = new ArrayList<>();
         Consumer<TransportEvent.Started> repeated = ev -> calls.add("h");
         bus.onPublication(TransportEvent.Started.class, repeated);
@@ -318,7 +318,7 @@ class DefaultEventBusTest {
 
     @Test
     void closingAPublicationHandleAfterTheBusClosesReturnsNormally() {
-        bus = DefaultEventBus.builder().build();
+        bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).build();
         EventBus.Subscription handle = bus.onPublication(TransportEvent.Started.class, ev -> {});
         bus.close();
 
@@ -329,7 +329,7 @@ class DefaultEventBusTest {
 
     @Test
     void aThrowingPublicationObserverDoesNotStopLaterObservers() {
-        bus = DefaultEventBus.builder().build();
+        bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).build();
         AtomicInteger deliveries = new AtomicInteger();
         bus.onPublication(TransportEvent.Started.class, ev -> {
             throw new IllegalStateException("observer failure");

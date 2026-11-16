@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.persistence.journal;
 
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
 import com.benesquivelmusic.daw.core.persistence.backup.BackupRetentionPolicyStore;
@@ -556,7 +557,7 @@ class JournalSessionRecoveryTest {
 
     @Test void publicationFenceCannotBeOvertakenByAStalledOrOverflowingAsyncSubscriber() throws Exception {
         ProjectContext context = context("Head");
-        DefaultEventBus bus = DefaultEventBus.builder().bufferCapacity(1).uiExecutor(_ -> { }).build();
+        DefaultEventBus bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).bufferCapacity(1).uiExecutor(_ -> { }).build();
         bus.on(MixerEvent.class, DispatchMode.ON_UI_THREAD, _ -> { });
         try (JournalWriter writer = new JournalWriter(context, JournalConfig.DEFAULT, true, null);
              JournalEventRecorder recorder = new JournalEventRecorder(bus, writer, InstantSource.fixed(NOW)).start()) {

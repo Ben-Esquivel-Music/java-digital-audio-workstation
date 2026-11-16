@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectType;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
@@ -94,7 +95,7 @@ class WorkshopSelectionHostS3InvalidationTest {
     void setUp() {
         // Inline UI executor — DispatchMode.ON_UI_THREAD subscribers run
         // synchronously on the publish thread, so no toolkit is needed.
-        bus = DefaultEventBus.builder()
+        bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY)
                 .uiExecutor(Runnable::run)
                 .build();
         EventBusPublisher.setDefault(bus);

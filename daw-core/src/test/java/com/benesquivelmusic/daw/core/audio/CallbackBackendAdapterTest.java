@@ -747,6 +747,67 @@ class CallbackBackendAdapterTest {
 
     // ── Input flow: callback → ring → drain thread → publisher ───────────
 
+    /**
+     * Story 337, ruling E17: a block the {@code native-input-drain} thread
+     * cannot publish is counted as lost and the drain keeps draining — it
+     * ends only on its stop flag. The stream's publisher is swapped for one
+     * whose {@code offer} fails, so the publish throws for real.
+     */
+    @Test
+    void aPublishFailureOnTheNativeInputDrainIsCountedAndTheDrainContinues() throws Exception {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+        IllegalStateException publishFailure = new IllegalStateException("subscriber pipeline failed");
+        java.lang.reflect.Field publisherField =
+                CallbackBackendAdapter.class.getDeclaredField("inputPublisher");
+        publisherField.setAccessible(true);
+        publisherField.set(adapter, new java.util.concurrent.SubmissionPublisher<AudioBlock>() {
+            @Override
+            public int offer(AudioBlock item,
+                             java.util.function.BiPredicate<Flow.Subscriber<? super AudioBlock>,
+                                     ? super AudioBlock> onDrop) {
+                throw publishFailure;
+            }
+        });
+        float[][] in = new float[2][FRAMES];
+        float[][] out = new float[2][FRAMES];
+
+        fake.callback.process(in, out, FRAMES);
+        awaitCondition(() -> adapter.threadCounters().inputBlocksLost() >= 1,
+                "the drain counts the block it could not publish");
+        fake.callback.process(in, out, FRAMES);
+        awaitCondition(() -> adapter.threadCounters().inputBlocksLost() >= 2,
+                "the drain survived the first failure and drains the next block");
+
+        assertThat(adapter.threadCounters().inputBlocksLost()).isEqualTo(2);
+        assertThat(adapter.threadCounters().lastInputFault()).containsSame(publishFailure);
+        adapter.close();
+    }
+
+    /**
+     * Story 337, ruling E4: the adapter reports the wrapped backend's own
+     * counters (for PortAudio, its callback guard and device heartbeat) plus
+     * its drain's lost blocks.
+     */
+    @Test
+    void threadCountersSumTheDelegateAndTheDrain() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        IllegalStateException callbackFault = new IllegalStateException("callback");
+        fake.counters = new com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters(
+                4, 0, 0, 0, java.util.OptionalLong.of(250), java.util.Optional.of(callbackFault),
+                java.util.Optional.empty(), java.util.Optional.empty());
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+
+        com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters counters = adapter.threadCounters();
+
+        assertThat(counters.callbackFaults()).isEqualTo(4);
+        assertThat(counters.inputBlocksLost()).isZero();
+        assertThat(counters.deviceCallbackPeriods()).hasValue(250);
+        assertThat(counters.lastCallbackFault()).containsSame(callbackFault);
+        adapter.close();
+    }
+
     @Test
     void capturedInputIsPublishedByTheDrainThreadNeverTheCallback() {
         FakeNativeBackend fake = new FakeNativeBackend();
@@ -1271,6 +1332,14 @@ class CallbackBackendAdapterTest {
     private static final class FakeNativeBackend implements NativeAudioBackend {
 
         final List<AudioDeviceInfo> devices;
+        /** Story 337: what this delegate reports from {@link #threadCounters()}. */
+        volatile com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters counters =
+                com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters.NONE;
+
+        @Override
+        public com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters threadCounters() {
+            return counters;
+        }
 
         int initializeCount;
         int enumerationCount;

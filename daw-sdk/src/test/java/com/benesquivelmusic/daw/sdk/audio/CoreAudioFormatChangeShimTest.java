@@ -32,6 +32,31 @@ class CoreAudioFormatChangeShimTest {
         }
     }
 
+    /**
+     * Story 337, ruling E31: a listener upcall whose handling throws is
+     * counted on the backend ({@code audio.device}) and answers {@code 0}
+     * (noErr). A heap segment stands in for an address array that cannot be
+     * reinterpreted, so the dispatch throws for real on any host.
+     */
+    @Test
+    void aThrowingDispatchIsCountedOnTheBackendAndAnswersNoErr() {
+        CoreAudioBackend backend = new CoreAudioBackend();
+        try (CoreAudioFormatChangeShim shim =
+                     new CoreAudioFormatChangeShim(backend, DEVICE, /* objectID */ 42)) {
+            int answer = shim.listenerUpcall(42, 1, MemorySegment.ofArray(new byte[16]),
+                    MemorySegment.NULL);
+
+            assertThat(answer).isZero();
+        }
+        BackendThreadCounters counters = backend.threadCounters();
+        assertThat(counters.deviceNotificationFaults()).isEqualTo(1L);
+        assertThat(counters.lastDeviceNotificationFault()).get()
+                .isInstanceOf(UnsupportedOperationException.class);
+        assertThat(counters.deviceCallbackPeriods())
+                .as("CoreAudio runs no device callback thread in this tree")
+                .isEmpty();
+    }
+
     @Test
     void closeIsIdempotent() {
         CoreAudioFormatChangeShim shim =

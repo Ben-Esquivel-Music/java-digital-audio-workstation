@@ -3,8 +3,10 @@ package com.benesquivelmusic.daw.sdk.audio;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.Flow;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Windows WASAPI backend driven by FFM bindings to {@code mmdeviceapi.h}
@@ -26,6 +28,17 @@ public final class WasapiBackend implements AudioBackend {
     private final AudioBackendSupport support = new AudioBackendSupport();
     private final boolean exclusive;
     private volatile WasapiFormatChangeShim formatChangeShim;
+
+    /**
+     * {@code IMMNotificationClient} upcalls whose handling failed (story 337,
+     * ruling E31) — {@code audio.device}. The notifications may arrive on more
+     * than one COM thread, so this one counter is an {@link AtomicLong},
+     * incremented on the failure path only.
+     */
+    private final AtomicLong deviceNotificationFaults = new AtomicLong();
+
+    /** The newest fault behind {@link #deviceNotificationFaults}. */
+    private volatile Throwable lastDeviceNotificationFault;
 
     /** Creates a new WASAPI backend in shared mode. */
     public WasapiBackend() {
@@ -107,6 +120,37 @@ public final class WasapiBackend implements AudioBackend {
     @Override
     public Flow.Publisher<AudioDeviceEvent> deviceEvents() {
         return support.deviceEvents();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>WASAPI counts the device-notification upcalls whose handling failed
+     * ({@code audio.device}; story 337, ruling E31). It reports no device
+     * heartbeat: this backend runs no device callback thread in this tree, so
+     * a watchdog uses the engine's render-drive heartbeat (story 337, ruling
+     * E5).</p>
+     */
+    @Override
+    public BackendThreadCounters threadCounters() {
+        return new BackendThreadCounters(0L, 0L, 0L, deviceNotificationFaults.get(),
+                OptionalLong.empty(), Optional.empty(), Optional.empty(),
+                Optional.ofNullable(lastDeviceNotificationFault));
+    }
+
+    /**
+     * Counts one notification upcall whose handling failed (story 337, ruling
+     * E31). Called from {@link WasapiFormatChangeShim}'s upcall catch,
+     * inside its own catch-all: a reference store, then an
+     * {@link AtomicLong} increment, on the failure path only. The fault is
+     * stored before its count, so a reader that sees the count sees this
+     * fault or a newer one (story 337, ruling E82).
+     *
+     * @param fault the fault the shim caught
+     */
+    void noteDeviceNotificationFault(Throwable fault) {
+        lastDeviceNotificationFault = fault;
+        deviceNotificationFaults.incrementAndGet();
     }
 
     /**

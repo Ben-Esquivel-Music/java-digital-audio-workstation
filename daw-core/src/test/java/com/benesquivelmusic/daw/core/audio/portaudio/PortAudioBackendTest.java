@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.core.audio.portaudio;
 
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
+import com.benesquivelmusic.daw.sdk.audio.BackendCounterLedger;
+import com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters;
 
 import org.junit.jupiter.api.Test;
 
@@ -46,6 +48,75 @@ class PortAudioBackendTest {
     void shouldReportStreamInactiveBeforeStart() {
         PortAudioBackend backend = new PortAudioBackend();
         assertThat(backend.isStreamActive()).isFalse();
+    }
+
+    /**
+     * Story 337, rulings E4 and E5: with no stream ever opened there is
+     * nothing to count, and the device heartbeat is present at zero —
+     * PortAudio always has a device callback thread to report on.
+     */
+    @Test
+    void threadCountersWithNoStreamAreZeroWithADeviceHeartbeatOfZero() {
+        PortAudioBackend backend = new PortAudioBackend();
+
+        com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters counters = backend.threadCounters();
+
+        assertThat(counters.callbackFaults()).isZero();
+        assertThat(counters.inputBlocksLost()).isZero();
+        assertThat(counters.deviceCallbackPeriods()).hasValue(0L);
+        assertThat(counters.lastCallbackFault()).isEmpty();
+    }
+
+    /**
+     * Story 337, rulings E4 and E90: an invoker lives for one stream, so the
+     * backend attaches its counters to the shared SDK ledger and folds them in
+     * when the stream closes — a reopen never loses them, and the retired
+     * invoker is no longer read.
+     */
+    @Test
+    void retiringTheLiveInvokerKeepsItsCounts() {
+        Object backend = new Object();
+        IllegalStateException fault = new IllegalStateException("callback failed");
+        java.util.concurrent.atomic.AtomicBoolean failing =
+                new java.util.concurrent.atomic.AtomicBoolean(true);
+        PortAudioBackend.CallbackInvoker first = PortAudioBackend.CallbackInvoker.forStream(
+                (in, out, frames) -> {
+                    if (failing.get()) {
+                        throw fault;
+                    }
+                }, 0, 1, 16);
+        PortAudioBackend.CallbackInvoker second = PortAudioBackend.CallbackInvoker.forStream(
+                (in, out, frames) -> { }, 0, 1, 16);
+
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment output = arena.allocate(16L * Float.BYTES, Float.BYTES);
+            BackendCounterLedger counters = BackendCounterLedger.EMPTY.attached(
+                    backend, first::counters, BackendThreadCounters.NONE);
+            first.invoke(MemorySegment.NULL, output, 16, MemorySegment.NULL, 0L, MemorySegment.NULL);
+            failing.set(false);
+            first.invoke(MemorySegment.NULL, output, 16, MemorySegment.NULL, 0L, MemorySegment.NULL);
+
+            assertThat(counters.view().callbackFaults()).isEqualTo(1L);
+            assertThat(counters.view().deviceCallbackPeriods()).hasValue(2L);
+
+            BackendCounterLedger retired = counters.detached(backend);
+            failing.set(true);
+            first.invoke(MemorySegment.NULL, output, 16, MemorySegment.NULL, 0L, MemorySegment.NULL);
+
+            assertThat(retired.live()).isEmpty();
+            assertThat(retired.view().callbackFaults()).as("a retired invoker is no longer read").isEqualTo(1L);
+            assertThat(retired.view().deviceCallbackPeriods()).hasValue(2L);
+            assertThat(retired.view().lastCallbackFault()).containsSame(fault);
+            assertThat(retired.detached(backend)).as("retiring again is a no-op").isSameAs(retired);
+
+            BackendCounterLedger reopened = retired.attached(
+                    backend, second::counters, BackendThreadCounters.NONE);
+            second.invoke(MemorySegment.NULL, output, 16, MemorySegment.NULL, 0L, MemorySegment.NULL);
+
+            assertThat(reopened.view().callbackFaults()).isEqualTo(1L);
+            assertThat(reopened.view().deviceCallbackPeriods()).as("folded plus the live invoker").hasValue(3L);
+            assertThat(reopened.view().lastCallbackFault()).containsSame(fault);
+        }
     }
 
     @Test

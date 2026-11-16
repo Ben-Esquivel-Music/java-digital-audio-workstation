@@ -13,6 +13,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.IntFunction;
 import java.util.logging.Level;
@@ -48,6 +50,20 @@ public final class PortAudioBackend implements NativeAudioBackend {
     private AudioStreamConfig currentConfig;
     private AudioStreamCallback currentCallback;
     private CallbackInvoker currentInvoker;
+
+    /**
+     * The callback invokers' failure counters and device heartbeat,
+     * accumulated across this backend's streams in the shared SDK ledger
+     * (story 337, rulings E4, E5 and E90). An invoker lives for one stream,
+     * so its counters would vanish at a reopen; the stream's callback stub
+     * attaches the live invoker with this backend as owner, and its close —
+     * or a failed open — detaches it, folding its counts in, so
+     * {@link #threadCounters()} only ever grows. A fresh invoker counts from
+     * zero, so it is attached at {@link BackendThreadCounters#NONE}. Swapped
+     * in one volatile write of an immutable value, so a reader never sees an
+     * invoker counted twice or not at all.
+     */
+    private volatile BackendCounterLedger invokerCounters = BackendCounterLedger.EMPTY;
     private MemorySegment streamHandle;
     private Arena streamArena;
 
@@ -202,7 +218,10 @@ public final class PortAudioBackend implements NativeAudioBackend {
             releaseStreamArena();
             // The invoker was published by createCallbackStub before the open
             // failed; it belongs to a stream that never existed, so it must not
-            // survive into the next open's clamp report.
+            // survive into the next open's clamp report. Its counters (if the
+            // driver ever entered it) are folded, never dropped (story 337,
+            // rulings E4 and E90).
+            invokerCounters = invokerCounters.detached(this);
             currentInvoker = null;
             throw e;
         }
@@ -375,7 +394,28 @@ public final class PortAudioBackend implements NativeAudioBackend {
                     + " channel planes would have thrown out of an upcall on the"
                     + " driver's real-time thread");
         }
+        // Story 337, rulings E4 and E90: fold the closed stream's callback counters.
+        invokerCounters = invokerCounters.detached(this);
         this.currentInvoker = null;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>PortAudio counts the faults its callback guard caught
+     * ({@code audio.callback}; story 337, rulings E1 to E4) and reports a
+     * device heartbeat at all times: the callback periods the driver entered,
+     * across every stream of this backend, zero before the first (story 337,
+     * ruling E5). The counts come from the shared SDK ledger (story 337,
+     * ruling E90), each invoker's read counts first, so a count comes with
+     * its fault or a newer one (story 337, ruling E82).</p>
+     */
+    @Override
+    public BackendThreadCounters threadCounters() {
+        BackendThreadCounters invokers = invokerCounters.view();
+        return new BackendThreadCounters(invokers.callbackFaults(), 0L, 0L, 0L,
+                OptionalLong.of(invokers.deviceCallbackPeriods().orElse(0L)),
+                invokers.lastCallbackFault(), Optional.empty(), Optional.empty());
     }
 
     private void ensureInitialized() {
@@ -658,6 +698,7 @@ public final class PortAudioBackend implements NativeAudioBackend {
         CallbackInvoker invoker = CallbackInvoker.forStream(
                 callback, inputChannels, outputChannels, framesPerBuffer);
         this.currentInvoker = invoker;
+        invokerCounters = invokerCounters.attached(this, invoker::counters, BackendThreadCounters.NONE);
 
         // Create an upcall stub that bridges the C callback to the Java callback
         return Linker.nativeLinker().upcallStub(
@@ -761,6 +802,20 @@ public final class PortAudioBackend implements NativeAudioBackend {
      * with that exemption recorded against them, so they still get the
      * STRUCTURAL sentinels — no inline publish, no atomic read-modify-write —
      * which is the part of the contract they can and do keep.</p>
+     *
+     * <h2>The body is guarded (story 337, rulings E1 to E3)</h2>
+     * <p>An exception that leaves an upcall terminates the JVM. {@link #invoke}
+     * therefore bumps the device heartbeat and computes its frame counts with
+     * pure arithmetic before a {@code try}, runs the whole old body inside it,
+     * and on any {@link Throwable} silences the host's output extent, counts
+     * the fault with its reference and returns
+     * {@link PortAudioBindings#PA_CONTINUE} — never {@code paAbort} or
+     * {@code paComplete}, because a stream the driver stops behind the
+     * engine's back would be a lie. {@link #invokeNarrowLong} wraps its
+     * delegation in a catch-all of its own whose only job is to return
+     * {@code PA_CONTINUE}: it covers an error raised while entering
+     * {@link #invoke} on a small driver stack. Nothing on the fault path logs,
+     * locks or allocates beyond the thrown object in the common case.</p>
      */
     static final class CallbackInvoker {
 
@@ -796,6 +851,26 @@ public final class PortAudioBackend implements NativeAudioBackend {
          * {@code AsioBufferSwitchShim.renderedBlocksConsumed}.</p>
          */
         private volatile long clampedOversizedPeriods;
+
+        /**
+         * The device-callback heartbeat (story 337, ruling E5): bumped once at
+         * the entry of every {@link #invoke}, before the guard's {@code try}.
+         * Single writer — the driver's callback thread — so the
+         * {@link #clampedOversizedPeriods} idiom applies unchanged.
+         */
+        private volatile long deviceCallbackPeriods;
+
+        /**
+         * Faults the callback guard caught (story 337, rulings E1 and E4).
+         * Single writer — the driver's callback thread.
+         */
+        private volatile long callbackFaults;
+
+        /**
+         * The newest fault behind {@link #callbackFaults}: a reference store,
+         * which allocates nothing on the driver thread (story 337, ruling E4).
+         */
+        private volatile Throwable lastCallbackFault;
 
         /**
          * Creates an invoker with its channel planes pre-allocated at
@@ -850,8 +925,9 @@ public final class PortAudioBackend implements NativeAudioBackend {
          * <p>That still leaves a claim this method cannot act on, because
          * under LP64 {@code unsigned long} genuinely is 64 bits wide. A host
          * value at or above {@code 2^63} arrives as a NEGATIVE Java
-         * {@code long} and is read as zero frames by {@code Math.max(0L,
-         * frameCount)}; a merely enormous one is positive, yet multiplying it
+         * {@code long} and is read as zero frames by the conditional
+         * {@code frameCount < 0L ? 0L : frameCount}; a merely enormous one is
+         * positive, yet multiplying it
          * by the frame stride to size the output segment still overflows to a
          * NEGATIVE byte count, and {@link MemorySegment#reinterpret(long)}
          * answers a negative size with an {@link IllegalArgumentException} —
@@ -872,20 +948,63 @@ public final class PortAudioBackend implements NativeAudioBackend {
          * is no plausibility ceiling and no magic multiple of
          * {@link #framesPerBuffer} — representability is the whole test.</p>
          *
+         * <h2>The guard (story 337, rulings E1 to E3)</h2>
+         * <p>Before the {@code try} this method only bumps the device
+         * heartbeat and computes the two frame counts — own-field access and
+         * primitive arithmetic, nothing that can throw. The output segment is
+         * reinterpreted FIRST inside the {@code try}, so the common fault, a
+         * throw from the callback, finds it already sized to the host extent
+         * and silences it with one bulk fill that allocates nothing. Only when
+         * that reinterpret has not happened yet does the catch attempt one,
+         * itself inside a nested catch-all. The silenced extent is the normal
+         * path's own: {@code hostFrames × outputChannels × 4} bytes when
+         * representable, else the rendered extent — never
+         * {@link #framesPerBuffer}-based, which would overrun a short host
+         * period.</p>
+         *
          * @param frameCount the host's frame count for this period; any
          *                   {@code long} value is accepted, including a
          *                   negative one, which is read as zero frames
-         * @return {@link PortAudioBindings#PA_CONTINUE}
+         * @return {@link PortAudioBindings#PA_CONTINUE}, on every path
          */
         @SuppressWarnings("unused") // invoked reflectively via MethodHandle
         public int invoke(MemorySegment input, MemorySegment output, long frameCount,
                           MemorySegment timeInfo, long statusFlags, MemorySegment userData) {
-            long hostFrames = Math.max(0L, frameCount);
-            int frames = (int) Math.min(hostFrames, framesPerBuffer);
-            if (hostFrames > framesPerBuffer) {
-                clampedOversizedPeriods++; // single writer: the driver's callback thread
+            deviceCallbackPeriods++; // single writer: the driver's callback thread
+            // Pure arithmetic before the try: nothing here can throw.
+            long hostFrames = frameCount < 0L ? 0L : frameCount;
+            int frames = hostFrames < framesPerBuffer ? (int) hostFrames : framesPerBuffer;
+            MemorySegment outputSeg = null;
+            try {
+                if (hostFrames > framesPerBuffer) {
+                    clampedOversizedPeriods++; // single writer: the driver's callback thread
+                }
+                if (outputChannels > 0 && !output.equals(MemorySegment.NULL)) {
+                    outputSeg = output.reinterpret(outputExtentBytes(hostFrames, frames));
+                }
+                render(input, outputSeg, hostFrames, frames);
+            } catch (Throwable fault) {
+                try {
+                    silenceAfterFault(output, outputSeg, hostFrames, frames);
+                } catch (Throwable ignored) {
+                    // The reinterpret on this path can itself fail; the count
+                    // below still lands and nothing reaches the driver.
+                }
+                // The fault first, then its count: a reader that sees the
+                // count sees this fault or a newer one (story 337, ruling E82).
+                lastCallbackFault = fault;
+                callbackFaults++; // single writer: the driver's callback thread
             }
+            return PortAudioBindings.PA_CONTINUE;
+        }
 
+        /**
+         * The callback's body, unchanged apart from receiving the output
+         * segment {@link #invoke} already reinterpreted ({@code null} when
+         * the stream has no output or the host passed {@code NULL}).
+         */
+        private void render(MemorySegment input, MemorySegment outputSeg,
+                            long hostFrames, int frames) {
             // De-interleave input: native interleaved float buffer → float[][]
             if (inputChannels > 0 && !input.equals(MemorySegment.NULL)) {
                 MemorySegment inputSeg = input.reinterpret((long) frames * inputChannels * Float.BYTES);
@@ -902,15 +1021,9 @@ public final class PortAudioBackend implements NativeAudioBackend {
             callback.process(inputBuffer, outputBuffer, frames);
 
             // Interleave output: float[][] → native interleaved float buffer
-            if (outputChannels > 0 && !output.equals(MemorySegment.NULL)) {
-                // outputChannels > 0 is guaranteed by the enclosing test, so
-                // perFrameBytes is positive and the division cannot trap.
+            if (outputSeg != null) {
                 long renderedBytes = (long) frames * outputChannels * Float.BYTES;
-                long perFrameBytes = (long) outputChannels * Float.BYTES;
-                long hostBytes = hostFrames <= Long.MAX_VALUE / perFrameBytes
-                        ? hostFrames * perFrameBytes
-                        : renderedBytes; // not a period we can believe - write only what we rendered
-                MemorySegment outputSeg = output.reinterpret(Math.max(hostBytes, renderedBytes));
+                long hostBytes = hostBytes(hostFrames, renderedBytes);
                 for (int f = 0; f < frames; f++) {
                     for (int ch = 0; ch < outputChannels; ch++) {
                         outputSeg.set(ValueLayout.JAVA_FLOAT,
@@ -924,8 +1037,43 @@ public final class PortAudioBackend implements NativeAudioBackend {
                     outputSeg.asSlice(renderedBytes).fill((byte) 0);
                 }
             }
+        }
 
-            return PortAudioBindings.PA_CONTINUE;
+        /**
+         * The host's output extent in bytes: {@code hostFrames} frames when
+         * that byte count is representable, else what was rendered — not a
+         * period we can believe, so write only what we rendered. Requires
+         * {@code outputChannels > 0}, so the division cannot trap.
+         */
+        private long hostBytes(long hostFrames, long renderedBytes) {
+            long perFrameBytes = (long) outputChannels * Float.BYTES;
+            return hostFrames <= Long.MAX_VALUE / perFrameBytes
+                    ? hostFrames * perFrameBytes
+                    : renderedBytes;
+        }
+
+        /** The output segment's size: the larger of the host and rendered extents. */
+        private long outputExtentBytes(long hostFrames, int frames) {
+            long renderedBytes = (long) frames * outputChannels * Float.BYTES;
+            return Math.max(hostBytes(hostFrames, renderedBytes), renderedBytes);
+        }
+
+        /**
+         * Silences the host's output extent after a fault (story 337, ruling
+         * E2): skipped when the stream has no output or the host passed
+         * {@code NULL}; one bulk fill of the segment {@link #invoke} already
+         * reinterpreted, or — only when that had not happened yet — of a
+         * fresh reinterpret of the same extent.
+         */
+        private void silenceAfterFault(MemorySegment output, MemorySegment outputSeg,
+                                       long hostFrames, int frames) {
+            if (outputChannels <= 0 || output == null || output.equals(MemorySegment.NULL)) {
+                return;
+            }
+            MemorySegment target = outputSeg != null
+                    ? outputSeg
+                    : output.reinterpret(outputExtentBytes(hostFrames, frames));
+            target.fill((byte) 0);
         }
 
         /**
@@ -944,7 +1092,8 @@ public final class PortAudioBackend implements NativeAudioBackend {
          * {@link Integer#toUnsignedLong(int)} rather than by a plain cast
          * because the C types are UNSIGNED. A widening cast is sign
          * extension: a host period of {@code 0xFFFFFFFF} would become
-         * {@code -1}, which {@code Math.max(0L, frameCount)} reads as zero
+         * {@code -1}, which {@link #invoke}'s
+         * {@code frameCount < 0L ? 0L : frameCount} reads as zero
          * frames — a silent dropout instead of the oversized period it
          * actually is, and one the clamp counter would never report.
          * {@code Integer.toUnsignedLong} reads it as {@code 4294967295}, so
@@ -955,18 +1104,66 @@ public final class PortAudioBackend implements NativeAudioBackend {
          * the callback to reason about, and the ABI it adapts is the only
          * thing that can be wrong in it.</p>
          *
+         * <p>The delegation sits in a catch-all whose only job is to return
+         * {@code PA_CONTINUE} (story 337, ruling E1): an error raised while
+         * ENTERING {@link #invoke} — a stack overflow on a small driver stack
+         * — belongs to this frame, not to {@link #invoke}'s guard. It counts
+         * nothing; {@link #invoke} counts every fault it can see.</p>
+         *
          * @param frameCount  the host's frame count, as an unsigned 32-bit
          *                    value
          * @param statusFlags PortAudio's {@code PaStreamCallbackFlags}, as an
          *                    unsigned 32-bit value
-         * @return {@link PortAudioBindings#PA_CONTINUE}
+         * @return {@link PortAudioBindings#PA_CONTINUE}, on every path
          */
         @SuppressWarnings("unused") // invoked reflectively via MethodHandle
         public int invokeNarrowLong(MemorySegment input, MemorySegment output, int frameCount,
                                     MemorySegment timeInfo, int statusFlags,
                                     MemorySegment userData) {
-            return invoke(input, output, Integer.toUnsignedLong(frameCount),
-                    timeInfo, Integer.toUnsignedLong(statusFlags), userData);
+            try {
+                return invoke(input, output, Integer.toUnsignedLong(frameCount),
+                        timeInfo, Integer.toUnsignedLong(statusFlags), userData);
+            } catch (Throwable backstop) {
+                return PortAudioBindings.PA_CONTINUE;
+            }
+        }
+
+        /**
+         * The device-callback heartbeat: periods the driver has entered this
+         * invoker (story 337, ruling E5). A volatile read.
+         */
+        long deviceCallbackPeriods() {
+            return deviceCallbackPeriods;
+        }
+
+        /** Faults the callback guard caught (story 337, ruling E1). A volatile read. */
+        long callbackFaults() {
+            return callbackFaults;
+        }
+
+        /** The newest fault the callback guard caught, if any. */
+        Optional<Throwable> lastCallbackFault() {
+            return Optional.ofNullable(lastCallbackFault);
+        }
+
+        /**
+         * This invoker's counters as one report — the counter source the
+         * backend attaches to its {@link BackendCounterLedger} for the stream
+         * this invoker serves (story 337, ruling E90): the guard's faults
+         * ({@code audio.callback}) and the device heartbeat, always present.
+         *
+         * <p>The counts are read before the fault: {@link #invoke} stores the
+         * fault before its count, so a count read here comes with its fault or
+         * a newer one (story 337, ruling E82). Building the report allocates,
+         * so it runs on the caller's thread, never on the driver's callback
+         * thread.</p>
+         *
+         * @return the report; never {@code null}
+         */
+        BackendThreadCounters counters() {
+            return new BackendThreadCounters(callbackFaults(), 0L, 0L, 0L,
+                    OptionalLong.of(deviceCallbackPeriods()), lastCallbackFault(),
+                    Optional.empty(), Optional.empty());
         }
 
         /**

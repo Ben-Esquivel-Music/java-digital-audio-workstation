@@ -33,7 +33,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Each {@link EventBus#onPublication} call is its own registration: closing its handle removes exactly
  * that registration, a repeated close removes nothing, and observers run inside {@code publish} in
- * registration order with a throwing observer isolated.
+ * registration order with a throwing observer isolated and reported to the bus's
+ * {@link SubscriberFailureSink}.
  */
 class PublicationRegistrationIndependenceTest {
 
@@ -77,7 +78,7 @@ class PublicationRegistrationIndependenceTest {
 
     @Test
     void aSuperTypeAndALeafRegistrationOfOneSharedMethodReferenceCloseIndependently() {
-        bus = new DefaultEventBus();
+        bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         EventBus.Subscription superType = bus.onPublication(ClipEvent.class, recorder);
         EventBus.Subscription leaf = bus.onPublication(ClipEvent.Added.class, recorder);
 
@@ -95,7 +96,7 @@ class PublicationRegistrationIndependenceTest {
 
     @Test
     void equalRegistrationsClosedInAScrambledOrderWithRepeatedClosesRemoveOnlyThemselves() {
-        bus = new DefaultEventBus();
+        bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         EventBus.Subscription first = bus.onPublication(ProjectEvent.class, recorder);
         bus.onPublication(ProjectEvent.class, event -> deliveries.add("m1"));
         EventBus.Subscription second = bus.onPublication(ProjectEvent.class, recorder);
@@ -131,7 +132,7 @@ class PublicationRegistrationIndependenceTest {
 
     @Test
     void anObserverClosingAnEqualLaterSiblingStillReachesItInThatPublishButNotTheNext() {
-        bus = new DefaultEventBus();
+        bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         AtomicReference<EventBus.Subscription> sibling = new AtomicReference<>();
         Consumer<MixerEvent> closer = event -> {
             deliveries.add("closer");
@@ -155,7 +156,7 @@ class PublicationRegistrationIndependenceTest {
 
     @Test
     void manyThreadsClosingTheSameHandleRemoveExactlyOneRegistration() throws Exception {
-        bus = new DefaultEventBus();
+        bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         bus.onPublication(ClipEvent.class, recorder);
         bus.onPublication(ClipEvent.class, event -> deliveries.add("m1"));
         EventBus.Subscription contested = bus.onPublication(ClipEvent.class, recorder);
@@ -189,7 +190,7 @@ class PublicationRegistrationIndependenceTest {
 
     @Test
     void closingHandlesAfterTheBusClosesReturnsNormally() {
-        bus = new DefaultEventBus();
+        bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         EventBus.Subscription open = bus.onPublication(ProjectEvent.Created.class, recorder);
         EventBus.Subscription closedEarly = bus.onPublication(ProjectEvent.Created.class, recorder);
         closedEarly.close();
@@ -205,18 +206,19 @@ class PublicationRegistrationIndependenceTest {
                 .isInstanceOf(IllegalStateException.class);
     }
 
+    /**
+     * Story 337, rulings E37 and E38 (rewritten in place, ruling E55): a
+     * throwing observer is isolated and reported to the bus's sink exactly
+     * once, on the publishing thread; the bus no longer logs it itself.
+     */
     @Test
-    void observersRunOnThePublishingThreadInRegistrationOrderPastALoggedFailure() {
-        bus = new DefaultEventBus();
-        Logger busLogger = Logger.getLogger(DefaultEventBus.class.getName());
-        List<LogRecord> warnings = new CopyOnWriteArrayList<>();
-        Handler capture = new Handler() {
-            @Override public void publish(LogRecord logRecord) {
-                if (logRecord.getLevel().intValue() >= Level.WARNING.intValue()) warnings.add(logRecord);
-            }
-            @Override public void flush() {}
-            @Override public void close() {}
-        };
+    void observersRunOnThePublishingThreadInRegistrationOrderPastAFailureReportedOnceToTheSink() {
+        List<ReportedFailure> reports = new CopyOnWriteArrayList<>();
+        List<Thread> reportingThreads = new CopyOnWriteArrayList<>();
+        bus = new DefaultEventBus((subscriber, failure) -> {
+            reports.add(new ReportedFailure(subscriber, failure));
+            reportingThreads.add(Thread.currentThread());
+        });
         List<Thread> observerThreads = new CopyOnWriteArrayList<>();
         bus.onPublication(DawEvent.class, event -> {
             deliveries.add("super");
@@ -231,17 +233,65 @@ class PublicationRegistrationIndependenceTest {
         });
         bus.onPublication(BusEvent.class, event -> deliveries.add("root"));
 
+        List<LogRecord> warnings = busWarningsDuring(
+                () -> assertThat(deliveriesOf(gainChanged())).containsExactly("super", "leaf", "root"));
+
+        assertThat(observerThreads).containsOnly(Thread.currentThread()).hasSize(2);
+        assertThat(warnings).as("with a sink the bus logs no consumer failure itself").isEmpty();
+        assertThat(reportingThreads).containsExactly(Thread.currentThread());
+        assertThat(reports).singleElement().satisfies(report -> {
+            assertThat(report.subscriber().path()).isEqualTo(DeliveryPath.PUBLICATION_OBSERVER);
+            assertThat(report.subscriber().eventTypeName()).isEqualTo("GainChanged");
+            assertThat(report.failure())
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("probe observer failure");
+        });
+    }
+
+    /**
+     * Story 337, ruling E37: the explicit log-only sink keeps today's single
+     * WARNING, with the stack, per observer failure.
+     */
+    @Test
+    void theLogOnlySinkLeavesOneWarningPerObserverFailure() {
+        bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
+        bus.onPublication(MixerEvent.GainChanged.class, event -> {
+            throw new IllegalStateException("probe observer failure");
+        });
+        bus.onPublication(MixerEvent.GainChanged.class, event -> deliveries.add("after"));
+
+        List<LogRecord> warnings = busWarningsDuring(
+                () -> assertThat(deliveriesOf(gainChanged())).containsExactly("after"));
+
+        assertThat(warnings).singleElement().satisfies(warning -> {
+            assertThat(warning.getLevel()).isEqualTo(Level.WARNING);
+            assertThat(warning.getMessage()).startsWith("Subscriber ").endsWith("(PUBLICATION_OBSERVER) threw");
+            assertThat(warning.getThrown())
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("probe observer failure");
+        });
+    }
+
+    private record ReportedFailure(SubscriberDescription subscriber, Throwable failure) {
+    }
+
+    /** Runs {@code action} and returns the WARNING-or-above records the bus's logger published meanwhile. */
+    private static List<LogRecord> busWarningsDuring(Runnable action) {
+        Logger busLogger = Logger.getLogger(DefaultEventBus.class.getName());
+        List<LogRecord> warnings = new CopyOnWriteArrayList<>();
+        Handler capture = new Handler() {
+            @Override public void publish(LogRecord logRecord) {
+                if (logRecord.getLevel().intValue() >= Level.WARNING.intValue()) warnings.add(logRecord);
+            }
+            @Override public void flush() {}
+            @Override public void close() {}
+        };
         busLogger.addHandler(capture);
         try {
-            assertThat(deliveriesOf(gainChanged())).containsExactly("super", "leaf", "root");
+            action.run();
         } finally {
             busLogger.removeHandler(capture);
         }
-
-        assertThat(observerThreads).containsOnly(Thread.currentThread()).hasSize(2);
-        assertThat(warnings).singleElement()
-                .satisfies(warning -> assertThat(warning.getThrown())
-                        .isInstanceOf(IllegalStateException.class)
-                        .hasMessage("probe observer failure"));
+        return List.copyOf(warnings);
     }
 }

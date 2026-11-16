@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.mixer;
 
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.sdk.event.EventBus;
 import com.benesquivelmusic.daw.sdk.event.PluginEvent;
 
@@ -84,7 +85,7 @@ class ToggleBypassActionTest {
                 InsertEffectType.COMPRESSOR, 2, 44100.0);
         channel.addInsert(slot);
 
-        EventBus bus = DefaultEventBus.builder().build();
+        EventBus bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).build();
         EventBusPublisher.setDefault(bus);
         try {
             List<PluginEvent> events = new CopyOnWriteArrayList<>();

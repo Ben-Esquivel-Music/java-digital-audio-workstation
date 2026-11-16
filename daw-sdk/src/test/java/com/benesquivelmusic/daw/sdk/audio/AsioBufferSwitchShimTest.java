@@ -12,6 +12,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
+import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -382,6 +383,146 @@ class AsioBufferSwitchShimTest {
         assertThat(readDriverBuffer(driverOutputs[1][0], frames))
                 .as("a consumed block must not be replayed into the next half")
                 .containsOnly(0f);
+    }
+
+    // ------------------------------------------------------------------
+    // The upcall guard (story 337, rulings E5, E15, E16)
+    // ------------------------------------------------------------------
+
+    /**
+     * Ruling E15: a fault before the outputs were written must not leave the
+     * half holding the previous cycle's samples — the driver would replay
+     * them as a buzz. The guard silences the whole half, then counts. The
+     * fault is injected by swapping one input view for a one-byte segment,
+     * so the decode at the top of {@code bufferSwitch} throws.
+     */
+    @Test
+    void aThrowingBufferSwitchSilencesTheOutputHalfAndCounts() throws Exception {
+        buildShim(FLOAT32_LSB);
+        writeDriverBuffer(driverOutputs[0][0], 9f, 9f, 9f, 9f);
+        writeDriverBuffer(driverOutputs[0][1], 9f, 9f, 9f, 9f);
+        writeDriverBuffer(driverOutputs[1][0], 7f, 7f, 7f, 7f);
+        shimArray("inputBuffers")[0][0] = arena.allocate(1);
+
+        shim.bufferSwitchUpcall(0, 1);
+
+        assertThat(readDriverBuffer(driverOutputs[0][0], frames))
+                .as("the half the faulted cycle owned is silence, not the previous cycle")
+                .containsOnly(0f);
+        assertThat(readDriverBuffer(driverOutputs[0][1], frames)).containsOnly(0f);
+        assertThat(readDriverBuffer(driverOutputs[1][0], frames))
+                .as("the other half is not touched")
+                .containsOnly(7f);
+        assertThat(shim.upcallFaults()).isEqualTo(1L);
+        assertThat(shim.lastUpcallFault()).get().isInstanceOf(IndexOutOfBoundsException.class);
+        assertThat(shim.deviceCallbackPeriods()).isEqualTo(1L);
+    }
+
+    /** Ruling E5: every upcall is one device-callback period; a healthy one counts no fault. */
+    @Test
+    void aHealthyUpcallBeatsTheDeviceHeartbeatAndCountsNoFault() {
+        buildShim(FLOAT32_LSB);
+
+        shim.bufferSwitchUpcall(0, 1);
+        shim.bufferSwitchUpcall(1, 1);
+        shim.bufferSwitchUpcall(7, 1);
+
+        assertThat(shim.deviceCallbackPeriods())
+                .as("counted at entry, whatever the half index")
+                .isEqualTo(3L);
+        assertThat(shim.upcallFaults()).isZero();
+        assertThat(shim.lastUpcallFault()).isEmpty();
+    }
+
+    /**
+     * Ruling E16: a block the {@code asio-input-drain} thread cannot publish
+     * is counted on that thread, and the drain keeps draining.
+     */
+    @Test
+    void aPublishFailureOnTheDrainIsCounted() throws Exception {
+        IllegalStateException publishFailure = new IllegalStateException("subscriber pipeline failed");
+        support.close();
+        support = new AudioBackendSupport(new SubmissionPublisher<>() {
+            @Override
+            public int offer(AudioBlock item,
+                             java.util.function.BiPredicate<Flow.Subscriber<? super AudioBlock>,
+                                     ? super AudioBlock> onDrop) {
+                throw publishFailure;
+            }
+        }, new SubmissionPublisher<>());
+        support.markOpen(format, frames);
+        buildShim(FLOAT32_LSB);
+
+        shim.bufferSwitch(0, 1);
+        shim.bufferSwitch(1, 1);
+
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(AWAIT_SECONDS);
+        while (shim.publishDrops() < 2 && System.nanoTime() - deadline < 0L) {
+            java.util.concurrent.locks.LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(2));
+        }
+        assertThat(shim.publishDrops()).as("each lost block counted, the drain still running").isEqualTo(2L);
+        assertThat(shim.lastPublishFault()).containsSame(publishFailure);
+        assertThat(shim.upcallFaults()).as("the driver thread never saw the drain's fault").isZero();
+    }
+
+    /**
+     * Story 337, ruling E90: the report a backend's ledger reads from a live
+     * shim names each count by its category — upcall faults are
+     * {@code audio.callback}, publish drops are lost input blocks — with its
+     * last fault, and the heartbeat always present. Two lost blocks and one
+     * upcall fault, so a swap of the two counts cannot pass.
+     */
+    @Test
+    void countersReportTheShimsFaultsDropsAndHeartbeat() throws Exception {
+        IllegalStateException publishFailure = new IllegalStateException("subscriber pipeline failed");
+        support.close();
+        support = new AudioBackendSupport(new SubmissionPublisher<>() {
+            @Override
+            public int offer(AudioBlock item,
+                             java.util.function.BiPredicate<Flow.Subscriber<? super AudioBlock>,
+                                     ? super AudioBlock> onDrop) {
+                throw publishFailure;
+            }
+        }, new SubmissionPublisher<>());
+        support.markOpen(format, frames);
+        buildShim(FLOAT32_LSB);
+
+        shim.bufferSwitchUpcall(0, 1);
+        shim.bufferSwitchUpcall(1, 1);
+        shimArray("inputBuffers")[0][0] = arena.allocate(1);
+        shim.bufferSwitchUpcall(0, 1);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(AWAIT_SECONDS);
+        while (shim.publishDrops() < 2 && System.nanoTime() - deadline < 0L) {
+            java.util.concurrent.locks.LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(2));
+        }
+
+        BackendThreadCounters counters = shim.counters();
+
+        assertThat(counters.callbackFaults()).as("upcall faults are audio.callback").isEqualTo(1L);
+        assertThat(counters.inputBlocksLost()).as("publish drops are lost input blocks").isEqualTo(2L);
+        assertThat(counters.inputHalts()).isZero();
+        assertThat(counters.deviceNotificationFaults()).isZero();
+        assertThat(counters.deviceCallbackPeriods()).as("every upcall is one period").hasValue(3L);
+        assertThat(counters.lastCallbackFault()).get().isInstanceOf(IndexOutOfBoundsException.class);
+        assertThat(counters.lastInputFault()).containsSame(publishFailure);
+        assertThat(counters.lastDeviceNotificationFault()).isEmpty();
+    }
+
+    /** Rulings E4 and E5: a backend with no stream has nothing counted and a heartbeat at zero. */
+    @Test
+    void anAsioBackendWithNoStreamReportsZeroCountsAndAHeartbeatOfZero() {
+        BackendThreadCounters counters = new AsioBackend().threadCounters();
+
+        assertThat(counters.callbackFaults()).isZero();
+        assertThat(counters.inputBlocksLost()).isZero();
+        assertThat(counters.deviceNotificationFaults()).isZero();
+        assertThat(counters.deviceCallbackPeriods()).hasValue(0L);
+    }
+
+    private MemorySegment[][] shimArray(String field) throws ReflectiveOperationException {
+        java.lang.reflect.Field declared = AsioBufferSwitchShim.class.getDeclaredField(field);
+        declared.setAccessible(true);
+        return (MemorySegment[][]) declared.get(shim);
     }
 
     // ------------------------------------------------------------------

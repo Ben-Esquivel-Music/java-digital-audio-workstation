@@ -45,7 +45,10 @@ import java.util.logging.Logger;
  *
  * <p><strong>The substitution.</strong> {@code MainController} is never
  * FXML-loaded in tests and {@code DawApplication} never starts in them, so
- * {@link #armOnFx()} builds what they build — an {@link FxDispatcher}, a
+ * {@link #armOnFx()} builds what they build — an {@link FxDispatcher} on the
+ * funnel's pulse failure sink, as {@code DawApplication.start} builds it
+ * (story 337), so a pulse item that throws reaches the funnel and the pulse
+ * itself never throws — a
  * {@link NotificationBar} whose {@link NotificationHistoryService} is set as
  * {@code MainController.initializeNotificationBar} sets it — and then calls
  * the same production units {@code DawApplication.start} and
@@ -237,7 +240,8 @@ public final class FailureSpineFixture implements AutoCloseable {
     public void armOnFx() throws Exception {
         runOnFx(() -> {
             funnel.installOnCurrentFxThread();
-            dispatcher = new FxDispatcher();
+            // As DawApplication.start builds it: on the funnel's pulse failure sink (story 337, ruling E32).
+            dispatcher = new FxDispatcher(funnel.pulseFailureSink());
             history = new NotificationHistoryService();
             bar = new NotificationBar();
             bar.setAnimated(false);

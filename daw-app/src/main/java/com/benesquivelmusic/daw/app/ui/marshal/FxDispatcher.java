@@ -10,12 +10,15 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.DoubleConsumer;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * The single marshalling seam between non-JavaFX threads and the JavaFX
@@ -107,8 +110,36 @@ import java.util.function.DoubleConsumer;
  * <p>{@link #start()} creates and starts a single {@link AnimationTimer} (the
  * only one this seam owns); its {@code handle} body is exactly {@link #pulse()}.
  * Each pulse runs every pulse participant, then every pending keyed runnable
- * once (clearing the keyed map), then drains every continuous channel.
- * {@link #onFx(Runnable)} does
+ * once (clearing the keyed map), then drains every continuous channel.</p>
+ *
+ * <h2>Failure isolation (story 337, rulings E32 and E33)</h2>
+ *
+ * <p>Every participant, every keyed runnable and every channel drain runs
+ * inside its own {@code catch (Throwable)}, so one consumer that throws on
+ * every frame never starves its siblings — the playhead, the meters, the
+ * status cells — of the same frame (Failure Surfacing book §2.9 "Isolate
+ * every fan-out"). What happens to the throwable depends on how the
+ * dispatcher was built:</p>
+ * <ul>
+ *   <li><strong>With a {@link PulseFailureSink}</strong>
+ *       ({@link #FxDispatcher(PulseFailureSink)}, the composition root's
+ *       production dispatcher): each failure is handed to the sink as it
+ *       happens, with the item's kind and a description of the offender,
+ *       and {@link #pulse()} never throws. That matters because JavaFX counts
+ *       the throwables that leave an {@code AnimationTimer}'s {@code handle}
+ *       and, after 100 for one timer, logs one WARNING and drops every later
+ *       one silently ({@code AbstractPrimaryTimer.FAILING_TIMER_THRESHOLD},
+ *       javafx-graphics 27): a failure reported from inside the pulse is
+ *       never lost to that cap. A sink that throws is contained here, with
+ *       one WARNING on this class's logger.</li>
+ *   <li><strong>Without one</strong> ({@link #FxDispatcher()}, for unit and
+ *       headless contexts): every item still runs, and the first throwable —
+ *       the later ones suppressed onto it — is rethrown, unchanged, after the
+ *       whole frame has run. Nothing is swallowed and nothing is defaulted
+ *       (book §2.7).</li>
+ * </ul>
+ *
+ * <p>{@link #onFx(Runnable)} does
  * <em>not</em> depend on the timer — it goes straight to {@code Platform
  * .runLater}; the timer only flushes the keyed-coalesce map and the continuous
  * channels. {@link #dispose()} stops the timer and clears both. Both
@@ -148,6 +179,9 @@ import java.util.function.DoubleConsumer;
  * @see com.benesquivelmusic.daw.core.event.EventBusPublisher
  */
 public final class FxDispatcher {
+
+    /** Only for a {@link PulseFailureSink} that itself throws (story 337, ruling E33). */
+    private static final Logger LOG = Logger.getLogger(FxDispatcher.class.getName());
 
     /**
      * The application-wide dispatcher installed by the composition root.
@@ -214,10 +248,40 @@ public final class FxDispatcher {
      */
     private volatile Thread fxThread;
 
-    /** Creates an unstarted dispatcher. Call {@link #start()} on the FX thread. */
+    /**
+     * Where each failed pulse item is reported, or empty for the no-arg
+     * contract: rethrow the first failure after the whole frame (story 337,
+     * ruling E32).
+     */
+    private final Optional<PulseFailureSink> failureSink;
+
+    /**
+     * Creates an unstarted dispatcher with no failure sink, for unit and
+     * headless contexts. Call {@link #start()} on the FX thread.
+     *
+     * <p>Its pulse is never silent about a failure (story 337, ruling E32):
+     * every participant, keyed runnable and channel drain of a frame still
+     * runs when one of them throws, and the first throwable — every later one
+     * suppressed onto it — is rethrown unchanged from {@link #pulse()} after
+     * the whole frame has run.</p>
+     */
     public FxDispatcher() {
         // No FX state is touched until start(): constructable in any thread /
         // a toolkit-free unit context, like EventBusPublisher's bus reference.
+        this.failureSink = Optional.empty();
+    }
+
+    /**
+     * Creates an unstarted dispatcher that reports each failed pulse item to
+     * {@code failureSink} as it happens; its {@link #pulse()} never throws
+     * (story 337, rulings E32 and E33). The composition root builds the
+     * application's dispatcher this way, with the failure funnel's sink.
+     * Call {@link #start()} on the FX thread.
+     *
+     * @param failureSink where each failed participant, keyed runnable and channel drain is reported
+     */
+    public FxDispatcher(PulseFailureSink failureSink) {
+        this.failureSink = Optional.of(Objects.requireNonNull(failureSink, "failureSink must not be null"));
     }
 
     // ── app-scoped default (mirrors EventBusPublisher) ───────────────────────
@@ -542,10 +606,12 @@ public final class FxDispatcher {
      *
      * <p>Thread-safe. The same participant instance may be registered more
      * than once; each token removes one registration. A participant that
-     * throws does not stop the others, nor the rest of the frame: the first
-     * throwable (with the later ones suppressed onto it) is rethrown from
-     * {@link #pulse()} only after the keyed work and the channel drains have
-     * run.</p>
+     * throws — an {@link Error} included — does not stop the others, nor the
+     * rest of the frame (story 337, ruling E33): with a
+     * {@link PulseFailureSink} the failure is reported to it at once; without
+     * one, the first throwable of the frame (with the later ones suppressed
+     * onto it) is rethrown from {@link #pulse()} only after the keyed work and
+     * the channel drains have run.</p>
      *
      * @param participant the per-frame runnable; must not be {@code null}
      * @return an idempotent removal token — run it from the owner's
@@ -609,6 +675,16 @@ public final class FxDispatcher {
      * channel. The owned {@link AnimationTimer}'s {@code handle} body is
      * exactly this call; it runs on the FX thread.
      *
+     * <p>Each item runs inside its own {@code catch (Throwable)} (story 337,
+     * ruling E33): a throwing keyed runnable no longer leaves the rest of the
+     * frame's keyed snapshot unrun, a throwing channel consumer no longer
+     * stops the later channels, and an {@link Error} no longer discards a
+     * failure the frame already holds. With a {@link PulseFailureSink} each
+     * failure is reported as it happens and this method never throws, so no
+     * failure is lost to JavaFX's 100-throw cap per timer; without one, the
+     * first throwable — later ones suppressed onto it — is rethrown unchanged
+     * after the whole frame (see the class Javadoc, "Failure isolation").</p>
+     *
      * <p>Exposed (the enclosing module exports / opens nothing, so this is not a
      * widened public API) so the story's tests — which must live in the {@code
      * …app.ui} package for the JavaFX-toolkit extension to work under JPMS, a
@@ -616,11 +692,19 @@ public final class FxDispatcher {
      * than relying on a live timer.</p>
      */
     public void pulse() {
+        Throwable held = null;
         // Participants first (story 318): the metering drain reads the newest
-        // RT-published frames before this frame's keyed work runs. A participant
-        // failure is held back to the END of the pulse so a broken meter cannot
-        // starve the keyed work and the channel drains of this frame.
-        RuntimeException participantFailure = runPulseParticipants();
+        // RT-published frames before this frame's keyed work runs. One volatile
+        // read of the snapshot array — a participant added or removed during the
+        // loop takes effect on the next pulse.
+        Runnable[] participants = pulseParticipants;
+        for (Runnable participant : participants) {
+            try {
+                participant.run();
+            } catch (Throwable failure) {
+                held = itemFailed(PulseItemKind.PARTICIPANT, participant, failure, held);
+            }
+        }
         // Snapshot the keyed entries first, then remove each by key AND value, so
         // work posted while this pulse runs (including a runnable that re-posts
         // under the same key) stays queued for the NEXT pulse. A weakly
@@ -631,41 +715,100 @@ public final class FxDispatcher {
             List<Map.Entry<Object, Runnable>> snapshot =
                     new ArrayList<>(keyedWork.entrySet());
             for (Map.Entry<Object, Runnable> entry : snapshot) {
-                if (keyedWork.remove(entry.getKey(), entry.getValue())) {
-                    entry.getValue().run();
+                // The removal runs the key's hashCode and equals, so it is inside the item's guard too (story 337,
+                // ruling E33).
+                try {
+                    if (keyedWork.remove(entry.getKey(), entry.getValue())) {
+                        entry.getValue().run();
+                    }
+                } catch (Throwable failure) {
+                    held = itemFailed(PulseItemKind.KEYED_WORK, entry, failure, held);
                 }
             }
         }
         for (DrainableChannel channel : channels) {
-            channel.drain();
+            try {
+                channel.drain();
+            } catch (Throwable failure) {
+                held = itemFailed(PulseItemKind.CHANNEL_DRAIN, channel, failure, held);
+            }
         }
-        if (participantFailure != null) {
-            throw participantFailure;
+        if (held != null) {
+            // Only reachable without a sink: the no-arg contract (story 337, ruling E32).
+            FxDispatcher.<RuntimeException>rethrow(held);
         }
     }
 
     /**
-     * Runs every registered participant on one volatile read of the snapshot
-     * array — a participant added or removed during the loop takes effect on
-     * the next pulse. Returns the first {@link RuntimeException} thrown (the
-     * later ones suppressed onto it), or {@code null}: the caller rethrows it
-     * only after the rest of the frame has drained.
+     * One pulse item threw. With a sink, reports it at once — a sink that
+     * throws is contained with one WARNING — and holds nothing; without one,
+     * keeps the frame's first failure and suppresses each later distinct one
+     * onto it (story 337, rulings E32 and E33).
+     *
+     * @param kind     the item's kind
+     * @param offender the item: a participant, a keyed entry or a channel
+     * @param failure  what it threw
+     * @param held     the failure the frame holds so far, or {@code null}
+     * @return the failure the frame holds now, or {@code null}
      */
-    private RuntimeException runPulseParticipants() {
-        Runnable[] participants = pulseParticipants;
-        RuntimeException failure = null;
-        for (Runnable participant : participants) {
+    private Throwable itemFailed(PulseItemKind kind, Object offender, Throwable failure, Throwable held) {
+        if (failureSink.isPresent()) {
             try {
-                participant.run();
-            } catch (RuntimeException e) {
-                if (failure == null) {
-                    failure = e;
-                } else if (failure != e) {
-                    failure.addSuppressed(e);
+                failureSink.get().pulseItemFailed(kind, describe(kind, offender), failure);
+            } catch (Throwable sinkFailure) {
+                try {
+                    LOG.log(Level.WARNING, "The pulse failure sink failed", sinkFailure);
+                } catch (Throwable unloggable) {
+                    // Contained: the frame carries on whatever the log does (story 337, ruling E33).
                 }
             }
+            return held;
         }
-        return failure;
+        if (held == null) {
+            return failure;
+        }
+        if (held != failure) {
+            held.addSuppressed(failure);
+        }
+        return held;
+    }
+
+    /**
+     * The offender as the log names it; never throws (a key's
+     * {@code toString} may). A participant is its class; keyed work is its key
+     * and its runnable's class; a channel is its FX consumer's class.
+     */
+    private static String describe(PulseItemKind kind, Object offender) {
+        try {
+            if (kind == PulseItemKind.KEYED_WORK && offender instanceof Map.Entry<?, ?> entry) {
+                return "key " + guardedToString(entry.getKey()) + ", " + entry.getValue().getClass().getName();
+            }
+            if (kind == PulseItemKind.CHANNEL_DRAIN && offender instanceof DrainableChannel channel) {
+                return channel.consumerName();
+            }
+            return offender.getClass().getName();
+        } catch (Throwable unreadable) {
+            return kind.name();
+        }
+    }
+
+    private static String guardedToString(Object value) {
+        try {
+            return String.valueOf(value);
+        } catch (Throwable unreadable) {
+            return value.getClass().getName();
+        }
+    }
+
+    /**
+     * Rethrows {@code failure} unchanged, a checked one included, from a
+     * method that declares nothing — its own copy: the marshalling seam
+     * imports nothing from the diagnostics package (story 337, rulings E32
+     * and E91).
+     */
+    @SuppressWarnings("unchecked")
+    private static <T extends Throwable> void rethrow(Throwable failure) throws T {
+        throw (T) failure;
     }
 
     /**
@@ -727,6 +870,9 @@ public final class FxDispatcher {
     private interface DrainableChannel {
         /** Takes the latest value (if any) and delivers it once on the FX thread. */
         void drain();
+
+        /** The FX consumer's class name: how a failed drain names its offender (story 337, ruling E36). */
+        String consumerName();
     }
 
     /**
@@ -780,6 +926,11 @@ public final class FxDispatcher {
         }
 
         @Override
+        public String consumerName() {
+            return fxConsumer.getClass().getName();
+        }
+
+        @Override
         public void close() {
             channels.remove(this);
         }
@@ -822,6 +973,11 @@ public final class FxDispatcher {
             if (bits != DOUBLE_CHANNEL_EMPTY) {
                 fxConsumer.accept(Double.longBitsToDouble(bits));
             }
+        }
+
+        @Override
+        public String consumerName() {
+            return fxConsumer.getClass().getName();
         }
 
         @Override

@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.audio;
 
 import com.benesquivelmusic.daw.core.analysis.LoudnessMeter;
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.dsp.CompressorProcessor;
 import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 import com.benesquivelmusic.daw.core.metering.MeterFrame;
@@ -145,7 +146,7 @@ class LiveMasterBusTest {
             offlineProject.getMixer().prepareForPlayback(2, BLOCK);
             offlineProject.getTransport().play();
             var offlineOutput = new float[2][programmeFrames];
-            new RenderPipeline(FORMAT, 4, BLOCK).renderOffline(offlineProject.getTransport(),
+            new RenderPipeline(FORMAT, 4, BLOCK, new AudioHealthRecord()).renderOffline(offlineProject.getTransport(),
                     offlineProject.getMixer(), offlineProject.getTracks(), null, offlineChain,
                     offlineOutput, programmeFrames, BLOCK);
             var offlineMeter = new LoudnessMeter(48_000, BLOCK);

@@ -370,7 +370,11 @@ public interface AudioBackend extends AutoCloseable {
     /**
      * Returns a {@link Flow.Publisher} that emits one {@link AudioBlock} per
      * hardware callback while the stream is open. The publisher completes
-     * when {@link #close()} is called. Returns an empty publisher (completes
+     * when {@link #close()} is called. When the capture source ends on a fault
+     * while the stream is open — an input halt the backend counts in
+     * {@link #threadCounters()} — it fails instead: {@code onError} with that
+     * fault, and a subscriber attached to it afterwards is failed at once
+     * (story 337, rulings E83 and E84). Returns an empty publisher (completes
      * immediately) for output-only devices.
      *
      * @return a publisher of captured input blocks; never {@code null}
@@ -1029,6 +1033,35 @@ public interface AudioBackend extends AutoCloseable {
      */
     default boolean isReleasePending() {
         return false;
+    }
+
+    /**
+     * Returns the failure counters this backend keeps on the threads it owns
+     * (story 337, ruling E4) — a device callback, an input drain, a capture
+     * loop, a device-notification upcall.
+     *
+     * <p>The counters are PULLED: each one lives inside the backend with the
+     * thread or threads that write it, and the engine reads them from a
+     * lifecycle or drain thread. They are monotonic for the life of this backend
+     * instance — a backend folds the counts of each per-stream helper into
+     * its own totals when the helper is torn down, through the shared
+     * {@link BackendCounterLedger} (story 337, ruling E90), so reopening never
+     * resets them. This is a report, not a failure sink (failure-surfacing book
+     * §2.7): a backend that runs no thread of its own truthfully has nothing
+     * to count.</p>
+     *
+     * <p>Every writer stores a fault before it bumps the fault's count, and an
+     * implementation reads the counts before the faults, so a count in the
+     * report comes with its fault or a newer one (story 337, ruling E82).</p>
+     *
+     * <p>Never called from a real-time thread: building the value allocates.</p>
+     *
+     * @return the counters; never {@code null}. The default is
+     *         {@link BackendThreadCounters#NONE} — "no own threads, zero
+     *         counts"
+     */
+    default BackendThreadCounters threadCounters() {
+        return BackendThreadCounters.NONE;
     }
 
     /**

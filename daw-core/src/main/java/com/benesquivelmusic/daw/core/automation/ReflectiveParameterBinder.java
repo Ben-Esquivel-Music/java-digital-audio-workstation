@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.automation;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCodes;
+import com.benesquivelmusic.daw.core.audio.health.RenderThread;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
@@ -140,6 +142,22 @@ public final class ReflectiveParameterBinder {
      * <p>This method performs no reflection, no allocation, and no
      * synchronization — it may be called from the audio thread.</p>
      *
+     * <p>A setter that throws on a render thread neither throws nor logs: the
+     * failure is recorded into the thread's lane as {@code audio.automation}
+     * with the binding's {@link PluginParameterTarget} as subject, and only
+     * that binding is disabled — the parameter keeps its last value while the
+     * rest of the mix plays on (story 337, ruling E28). A disabled binding is
+     * re-enabled only by {@link #rebind(MixerChannel)}, which the mixer runs
+     * from {@code prepareForPlayback} on every engine start and on every
+     * insert-chain change. Off a render thread — an offline export, bounce or
+     * freeze — the failure is thrown as an {@link IllegalStateException}
+     * exactly as before and nothing is disabled or recorded, so that render
+     * fails visibly (story 337, ruling E57). A thread with no lane also
+     * ignores the disabled flag: it tries every binding a render thread
+     * disabled, so an offline render applies each automated value playback
+     * gave up on, and throws that exception if the value is rejected again
+     * (story 337, ruling E74).</p>
+     *
      * @param channel     the channel to apply automation to
      * @param automation  the track's automation data
      * @param timeInBeats the current transport position in beats
@@ -162,8 +180,15 @@ public final class ReflectiveParameterBinder {
             return;
         }
         ParameterBinding[] array = bindings.bindings;
+        // Story 337, ruling E74: only a render thread reads the disabled flag.
+        // An offline render tries every binding playback disabled, so its
+        // output never silently lacks an automated value.
+        boolean onRenderThread = Thread.currentThread() instanceof RenderThread;
         for (int i = 0, n = array.length; i < n; i++) {
             ParameterBinding b = array[i];
+            if (onRenderThread && b.disabled) {
+                continue;
+            }
             AutomationLane lane = automation.getPluginLane(b.target);
             if (lane == null || lane.getPointCount() == 0) {
                 continue;
@@ -173,10 +198,20 @@ public final class ReflectiveParameterBinder {
             try {
                 b.setter.invokeExact(value);
             } catch (Throwable t) {
-                // Setters should not throw for in-range values; surface any
-                // unchecked exception and let the audio thread error path handle it.
-                throw new IllegalStateException(
-                        "automation setter for parameter " + b.target + " failed", t);
+                // Story 337, ruling E28: on a render thread a rejected value is
+                // recorded as audio.automation (the binding's target is the
+                // subject) and disables only this binding; the parameter keeps
+                // its last value and the mix keeps playing. Rulings E57 and
+                // E74: on a thread with no lane (offline export, bounce,
+                // freeze) nothing is recorded and the disabled flag is neither
+                // read nor written — the binder is the mixer's shared one — and
+                // the failure is thrown, so that render fails visibly.
+                if (!RenderThread.recordOnCurrentThread(
+                        AudioFailureCodes.AUTOMATION, t, b.target, b.paramId)) {
+                    throw new IllegalStateException(
+                            "automation setter for parameter " + b.target + " failed", t);
+                }
+                b.disabled = true;
             }
         }
     }
@@ -298,6 +333,13 @@ public final class ReflectiveParameterBinder {
         final double max;
         final MethodHandle setter;
         final PluginParameterTarget target;
+        /**
+         * Set when the setter threw on a render thread (story 337, ruling
+         * E28); read and written only on a render thread — a thread with no
+         * lane neither reads nor writes it (story 337, rulings E57 and E74).
+         * Only {@code rebind} clears it — by replacing the binding objects.
+         */
+        boolean disabled;
 
         ParameterBinding(int slotIndex, int paramId, double min, double max,
                          MethodHandle setter, PluginParameterTarget target) {

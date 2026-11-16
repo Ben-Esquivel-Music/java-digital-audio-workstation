@@ -342,8 +342,12 @@ final class WasapiFormatChangeShim implements AutoCloseable {
 
     // -- Upcall targets ------------------------------------------------------
 
-    @SuppressWarnings("unused")
-    private int queryInterfaceUpcall(MemorySegment self, MemorySegment riid, MemorySegment ppv) {
+    /**
+     * Upcall target for {@code IUnknown::QueryInterface}. Every fault is caught
+     * and counted (story 337, ruling E31) and answers {@code E_NOINTERFACE};
+     * package-private so tests drive this entry the way the stub would.
+     */
+    int queryInterfaceUpcall(MemorySegment self, MemorySegment riid, MemorySegment ppv) {
         try {
             if (riid == null || riid.equals(MemorySegment.NULL)) {
                 return E_NOINTERFACE;
@@ -357,6 +361,11 @@ final class WasapiFormatChangeShim implements AutoCloseable {
             }
             return E_NOINTERFACE;
         } catch (Throwable t) {
+            try {
+                backend.noteDeviceNotificationFault(t);
+            } catch (Throwable ignored) {
+                // Nothing may reach the COM caller.
+            }
             return E_NOINTERFACE;
         }
     }
@@ -385,13 +394,23 @@ final class WasapiFormatChangeShim implements AutoCloseable {
         return S_OK;
     }
 
-    @SuppressWarnings("unused")
-    private int onPropertyValueChangedUpcall(MemorySegment self,
-                                             MemorySegment pwstrDeviceId,
-                                             MemorySegment key) {
+    /**
+     * Upcall target for {@code IMMNotificationClient::OnPropertyValueChanged}.
+     * Every fault is caught and counted (story 337, ruling E31) and answers
+     * {@code S_OK}; package-private so tests drive this entry the way the stub
+     * would.
+     */
+    int onPropertyValueChangedUpcall(MemorySegment self,
+                                     MemorySegment pwstrDeviceId,
+                                     MemorySegment key) {
         try {
             return dispatchPropertyChanged(key);
         } catch (Throwable t) {
+            try {
+                backend.noteDeviceNotificationFault(t);
+            } catch (Throwable ignored) {
+                // Nothing may reach the COM caller.
+            }
             return S_OK;
         }
     }

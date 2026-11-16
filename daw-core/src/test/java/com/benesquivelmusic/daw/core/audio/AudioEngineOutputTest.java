@@ -2,11 +2,13 @@ package com.benesquivelmusic.daw.core.audio;
 
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.AudioBlock;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.BackendFallbackEvent;
+import com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 
 import org.junit.jupiter.api.AfterEach;
@@ -24,6 +26,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
+import java.util.logging.Handler;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -298,7 +304,7 @@ class AudioEngineOutputTest {
 
     @Test
     void everyFailedHopPublishesABackendFallbackEvent() {
-        DefaultEventBus bus = new DefaultEventBus();
+        DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
         try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
             EventBusPublisher.setDefault(bus);
@@ -327,7 +333,7 @@ class AudioEngineOutputTest {
 
     @Test
     void allRungsFailingPublishesEventsNamingNoActiveBackend() {
-        DefaultEventBus bus = new DefaultEventBus();
+        DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
         try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
             EventBusPublisher.setDefault(bus);
@@ -365,7 +371,7 @@ class AudioEngineOutputTest {
         // seam the story says every fallback is visible on. The provision
         // carries the rejection forward and the walk SEEDS it, ordered
         // first because the gate rejection happened first.
-        DefaultEventBus bus = new DefaultEventBus();
+        DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
         try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
             EventBusPublisher.setDefault(bus);
@@ -409,7 +415,7 @@ class AudioEngineOutputTest {
     @Test
     void aGateRejectedHopIsPublishedEvenWhenTheLadderHeadOpensFirstTry() {
         // The exact case the pre-fix code published nothing for.
-        DefaultEventBus bus = new DefaultEventBus();
+        DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
         try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
             EventBusPublisher.setDefault(bus);
@@ -559,7 +565,7 @@ class AudioEngineOutputTest {
      */
     @Test
     void aCaptureLessRungPublishesABackendFallbackEventNamingTheWinner() {
-        DefaultEventBus bus = new DefaultEventBus();
+        DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
         try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
             EventBusPublisher.setDefault(bus);
@@ -586,7 +592,7 @@ class AudioEngineOutputTest {
 
     @Test
     void story326RoutedDefaultInputPublishesFallbackWinner() {
-        DefaultEventBus bus = new DefaultEventBus();
+        DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
         try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
             EventBusPublisher.setDefault(bus);
@@ -709,7 +715,7 @@ class AudioEngineOutputTest {
         // Falling through the ladder — visibly, via the hop's event — is the
         // honest outcome. Story 317 broadens backend encoding negotiation;
         // adapting the engine's render shape remains unsupported.
-        DefaultEventBus bus = new DefaultEventBus();
+        DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
         try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
             EventBusPublisher.setDefault(bus);
@@ -744,7 +750,7 @@ class AudioEngineOutputTest {
         // A changed rate is worse than a rejection: the block would merely be
         // RELABELLED, playing un-resampled audio at the wrong pitch with
         // nothing in the log.
-        DefaultEventBus bus = new DefaultEventBus();
+        DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
         try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
             EventBusPublisher.setDefault(bus);
@@ -911,6 +917,93 @@ class AudioEngineOutputTest {
         backend.blockAwait = false; // the wedge clears; the loop exits on its flag
 
         engine.startAudioOutput(); // joins for real, releases the handle, opens fresh
+
+        assertThat(engine.isStreamOpen()).isTrue();
+        assertThat(backend.openCount.get()).isEqualTo(2);
+        assertThat(backend.closeCount.get()).isEqualTo(1);
+    }
+
+    /**
+     * Story 337, ruling E61: Play reaps a dead render drive through the
+     * existing stop (ruling E10), and when that stop's bounded join times out
+     * the stream is still open with the RT clock claimed — the start refuses
+     * instead of opening over it.
+     *
+     * <p>Deterministic, not timed: a log handler clears the wedge from inside
+     * the SECOND timed-out join's warning — the reap's own — which
+     * {@code EngineStreamPump.stop()} writes after its {@code isAlive()}
+     * check, so that stop still reports {@code false} while the old pump can
+     * now exit. Without the refusal the start re-joins (and either opens a
+     * second stream over the unclosed one or fails with another message).
+     * (Two bounded 1 s joins &lt; the 5 s guard budget — house async rule.)</p>
+     */
+    @Test
+    void aStartOverAStreamWhoseStopTimedOutIsRefusedUntilTheOldPumpExits() {
+        com.benesquivelmusic.daw.core.transport.Transport transport =
+                new com.benesquivelmusic.daw.core.transport.Transport();
+        engine.setGraph(transport, null, null);
+        backend.blockAwait = true;
+        engine.startAudioOutput();
+        awaitCondition(() -> backend.blockedAwaitEntries.get() >= 1,
+                "the pump is wedged inside awaitSinkCapacity");
+
+        Thread testThread = Thread.currentThread();
+        AtomicInteger timedOutJoins = new AtomicInteger();
+        Handler unwedgeAtTheSecondTimedOutJoin = new Handler() {
+            @Override
+            public void publish(LogRecord entry) {
+                String message = entry.getMessage();
+                if (Thread.currentThread() == testThread && message != null
+                        && message.contains("did not exit")
+                        && timedOutJoins.incrementAndGet() == 2) {
+                    backend.blockAwait = false;
+                }
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        StreamingProvision provision = engine.getStreamingProvision();
+        Logger pumpLog = Logger.getLogger(EngineStreamPump.class.getName());
+        pumpLog.addHandler(unwedgeAtTheSecondTimedOutJoin);
+        try {
+            assertThat(engine.stopAudioOutput())
+                    .as("the first timed-out join: the stop is deferred, the stream stays RUNNING")
+                    .isFalse();
+
+            Throwable refusal = catchThrowable(engine::startAudioOutput);
+            assertThat(refusal)
+                    .as("the reap's join timed out too, so the start refuses to open over the stream")
+                    .isInstanceOf(AudioBackendException.class)
+                    .hasMessageContaining("its stream could not be closed");
+            assertThat(engine.takeFailedStreamStart(refusal))
+                    .as("the refusal names the requested endpoint, like every refusal of a start")
+                    .hasValueSatisfying(failure -> {
+                        assertThat(failure.operation()).isEqualTo(StreamStartFailure.Operation.START);
+                        assertThat(failure.endpoint().backendName()).isEqualTo(provision.requestedBackendName());
+                    });
+            assertThat(timedOutJoins.get())
+                    .as("non-vacuity: the reap's own stop timed out, and the wedge cleared inside it")
+                    .isEqualTo(2);
+            assertThat(backend.openCount.get())
+                    .as("no second open over the stream that could not be closed")
+                    .isEqualTo(1);
+            assertThat(backend.closeCount.get())
+                    .as("the old stream's handle is untouched while its pump may still render")
+                    .isZero();
+            assertThat(transport.isRealTimeClockActive())
+                    .as("the RT-clock claim stays with the unclosed stream")
+                    .isTrue();
+        } finally {
+            pumpLog.removeHandler(unwedgeAtTheSecondTimedOutJoin);
+        }
+
+        engine.startAudioOutput(); // the old pump has exited: reaped, closed, reopened
 
         assertThat(engine.isStreamOpen()).isTrue();
         assertThat(backend.openCount.get()).isEqualTo(2);
@@ -1440,7 +1533,7 @@ class AudioEngineOutputTest {
         // on it. When subscribing to inputBlocks() then failed, the handle
         // was closed but subscribers had already been told that rung was
         // the active stream.
-        DefaultEventBus bus = new DefaultEventBus();
+        DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
         try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
             EventBusPublisher.setDefault(bus);
@@ -1495,7 +1588,7 @@ class AudioEngineOutputTest {
         // native shim). The engine asks it itself instead of trusting the
         // app layer's gate, so a non-streaming rung can never become an
         // honest-looking silent stream.
-        DefaultEventBus bus = new DefaultEventBus();
+        DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
         try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
             EventBusPublisher.setDefault(bus);
@@ -1594,7 +1687,7 @@ class AudioEngineOutputTest {
         // propagates directly, but it is the CAUSE of what does, and the
         // close failure is still suppressed on it, so both survive in the
         // chain and the published cause still describes the OPEN failure.
-        DefaultEventBus bus = new DefaultEventBus();
+        DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         List<BackendFallbackEvent> received = new CopyOnWriteArrayList<>();
         try (var subscription = bus.on(BackendFallbackEvent.class, received::add)) {
             EventBusPublisher.setDefault(bus);
@@ -2396,6 +2489,15 @@ class AudioEngineOutputTest {
         volatile boolean failOnReleasePendingQuery;
         /** Set by a DEFERRED close, cleared when that release completes. */
         private volatile boolean releaseDeferred;
+        /**
+         * Story 337, ruling E78: an opt-in script for
+         * {@link AudioBackend#threadCounters()}. {@code null} (the default)
+         * reports {@link BackendThreadCounters#NONE}, as the interface's
+         * default does; a script may answer {@code null}, throw a
+         * {@link RuntimeException} or an {@link Error}, to model a backend
+         * whose own failure report cannot be read.
+         */
+        volatile Supplier<BackendThreadCounters> counterReport;
         volatile boolean blockAwait;
         /** Story 316 review: what the engine-side streaming guard sees. */
         volatile boolean streamingSupported = true;
@@ -2563,6 +2665,12 @@ class AudioEngineOutputTest {
         public int openedInputChannels() {
             com.benesquivelmusic.daw.sdk.audio.AudioFormat opened = lastOpenFormat;
             return open && capturesInput && opened != null ? opened.channels() : 0;
+        }
+
+        @Override
+        public BackendThreadCounters threadCounters() {
+            Supplier<BackendThreadCounters> script = counterReport;
+            return script == null ? BackendThreadCounters.NONE : script.get();
         }
 
         @Override

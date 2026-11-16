@@ -56,7 +56,7 @@ class EventBusMetricsSmokeTest {
 
     @Test
     void publishedByTypeShowsAllRepresentativeEventFamilies() {
-        EventBus bus = DefaultEventBus.builder().build();
+        EventBus bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).build();
         EventBusPublisher.setDefault(bus);
         try {
             DawProject project = new DawProject("Smoke", AudioFormat.CD_QUALITY);

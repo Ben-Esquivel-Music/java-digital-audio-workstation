@@ -25,10 +25,14 @@ import static org.assertj.core.api.Assertions.entry;
  * call ({@code FailureSpineFixture}), and this source scan pins the call sites
  * themselves — in the Failure Surfacing book §6.4's order: the log manager
  * named, then the log sink and its banner, then the default handler, all
- * before the toolkit starts; the FX thread's handler right after the
+ * before the toolkit starts; the dispatcher built on the funnel's pulse
+ * failure sink and the event bus on its bus failure sink (story 337), and the
+ * FX thread's handler right after the
  * dispatcher, before the window is loaded; the toasts armed right after the
  * window's controller has its dispatcher, before the window shows and the
- * Welcome screen or first-run wizard opens. It pins Help ▸ Open Log Folder's
+ * Welcome screen or first-run wizard opens, and then the window's audio
+ * health drain registered on that dispatcher, removed in its disposal, with
+ * its halt response and Restart Audio Engine (story 337). It pins Help ▸ Open Log Folder's
  * route, the seven plugin disposals story 334 left to this story, and that the
  * spine's own code opens no window and takes no focus (story 336, studio-engineer ruling E9) and posts to
  * the FX thread only through the dispatcher (javafx-application-design
@@ -107,10 +111,14 @@ class FailureSpineWiringSourceTest {
         String start = body(flat(code(APP.resolve("DawApplication.java"))),
                 "public void start(Stage primaryStage)");
 
-        assertThat(start).as("the FX thread's handler right after the dispatcher, before the window loads")
-                .containsSubsequence("FxDispatcher.installDefault(fxDispatcher);",
-                        "failureFunnel = DawLauncher.failureFunnel(); failureFunnel.installOnCurrentFxThread();",
-                        "loader.load();");
+        assertThat(start).as("the funnel first, the dispatcher built on its pulse sink, the FX thread's handler"
+                        + " right after the dispatcher, the bus built on the funnel's bus sink, all before the window"
+                        + " loads (story 337, rulings E32 and E37)")
+                .containsSubsequence("failureFunnel = DawLauncher.failureFunnel();",
+                        "fxDispatcher = new FxDispatcher(failureFunnel.pulseFailureSink());", "fxDispatcher.start();",
+                        "FxDispatcher.installDefault(fxDispatcher);", "failureFunnel.installOnCurrentFxThread();",
+                        "DefaultEventBus.builder(failureFunnel.busFailureSink())", "loader.load();");
+        assertThat(occurrences(start, "new FxDispatcher(")).as("the one dispatcher, with the sink").isEqualTo(1);
         assertThat(start).as("the toasts armed right after the controller has its dispatcher, before the window"
                         + " shows and the Welcome screen or first-run wizard opens (book §6.4)")
                 .containsSubsequence("mainController.setFxDispatcher(fxDispatcher);"
@@ -125,9 +133,13 @@ class FailureSpineWiringSourceTest {
         String main = flat(code(UI.resolve("MainController.java")));
 
         String attach = body(main, "public void attachFailureFunnel(FailureFunnel funnel)");
-        assertThat(attach).startsWith("{ this.failureFunnel = Objects.requireNonNull(funnel, \"\");")
-                .contains("if (notificationBar == null || fxDispatcher == null) { LOG.warning(")
-                .endsWith("funnel.armToasts(fxDispatcher, notificationBar); }");
+        assertThat(attach).as("set once, a second attach refused before anything is touched (story 337, ruling E73)")
+                .startsWith("{ Objects.requireNonNull(funnel, \"\"); if (failureFunnel != null) {"
+                        + " throw new IllegalStateException(")
+                .contains("this.failureFunnel = funnel; if (notificationBar == null || fxDispatcher == null) {"
+                        + " LOG.warning(")
+                .as("the toasts armed, then the audio health drain registered (story 337, ruling E42)")
+                .endsWith("funnel.armToasts(fxDispatcher, notificationBar); attachAudioHealthDrain(funnel); }");
         assertThat(body(main, "} void onOpenLogFolder()"))
                 .as("the window's own method, not the MenuActions override that calls it")
                 .isEqualTo("{ if (failureFunnel != null) { failureFunnel.openLogFolder(); } }");
@@ -145,6 +157,120 @@ class FailureSpineWiringSourceTest {
                 .contains("MenuItem openLogFolderItem = menuItem(msg(\"menu.help.openLogFolder\"),"
                         + " DawIcon.FOLDER, null, host::onOpenLogFolder);"
                         + " helpMenu.getItems().addAll(helpItem, openLogFolderItem);");
+    }
+
+    /**
+     * Story 337, rulings E11, E12 and E42: the window registers its audio
+     * health drain over its engine's record as a pulse participant of its own
+     * dispatcher, once (ruling E73), removes it in its disposal next to the
+     * meters, stops and closes through the Stop gesture's paths when the
+     * render drive halts — only while the open stream's drive is the halted
+     * one, the Stop closing nothing and the close never waiting for the
+     * engine's lifecycle lock (ruling E69) — and restarts the engine through
+     * the controller on the restart's own thread.
+     * {@code FailureSpineStartupWiringTest} runs the registration;
+     * {@code MainControllerRestartAudioEngineTest} the restart's helper. The
+     * window is never FXML-loaded in a test, so its halt fence is pinned here;
+     * {@code AudioEngineRenderDriveHaltTest} and {@code TransportControllerTest}
+     * run the engine's and the transport's halves on real objects, the
+     * transport answering what its halt Stop did (ruling E101), and
+     * {@code CountInRecordStartTest} runs the window's halt response over a
+     * real halt.
+     */
+    @Test
+    void theWindowRegistersTheAudioHealthDrainRemovesItOnDisposalAndRestartsThroughTheController()
+            throws IOException {
+        String main = flat(code(UI.resolve("MainController.java")));
+
+        assertThat(body(main, "private void attachAudioHealthDrain(FailureFunnel funnel)"))
+                .startsWith("{ if (audioEngine == null) { return; }")
+                .as("one drain for the window's life: no replacement removes an earlier one (ruling E73)")
+                .doesNotContain("audioHealthDrainRemoval.run();")
+                .contains("audioHealthDrain = new AudioHealthDrain(new AudioHealthDrain.Collaborators("
+                        + "audioEngine.audioHealth(), funnel, System::nanoTime, InstantSource.system(),"
+                        + " this::audioDeviceDisplayName, () -> restartAudioEngine(),")
+                .contains("return stopTransportForEngineHalt();").contains("return closeStreamForEngineHalt();")
+                .contains("public boolean retryCloseStreamForHalt() { return retryCloseStreamForEngineHalt(); }")
+                .endsWith("audioHealthDrainRemoval = fxDispatcher.addPulseParticipant(audioHealthDrain::pulse); }");
+        assertThat(occurrences(main, "new AudioHealthDrain(")).as("one drain, built there").isEqualTo(1);
+        assertThat(occurrences(main, "attachAudioHealthDrain(")).as("declared once, called by attachFailureFunnel")
+                .isEqualTo(2);
+
+        assertThat(body(main, "java.util.concurrent.CompletionStage<Void> disposeWindowLifetime()"))
+                .as("the drain's participant is removed next to the meters' (ruling E42)")
+                .containsSubsequence("engineStateBridge.cancel();",
+                        "if (audioHealthDrainRemoval != null) { audioHealthDrainRemoval.run();"
+                                + " audioHealthDrainRemoval = null; } audioHealthDrain = null;",
+                        "meterFeed.dispose();");
+
+        assertThat(body(main, "private HaltContext stopTransportForEngineHalt()"))
+                .as("a halt whose stream is no longer the halted one stops nothing (rulings E69, E70 and E72)")
+                .startsWith("{ AudioEngine engine = audioEngine; if (engine == null || !engine.isRenderDriveHalted())"
+                        + " { return HaltContext.STREAM_REPLACED; }")
+                .as("then the transport's halt Stop runs and answers what it did, which the window hands over"
+                        + " (rulings E11 step 1, E67 and E101)")
+                .isEqualTo("{ AudioEngine engine = audioEngine; if (engine == null || !engine.isRenderDriveHalted())"
+                        + " { return HaltContext.STREAM_REPLACED; } TransportController transport = transportController;"
+                        + " if (transport == null || project == null) { return HaltContext.IDLE; }"
+                        + " return transport.stopForEngineHalt(); }");
+        String transport = flat(code(UI.resolve("TransportController.java")));
+        assertThat(body(transport, "HaltContext stopForEngineHalt()"))
+                .as("only while the transport rolls or a take is in flight, the normal Stop, then the end of any"
+                        + " post-roll on the same turn (ruling E67), neither closing the stream: the halt's own close"
+                        + " follows (ruling E69); it answers what that Stop did (ruling E101)")
+                .isEqualTo("{ Transport transport = project.getTransport(); boolean wasRolling = transport.getState()"
+                        + " != TransportState.STOPPED; if (!wasRolling && !isRecordingInFlight()) {"
+                        + " return HaltContext.IDLE; } boolean countingIn = recordCoordinator.isCountingIn();"
+                        + " boolean endedAStartedTake = stopTransport(NO_CLOSE); if (transport.isInPostRoll()) {"
+                        + " if (postRollTimer != null) { postRollTimer.stop(); } endPostRoll(NO_CLOSE); }"
+                        + " if (endedAStartedTake) { return HaltContext.RECORDING; }"
+                        + " return wasRolling && !countingIn ? HaltContext.PLAYBACK : HaltContext.IDLE; }");
+        assertThat(body(main, "private boolean closeStreamForEngineHalt()"))
+                .as("only the halted drive's stream is closed; else the transport closes it (rulings E11 step 2 and"
+                        + " E69)")
+                .contains("if (engine == null || !engine.isRenderDriveHalted()) { return true; }")
+                .endsWith("return transport == null || transport.closeStreamAfterEngineHalt(); }");
+        assertThat(body(transport, "boolean closeStreamAfterEngineHalt()"))
+                .as("closes even with graph instruments, once the take no longer defers the stop, only the halted"
+                        + " stream and never waiting for the lifecycle lock (ruling E69)")
+                .isEqualTo("{ if (recordCoordinator.deferInputStreamStop()) return false;"
+                        + " return audioEngine.closeHaltedStream() != AudioEngine.HaltedStreamClose.LIFECYCLE_BUSY; }");
+        assertThat(body(main, "private boolean retryCloseStreamForEngineHalt()"))
+                .as("a later frame's retry closes only the halted drive's stream too, through the transport (E66,"
+                        + " E69)")
+                .contains("if (engine == null || !engine.isRenderDriveHalted()) { return true; }")
+                .endsWith("return transport == null || transport.retryCloseStreamAfterEngineHalt(); }");
+        assertThat(body(transport, "boolean retryCloseStreamAfterEngineHalt()"))
+                .as("the retry only asks whether the take defers the stop; it never restarts its cleanup (E66)")
+                .isEqualTo("{ if (recordCoordinator.isInputStreamStopDeferred()) return false;"
+                        + " return audioEngine.closeHaltedStream() != AudioEngine.HaltedStreamClose.LIFECYCLE_BUSY; }");
+
+        assertThat(body(main, "static Thread restartAudioEngine(SettingsModel settings,"
+                + " AudioEngineController controller, BooleanSupplier streamOpen, Runnable onRestarted)"))
+                .as("the restart's own virtual thread applies the persisted configuration through the controller"
+                        + " (ruling E12), and only a restart that left open a stream open at its start succeeded"
+                        + " (ruling E62)")
+                .contains("Thread.ofVirtual().name(RESTART_AUDIO_ENGINE_THREAD).unstarted(")
+                .containsSubsequence("AudioEngineController.Request request = audioConfigurationRequest(settings,"
+                                + " controller);", "boolean wasOpen = streamOpen.getAsBoolean();",
+                        "controller.applyConfiguration(request);",
+                        "} catch (AudioConfigurationDeclinedException declined) {", "return;",
+                        "} catch (RuntimeException failure) {", "return;",
+                        "if (wasOpen && !streamOpen.getAsBoolean()) { return; }", "onRestarted.run();",
+                        "worker.start();");
+        assertThat(flat(SourceScanSupport.stripComments(read(UI.resolve("MainController.java")))))
+                .contains("static final String RESTART_AUDIO_ENGINE_THREAD = \"daw-audio-engine-restart\";");
+        assertThat(body(main, "public Thread restartAudioEngine()"))
+                .as("the engine's stream answers whether a stream is open; on success, the window's engine fault"
+                        + " clears on the FX thread")
+                .contains("return restartAudioEngine(settingsModel, audioEngineController, () -> {"
+                        + " AudioEngine engine = audioEngine; return engine != null && engine.isStreamOpen(); },"
+                        + " () -> FxDispatcher.runOnFx(fxDispatcher, () -> audioHealthDrain()"
+                        + ".ifPresent(AudioHealthDrain::clearEngineFault)));");
+        assertThat(occurrences(main, "applyConfiguration(")).as("startup's apply and the restart's")
+                .isEqualTo(2);
+        assertThat(main).as("startup and the restart build the request in one place")
+                .contains("controller.applyConfiguration(audioConfigurationRequest(settings, backend));");
     }
 
     @Test
@@ -227,6 +353,37 @@ class FailureSpineWiringSourceTest {
                 .hasEntrySatisfying("GuardedThrowables.java", calls -> assertThat(calls).isGreaterThanOrEqualTo(6))
                 .hasEntrySatisfying("LastResortLog.java", calls -> assertThat(calls).isGreaterThanOrEqualTo(3))
                 .hasEntrySatisfying("LogLineFormatter.java", calls -> assertThat(calls).isGreaterThanOrEqualTo(3));
+    }
+
+    /**
+     * Story 337, ruling E91: the undeclared rethrow is written twice in the
+     * application — once for the diagnostics package, in
+     * {@code GuardedThrowables}, which the audio health drain and
+     * {@code DeclaredSubject} share, and once in {@code FxDispatcher}, whose
+     * marshalling seam imports nothing from diagnostics (ruling E32). Read
+     * with comments stripped.
+     */
+    @Test
+    void theUndeclaredRethrowIsWrittenOnceForDiagnosticsAndOnceForTheMarshallingSeam() throws IOException {
+        Path sources = SourceScanSupport.locateDawAppModule().resolve("src/main/java");
+        Map<String, Integer> rethrows = new LinkedHashMap<>();
+        List<String> scanned = new ArrayList<>();
+        try (Stream<Path> files = Files.walk(sources)) {
+            for (Path file : files.filter(path -> path.toString().endsWith(".java")).sorted().toList()) {
+                scanned.add(file.getFileName().toString());
+                int found = occurrences(SourceScanSupport.stripComments(
+                        Files.readString(file, StandardCharsets.UTF_8)), "throw (T) ");
+                if (found > 0) {
+                    rethrows.put(file.getFileName().toString(), found);
+                }
+            }
+        }
+
+        assertThat(scanned).as("non-vacuity: the application's sources were read")
+                .contains("AudioHealthDrain.java", "DeclaredSubject.java", "GuardedThrowables.java",
+                        "FxDispatcher.java");
+        assertThat(rethrows).as("by path: diagnostics, then ui/marshal")
+                .containsExactly(entry("GuardedThrowables.java", 1), entry("FxDispatcher.java", 1));
     }
 
     private static String read(Path file) throws IOException {

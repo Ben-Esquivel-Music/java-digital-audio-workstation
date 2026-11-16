@@ -162,7 +162,8 @@ class EveryOpenDoorRunsRecoveryFirstTest {
             DawProject priorModel = fixture.project.get();
             ProjectMetadata priorMetadata = fixture.projectManager.getCurrentProject();
             byte[] priorLock = Files.readAllBytes(fixture.songA.resolve(ProjectLockManager.LOCK_FILE_NAME));
-            com.benesquivelmusic.daw.core.event.DefaultEventBus bus = new com.benesquivelmusic.daw.core.event.DefaultEventBus();
+            com.benesquivelmusic.daw.core.event.DefaultEventBus bus = new com.benesquivelmusic.daw.core.event.DefaultEventBus(
+                    com.benesquivelmusic.daw.core.event.SubscriberFailureSink.LOG_ONLY);
             JournalWriter outgoing = new JournalWriter(ProjectContext.forProject(fixture.songA), JournalConfig.DEFAULT, true, null);
             outgoing.start();
             JournalEventRecorder recorder = new JournalEventRecorder(bus, outgoing, java.time.InstantSource.system()).start();

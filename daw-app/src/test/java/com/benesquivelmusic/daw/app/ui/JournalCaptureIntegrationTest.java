@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.status.ProjectJournalCoordinator;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.persistence.*;
 import com.benesquivelmusic.daw.core.persistence.journal.*;
 import com.benesquivelmusic.daw.core.session.SessionManager;
@@ -46,7 +47,7 @@ class JournalCaptureIntegrationTest {
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
     void sameRevisionCapturesKeepTheirTransportBoundariesDespiteReversedCompletion(boolean reverse) throws Exception {
-        DefaultEventBus bus = new DefaultEventBus();
+        DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         try (SaveFlowFixture fixture = new SaveFlowFixture(workspace, AutoSaveConfig.DEFAULT);
              ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
             fixture.save(); fixture.settle();
@@ -103,7 +104,7 @@ class JournalCaptureIntegrationTest {
 
     @Test
     void anOlderSlowSaveCannotPruneTheNewerExplicitRecoveryBaseAtTheSmallestRetentionCap() throws Exception {
-        DefaultEventBus bus = new DefaultEventBus();
+        DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         try (SaveFlowFixture fixture = new SaveFlowFixture(workspace, new AutoSaveConfig(Duration.ofHours(1), 1, true))) {
             fixture.save(); fixture.settle();
             ProjectJournalCoordinator journal = coordinator(fixture, bus, () -> true);
@@ -140,7 +141,7 @@ class JournalCaptureIntegrationTest {
 
     @Test
     void aFailedSaveCarriesItsOriginalCaptureBoundaryIntoItsSafetyCopy() throws Exception {
-        DefaultEventBus bus = new DefaultEventBus();
+        DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         try (SaveFlowFixture fixture = new SaveFlowFixture(workspace, AutoSaveConfig.DEFAULT)) {
             fixture.save(); fixture.settle();
             ProjectJournalCoordinator journal = coordinator(fixture, bus, () -> true);
@@ -166,7 +167,7 @@ class JournalCaptureIntegrationTest {
 
     @Test
     void anOldGenerationCompletingAfterSameFolderRestartCannotMarkTheNewJournal() throws Exception {
-        DefaultEventBus bus = new DefaultEventBus();
+        DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         try (SaveFlowFixture fixture = new SaveFlowFixture(workspace, AutoSaveConfig.DEFAULT)) {
             fixture.save(); fixture.settle();
             ProjectJournalCoordinator journal = coordinator(fixture, bus, () -> true);
@@ -194,7 +195,7 @@ class JournalCaptureIntegrationTest {
     @Test void actualSaveCaptureRetainsAnEditPublishedWhileItsCheckpointWriteIsHeld() throws Exception {
         try (SaveFlowFixture fixture = new SaveFlowFixture(workspace, AutoSaveConfig.DEFAULT)) {
             fixture.save(); fixture.settle();
-            DefaultEventBus bus = new DefaultEventBus();
+            DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
             ProjectJournalCoordinator coordinator = coordinator(fixture, bus, () -> true);
             coordinator.openFor(fixture.songA);
             try {
@@ -222,7 +223,7 @@ class JournalCaptureIntegrationTest {
     @Test void autosaveDisabledSavesDoNotRotateButCreateCheckpointAdvancesTheVerifiedReplayBase() throws Exception {
         try (SaveFlowFixture fixture = new SaveFlowFixture(workspace, AutoSaveConfig.DEFAULT.withEnabled(false))) {
             fixture.save(); fixture.settle();
-            DefaultEventBus bus = new DefaultEventBus();
+            DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
             ProjectJournalCoordinator coordinator = coordinator(fixture, bus, () -> true);
             coordinator.openFor(fixture.songA);
             try {
@@ -262,7 +263,7 @@ class JournalCaptureIntegrationTest {
             fixture.save(); fixture.settle();
             SettingsModel settings = new SettingsModel(preferences);
             assertThat(settings.isUseJournaledPersistence()).isTrue();
-            DefaultEventBus bus = new DefaultEventBus();
+            DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
             ProjectJournalCoordinator coordinator = coordinator(fixture, bus, settings::isUseJournaledPersistence);
             try {
                 coordinator.openFor(fixture.songA);
@@ -282,7 +283,7 @@ class JournalCaptureIntegrationTest {
     @Test void switchSealsBeforeOpeningTheNextJournalAndAnUnsealedDrainLeavesItsReaderOwingRecovery() throws Exception {
         try (SaveFlowFixture fixture = new SaveFlowFixture(workspace, AutoSaveConfig.DEFAULT)) {
             fixture.save(); fixture.settle();
-            DefaultEventBus bus = new DefaultEventBus();
+            DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
             ProjectJournalCoordinator coordinator = coordinator(fixture, bus, () -> true);
             coordinator.openFor(fixture.songA);
             try {

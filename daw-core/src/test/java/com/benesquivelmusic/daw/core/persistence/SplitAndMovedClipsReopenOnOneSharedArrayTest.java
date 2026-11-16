@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.persistence;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.RenderPipeline;
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.audioimport.AudioFileImporter;
 import com.benesquivelmusic.daw.core.audioimport.AudioImportResult;
 import com.benesquivelmusic.daw.core.export.WavExporter;
@@ -205,7 +206,7 @@ class SplitAndMovedClipsReopenOnOneSharedArrayTest {
         mixer.prepareForPlayback(2, BLOCK);
         MasteringChain master = new MasteringChain(2);
         master.allocateIntermediateBuffers(2, BLOCK);
-        RenderPipeline pipeline = new RenderPipeline(new AudioFormat(PROJECT_RATE, 2, 24, BLOCK), 64, BLOCK);
+        RenderPipeline pipeline = new RenderPipeline(new AudioFormat(PROJECT_RATE, 2, 24, BLOCK), 64, BLOCK, new AudioHealthRecord());
         float[][] out = new float[2][frames];
         pipeline.renderOffline(transport, mixer, project.getTracks(), null, master, out, frames, BLOCK);
         return out;

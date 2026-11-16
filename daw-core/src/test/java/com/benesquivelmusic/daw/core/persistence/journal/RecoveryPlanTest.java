@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.persistence.journal;
 
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.persistence.CheckpointFileName;
 import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
@@ -555,7 +556,7 @@ class RecoveryPlanTest {
     private List<String> journaledTypesOf(DawEvent... events) throws IOException {
         ProjectContext scratch = ProjectContext.forProject(Files.createDirectories(folder.resolve("recorded")),
                 InstantSource.fixed(NOW));
-        DefaultEventBus bus = new DefaultEventBus();
+        DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         try (JournalWriter writer = new JournalWriter(scratch, JournalConfig.DEFAULT, true, null);
              JournalEventRecorder recorder = new JournalEventRecorder(bus, writer, InstantSource.fixed(NOW))) {
             writer.start();

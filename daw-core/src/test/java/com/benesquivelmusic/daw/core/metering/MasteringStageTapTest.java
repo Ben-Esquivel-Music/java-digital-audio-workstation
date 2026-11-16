@@ -254,7 +254,7 @@ class MasteringStageTapTest {
         var output = new float[2][4];
         var returns = new float[Mixer.MAX_RETURN_BUSES][2][4];
         taps.beginPublication();
-        mixer.mixDown(input, output, returns, 4, taps, chain, null, false, true);
+        mixer.mixDown(input, output, returns, 4, taps, chain, null, false, true, true);
         bus.blockCompleted(taps);
         var frame = new MeterFrame();
         assertThat(slot.readInto(frame)).isTrue();
@@ -263,7 +263,7 @@ class MasteringStageTapTest {
 
         chain.removeStage(0);
         taps.beginPublication();
-        mixer.mixDown(input, output, returns, 3, taps, chain, null, false, true);
+        mixer.mixDown(input, output, returns, 3, taps, chain, null, false, true, true);
         bus.blockCompleted(taps);
 
         assertSilentStage(slot, ring, 1L, 3);

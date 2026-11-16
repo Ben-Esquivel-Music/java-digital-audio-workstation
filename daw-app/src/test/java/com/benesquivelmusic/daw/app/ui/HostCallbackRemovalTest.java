@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.sdk.event.DispatchMode;
 import com.benesquivelmusic.daw.sdk.event.EventBus;
 import com.benesquivelmusic.daw.sdk.event.UiEvent;
@@ -94,7 +95,7 @@ final class HostCallbackRemovalTest {
 
     @Test
     void aCascadeFactNowTravelsAsATypedBusEventDeliveredToASubscriber() throws Exception {
-        DefaultEventBus bus = new DefaultEventBus();
+        DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         try {
             CountDownLatch delivered = new CountDownLatch(1);
             AtomicReference<UiEvent.UndoStateChanged> received = new AtomicReference<>();

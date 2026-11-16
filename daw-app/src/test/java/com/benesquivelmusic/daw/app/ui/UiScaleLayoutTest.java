@@ -23,6 +23,7 @@ import com.benesquivelmusic.daw.app.ui.theme.UiScale;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.sdk.event.EventBus;
 
@@ -156,7 +157,7 @@ class UiScaleLayoutTest {
         appearance = new ThemeManager(node("uiScaleLayoutTheme"));
         ThemeManager.setDefaultForTest(appearance);
         previousBus = EventBusPublisher.getDefault();
-        bus = DefaultEventBus.builder().uiExecutor(Runnable::run).build();
+        bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).uiExecutor(Runnable::run).build();
         EventBusPublisher.setDefault(bus);
     }
 

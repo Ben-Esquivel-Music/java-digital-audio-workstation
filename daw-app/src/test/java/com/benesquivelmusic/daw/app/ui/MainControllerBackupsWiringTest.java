@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.CheckpointOrigin;
@@ -85,7 +86,7 @@ class MainControllerBackupsWiringTest {
     @BeforeEach
     void isolateTheBusAndTheThemeManager() {
         previousBus = EventBusPublisher.getDefault();
-        bus = DefaultEventBus.builder().uiExecutor(Runnable::run).build();
+        bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).uiExecutor(Runnable::run).build();
         EventBusPublisher.setDefault(bus);
         ThemeManager.setDefaultForTest(new ThemeManager(node("mainControllerBackupsTheme")));
     }

@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.status.ProjectJournalCoordinator;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.ProjectLockManager;
 import com.benesquivelmusic.daw.core.session.SessionManager;
@@ -66,7 +67,7 @@ class NewFirstSaveAndOpenMakeNoFileSystemCallOnTheFxThreadTest {
     @BeforeEach
     void openSongAWithTheGateAndTheJournalOn() throws Exception {
         files = ThreadRecordingFileSystem.over(temp);
-        bus = new DefaultEventBus();
+        bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         fixture = new SaveFlowFixture(files.root(), AutoSaveConfig.DEFAULT);
         journal = new ProjectJournalCoordinator(fixture.progress, onFx(NotificationBar::new), fixture.dispatcher,
                 () -> true, () -> bus, fixture.checkpoints, new SessionManager(), InstantSource.system());

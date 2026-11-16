@@ -1,5 +1,8 @@
 package com.benesquivelmusic.daw.app.diagnostics;
 
+import com.benesquivelmusic.daw.app.ui.NotificationLevel;
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCategory;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -15,6 +18,7 @@ import java.util.ResourceBundle;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.CompletionException;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -29,6 +33,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * with the typographic quotes “ ” (U+201C, U+201D), the ellipsis … (U+2026)
  * and ▸ (U+25B8) as printed, so the assertions also prove each key's
  * {@code MessageFormat} (a single apostrophe would swallow the text after it).
+ *
+ * <p>Story 337 (rulings E45 and E64) adds thirty-six keys — the real-time error
+ * channel's first-occurrence, sustained and halt copy, the Restart Audio
+ * Engine action, and the pulse and bus isolated-consumer notices — and the
+ * WARNING severity, shown as a WARNING toast and logged at WARNING (ruling
+ * E43).</p>
  */
 class FailureCopyTest {
 
@@ -37,6 +47,8 @@ class FailureCopyTest {
     private static final Instant YESTERDAY = Instant.parse("2026-11-11T23:59:59Z");
     private static final String GATE_FOUR =
             "Internal error in the user interface: gate four. Check that your last change took effect.";
+    private static final String DEVICE = "USB Audio Interface";
+    private static final String REASON = "the driver returned a short buffer";
 
     private final FailureCopy copy = FailureCopy.fromBundle(InstantSource.fixed(NOW), ZoneOffset.UTC);
 
@@ -50,7 +62,7 @@ class FailureCopyTest {
             }
         }
 
-        assertThat(family).hasSize(15).containsExactlyInAnyOrderElementsOf(FailureCopy.KEYS);
+        assertThat(family).hasSize(51).containsExactlyInAnyOrderElementsOf(FailureCopy.KEYS);
         assertThat(FailureCopy.KEYS).allSatisfy(key -> assertThat(bundle.getString(key)).doesNotContain("'"));
     }
 
@@ -210,9 +222,165 @@ class FailureCopyTest {
     }
 
     @Test
+    void theFirstOccurrenceCopyOfEachAudioCategoryNamesTheDeviceOrTheComponentAndTheReason() {
+        assertThat(first(AudioFailureCategory.CALLBACK, Optional.empty())).isEqualTo("The audio callback for “"
+                + DEVICE + "” failed, so a block of output was played as silence: " + REASON + ". Audio continues.");
+        assertThat(first(AudioFailureCategory.RENDER, Optional.empty())).isEqualTo("Audio processing failed, so a"
+                + " block was played as silence: " + REASON + ". Playback continues.");
+        assertThat(first(AudioFailureCategory.RENDER, Optional.of("Tape Echo"))).isEqualTo("Audio processing failed"
+                + " in “Tape Echo”, so a block was played as silence: " + REASON + ". Playback continues; if it"
+                + " happens again, bypass “Tape Echo”.");
+        assertThat(first(AudioFailureCategory.SINK, Optional.empty())).isEqualTo("The audio device “" + DEVICE
+                + "” did not accept a block of output, so it was skipped: " + REASON + ". Audio continues.");
+        assertThat(first(AudioFailureCategory.PACING, Optional.empty())).isEqualTo("The audio device “" + DEVICE
+                + "” stopped reporting when it needs more audio, so playback is timed by the computer clock instead: "
+                + REASON + ". Audio continues but may drift or drop out.");
+        assertThat(first(AudioFailureCategory.INPUT, Optional.empty())).isEqualTo("Input from “" + DEVICE + "” was"
+                + " lost for a block: " + REASON + ". If you are recording, the take has a gap there.");
+        assertThat(first(AudioFailureCategory.WORKER, Optional.empty())).isEqualTo("The inserts of a track failed"
+                + " during multi-core processing and were run again for that block: " + REASON + ". If it keeps"
+                + " happening, check the inserts on your tracks.");
+        assertThat(first(AudioFailureCategory.DSP, Optional.of("Velvet Noise Reverb"))).isEqualTo("Part of the sound"
+                + " of “Velvet Noise Reverb” failed and was left out of a block: " + REASON + ". Audio continues.");
+        assertThat(first(AudioFailureCategory.MIDI, Optional.empty())).isEqualTo("MIDI playback failed, so notes may"
+                + " be missing or held: " + REASON + ". If it keeps happening, check the instruments on your MIDI"
+                + " tracks.");
+        assertThat(first(AudioFailureCategory.PLUGIN, Optional.of("Tape Echo"))).isEqualTo("The plugin “Tape Echo”"
+                + " failed while processing, so its input was passed through unprocessed: " + REASON + ".");
+        assertThat(first(AudioFailureCategory.AUTOMATION, Optional.of("Tape Echo: Feedback"))).isEqualTo("Automation"
+                + " of “Tape Echo: Feedback” stopped because its plugin rejected a value: " + REASON + ". The"
+                + " parameter keeps its last value; restarting the audio engine retries its automation.");
+        assertThat(copy.audioFirst(AudioFailureCategory.CONFIG, Optional.empty(), DEVICE, "", 18))
+                .as("the bus count, then the cap").isEqualTo("This mix has 18 return buses but only 16 can receive"
+                        + " sends, so sends to the others are silent. Remove return buses you do not need.");
+        assertThat(copy.audioFirst(AudioFailureCategory.CONFIG, Optional.empty(), DEVICE, "", 0))
+                .as("no sample carried the count: the cap alone (ruling E64)").isEqualTo("This mix has more return"
+                        + " buses than the 16 that can receive sends, so sends to the others are silent. Remove return"
+                        + " buses you do not need.");
+        assertThat(first(AudioFailureCategory.DEVICE, Optional.empty())).isEqualTo("A notification from the audio"
+                + " device “" + DEVICE + "” could not be handled: " + REASON + ". If you changed its settings,"
+                + " restart the audio engine to apply them.");
+    }
+
+    @Test
+    void aComponentSentenceWithNoComponentUsesTheUnnamedSentenceOfItsCategory() {
+        assertThat(first(AudioFailureCategory.DSP, Optional.empty())).as("a part left out, not silence (ruling E64)")
+                .isEqualTo("Part of the sound of an effect failed and was left out of a block: " + REASON
+                        + ". Audio continues.");
+        assertThat(first(AudioFailureCategory.PLUGIN, Optional.empty())).as("passed through, not silence")
+                .isEqualTo("A plugin failed while processing, so a block passed through it unprocessed or without"
+                        + " its parameter changes: " + REASON + ". Audio continues.");
+        assertThat(first(AudioFailureCategory.AUTOMATION, Optional.empty())).as("a value rejected, no audio lost")
+                .isEqualTo("Automation of a plugin parameter stopped because its plugin rejected a value: " + REASON
+                        + ". The parameter keeps its last value; restarting the audio engine retries its"
+                        + " automation.");
+    }
+
+    @Test
+    void theSustainedFaultCopyCarriesTheGroupedCountTheDeviceAndWhenItBegan() {
+        assertThat(sustained(AudioFailureCategory.CALLBACK, Optional.empty(), 1234)).isEqualTo("Audio engine fault —"
+                + " 1,234 callback errors since 14:32:05: " + REASON + ". Audio may stay silent or broken until you"
+                + " restart the audio engine.");
+        for (AudioFailureCategory device : new AudioFailureCategory[] {AudioFailureCategory.SINK,
+                AudioFailureCategory.PACING, AudioFailureCategory.INPUT, AudioFailureCategory.DEVICE}) {
+            assertThat(sustained(device, Optional.empty(), 66)).as("%s", device).isEqualTo("Audio device fault — 66"
+                    + " errors from “" + DEVICE + "” since 14:32:05: " + REASON + ". Audio may stay silent or broken"
+                    + " until you restart the audio engine.");
+        }
+        assertThat(sustained(AudioFailureCategory.RENDER, Optional.empty(), 180)).isEqualTo("Audio processing keeps"
+                + " failing — 180 errors since 14:32:05: " + REASON + ". The failed blocks are played as silence;"
+                + " check the inserts on your tracks.");
+        assertThat(sustained(AudioFailureCategory.RENDER, Optional.of("Tape Echo"), 180)).isEqualTo("“Tape Echo”"
+                + " keeps failing — 180 errors since 14:32:05: " + REASON + ". Its failed blocks are played as"
+                + " silence; bypass or remove “Tape Echo”.");
+        assertThat(sustained(AudioFailureCategory.PLUGIN, Optional.of("Tape Echo"), 2000)).isEqualTo("“Tape Echo”"
+                + " keeps failing — 2,000 errors since 14:32:05: " + REASON + ". Its input is passed through"
+                + " unprocessed; bypass or remove “Tape Echo”.");
+    }
+
+    @Test
+    void eachRenderPipelineCategorySustainsWithASentenceOfItsOwn() {
+        assertThat(sustained(AudioFailureCategory.WORKER, Optional.of("ignored"), 180))
+                .as("re-run on one core, not silence (ruling E64); any name is ignored")
+                .isEqualTo("Multi-core processing keeps failing — 180 errors since 14:32:05: " + REASON + ". The"
+                        + " affected tracks are processed again on one core, which costs processor time; check the"
+                        + " inserts on your tracks.");
+        assertThat(sustained(AudioFailureCategory.DSP, Optional.of("Velvet Noise Reverb"), 180))
+                .isEqualTo("Part of the sound of “Velvet Noise Reverb” keeps failing — 180 errors since 14:32:05: "
+                        + REASON + ". That part is left out while it fails; bypass or remove “Velvet Noise Reverb”.");
+        assertThat(sustained(AudioFailureCategory.DSP, Optional.empty(), 1234))
+                .isEqualTo("Part of the sound of an effect keeps failing — 1,234 errors since 14:32:05: " + REASON
+                        + ". That part is left out while it fails; check the effects in your mix.");
+        assertThat(sustained(AudioFailureCategory.MIDI, Optional.of("ignored"), 66)).as("any name is ignored")
+                .isEqualTo("MIDI playback keeps failing — 66 errors since 14:32:05: " + REASON + ". Notes may be"
+                        + " missing or held; check the instruments on your MIDI tracks.");
+        assertThat(sustained(AudioFailureCategory.PLUGIN, Optional.empty(), 2000))
+                .isEqualTo("A plugin keeps failing — 2,000 errors since 14:32:05: " + REASON + ". Its blocks pass"
+                        + " through unprocessed or without their parameter changes; check the plugins on your"
+                        + " tracks.");
+    }
+
+    @Test
+    void theHaltCopyJoinsTheBaseTheContextAndTheNextStepWithSingleSpaces() {
+        assertThat(copy.audioHalted(Optional.empty(), REASON, HaltContext.PLAYBACK)).isEqualTo("The audio engine"
+                + " stopped because audio processing failed for a full second without recovering: " + REASON + "."
+                + " Playback was stopped. Restart the audio engine to continue.");
+        assertThat(copy.audioHalted(Optional.of("Tape Echo"), REASON, HaltContext.RECORDING)).isEqualTo("The audio"
+                + " engine stopped because “Tape Echo” failed for a full second without recovering: " + REASON + "."
+                + " Recording was stopped; the take keeps what was recorded before the audio failed. Bypass or"
+                + " remove “Tape Echo”, then restart the audio engine.");
+        assertThat(copy.audioHalted(Optional.empty(), REASON, HaltContext.IDLE)).as("idle: no context sentence")
+                .isEqualTo("The audio engine stopped because audio processing failed for a full second without"
+                        + " recovering: " + REASON + ". Restart the audio engine to continue.");
+        assertThat(copy.audioHaltedFatal(new StackOverflowError(), HaltContext.RECORDING)).isEqualTo("Serious internal"
+                + " error: the application may not work correctly from now on. When you can, save a copy with File ▸"
+                + " Save As… and restart. Reason: StackOverflowError. Recording was stopped; the take keeps what was"
+                + " recorded before the audio failed.");
+        assertThat(copy.audioHaltedFatal(new OutOfMemoryError("Java heap space"), HaltContext.PLAYBACK))
+                .isEqualTo("The application ran out of memory. When you can, save a copy with File ▸ Save As… and"
+                        + " restart. Playback was stopped.");
+        assertThat(copy.audioHaltedFatal(new StackOverflowError(), HaltContext.IDLE))
+                .as("idle: the FATAL copy carries no context sentence either (story 337, ruling E101)")
+                .isEqualTo("Serious internal error: the application may not work correctly from now on. When you can,"
+                        + " save a copy with File ▸ Save As… and restart. Reason: StackOverflowError.");
+    }
+
+    @Test
+    void theIsolatedConsumerCopyNamesTheEventTypeAndTheReason() {
+        assertThat(copy.isolatedConsumer(FailureFunnel.UI_PULSE, Optional.empty(), new IllegalStateException(REASON)))
+                .isEqualTo("A display in the window keeps failing to update: " + REASON + ". The rest of the window"
+                        + " still updates; if something looks frozen, check the log.");
+        assertThat(copy.isolatedConsumer(FailureFunnel.BUS_SUBSCRIBER, Optional.of("Started"),
+                new IllegalStateException(REASON))).isEqualTo("Part of the application keeps failing to handle"
+                + " “Started” updates: " + REASON + ". Everything else still receives them; check the log for"
+                + " details.");
+    }
+
+    @Test
+    void theRestartActionAndTheWarningSeverity() {
+        assertThat(copy.restartAudioEngineLabel()).isEqualTo("Restart Audio Engine");
+        assertThat(FailureFact.Severity.WARNING.notificationLevel()).isEqualTo(NotificationLevel.WARNING);
+        assertThat(FailureFact.Severity.WARNING.logLevel()).isEqualTo(Level.WARNING);
+        assertThat(FailureFact.Severity.ERROR.notificationLevel()).isEqualTo(NotificationLevel.ERROR);
+        assertThat(FailureFact.Severity.FATAL.notificationLevel()).isEqualTo(NotificationLevel.ERROR);
+        assertThat(FailureFact.Severity.ERROR.logLevel()).isEqualTo(Level.SEVERE);
+        assertThat(FailureFact.Severity.FATAL.logLevel()).isEqualTo(Level.SEVERE);
+        assertThat(FailureFact.Severity.values()).as("story 336's ordinals unchanged")
+                .containsExactly(FailureFact.Severity.FATAL, FailureFact.Severity.ERROR, FailureFact.Severity.WARNING);
+    }
+
+    @Test
     void aTimeIsHoursMinutesAndSecondsTodayAndCarriesTheDateOtherwise() {
         assertThat(copy.clock(EARLIER_TODAY)).isEqualTo("14:32:05");
         assertThat(copy.clock(YESTERDAY)).isEqualTo("2026-11-11 23:59:59");
+    }
+
+    private String first(AudioFailureCategory category, Optional<String> name) {
+        return copy.audioFirst(category, name, DEVICE, REASON, 0);
+    }
+
+    private String sustained(AudioFailureCategory category, Optional<String> name, long count) {
+        return copy.audioSustained(category, name, DEVICE, count, EARLIER_TODAY, REASON);
     }
 
     private static FailureFact.Severity severity(String category, Throwable failure) {

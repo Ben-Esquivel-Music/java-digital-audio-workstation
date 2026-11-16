@@ -19,6 +19,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -262,6 +266,50 @@ class PluginInvocationSupervisorTest {
         assertThat(subscriber.latch.await(2, TimeUnit.SECONDS)).isTrue();
         PluginFault fault = subscriber.faults.getFirst();
         assertThat(fault.exceptionClass()).isEqualTo(StackOverflowError.class.getName());
+    }
+
+    /**
+     * Story 337, ruling E26: the SEVERE for a JVM-level {@link Error} is
+     * written by the {@code plugin-fault-drain} thread, never by the thread
+     * that rendered the plugin — the message is unchanged.
+     */
+    @Test
+    void anErrorIsLoggedAtSevereOnTheDrainThreadNotTheCallingThread() throws Exception {
+        CollectingSubscriber subscriber = new CollectingSubscriber(1);
+        supervisor.publisher().subscribe(subscriber);
+        Logger log = Logger.getLogger(PluginInvocationSupervisor.class.getName());
+        List<String> severeThreads = new CopyOnWriteArrayList<>();
+        List<String> severeMessages = new CopyOnWriteArrayList<>();
+        CountDownLatch severeLogged = new CountDownLatch(1);
+        Handler handler = new Handler() {
+            @Override public void publish(LogRecord entry) {
+                if (entry.getLevel() == Level.SEVERE) {
+                    severeThreads.add(Thread.currentThread().getName());
+                    severeMessages.add(entry.getMessage());
+                    severeLogged.countDown();
+                }
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        log.addHandler(handler);
+        try {
+            InsertSlot slot = new InsertSlot("BadError",
+                    new ThrowingErrorProcessor(new StackOverflowError("deep")));
+            AudioProcessor supervised = supervisor.supervise(slot, slot.getProcessor());
+
+            supervised.process(new float[][]{{0f}}, new float[][]{{9f}}, 1);
+
+            assertThat(severeLogged.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(subscriber.latch.await(2, TimeUnit.SECONDS)).isTrue();
+        } finally {
+            log.removeHandler(handler);
+        }
+
+        assertThat(severeThreads).containsExactly("plugin-fault-drain");
+        assertThat(severeMessages).singleElement().asString()
+                .isEqualTo("JVM-level error in plugin BadError (java.lang.StackOverflowError)"
+                        + " — session continued but the JVM may be unstable");
     }
 
     // --- helpers ---

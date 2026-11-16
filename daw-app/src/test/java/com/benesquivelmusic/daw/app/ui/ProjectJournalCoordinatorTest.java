@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.status.ProjectJournalCoordinator;
 import com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.journal.JournalRecord;
@@ -78,7 +79,7 @@ class ProjectJournalCoordinatorTest {
         checkpointManager = new CheckpointManager(AutoSaveConfig.DEFAULT);
         sessionManager = new SessionManager();
         // ON_CALLER_THREAD delivery is the journal recorder's mode; no UI executor needed.
-        bus = DefaultEventBus.builder().build();
+        bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).build();
         AtomicReference<NotificationBar> barRef = new AtomicReference<>();
         runOnFxThread(() -> {
             NotificationBar bar = new NotificationBar();

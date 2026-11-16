@@ -12,6 +12,7 @@ import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 import com.benesquivelmusic.daw.core.audio.EngineBinder;
 import com.benesquivelmusic.daw.core.audio.RenderPipeline;
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.metering.MeteringTapBus;
 import com.benesquivelmusic.daw.core.metering.TapSnapshot;
 import com.benesquivelmusic.daw.core.mixer.ChannelLink;
@@ -187,7 +188,7 @@ class MixerViewMeterFeedTest {
 
         project.getTransport().setTempo(TEMPO);
         project.getMixer().prepareForPlayback(CHANNELS, BLOCK);
-        pipeline = new RenderPipeline(FORMAT, 8, BLOCK);
+        pipeline = new RenderPipeline(FORMAT, 8, BLOCK, new AudioHealthRecord());
         output = new float[CHANNELS][BLOCK];
 
         engine = new AudioEngine(FORMAT);

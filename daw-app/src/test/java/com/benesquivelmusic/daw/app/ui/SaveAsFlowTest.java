@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.app.ui.status.ProjectJournalCoordinator;
 import com.benesquivelmusic.daw.app.ui.vm.ProjectVM;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.LockConflictResolution;
 import com.benesquivelmusic.daw.core.persistence.ProjectLockManager;
@@ -404,7 +405,7 @@ class SaveAsFlowTest {
         assertThat(fixture.projectManager.isReadOnly()).as("fixture: Song A is open read-only").isTrue();
         // A session kept for the read-only folder, as the composition root never keeps one: the close writes no
         // manifest into it all the same (stage-5 review N3 / ENG-N4: nothing is written by construction).
-        bus = new DefaultEventBus();
+        bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         sessions = new SessionManager();
         journal = new ProjectJournalCoordinator(fixture.progress, onFx(NotificationBar::new), fixture.dispatcher,
                 () -> true, () -> bus, fixture.checkpoints, sessions, InstantSource.system());
@@ -1190,7 +1191,7 @@ class SaveAsFlowTest {
 
     /** Journaling on: a real coordinator whose journal of Song A is open, and Song A's working session. */
     private void withTheJournal(UnaryOperator<JournalEnding> wrap) throws Exception {
-        bus = new DefaultEventBus();
+        bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         sessions = new SessionManager();
         journal = new ProjectJournalCoordinator(fixture.progress, onFx(NotificationBar::new), fixture.dispatcher,
                 () -> true, () -> bus, fixture.checkpoints, sessions, InstantSource.system());

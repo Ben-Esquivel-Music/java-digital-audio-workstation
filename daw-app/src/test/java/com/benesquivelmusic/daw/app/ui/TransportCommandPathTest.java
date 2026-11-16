@@ -10,6 +10,7 @@ import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
 import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
@@ -91,7 +92,7 @@ class TransportCommandPathTest {
 
     @BeforeEach
     void installBus() {
-        bus = new DefaultEventBus();
+        bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         EventBusPublisher.setDefault(bus);
     }
 

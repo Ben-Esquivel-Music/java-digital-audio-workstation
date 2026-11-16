@@ -9,6 +9,7 @@ import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
@@ -105,7 +106,7 @@ class ArrangementEditsAreRefusedWhileProjectActionsAreNotAllowedTest {
     @BeforeEach
     void aLaneBehindTheGate() throws Exception {
         previousBus = EventBusPublisher.getDefault();
-        bus = new DefaultEventBus();
+        bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         recording = bus.onPublication(DawEvent.class, published::add);
         EventBusPublisher.setDefault(bus);
         previousLevel = LANE_LOG.getLevel();

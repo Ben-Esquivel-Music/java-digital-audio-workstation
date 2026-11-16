@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer;
 import com.benesquivelmusic.daw.core.dsp.LimiterProcessor;
 import com.benesquivelmusic.daw.core.mastering.MasteringChain;
@@ -131,7 +132,7 @@ class MasteringLatencyCompensationTest {
                 var transport = new Transport();
                 transport.play();
                 var output = new float[2][totalFrames];
-                var pipeline = new RenderPipeline(FORMAT, 1, BLOCK);
+                var pipeline = new RenderPipeline(FORMAT, 1, BLOCK, new AudioHealthRecord());
                 pipeline.renderOffline(transport, offlineMixer, List.of(impulseTrack(totalFrames)),
                         null, limiterChain(), output, totalFrames, BLOCK);
 
@@ -161,7 +162,7 @@ class MasteringLatencyCompensationTest {
             transport.play();
             var output = new float[2][totalFrames];
             try (var compensation = mixer.getDelayCompensation()) {
-                new RenderPipeline(FORMAT, 1, BLOCK).renderOffline(transport, mixer,
+                new RenderPipeline(FORMAT, 1, BLOCK, new AudioHealthRecord()).renderOffline(transport, mixer,
                         List.of(impulseTrack(totalFrames)), null, renderedChain,
                         output, totalFrames, BLOCK, masterEnabled);
                 assertThat(output[0][512]).isCloseTo(0.25f, within(1e-7f));
@@ -191,7 +192,7 @@ class MasteringLatencyCompensationTest {
         mixer.setMasteringChain(original);
         try (var compensation = mixer.getDelayCompensation()) {
             failNextRead.set(true);
-            var pipeline = new RenderPipeline(FORMAT, 1, BLOCK);
+            var pipeline = new RenderPipeline(FORMAT, 1, BLOCK, new AudioHealthRecord());
 
             assertThatThrownBy(() -> pipeline.renderOffline(new Transport(), mixer, List.of(), null,
                     new MasteringChain(), new float[2][BLOCK], BLOCK, BLOCK))
@@ -318,7 +319,7 @@ class MasteringLatencyCompensationTest {
             mixer.mixDownInstrumented(sources, output, returns, FRAMES, List.of(), enforcer,
                     null, chain, null, false, true);
         } else {
-            mixer.mixDown(sources, output, returns, FRAMES, null, chain, null, false, true);
+            mixer.mixDown(sources, output, returns, FRAMES, null, chain, null, false, true, true);
         }
         mixer.renderDirectOutputs(sources, output, FRAMES);
         return output;

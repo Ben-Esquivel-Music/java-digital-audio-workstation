@@ -640,6 +640,8 @@ never; and silently overwriting — a lie in the take. Stage 1 as landed (story 
 single-producer-safe while the consumer may be copying out of it — and records the drop as a
 `gap=` line in the manifest.
 
+*As built in story 337: the counter does not surface through story 337's channel (ruling E47); see §6.3's note.*
+
 As landed (story 324): dropping the incoming block is the policy, not a Stage 1 stopgap; the
 "oldest unwritten block" wording above is superseded. The ring is allocated when the take is
 prepared (`RecordingPipeline.doPrepare`) from the format the pipeline was constructed with, which
@@ -1029,6 +1031,8 @@ by contract and fails loudly in their absence:
 | RT-safe error channel + callback guards (story 337) | Book 4 | ring-overflow and write-failure counters; capture errors never throw across the callback |
 | Engine watchdog + xrun surfaces (story 338) | Book 4 | stall-declared device loss (§5.5); dropout counters during a take |
 | Global exception visibility (story 336) | Book 4 | flush-thread uncaught failures surface instead of silently ending flushing |
+
+*As built in story 337 (ruling E47): the capture ring's overflow and truncation counts and the flush thread's write failures are not on story 337's channel. The flush thread reports them through `RecordingPipeline`'s warning sink, whose visibility is story 339's; the dropout counts during a take are story 338's. Story 337 delivered "capture errors never throw across the callback": the capture callback runs inside `processBlock` under the render drive's catch-all (ruling E9).*
 
 Ordering note: stages 1-4 of §8 do not *depend* on Book 4 landing — they degrade to logging —
 but §5.5 (Stage 5) requires 337/338/339 or the backend events of story 316 to be genuinely

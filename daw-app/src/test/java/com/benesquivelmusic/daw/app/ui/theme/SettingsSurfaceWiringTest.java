@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.app.ui.density.DensityManager;
 import com.benesquivelmusic.daw.app.ui.density.DensityMode;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.sdk.event.UiEvent;
 
 import org.junit.jupiter.api.Test;
@@ -218,7 +219,7 @@ final class SettingsSurfaceWiringTest {
      * {@code WorkshopSelectionHostS3InvalidationTest}.
      */
     private static DefaultEventBus controllableBus() {
-        return DefaultEventBus.builder().uiExecutor(Runnable::run).build();
+        return DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).uiExecutor(Runnable::run).build();
     }
 
     /**

@@ -43,8 +43,9 @@ public final class DawApplication extends Application {
     private FxDispatcher fxDispatcher;
     /**
      * Story 336 — the failure funnel {@code DawLauncher.main} installed as the
-     * default handler; {@link #start} installs its FX-thread handler and arms
-     * its toasts, {@link #stop()} disarms them first. FX thread.
+     * default handler; {@link #start} builds the dispatcher and the bus on its
+     * sinks (story 337), installs its FX-thread handler and arms its toasts,
+     * {@link #stop()} disarms them first. FX thread.
      */
     private FailureFunnel failureFunnel;
 
@@ -80,14 +81,19 @@ public final class DawApplication extends Application {
         // minority of call sites that cannot take a constructor dependency
         // (the FXML-instantiated MainController, the toolkit-free getDefault()
         // singletons, short-lived dialogs), mirroring EventBusPublisher.
-        fxDispatcher = new FxDispatcher();
+        // Story 337 (Failure Surfacing book §2.7, §2.9) — the funnel, which
+        // DawLauncher.prepareLaunch built and installed as the default handler,
+        // is fetched first: the dispatcher is built on its pulse failure sink, so
+        // each pulse item that throws is isolated and reported, and the pulse
+        // never throws into JavaFX's 100-throw timer cap (story 337, ruling E32).
+        failureFunnel = DawLauncher.failureFunnel();
+        fxDispatcher = new FxDispatcher(failureFunnel.pulseFailureSink());
         fxDispatcher.start();
         FxDispatcher.installDefault(fxDispatcher);
         // Story 336 (Failure Surfacing book §4.1, §6.4) — the FX thread's own
         // handler, alongside the dispatcher the funnel's toasts ride: an FX
         // event-dispatch failure is labelled ui.handler from here on. Its toasts
         // stay buffered until attachFailureFunnel arms them, below.
-        failureFunnel = DawLauncher.failureFunnel();
         failureFunnel.installOnCurrentFxThread();
 
         // Story 283 — install the application-wide EventBus before any
@@ -98,7 +104,10 @@ public final class DawApplication extends Application {
         // FxDispatcher seam (fxDispatcher::onFx is Executor-compatible and
         // posts an unconditional Platform.runLater, which the bus's blocking
         // runAndAwait worker requires) instead of a bare Platform::runLater.
-        bus = DefaultEventBus.builder()
+        // Story 337 (ruling E37) — the bus requires its consumer failure sink:
+        // the funnel's, so a subscriber that keeps failing becomes a visible
+        // fact instead of an invisible log line.
+        bus = DefaultEventBus.builder(failureFunnel.busFailureSink())
                 .uiExecutor(fxDispatcher::onFx)
                 .build();
         EventBusPublisher.setDefault(bus);

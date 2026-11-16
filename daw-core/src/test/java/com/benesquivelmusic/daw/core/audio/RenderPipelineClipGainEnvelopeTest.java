@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 
 import com.benesquivelmusic.daw.core.mixer.Mixer;
@@ -61,7 +62,7 @@ class RenderPipelineClipGainEnvelopeTest {
         master.allocateIntermediateBuffers(CHANNELS, BUFFER_SIZE);
 
         RenderPipeline pipeline = new RenderPipeline(format(),
-                AudioEngine.MAX_TRACKS, BUFFER_SIZE);
+                AudioEngine.MAX_TRACKS, BUFFER_SIZE, new AudioHealthRecord());
         float[][] out = new float[CHANNELS][totalFrames];
         pipeline.renderOffline(transport, mixer, List.of(track), null,
                 master, out, totalFrames, BUFFER_SIZE);

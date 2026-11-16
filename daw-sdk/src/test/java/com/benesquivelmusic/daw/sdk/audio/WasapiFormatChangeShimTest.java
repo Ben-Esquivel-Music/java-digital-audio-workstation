@@ -37,6 +37,34 @@ class WasapiFormatChangeShimTest {
         }
     }
 
+    /**
+     * Story 337, ruling E31: an {@code OnPropertyValueChanged} or
+     * {@code QueryInterface} upcall whose handling throws is counted on the
+     * backend ({@code audio.device}) and answers its ABI-safe value. A heap
+     * segment stands in for a key or IID that cannot be reinterpreted, so the
+     * handling throws for real on any host.
+     */
+    @Test
+    void aThrowingUpcallIsCountedOnTheBackendAndAnswersItsAbiValue() {
+        WasapiBackend backend = new WasapiBackend();
+        try (WasapiFormatChangeShim shim = new WasapiFormatChangeShim(backend, DEVICE)) {
+            MemorySegment unreadable = MemorySegment.ofArray(new byte[32]);
+
+            int propertyAnswer = shim.onPropertyValueChangedUpcall(
+                    MemorySegment.NULL, MemorySegment.NULL, unreadable);
+            int queryAnswer = shim.queryInterfaceUpcall(
+                    MemorySegment.NULL, unreadable, MemorySegment.NULL);
+
+            assertThat(propertyAnswer).isEqualTo(WasapiFormatChangeShim.S_OK);
+            assertThat(queryAnswer).isEqualTo(WasapiFormatChangeShim.E_NOINTERFACE);
+        }
+        BackendThreadCounters counters = backend.threadCounters();
+        assertThat(counters.deviceNotificationFaults()).isEqualTo(2L);
+        assertThat(counters.lastDeviceNotificationFault()).get()
+                .isInstanceOf(UnsupportedOperationException.class);
+        assertThat(counters.deviceCallbackPeriods()).isEmpty();
+    }
+
     @Test
     void closeIsIdempotent() {
         WasapiFormatChangeShim shim =

@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.locks.LockSupport;
 
 /**
@@ -231,6 +232,40 @@ final class AsioBufferSwitchShim implements AutoCloseable {
     private volatile long renderedBlocksConsumed;
 
     /**
+     * The device-callback heartbeat (story 337, ruling E5): bumped once at the
+     * entry of every {@link #bufferSwitchUpcall(int, int)}, before the guard's
+     * {@code try}, whatever the callback then does. A watchdog compares it
+     * with the periods it expected to see a stalled or half-rate driver.
+     * Single writer — the driver's callback thread — so the plain
+     * {@code volatile long ++} idiom of {@link #renderedBlocksConsumed}
+     * applies unchanged.
+     */
+    private volatile long deviceCallbackPeriods;
+
+    /**
+     * Faults the upcall guard caught (story 337, ruling E16): bumped in
+     * {@link #bufferSwitchUpcall(int, int)}'s catch after the output half was
+     * silenced. Single writer — the driver's callback thread.
+     */
+    private volatile long upcallFaults;
+
+    /**
+     * The newest fault behind {@link #upcallFaults}: a reference store, which
+     * allocates nothing on the driver thread (story 337, ruling E4).
+     */
+    private volatile Throwable lastUpcallFault;
+
+    /**
+     * Captured input blocks the {@code asio-input-drain} thread could not
+     * publish (story 337, ruling E16) — {@code audio.input}. Single writer:
+     * the drain thread.
+     */
+    private volatile long publishDrops;
+
+    /** The newest fault behind {@link #publishDrops}; written by the drain thread. */
+    private volatile Throwable lastPublishFault;
+
+    /**
      * Pre-allocates every buffer, view and staging array the callback needs,
      * builds the FFM upcall stub, and starts the {@code asio-input-drain}
      * thread. Runs on the calling (control) thread — never on the driver's
@@ -442,14 +477,56 @@ final class AsioBufferSwitchShim implements AutoCloseable {
     /**
      * Method-handle target bound into the FFM upcall stub. The JVM calls it
      * from the driver's real-time callback thread.
+     *
+     * <p>Guarded (story 337, rulings E5, E15, E16): it bumps the device
+     * heartbeat before the {@code try}, and a fault from the bridge never
+     * reaches native code — the JVM would terminate the process. On a fault
+     * the output half is silenced first, because {@link #bufferSwitch} writes
+     * the outputs last and a half left holding the previous cycle's samples
+     * would replay as a buzz at the buffer rate; then the fault's reference is
+     * stored and it is counted, in that order (story 337, ruling E82). Nothing
+     * here logs, locks or allocates beyond the
+     * already-thrown object (failure-surfacing book §2.3, §4.3); the call made
+     * from the handler sits in a nested catch-all so the count still lands.</p>
+     *
+     * <p>Package-private for the unit tests, which drive faults through it the
+     * way the stub would.</p>
      */
-    @SuppressWarnings("unused") // invoked reflectively via the upcall stub
-    private void bufferSwitchUpcall(int bufferIndex, int directProcess) {
+    @RealTimeSafe
+    void bufferSwitchUpcall(int bufferIndex, int directProcess) {
+        deviceCallbackPeriods++;
         try {
             bufferSwitch(bufferIndex, directProcess);
-        } catch (Throwable ignored) {
-            // Never let an exception propagate back into native code — the
-            // ASIO driver has no way to recover from a Java stack unwind.
+        } catch (Throwable fault) {
+            try {
+                silenceOutputHalf(bufferIndex);
+            } catch (Throwable ignored) {
+                // The count below still lands; nothing may escape to native code.
+            }
+            // The fault first, then its count: a reader that sees the count
+            // sees this fault or a newer one (story 337, ruling E82).
+            lastUpcallFault = fault;
+            upcallFaults++;
+        }
+    }
+
+    /**
+     * Bulk-zeroes every bound output segment of one half (story 337, ruling
+     * E15). Zero bytes are silence for every {@link AsioSampleType} this shim
+     * converts, so no per-type encode is needed. An out-of-range half and a
+     * {@code null} or {@code NULL} segment are skipped.
+     */
+    @RealTimeSafe
+    private void silenceOutputHalf(int bufferIndex) {
+        if (bufferIndex < 0 || bufferIndex >= HALVES) {
+            return;
+        }
+        MemorySegment[] outputs = outputBuffers[bufferIndex];
+        for (int channel = 0; channel < outputs.length; channel++) {
+            MemorySegment segment = outputs[channel];
+            if (segment != null && !segment.equals(MemorySegment.NULL)) {
+                segment.fill((byte) 0);
+            }
         }
     }
 
@@ -598,10 +675,15 @@ final class AsioBufferSwitchShim implements AutoCloseable {
         try {
             support.publishInput(new AudioBlock(
                     sampleRate, channels, bufferFrames, scratch.clone()));
-        } catch (Throwable ignored) {
+        } catch (Throwable lost) {
             // A publisher closed concurrently with this drain, or a
             // misbehaving drop handler, must never kill the drain thread —
-            // the next callback still has to be delivered.
+            // the next callback still has to be delivered. The lost block is
+            // counted, never silent (story 337, ruling E16): this drain
+            // thread is the counter's only writer. The fault is stored
+            // before its count (story 337, ruling E82).
+            lastPublishFault = lost;
+            publishDrops++;
         }
     }
 
@@ -709,6 +791,55 @@ final class AsioBufferSwitchShim implements AutoCloseable {
      */
     long renderedBlocksConsumed() {
         return renderedBlocksConsumed;
+    }
+
+    /**
+     * The device-callback heartbeat: upcalls the driver has made into this
+     * shim (story 337, ruling E5). A volatile read; adds nothing to the
+     * real-time path.
+     */
+    long deviceCallbackPeriods() {
+        return deviceCallbackPeriods;
+    }
+
+    /** Faults the upcall guard caught (story 337, ruling E16). A volatile read. */
+    long upcallFaults() {
+        return upcallFaults;
+    }
+
+    /** The newest fault the upcall guard caught, if any. */
+    Optional<Throwable> lastUpcallFault() {
+        return Optional.ofNullable(lastUpcallFault);
+    }
+
+    /** Captured blocks the input drain could not publish (story 337, ruling E16). */
+    long publishDrops() {
+        return publishDrops;
+    }
+
+    /** The newest fault behind {@link #publishDrops()}, if any. */
+    Optional<Throwable> lastPublishFault() {
+        return Optional.ofNullable(lastPublishFault);
+    }
+
+    /**
+     * This shim's counters as one report — the counter source
+     * {@link AsioBackend} attaches to its {@link BackendCounterLedger} for the
+     * open this shim serves (story 337, ruling E90). Upcall faults are
+     * {@code audio.callback}, publish drops are lost input blocks
+     * ({@code audio.input}), and the heartbeat is always present.
+     *
+     * <p>The counts are read before the faults: every writer here stores the
+     * fault before its count, so a count read here comes with its fault or a
+     * newer one (story 337, ruling E82). Building the report allocates, so it
+     * runs on the caller's thread, never on the driver's callback thread.</p>
+     *
+     * @return the report; never {@code null}
+     */
+    BackendThreadCounters counters() {
+        return new BackendThreadCounters(upcallFaults(), publishDrops(), 0L, 0L,
+                OptionalLong.of(deviceCallbackPeriods()),
+                lastUpcallFault(), lastPublishFault(), Optional.empty());
     }
 
     /**

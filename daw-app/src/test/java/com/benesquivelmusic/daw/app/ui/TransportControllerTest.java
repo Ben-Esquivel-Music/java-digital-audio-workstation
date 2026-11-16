@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.diagnostics.HaltContext;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
@@ -8,6 +9,7 @@ import com.benesquivelmusic.daw.core.audio.InputRouting;
 import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CaptureFlushService;
@@ -40,6 +42,7 @@ import com.benesquivelmusic.daw.sdk.event.EventBus;
 import com.benesquivelmusic.daw.sdk.event.EventBusMetrics;
 import com.benesquivelmusic.daw.sdk.event.TransportEvent;
 import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
+import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import javafx.application.Platform;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
@@ -56,6 +59,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.List;
@@ -272,6 +276,15 @@ class TransportControllerTest {
 
     /** The hang guard of a wait for a real take's capture thread: its files created, or the take published. */
     private static final long TAKE_BUDGET_NANOS = TimeUnit.SECONDS.toNanos(30);
+
+    /** The hang guard of a wait for a render drive to halt itself: about one second of failing blocks. */
+    private static final long HALT_BUDGET_NANOS = TimeUnit.SECONDS.toNanos(15);
+
+    /**
+     * How long a stream that a close on a virtual thread would have closed is watched staying open: a take's
+     * input cleanup closes a mock stream within milliseconds.
+     */
+    private static final long STREAM_WATCH_NANOS = TimeUnit.SECONDS.toNanos(1);
 
     /**
      * Story 323 — an audio take streams into the project's own
@@ -824,6 +837,284 @@ class TransportControllerTest {
                 com.benesquivelmusic.daw.core.transport.TransportState.PLAYING);
     }
 
+    /**
+     * Story 337, rulings E67, E69 and E101: the Stop a render-drive halt runs
+     * ends a configured post-roll at once — no tail can play on a dead drive —
+     * so on that turn the transport is stopped, the status says so, and the
+     * stop is announced once; the end of the post-roll closes no stream
+     * either. It stopped playback, and answers so: "Playback was stopped."
+     */
+    @Test
+    void aStopForAnEngineHaltEndsAPostRollAtOnce() throws Exception {
+        DawProject project = new DawProject("halt", new AudioFormat(48000, 2, 16, 256));
+        Transport transport = project.getTransport();
+        transport.setPreRollPostRoll(PreRollPostRoll.enabled(0, 2));
+        TransportController controller = newController(project);
+        runHandler(controller::start);
+        assertThat(transport.getState()).as("fixture: playing")
+                .isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.PLAYING);
+        assertThat(audioEngine.isStreamOpen()).as("fixture: playing on an open stream").isTrue();
+        List<BusEvent> published = new CopyOnWriteArrayList<>();
+        AtomicReference<HaltContext> answered = new AtomicReference<>();
+        EventBus previousBus = EventBusPublisher.getDefault();
+        try {
+            EventBusPublisher.setDefault(new PublishHookEventBus(published::add));
+            runHandler(() -> answered.set(controller.stopForEngineHalt()));
+        } finally {
+            EventBusPublisher.setDefault(previousBus);
+        }
+
+        assertThat(answered.get()).as("the Stop stopped playback").isEqualTo(HaltContext.PLAYBACK);
+        assertThat(transport.getState()).isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.STOPPED);
+        assertThat(transport.isInPostRoll()).as("no tail on a dead drive").isFalse();
+        assertThat(statusBarLabel.getText()).isEqualTo("Stopped");
+        assertThat(published).as("the stop is announced once, on this turn")
+                .filteredOn(TransportEvent.Stopped.class::isInstance).hasSize(1);
+        assertThat(audioEngine.isStreamOpen())
+                .as("no graph instrument, yet the post-roll's end closed nothing: the halt's own close follows")
+                .isTrue();
+    }
+
+    /**
+     * Story 337, rulings E69 and E101: over a stopped transport with no take
+     * in flight — a stream open for an audition — a render-drive halt runs no
+     * Stop at all: no double-stop rewind, no close of the idle stream the
+     * user's Stop would close. Nothing was stopped, so the notice has no
+     * context sentence.
+     */
+    @Test
+    void aStopForAnEngineHaltOverAStoppedTransportClosesNoStream() throws Exception {
+        DawProject project = new DawProject("halt", new AudioFormat(48000, 2, 16, 256));
+        TransportController controller = newController(project);
+        audioEngine.startAudioOutput();
+        runHandler(() -> project.getTransport().setPositionInBeats(8.0));
+        assertThat(audioEngine.isStreamOpen()).as("fixture: an open stream").isTrue();
+        assertThat(project.getTransport().getState()).as("fixture: the transport stands still")
+                .isEqualTo(TransportState.STOPPED);
+        assertThat(project.getTransport().isReturnToStartOnStop()).as("fixture: a Stop here would rewind").isTrue();
+
+        AtomicReference<HaltContext> answered = new AtomicReference<>();
+        runHandler(() -> answered.set(controller.stopForEngineHalt()));
+
+        assertThat(answered.get()).as("no Stop ran: no context sentence").isEqualTo(HaltContext.IDLE);
+        assertThat(project.getTransport().getPositionInBeats()).as("no double-stop rewind: no Stop ran")
+                .isEqualTo(8.0);
+        assertThat(statusBarLabel.getText()).isNotEqualTo("Returned to start");
+        assertThat(audioEngine.isStreamOpen()).as("no graph instrument, yet nothing closed the stream").isTrue();
+    }
+
+    /**
+     * Story 337, rulings E67 and E101: a halt inside the post-roll tail a
+     * user's Stop of playback left playing stops that playback — its Stop
+     * enters a tail and ends it at once — and answers "Playback was
+     * stopped.", closing no stream.
+     */
+    @Test
+    void aStopForAnEngineHaltInsideTheTailOfAStopEndsTheTailAndAnswersThatPlaybackWasStopped() throws Exception {
+        DawProject project = new DawProject("halt", new AudioFormat(48000, 2, 16, 256));
+        Transport transport = project.getTransport();
+        transport.setPreRollPostRoll(PreRollPostRoll.enabled(0, 2));
+        TransportController controller = newController(project);
+        runHandler(controller::start);
+        runHandler(controller::stop);
+        assertThat(transport.isInPostRoll()).as("fixture: the user's Stop left a tail playing").isTrue();
+        assertThat(transport.getState()).isEqualTo(TransportState.PLAYING);
+        List<BusEvent> published = new CopyOnWriteArrayList<>();
+        AtomicReference<HaltContext> answered = new AtomicReference<>();
+        EventBus previousBus = EventBusPublisher.getDefault();
+        try {
+            EventBusPublisher.setDefault(new PublishHookEventBus(published::add));
+            runHandler(() -> answered.set(controller.stopForEngineHalt()));
+        } finally {
+            EventBusPublisher.setDefault(previousBus);
+        }
+
+        assertThat(answered.get()).as("the tail is playback, and the halt's Stop ended it")
+                .isEqualTo(HaltContext.PLAYBACK);
+        assertThat(transport.getState()).isEqualTo(TransportState.STOPPED);
+        assertThat(transport.isInPostRoll()).isFalse();
+        assertThat(published).as("the Stop ran once: one stop announced, on this turn")
+                .filteredOn(TransportEvent.Stopped.class::isInstance).hasSize(1);
+        assertThat(audioEngine.isStreamOpen()).as("the halt's Stop closed nothing").isTrue();
+    }
+
+    /**
+     * Story 337, rulings E66, E69 and E101: a halt's Stop while Record's take
+     * is still being prepared over a stopped transport — the halted drive is
+     * the take's own new stream — cancels the take and closes nothing — not
+     * the take's stream either, whose cleanup only the halt's own close may
+     * start. The user's Stop at that end starts it, and that cleanup closes
+     * the stream on a virtual thread, so the stream is watched for a while.
+     * No take was started and nothing was playing, so the notice has no
+     * context sentence; a second halt while the cancelled start is cleaned
+     * up runs no Stop and has none either.
+     */
+    @Test
+    void aStopForAnEngineHaltWhileATakeIsPreparedClosesNoStream() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        TransportController controller = newController(project);
+        AtomicReference<Runnable> allocation = new AtomicReference<>();
+        runStrictHandler(() -> {
+            controller.setStorageExecutorForTest(allocation::set);
+            controller.toggleRecord();
+        });
+        awaitOnFx(() -> allocation.get() != null, "the take's stream is open and its directory's allocation waits");
+        try {
+            assertThat(controller.isPreparingTake()).as("fixture: the take is being prepared").isTrue();
+            assertThat(audioEngine.isStreamOpen()).as("fixture: Record opened the take's stream").isTrue();
+            assertThat(project.getTransport().getState()).as("fixture: the transport stands still")
+                    .isEqualTo(TransportState.STOPPED);
+
+            AtomicReference<HaltContext> answered = new AtomicReference<>();
+            runHandler(() -> answered.set(controller.stopForEngineHalt()));
+
+            assertThat(answered.get()).as("a cancelled start over a stopped transport: no context sentence")
+                    .isEqualTo(HaltContext.IDLE);
+            assertThat(controller.isPreparingTake()).as("the Stop cancelled the take").isFalse();
+            assertThat(statusBarLabel.getText()).isEqualTo(TransportController.RECORDING_CANCELLED_MESSAGE);
+            long watchUntil = System.nanoTime() + STREAM_WATCH_NANOS;
+            while (System.nanoTime() < watchUntil) {
+                assertThat(audioEngine.isStreamOpen()).as("no graph instrument, yet the Stop closed nothing")
+                        .isTrue();
+                Thread.sleep(10);
+            }
+
+            assertThat(controller.isTakeBeingWritten()).as("fixture: the cancelled start is still cleaned up")
+                    .isTrue();
+            runHandler(() -> answered.set(controller.stopForEngineHalt()));
+            assertThat(answered.get()).as("a later halt meanwhile: no Stop, no context sentence")
+                    .isEqualTo(HaltContext.IDLE);
+            assertThat(statusBarLabel.getText()).as("no Stop ran: no double-stop rewind")
+                    .isEqualTo(TransportController.RECORDING_CANCELLED_MESSAGE);
+            assertThat(controller.isTakeBeingWritten()).as("the cleanup is left to finish").isTrue();
+            assertThat(audioEngine.isStreamOpen()).isTrue();
+        } finally {
+            runStrictHandler(() -> controller.setStorageExecutorForTest(task -> Thread.ofVirtual().start(task)));
+            allocation.get().run();
+            awaitOnFx(() -> !controller.isTakeBeingWritten(), "the cancelled take's cleanup ends");
+        }
+    }
+
+    /** The recording audio takes a render-drive halt's Stop ends. */
+    enum RecordingAudioTake { WITH_AUDIO_ON_DISK, BEFORE_ITS_PUNCH_IN_POINT, LOOP_RECORDING }
+
+    /**
+     * Story 337, rulings E11 and E101: a halt's Stop ends a recording audio
+     * take — one with audio on disk, a punch-in take before its punch-in
+     * point, which has captured nothing yet, and a loop-record take — through
+     * its normal finalization, closes no stream, and answers that recording
+     * was stopped: each take had started, past its preparation.
+     */
+    @ParameterizedTest
+    @EnumSource(RecordingAudioTake.class)
+    void aStopForAnEngineHaltEndsARecordingAudioTakeAndAnswersThatRecordingWasStopped(RecordingAudioTake take)
+            throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        TransportController controller = newController(project);
+        switch (take) {
+            case BEFORE_ITS_PUNCH_IN_POINT -> runHandler(() -> project.getTransport().setPunchRegion(
+                    new PunchRegion(48_000L * 600, 48_000L * 660, true)));
+            case LOOP_RECORDING -> runHandler(controller::toggleLoopRecord);
+            case WITH_AUDIO_ON_DISK -> { }
+        }
+        record(controller);
+        if (take == RecordingAudioTake.WITH_AUDIO_ON_DISK) {
+            awaitABlockOnDisk(controller, armed);
+        }
+        runHandler(() -> assertThat(controller.recordCoordinator().getState()).as("fixture: the take records")
+                .isEqualTo(RecordState.RECORDING));
+        List<BusEvent> published = new CopyOnWriteArrayList<>();
+        AtomicReference<HaltContext> answered = new AtomicReference<>();
+        AtomicReference<Boolean> streamOpenAfterTheStop = new AtomicReference<>();
+        EventBus previousBus = EventBusPublisher.getDefault();
+        try {
+            EventBusPublisher.setDefault(new PublishHookEventBus(published::add));
+            runHandler(() -> {
+                answered.set(controller.stopForEngineHalt());
+                streamOpenAfterTheStop.set(audioEngine.isStreamOpen());
+            });
+        } finally {
+            EventBusPublisher.setDefault(previousBus);
+        }
+
+        assertThat(answered.get()).as("the Stop ended a take that had started").isEqualTo(HaltContext.RECORDING);
+        assertThat(controller.isRecordingInFlight()).as("the take was ended").isFalse();
+        assertThat(statusBarLabel.getText()).isEqualTo(TransportController.TAKE_FINISHING_MESSAGE);
+        assertThat(project.getTransport().getState()).isEqualTo(TransportState.STOPPED);
+        assertThat(published).as("the Stop ran once").filteredOn(TransportEvent.Stopped.class::isInstance)
+                .hasSize(1);
+        assertThat(streamOpenAfterTheStop.get()).as("the halt's Stop closed no stream").isTrue();
+        awaitOnFx(() -> !controller.isTakeBeingWritten(), "the take is written and published as after any Stop");
+        if (take == RecordingAudioTake.WITH_AUDIO_ON_DISK) {
+            assertThat(armed.getClips()).as("it keeps what it recorded").hasSize(1);
+        }
+    }
+
+    /**
+     * Story 337, ruling E101: a halt while a take is still being written after
+     * the user's Stop leaves that take to its writing. Over the stopped
+     * transport no Stop runs and the notice has no context sentence; with
+     * Play pressed meanwhile, the halt's Stop stops that playback and answers
+     * so. The take is published as after any Stop.
+     */
+    @Test
+    void aStopForAnEngineHaltWhileATakeIsBeingWrittenLeavesItAloneAndAnswersOnlyForPlayback() throws Exception {
+        DawProject project = new DawProject("saved", new AudioFormat(48000, 2, 16, 256));
+        giveTheProjectADirectory(project);
+        Track armed = project.createAudioTrack("Vox");
+        armed.setArmed(true);
+        CountingCompletion completions = new CountingCompletion();
+        TransportController controller = recordingWithABlockOnDisk(project, armed, completions);
+        holdTheCaptureThread();
+        runHandler(controller::stop);
+        assertThat(controller.isTakeBeingWritten()).as("fixture: the take is still being written").isTrue();
+        assertThat(controller.isRecordingInFlight()).as("fixture: and is no longer in flight").isFalse();
+        runHandler(() -> project.getTransport().setPositionInBeats(8.0));
+        AtomicReference<HaltContext> answered = new AtomicReference<>();
+
+        runHandler(() -> answered.set(controller.stopForEngineHalt()));
+
+        assertThat(answered.get()).as("nothing rolled and no take was in flight: no Stop, no context sentence")
+                .isEqualTo(HaltContext.IDLE);
+        assertThat(project.getTransport().getPositionInBeats()).as("no double-stop rewind").isEqualTo(8.0);
+        assertThat(statusBarLabel.getText()).isEqualTo(TransportController.TAKE_FINISHING_MESSAGE);
+
+        runHandler(controller::start);
+        assertThat(project.getTransport().getState()).as("fixture: Play pressed meanwhile")
+                .isEqualTo(TransportState.PLAYING);
+        List<BusEvent> published = new CopyOnWriteArrayList<>();
+        AtomicReference<Boolean> streamOpenAfterTheStop = new AtomicReference<>();
+        EventBus previousBus = EventBusPublisher.getDefault();
+        try {
+            EventBusPublisher.setDefault(new PublishHookEventBus(published::add));
+            runHandler(() -> {
+                answered.set(controller.stopForEngineHalt());
+                streamOpenAfterTheStop.set(audioEngine.isStreamOpen());
+            });
+        } finally {
+            EventBusPublisher.setDefault(previousBus);
+        }
+
+        assertThat(answered.get()).as("the halt's Stop stopped that playback and ended no take")
+                .isEqualTo(HaltContext.PLAYBACK);
+        assertThat(project.getTransport().getState()).isEqualTo(TransportState.STOPPED);
+        assertThat(published).as("the Stop ran once").filteredOn(TransportEvent.Stopped.class::isInstance)
+                .hasSize(1);
+        assertThat(streamOpenAfterTheStop.get()).as("the halt's Stop closed no stream").isTrue();
+        assertThat(controller.isTakeBeingWritten()).as("the take is left to its writing").isTrue();
+        assertThat(completions.calls).as("nothing completed it on the halt's turns").isEmpty();
+
+        releaseAndAwaitThePublication(controller);
+        assertThat(completions.calls).as("the take is completed once, as after any Stop").hasSize(1);
+        assertThat(armed.getClips()).hasSize(1);
+    }
+
     // ── Intent handlers (story 315: start/pause/stop replace onPlay/onStop) ──
 
     @Test
@@ -1077,7 +1368,7 @@ class TransportControllerTest {
         assertThat(audioEngine.isStreamPaused()).isTrue();
 
         var previousBus = EventBusPublisher.getDefault();
-        var eventBus = new DefaultEventBus();
+        var eventBus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         try {
             EventBusPublisher.setDefault(eventBus);
             runHandler(controller::start);
@@ -1338,6 +1629,112 @@ class TransportControllerTest {
         } finally {
             audioEngine.stopAudioOutput();
             project.disposeInsertsWhenQuiescent().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    /**
+     * Story 337, ruling E11 step 2: once nothing defers the input-stream stop,
+     * a render-drive halt closes the stream even when a graph instrument
+     * would keep it open while stopped — which the idle stop
+     * ({@code stopAudioOutputWhenIdle}) does not do — because a stream left
+     * open behind a dead drive keeps its clock claim. The drive really halts
+     * first: the close acts only on the halted drive's stream (ruling E69).
+     */
+    @Test
+    void anEngineHaltClosesTheStreamAGraphInstrumentKeepsOpenOnceNothingDefersIt() throws Exception {
+        DawProject project = new DawProject("Keyboard", new AudioFormat(48_000, 2, 16, 256));
+        Track track = project.createAudioTrack("Keyboard");
+        project.getMixerChannelForTrack(track).addInsert(PluginSignalPathActivationTest.builtInSlot(
+                com.benesquivelmusic.daw.core.plugin.VirtualKeyboardPlugin.class));
+        TransportController controller = newController(project);
+        audioEngine.setGraph(project.getTransport(), project.getMixer(), project.getTracks());
+        try {
+            runHandler(controller::start);
+            runHandler(controller::stop);
+            assertThat(audioEngine.isStreamOpen()).as("fixture: the instrument keeps the stream open while stopped")
+                    .isTrue();
+            runHandler(controller::stopAudioOutputWhenIdle);
+            assertThat(audioEngine.isStreamOpen()).as("the idle stop leaves it open for the instrument").isTrue();
+            haltTheRenderDrive();
+
+            AtomicReference<Boolean> closed = new AtomicReference<>();
+            runHandler(() -> closed.set(controller.closeStreamAfterEngineHalt()));
+
+            assertThat(closed.get()).as("nothing defers the stop: nothing more is owed").isTrue();
+            assertThat(audioEngine.isStreamOpen()).as("the halt closed it, instrument or not").isFalse();
+        } finally {
+            audioEngine.stopAudioOutput();
+            project.disposeInsertsWhenQuiescent().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    /**
+     * Story 337, ruling E69: the halt's close closes only the stream whose
+     * render drive halted itself. A stream whose drive is alive — Play
+     * reopened it since the halt, or a restart replaced it — stays open, and
+     * nothing more is owed.
+     */
+    @Test
+    void anEngineHaltCloseLeavesAStreamWhoseDriveIsAliveOpen() throws Exception {
+        DawProject project = new DawProject("Keyboard", new AudioFormat(48_000, 2, 16, 256));
+        Track track = project.createAudioTrack("Keyboard");
+        project.getMixerChannelForTrack(track).addInsert(PluginSignalPathActivationTest.builtInSlot(
+                com.benesquivelmusic.daw.core.plugin.VirtualKeyboardPlugin.class));
+        TransportController controller = newController(project);
+        audioEngine.setGraph(project.getTransport(), project.getMixer(), project.getTracks());
+        try {
+            runHandler(controller::start);
+            runHandler(controller::stop);
+            assertThat(audioEngine.isRenderDriveAlive()).as("fixture: the instrument's stream renders on").isTrue();
+
+            AtomicReference<Boolean> closed = new AtomicReference<>();
+            runHandler(() -> closed.set(controller.closeStreamAfterEngineHalt()));
+
+            assertThat(closed.get()).as("not the halted stream: nothing is owed").isTrue();
+            assertThat(audioEngine.isStreamOpen()).as("a live drive's stream is never closed by a halt").isTrue();
+            assertThat(audioEngine.isRenderDriveAlive()).isTrue();
+        } finally {
+            audioEngine.stopAudioOutput();
+            project.disposeInsertsWhenQuiescent().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    /**
+     * Story 337, rulings E69 and E101: the Stop of a render-drive halt stops
+     * the transport and closes no stream — not even through the idle close
+     * the user's Stop runs — because the halt's own close follows on the same
+     * frame and closes only the halted stream. It stopped playback with no
+     * take in flight, and answers so.
+     */
+    @Test
+    void theStopOfAnEngineHaltClosesNoStream() throws Exception {
+        DawProject project = new DawProject("halt", new AudioFormat(48000, 2, 16, 256));
+        TransportController controller = newController(project);
+        runHandler(controller::start);
+        assertThat(audioEngine.isStreamOpen()).as("fixture: playing on an open stream").isTrue();
+
+        AtomicReference<HaltContext> answered = new AtomicReference<>();
+        runHandler(() -> answered.set(controller.stopForEngineHalt()));
+
+        assertThat(answered.get()).as("\"Playback was stopped.\"").isEqualTo(HaltContext.PLAYBACK);
+        assertThat(project.getTransport().getState())
+                .isEqualTo(com.benesquivelmusic.daw.core.transport.TransportState.STOPPED);
+        assertThat(audioEngine.isStreamOpen()).as("no graph instrument, yet the Stop closed nothing").isTrue();
+    }
+
+    /**
+     * Halts the open stream's render drive the way a sustained render fault
+     * does (story 337, ruling E8): every block's recording callback throws
+     * until the drive ends itself, which takes about one second of blocks.
+     */
+    private void haltTheRenderDrive() throws InterruptedException {
+        audioEngine.setRecordingCallback((inputBuffer, numFrames) -> {
+            throw new IllegalStateException("an insert fails every block");
+        });
+        long deadline = System.nanoTime() + HALT_BUDGET_NANOS;
+        while (!audioEngine.isRenderDriveHalted()) {
+            assertThat(System.nanoTime() - deadline).as("the render drive halts itself").isNegative();
+            Thread.sleep(10);
         }
     }
 

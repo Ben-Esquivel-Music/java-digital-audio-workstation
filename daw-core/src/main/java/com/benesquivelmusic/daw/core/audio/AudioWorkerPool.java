@@ -1,5 +1,9 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCodes;
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
+import com.benesquivelmusic.daw.core.audio.health.LaneRole;
+import com.benesquivelmusic.daw.core.audio.health.RenderThread;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 import java.util.Objects;
@@ -28,14 +32,24 @@ import java.util.concurrent.locks.LockSupport;
  * for a short window and then {@link LockSupport#park()}-ing; the coordinator
  * calls {@link LockSupport#unpark(Thread)} when a new batch is published to
  * avoid unbounded busy-waiting.</p>
+ *
+ * <p>A task that throws never aborts its batch and never kills a worker: the
+ * failure is COUNTED into the running thread's lane of the engine's
+ * {@link AudioHealthRecord} as {@code audio.worker} (story 337, ruling E27;
+ * failure-surfacing book §5.1 row 11) — the coordinator's render-drive lane
+ * for a task it ran itself, the worker's own lane otherwise. Every worker is
+ * a {@link RenderThread} carrying a lane claimed from that record; closing
+ * the pool retires the lanes of the workers that exited, so their counts
+ * outlive them.</p>
  */
 public final class AudioWorkerPool implements AutoCloseable {
 
     /** Number of spin iterations before a worker parks when idle. */
     private static final int SPIN_LIMIT = 1_000;
 
-    private final Thread[] workers;
+    private final RenderThread[] workers;
     private final int size;
+    private final AudioHealthRecord health;
 
     // Batch publication state — updated by the coordinator, observed by workers.
     private volatile Runnable[] currentTasks;
@@ -50,27 +64,29 @@ public final class AudioWorkerPool implements AutoCloseable {
     /**
      * Creates a new worker pool with the given number of worker threads.
      *
-     * @param size the number of worker threads to spawn (must be positive;
-     *             when {@code size == 1} the pool degenerates to a direct
-     *             execution model — the coordinator runs every task inline)
+     * @param size   the number of worker threads to spawn (must be positive;
+     *               when {@code size == 1} the pool degenerates to a direct
+     *               execution model — the coordinator runs every task inline)
+     * @param health the engine's health record: each worker claims a lane of
+     *               it, and task failures are counted into it (story 337,
+     *               rulings E20 and E27); must not be null
      * @throws IllegalArgumentException if {@code size <= 0}
      */
-    public AudioWorkerPool(int size) {
+    public AudioWorkerPool(int size, AudioHealthRecord health) {
         if (size <= 0) {
             throw new IllegalArgumentException("size must be positive: " + size);
         }
+        this.health = Objects.requireNonNull(health, "health must not be null");
         this.size = size;
         // One worker count == coordinator only; we still allocate a zero-length
         // worker array so invokeAll can detect the degenerate case.
         int spawn = size - 1;
-        this.workers = new Thread[spawn];
+        this.workers = new RenderThread[spawn];
         for (int i = 0; i < spawn; i++) {
-            final int workerId = i;
-            Thread t = Thread.ofPlatform()
-                    .daemon(true)
-                    .name("daw-audio-worker-" + workerId)
-                    .priority(Thread.MAX_PRIORITY)
-                    .unstarted(this::workerLoop);
+            // A RenderThread is a daemon platform thread at MAX_PRIORITY that
+            // carries its own lane (story 337, ruling E20).
+            RenderThread t = new RenderThread(health.claimLane(LaneRole.WORKER),
+                    this::workerLoop, "daw-audio-worker-" + i);
             workers[i] = t;
             t.start();
         }
@@ -116,8 +132,10 @@ public final class AudioWorkerPool implements AutoCloseable {
                 }
                 try {
                     task.run();
-                } catch (Throwable ignored) {
-                    // Intentionally ignored to preserve batch execution semantics.
+                } catch (Throwable failure) {
+                    // Isolated so one bad task does not abort the batch, and
+                    // counted on the coordinator's lane (story 337, ruling E27).
+                    health.recordOnCurrentThread(AudioFailureCodes.WORKER, failure, null, i);
                 }
             }
             return;
@@ -131,7 +149,7 @@ public final class AudioWorkerPool implements AutoCloseable {
         batchVersion++;
 
         // Wake parked workers.
-        for (Thread t : workers) {
+        for (RenderThread t : workers) {
             LockSupport.unpark(t);
         }
 
@@ -153,18 +171,30 @@ public final class AudioWorkerPool implements AutoCloseable {
      * Initiates an orderly shutdown: worker threads stop after their next wake.
      * Pending batches are drained normally; no new tasks should be submitted
      * after {@link #close()} is called.
+     *
+     * <p>Each worker that exited has its lane retired into the health record,
+     * folding its counts in (story 337, ruling E18); the lane's undrained
+     * descriptors stay readable until the drain takes them (story 337, ruling
+     * E81). A worker that did not join within the bound keeps its lane live —
+     * it may still write it — and its counts stay visible through the
+     * record.</p>
      */
     @Override
     public void close() {
         shutdown = true;
-        for (Thread t : workers) {
+        for (RenderThread t : workers) {
             LockSupport.unpark(t);
         }
-        for (Thread t : workers) {
+        for (RenderThread t : workers) {
             try {
                 t.join(500);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+            }
+        }
+        for (RenderThread t : workers) {
+            if (!t.isAlive()) {
+                health.retireLane(t.lane());
             }
         }
     }
@@ -196,6 +226,14 @@ public final class AudioWorkerPool implements AutoCloseable {
      * Pulls tasks from the shared array until exhausted. Each claimed task
      * decrements the {@link #remaining} counter on completion so the
      * coordinator can detect batch completion.
+     *
+     * <p>A task that throws is isolated — a worker that died would starve
+     * future batches — and counted, never silent: the failure is recorded
+     * into the running thread's lane as {@code audio.worker}, with the task
+     * index as detail (story 337, ruling E27; failure-surfacing book §5.1
+     * row 11). The decrement sits in a {@code finally}, so even a failure on
+     * the recording path can never leave the coordinator spinning on a batch
+     * that will not complete.</p>
      */
     @RealTimeSafe
     private void runTasks() {
@@ -210,17 +248,15 @@ public final class AudioWorkerPool implements AutoCloseable {
                 return;
             }
             Runnable r = local[idx];
-            if (r != null) {
-                try {
+            try {
+                if (r != null) {
                     r.run();
-                } catch (Throwable t) {
-                    // Swallow to protect the audio thread; individual tasks
-                    // are expected to be failure-tolerant (e.g. DSP inserts
-                    // catching their own plugin exceptions). A worker that
-                    // dies would starve future batches.
                 }
+            } catch (Throwable failure) {
+                health.recordOnCurrentThread(AudioFailureCodes.WORKER, failure, null, idx);
+            } finally {
+                remaining.decrementAndGet();
             }
-            remaining.decrementAndGet();
         }
     }
 }

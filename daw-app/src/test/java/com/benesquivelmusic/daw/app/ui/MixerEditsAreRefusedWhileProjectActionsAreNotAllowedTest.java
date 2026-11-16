@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.app.ui.vm.TrackControlWiring;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.mixer.ChannelLink;
 import com.benesquivelmusic.daw.core.mixer.CueBus;
 import com.benesquivelmusic.daw.core.mixer.CueSend;
@@ -117,7 +118,7 @@ class MixerEditsAreRefusedWhileProjectActionsAreNotAllowedTest {
     @BeforeEach
     void aMixerBehindTheGate() throws Exception {
         previousBus = EventBusPublisher.getDefault();
-        bus = new DefaultEventBus();
+        bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         recording = bus.onPublication(DawEvent.class, published::add);
         EventBusPublisher.setDefault(bus);
         project = new DawProject("Mix", FORMAT);

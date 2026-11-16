@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.status.ProjectJournalCoordinator;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.LockStatus;
 import com.benesquivelmusic.daw.core.persistence.LockStolenException;
@@ -166,7 +167,7 @@ class StolenLockSaveAsFlowTest {
      */
     @Test
     void theTakeoverSaveAsWithTheJournalOnDrainsTheOriginalsJournalAndSealsNothing() throws Exception {
-        DefaultEventBus bus = new DefaultEventBus();
+        DefaultEventBus bus = new DefaultEventBus(SubscriberFailureSink.LOG_ONLY);
         SessionManager sessions = new SessionManager();
         ProjectJournalCoordinator journal = new ProjectJournalCoordinator(fixture.progress, onFx(NotificationBar::new),
                 fixture.dispatcher, () -> true, () -> bus, fixture.checkpoints, sessions, InstantSource.system());

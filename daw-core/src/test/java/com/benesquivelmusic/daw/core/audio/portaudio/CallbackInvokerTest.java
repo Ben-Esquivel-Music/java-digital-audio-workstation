@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
  * Drives {@link PortAudioBackend.CallbackInvoker} the way PortAudio's upcall
@@ -403,8 +404,8 @@ class CallbackInvokerTest {
      * <p>{@code 0xFFFFFFFF} is the discriminator. Read as unsigned it is
      * 4294967295 — an absurdly oversized period, which the bridge clamps to
      * the opened buffer size and counts. Read with a widening cast it is
-     * {@code -1}, which {@code Math.max(0L, frameCount)} turns into zero
-     * frames: a silent dropout, no clamp recorded, and nothing anywhere
+     * {@code -1}, which the bridge's {@code frameCount < 0L ? 0L : frameCount}
+     * turns into zero frames: a silent dropout, no clamp recorded, and nothing anywhere
      * saying the driver misbehaved. So the assertions below distinguish the
      * correct conversion from the plausible wrong one rather than merely
      * observing that nothing threw.</p>
@@ -503,6 +504,179 @@ class CallbackInvokerTest {
             assertThat(narrow.clampedOversizedPeriods())
                     .as("and the same clamp accounting")
                     .isEqualTo(wide.clampedOversizedPeriods());
+        }
+    }
+
+    // ── The upcall guard (story 337, rulings E1 to E5) ───────────────────
+
+    /**
+     * Ruling E2: a throw from the callback silences the host's whole output
+     * extent with the segment the body already reinterpreted, counts the
+     * fault with its reference, and continues (ruling E3).
+     */
+    @Test
+    void aThrowingCallbackSilencesTheHostExtentCountsTheFaultAndContinues() {
+        int framesPerBuffer = 64;
+        int channels = 2;
+        IllegalStateException fault = new IllegalStateException("callback failed mid-render");
+        RecordingCallback callback = new RecordingCallback((out, numFrames) -> {
+            fill(out, numFrames, 1.0f);
+            throw fault;
+        });
+        PortAudioBackend.CallbackInvoker invoker = PortAudioBackend.CallbackInvoker
+                .forStream(callback, channels, channels, framesPerBuffer);
+
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment input = allocateFrames(arena, framesPerBuffer, channels);
+            MemorySegment output = allocateFrames(arena, framesPerBuffer, channels);
+            output.fill((byte) 0x7F);
+
+            int result = invoker.invoke(input, output, framesPerBuffer,
+                    MemorySegment.NULL, 0L, MemorySegment.NULL);
+
+            assertThat(result).as("every fault continues the stream").isEqualTo(PortAudioBindings.PA_CONTINUE);
+            assertThat(output.toArray(ValueLayout.JAVA_BYTE))
+                    .as("the whole host extent is silence, not the driver's stale bytes")
+                    .containsOnly((byte) 0);
+            assertThat(invoker.callbackFaults()).isEqualTo(1L);
+            assertThat(invoker.lastCallbackFault()).containsSame(fault);
+            assertThat(invoker.deviceCallbackPeriods()).isEqualTo(1L);
+        }
+    }
+
+    /** Ruling E2: the silenced extent is the HOST's, never framesPerBuffer-based. */
+    @Test
+    void aThrowingCallbackOnAShortHostPeriodZeroesOnlyTheHostExtent() {
+        int framesPerBuffer = 64;
+        int hostFrames = 32;
+        int channels = 2;
+        RecordingCallback callback = new RecordingCallback((out, numFrames) -> {
+            throw new IllegalStateException("callback failed");
+        });
+        PortAudioBackend.CallbackInvoker invoker = PortAudioBackend.CallbackInvoker
+                .forStream(callback, channels, channels, framesPerBuffer);
+
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment input = allocateFrames(arena, hostFrames, channels);
+            MemorySegment output = allocateFrames(arena, framesPerBuffer, channels);
+            fillNative(output, framesPerBuffer, channels, GUARD_MARKER);
+
+            int result = invoker.invoke(input, output, hostFrames,
+                    MemorySegment.NULL, 0L, MemorySegment.NULL);
+
+            assertThat(result).isEqualTo(PortAudioBindings.PA_CONTINUE);
+            assertThat(readFrames(output, 0, hostFrames, channels))
+                    .as("the host's frames are silenced")
+                    .containsOnly(0.0f);
+            assertThat(readFrames(output, hostFrames, framesPerBuffer - hostFrames, channels))
+                    .as("nothing past the host's period is touched on the fault path either")
+                    .containsOnly(GUARD_MARKER);
+            assertThat(invoker.callbackFaults()).isEqualTo(1L);
+        }
+    }
+
+    /**
+     * Ruling E1: an Error from the callback is caught like any fault — an
+     * exception that left the upcall would terminate the JVM.
+     */
+    @Test
+    void anErrorFromTheCallbackNeverReachesTheNativeFrame() {
+        int framesPerBuffer = 64;
+        int channels = 2;
+        StackOverflowError error = new StackOverflowError("deep plugin recursion");
+        RecordingCallback callback = new RecordingCallback((out, numFrames) -> {
+            throw error;
+        });
+        PortAudioBackend.CallbackInvoker invoker = PortAudioBackend.CallbackInvoker
+                .forStream(callback, channels, channels, framesPerBuffer);
+
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment input = allocateFrames(arena, framesPerBuffer, channels);
+            MemorySegment output = allocateFrames(arena, framesPerBuffer, channels);
+            int[] result = new int[1];
+
+            assertThatCode(() -> result[0] = invoker.invoke(input, output, framesPerBuffer,
+                    MemorySegment.NULL, 0L, MemorySegment.NULL))
+                    .doesNotThrowAnyException();
+            assertThat(result[0]).isEqualTo(PortAudioBindings.PA_CONTINUE);
+            assertThat(invoker.callbackFaults()).isEqualTo(1L);
+            assertThat(invoker.lastCallbackFault()).containsSame(error);
+        }
+    }
+
+    /** Ruling E1: the narrow (LLP64) entry point continues the same way, on any host. */
+    @Test
+    void theNarrowEntryPointContinuesWhenTheCallbackThrows() {
+        int framesPerBuffer = 64;
+        int channels = 2;
+        RecordingCallback callback = new RecordingCallback((out, numFrames) -> {
+            throw new IllegalArgumentException("callback failed");
+        });
+        PortAudioBackend.CallbackInvoker invoker = PortAudioBackend.CallbackInvoker
+                .forStream(callback, channels, channels, framesPerBuffer);
+
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment input = allocateFrames(arena, framesPerBuffer, channels);
+            MemorySegment output = allocateFrames(arena, framesPerBuffer, channels);
+            fillNative(output, framesPerBuffer, channels, STALE_MARKER);
+
+            int result = invoker.invokeNarrowLong(input, output, framesPerBuffer,
+                    MemorySegment.NULL, 0, MemorySegment.NULL);
+
+            assertThat(result).isEqualTo(PortAudioBindings.PA_CONTINUE);
+            assertThat(readFrames(output, 0, framesPerBuffer, channels)).containsOnly(0.0f);
+            assertThat(invoker.callbackFaults()).isEqualTo(1L);
+            assertThat(invoker.deviceCallbackPeriods()).isEqualTo(1L);
+        }
+    }
+
+    /**
+     * Ruling E2: when the fault is the output reinterpret itself, the guard's
+     * own reinterpret fails too — the nested catch keeps it from escaping and
+     * the fault is still counted. A heap segment stands in for a host buffer
+     * that cannot be reinterpreted.
+     */
+    @Test
+    void aFailingOutputReinterpretIsCountedEvenWhenTheSilencingReinterpretFailsToo() {
+        int framesPerBuffer = 64;
+        int channels = 2;
+        RecordingCallback callback = new RecordingCallback(
+                (out, numFrames) -> fill(out, numFrames, RENDERED));
+        PortAudioBackend.CallbackInvoker invoker = PortAudioBackend.CallbackInvoker
+                .forStream(callback, channels, channels, framesPerBuffer);
+        MemorySegment heapOutput = MemorySegment.ofArray(new byte[(int) frameBytes(framesPerBuffer, channels)]);
+
+        int result = invoker.invoke(MemorySegment.NULL, heapOutput, framesPerBuffer,
+                MemorySegment.NULL, 0L, MemorySegment.NULL);
+
+        assertThat(result).isEqualTo(PortAudioBindings.PA_CONTINUE);
+        assertThat(callback.frameCounts).as("the body never reached the callback").isEmpty();
+        assertThat(invoker.callbackFaults()).isEqualTo(1L);
+        assertThat(invoker.lastCallbackFault()).get().isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    /** Ruling E5: the device heartbeat counts every period; a healthy callback counts no fault. */
+    @Test
+    void aHealthyCallbackBeatsTheDeviceHeartbeatAndCountsNoFault() {
+        int framesPerBuffer = 64;
+        int channels = 2;
+        RecordingCallback callback = new RecordingCallback(
+                (out, numFrames) -> fill(out, numFrames, RENDERED));
+        PortAudioBackend.CallbackInvoker invoker = PortAudioBackend.CallbackInvoker
+                .forStream(callback, channels, channels, framesPerBuffer);
+
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment input = allocateFrames(arena, framesPerBuffer, channels);
+            MemorySegment output = allocateFrames(arena, framesPerBuffer, channels);
+            for (int period = 0; period < 3; period++) {
+                invoker.invoke(input, output, framesPerBuffer,
+                        MemorySegment.NULL, 0L, MemorySegment.NULL);
+            }
+
+            assertThat(invoker.deviceCallbackPeriods()).isEqualTo(3L);
+            assertThat(invoker.callbackFaults()).isZero();
+            assertThat(invoker.lastCallbackFault()).isEmpty();
+            assertThat(readFrames(output, 0, framesPerBuffer, channels)).containsOnly(RENDERED);
         }
     }
 

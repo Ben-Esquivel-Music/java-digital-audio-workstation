@@ -2,8 +2,20 @@ package com.benesquivelmusic.daw.core.export;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCategory;
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
+import com.benesquivelmusic.daw.core.audio.health.LaneRole;
+import com.benesquivelmusic.daw.core.audio.health.RenderThread;
+import com.benesquivelmusic.daw.core.automation.AutomationPoint;
+import com.benesquivelmusic.daw.core.automation.PluginParameterTarget;
+import com.benesquivelmusic.daw.core.automation.ReflectiveParameterBinder;
+import com.benesquivelmusic.daw.core.mixer.InsertSlot;
+import com.benesquivelmusic.daw.core.mixer.Mixer;
+import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
+import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.export.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -352,6 +364,77 @@ class StemExporterTest {
         assertThat(result.allSucceeded()).isTrue();
         assertThat(result.trackResults().get(0).outputPath().getFileName().toString())
                 .isEqualTo("Vocals.flac");
+    }
+
+    /**
+     * Story 337, ruling E74, on the production export path: playback disabled
+     * a plugin parameter's binding after its setter rejected one value; the
+     * stem export, which renders on this ordinary thread, tries that binding
+     * again and the processor ends holding the automated value. The project's
+     * buffer is the offline block size, so the export runs no re-bind of its
+     * own (the disable survives into the render).
+     */
+    @Test
+    void aStemExportAppliesAutomationThatPlaybackDisabled() throws Exception {
+        DawProject offlineSized = new DawProject("TestProject",
+                new AudioFormat(SAMPLE_RATE, 2, 24, OfflineStemRenderer.OFFLINE_BLOCK_SIZE));
+        Track track = offlineSized.createAudioTrack("Synth");
+        Mixer mixer = offlineSized.getMixer();
+        MixerChannel channel = offlineSized.getMixerChannelForTrack(track);
+        FirstValueRejectingProcessor processor = new FirstValueRejectingProcessor();
+        channel.addInsert(new InsertSlot("Drive", processor));
+        mixer.prepareForPlayback(2, OfflineStemRenderer.OFFLINE_BLOCK_SIZE);
+        ReflectiveParameterBinder binder = mixer.getReflectiveParameterBinder();
+        PluginParameterTarget drive = binder.getAutomatablePluginParameters(channel).getFirst();
+        track.getAutomationData().getOrCreatePluginLane(drive).addPoint(new AutomationPoint(0.0, 7.5));
+
+        AudioHealthRecord record = new AudioHealthRecord();
+        RenderThread playback = new RenderThread(record.claimLane(LaneRole.RENDER_DRIVE),
+                () -> binder.apply(channel, track.getAutomationData(), 0.0), "playback-block");
+        playback.start();
+        playback.join(5_000L);
+        assertThat(playback.isAlive()).as("the playback block finished within the guard budget").isFalse();
+        assertThat(record.total(AudioFailureCategory.AUTOMATION))
+                .as("playback recorded the rejection and disabled the binding").isEqualTo(1);
+        assertThat(processor.getDrive()).isEqualTo(FirstValueRejectingProcessor.DEFAULT_DRIVE);
+
+        StemExportConfig config = new StemExportConfig(
+                List.of(0), EXPORT_CONFIG, StemNamingConvention.TRACK_NAME, "TestProject");
+        StemExportResult result = stemExporter.exportStems(
+                offlineSized, config, tempDir, 1.0, ExportProgressListener.NONE);
+
+        assertThat(result.allSucceeded()).isTrue();
+        assertThat(processor.getDrive())
+                .as("the export applied the automated value playback had disabled")
+                .isEqualTo(7.5);
+        assertThat(record.total(AudioFailureCategory.AUTOMATION))
+                .as("the export recorded nothing into playback's record").isEqualTo(1);
+    }
+
+    /** A processor whose "Drive" setter rejects only its first value. */
+    public static final class FirstValueRejectingProcessor implements AudioProcessor {
+        static final double DEFAULT_DRIVE = 1.0;
+        private double drive = DEFAULT_DRIVE;
+        private boolean rejectedOnce;
+
+        @ProcessorParam(id = 0, name = "Drive", min = 0.0, max = 10.0, defaultValue = DEFAULT_DRIVE)
+        public double getDrive() { return drive; }
+        public void setDrive(double drive) {
+            if (!rejectedOnce) {
+                rejectedOnce = true;
+                throw new IllegalArgumentException("drive rejected once");
+            }
+            this.drive = drive;
+        }
+
+        @Override public void process(float[][] in, float[][] out, int numFrames) {
+            for (int ch = 0; ch < Math.min(in.length, out.length); ch++) {
+                System.arraycopy(in[ch], 0, out[ch], 0, numFrames);
+            }
+        }
+        @Override public void reset() { }
+        @Override public int getInputChannelCount() { return 2; }
+        @Override public int getOutputChannelCount() { return 2; }
     }
 
     /**

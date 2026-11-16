@@ -1,5 +1,10 @@
 package com.benesquivelmusic.daw.core.automation;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCategory;
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureSample;
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
+import com.benesquivelmusic.daw.core.audio.health.LaneRole;
+import com.benesquivelmusic.daw.core.audio.health.RenderThread;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
@@ -7,12 +12,15 @@ import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.offset;
 
 /**
@@ -45,6 +53,33 @@ class ReflectiveParameterBinderTest {
                 min = 1.0, max = 20.0, defaultValue = 4.0)
         public double getRatio() { return ratio; }
         public void setRatio(double ratio) { this.ratio = ratio; }
+
+        @Override public void process(float[][] in, float[][] out, int numFrames) { }
+        @Override public void reset() { }
+        @Override public int getInputChannelCount() { return 2; }
+        @Override public int getOutputChannelCount() { return 2; }
+    }
+
+    /**
+     * A processor whose "Drive" setter rejects every value, beside a healthy
+     * "Mix" — the shape of a plugin that refuses one automated parameter.
+     */
+    public static final class RejectingProcessor implements AudioProcessor {
+        static final IllegalArgumentException REJECTION =
+                new IllegalArgumentException("drive out of the plugin's range");
+        private double mix = 0.5;
+        private int driveCalls;
+
+        @ProcessorParam(id = 0, name = "Drive", min = 0.0, max = 10.0, defaultValue = 1.0)
+        public double getDrive() { return 1.0; }
+        public void setDrive(double drive) {
+            driveCalls++;
+            throw REJECTION;
+        }
+
+        @ProcessorParam(id = 1, name = "Mix", min = 0.0, max = 1.0, defaultValue = 0.5)
+        public double getMix() { return mix; }
+        public void setMix(double mix) { this.mix = mix; }
 
         @Override public void process(float[][] in, float[][] out, int numFrames) { }
         @Override public void reset() { }
@@ -205,6 +240,143 @@ class ReflectiveParameterBinderTest {
         assertThat(targets).hasSize(2);
         assertThat(targets.get(0).pluginInstanceId())
                 .contains("/slot-1/");
+    }
+
+    // ── A setter that throws (story 337, rulings E28 and E57) ────────────
+
+    @Test
+    void aThrowingSetterOnARenderThreadIsRecordedAndDisablesOnlyThatBinding() throws Exception {
+        RejectingProcessor processor = new RejectingProcessor();
+        AudioHealthRecord record = new AudioHealthRecord();
+        AutomationData automation = automateDriveAndMix(processor, 0.25);
+        PluginParameterTarget drive = target(0);
+
+        onRenderThread(record, () -> binder.apply(channel, automation, 0.0));
+
+        assertThat(record.total(AudioFailureCategory.AUTOMATION)).isEqualTo(1);
+        assertThat(processor.getMix()).as("the sibling binding still applied").isEqualTo(0.25);
+        List<AudioFailureSample> samples = new ArrayList<>();
+        record.read(samples::add);
+        assertThat(samples).singleElement().satisfies(sample -> {
+            assertThat(sample.category()).isEqualTo(AudioFailureCategory.AUTOMATION);
+            assertThat(sample.failure()).containsSame(RejectingProcessor.REJECTION);
+            assertThat(sample.subject()).contains(drive);
+            assertThat(sample.detail()).isEqualTo(drive.parameterId());
+        });
+
+        processor.setMix(0.9);
+        onRenderThread(record, () -> binder.apply(channel, automation, 0.0));
+
+        assertThat(processor.driveCalls).as("a disabled binding is never called again").isEqualTo(1);
+        assertThat(record.total(AudioFailureCategory.AUTOMATION)).isEqualTo(1);
+        assertThat(processor.getMix()).as("the rest of the mix keeps its automation").isEqualTo(0.25);
+    }
+
+    @Test
+    void rebindReenablesADisabledBinding() throws Exception {
+        RejectingProcessor processor = new RejectingProcessor();
+        AudioHealthRecord record = new AudioHealthRecord();
+        AutomationData automation = automateDriveAndMix(processor, 0.25);
+        onRenderThread(record, () -> binder.apply(channel, automation, 0.0));
+
+        binder.rebind(channel);
+        onRenderThread(record, () -> binder.apply(channel, automation, 0.0));
+
+        assertThat(processor.driveCalls).isEqualTo(2);
+        assertThat(record.total(AudioFailureCategory.AUTOMATION)).isEqualTo(2);
+    }
+
+    /**
+     * Ruling E57: off a render thread — an offline export, bounce or freeze —
+     * the failure is thrown as before, so that render fails visibly; nothing
+     * is recorded and the binding stays enabled, because the binder is the
+     * mixer's shared one and live playback must not inherit a disable.
+     */
+    @Test
+    void offARenderThreadTheSetterFailureStillThrowsAndDisablesNothing() throws Exception {
+        RejectingProcessor processor = new RejectingProcessor();
+        AudioHealthRecord record = new AudioHealthRecord();
+        AutomationData automation = automateDriveAndMix(processor, 0.25);
+        PluginParameterTarget drive = target(0);
+
+        assertThatThrownBy(() -> binder.apply(channel, automation, 0.0))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("automation setter for parameter " + drive + " failed")
+                .hasCause(RejectingProcessor.REJECTION);
+        assertThatThrownBy(() -> binder.apply(channel, automation, 0.0))
+                .as("the binding was not disabled")
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(record.totals()).as("nothing recorded off a render thread").containsOnly(0L);
+
+        onRenderThread(record, () -> binder.apply(channel, automation, 0.0));
+
+        assertThat(processor.driveCalls)
+                .as("the binding is still live for the next render-thread block")
+                .isEqualTo(3);
+        assertThat(record.total(AudioFailureCategory.AUTOMATION)).isEqualTo(1);
+    }
+
+    /**
+     * Ruling E74: a binding playback disabled is tried again off a render
+     * thread — an offline render never silently drops an automated value —
+     * and a second rejection throws E57's exception. The flag is neither read
+     * nor cleared there, so the next render-thread block still skips it.
+     */
+    @Test
+    void aBindingDisabledOnARenderThreadIsAppliedAgainOffARenderThread() throws Exception {
+        RejectingProcessor processor = new RejectingProcessor();
+        AudioHealthRecord record = new AudioHealthRecord();
+        AutomationData automation = automateDriveAndMix(processor, 0.25);
+        PluginParameterTarget drive = target(0);
+        onRenderThread(record, () -> binder.apply(channel, automation, 0.0));
+        assertThat(processor.driveCalls).as("playback tried the value once and disabled it").isEqualTo(1);
+
+        assertThatThrownBy(() -> binder.apply(channel, automation, 0.0))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("automation setter for parameter " + drive + " failed")
+                .hasCause(RejectingProcessor.REJECTION);
+
+        assertThat(processor.driveCalls).as("the offline apply tried the disabled binding").isEqualTo(2);
+        assertThat(record.total(AudioFailureCategory.AUTOMATION))
+                .as("nothing recorded off a render thread").isEqualTo(1);
+
+        onRenderThread(record, () -> binder.apply(channel, automation, 0.0));
+
+        assertThat(processor.driveCalls)
+                .as("the binding is still disabled for playback").isEqualTo(2);
+        assertThat(record.total(AudioFailureCategory.AUTOMATION)).isEqualTo(1);
+    }
+
+    private AutomationData automateDriveAndMix(RejectingProcessor processor, double mix) {
+        channel.addInsert(new InsertSlot("Rejecting", processor));
+        binder.rebind(channel);
+        AutomationData automation = new AutomationData();
+        automation.getOrCreatePluginLane(target(0)).addPoint(new AutomationPoint(0.0, 2.0));
+        automation.getOrCreatePluginLane(target(1)).addPoint(new AutomationPoint(0.0, mix));
+        return automation;
+    }
+
+    private PluginParameterTarget target(int parameterId) {
+        return binder.getAutomatablePluginParameters(channel).stream()
+                .filter(t -> t.parameterId() == parameterId)
+                .findFirst()
+                .orElseThrow();
+    }
+
+    /** Runs {@code body} on a render thread holding a lane of {@code record}; rethrows its failure. */
+    private static void onRenderThread(AudioHealthRecord record, Runnable body) throws Exception {
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        RenderThread thread = new RenderThread(record.claimLane(LaneRole.RENDER_DRIVE), () -> {
+            try {
+                body.run();
+            } catch (Throwable t) {
+                failure.set(t);
+            }
+        }, "binder-render-thread");
+        thread.start();
+        thread.join(5_000L);
+        assertThat(thread.isAlive()).as("the render thread finished within the guard budget").isFalse();
+        assertThat(failure.get()).as("nothing escaped the render thread").isNull();
     }
 
     @Test

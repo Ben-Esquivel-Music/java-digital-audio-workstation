@@ -568,6 +568,51 @@ class AsioFormatChangeShimTest {
         }
     }
 
+    /**
+     * Story 337, ruling E31: a notification whose handling throws is counted
+     * on the backend ({@code audio.device}) and answered with the ABI-safe
+     * {@code ASE_NotPresent} — on this target the message carries driver
+     * reset requests, and a reset swallowed uncounted is a missed reconfigure.
+     * The backend's device-event publisher is replaced by one whose
+     * {@code offer} fails, so the dispatch throws for real.
+     */
+    @Test
+    void aThrowingDispatchIsCountedOnTheBackendAndAnswersNotPresent() throws Exception {
+        AsioBackend backend = new AsioBackend();
+        IllegalStateException failure = new IllegalStateException("device-event pipeline failed");
+        replaceDevicePublisher(backend, new java.util.concurrent.SubmissionPublisher<>() {
+            @Override
+            public int offer(AudioDeviceEvent item,
+                             java.util.function.BiPredicate<Flow.Subscriber<? super AudioDeviceEvent>,
+                                     ? super AudioDeviceEvent> onDrop) {
+                throw failure;
+            }
+        });
+        AudioBackendSupport support = new AudioBackendSupport();
+        try (AsioFormatChangeShim shim = new AsioFormatChangeShim(backend, support, DEVICE)) {
+            int answer = shim.asioMessageUpcall(AsioFormatChangeShim.kAsioResyncRequest, 0,
+                    MemorySegment.NULL, MemorySegment.NULL);
+
+            assertThat(answer).as("ASE_NotPresent").isZero();
+        }
+        BackendThreadCounters counters = backend.threadCounters();
+        assertThat(counters.deviceNotificationFaults()).isEqualTo(1L);
+        assertThat(counters.lastDeviceNotificationFault()).containsSame(failure);
+        support.close();
+    }
+
+    private static void replaceDevicePublisher(AsioBackend backend,
+                                               java.util.concurrent.SubmissionPublisher<AudioDeviceEvent> publisher)
+            throws ReflectiveOperationException {
+        java.lang.reflect.Field supportField = AsioBackend.class.getDeclaredField("support");
+        supportField.setAccessible(true);
+        AudioBackendSupport support = (AudioBackendSupport) supportField.get(backend);
+        java.lang.reflect.Field publisherField =
+                AudioBackendSupport.class.getDeclaredField("devicePublisher");
+        publisherField.setAccessible(true);
+        publisherField.set(support, publisher);
+    }
+
     /** Subscribes, dispatches via the shim, and returns the first event. */
     private static AudioDeviceEvent subscribeAndDispatch(
             AsioBackend backend, AudioBackendSupport support,

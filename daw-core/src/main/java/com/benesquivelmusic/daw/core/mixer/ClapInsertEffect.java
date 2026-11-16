@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.mixer;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCodes;
+import com.benesquivelmusic.daw.core.audio.health.RenderThread;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.ExternalPluginHost;
 
@@ -19,10 +21,20 @@ import java.util.logging.Logger;
  * <p>Once a plugin has crashed, the adapter marks it as faulted and all
  * subsequent calls pass audio through unprocessed until {@link #reset()} is
  * called, which clears the faulted state.</p>
+ *
+ * <p>The crash is recorded, never logged, on the render thread: an
+ * {@code audio.plugin} record in the current render thread's lane, with the
+ * plugin host as subject (story 337, ruling E30). Off a render thread — an
+ * offline export, bounce or freeze — it is logged at SEVERE with the plugin's
+ * name and the thrown exception, and the faulted latch is set only together
+ * with that record or log record (story 337, ruling E77).</p>
  */
 public final class ClapInsertEffect implements AudioProcessor {
 
     private static final Logger LOGGER = Logger.getLogger(ClapInsertEffect.class.getName());
+
+    /** Named in a log record when the plugin's descriptor cannot be read. */
+    private static final String UNNAMED_PLUGIN = "an unnamed CLAP plugin";
 
     private final ExternalPluginHost pluginHost;
     private volatile boolean faulted;
@@ -65,10 +77,29 @@ public final class ClapInsertEffect implements AudioProcessor {
         try {
             pluginHost.process(inputBuffer, outputBuffer, numFrames);
         } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "CLAP plugin processing failed, falling back to pass-through: "
-                    + pluginHost.getDescriptor().name(), e);
+            // Story 337, ruling E30: on a render thread a record, not a SEVERE
+            // log line built by string concatenation. Ruling E77: a thread with
+            // no lane (an offline render) logs the crash at SEVERE instead, and
+            // the latch is set only together with the record or the log record.
+            if (!RenderThread.recordOnCurrentThread(AudioFailureCodes.PLUGIN, e, pluginHost, 0)) {
+                LOGGER.log(Level.SEVERE,
+                        "CLAP plugin processing failed, falling back to pass-through: " + pluginName(), e);
+            }
             faulted = true;
             copyBuffer(inputBuffer, outputBuffer, numFrames);
+        }
+    }
+
+    /**
+     * The plugin's descriptor name for an off-render-thread log record. A
+     * descriptor that cannot be read yields a fallback, so logging the crash
+     * throws nothing new (story 337, ruling E77).
+     */
+    private String pluginName() {
+        try {
+            return pluginHost.getDescriptor().name();
+        } catch (RuntimeException unreadable) {
+            return UNNAMED_PLUGIN;
         }
     }
 

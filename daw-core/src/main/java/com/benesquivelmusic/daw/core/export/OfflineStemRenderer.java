@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.export;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 import com.benesquivelmusic.daw.core.audio.RenderPipeline;
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.project.DawProject;
@@ -94,8 +95,13 @@ final class OfflineStemRenderer implements AutoCloseable {
             mixer.prepareForPlayback(audioChannels, blockSize);
         }
         this.allTracks = project.getTracks();
+        // Story 337, ruling E20: an offline render runs on no render thread —
+        // the pipeline keeps its blocks, inserts included, off the engine's
+        // worker pool (ruling E75) — so nothing is recorded; the record is
+        // explicit, never defaulted (failure-surfacing book §2.7). A site that
+        // cannot record logs instead (rulings E76 and E77).
         this.pipeline = new RenderPipeline(format,
-                Math.max(1, allTracks.size()), blockSize);
+                Math.max(1, allTracks.size()), blockSize, new AudioHealthRecord());
 
         this.emptyMastering = new MasteringChain();
         emptyMastering.allocateIntermediateBuffers(emptyMastering.getInputChannelCount(), blockSize);

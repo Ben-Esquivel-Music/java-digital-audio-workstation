@@ -636,6 +636,54 @@ on sustained evidence, with the user informed either way. Rejected alternative �
 rethrowing after recording: there is no safe place for an RT rethrow to land (§1.3
 enumerates both failure modes).
 
+*As built in story 337: since story 316 the PortAudio upcall enters
+`CallbackBackendAdapter.deviceCallback`, a ring hand‑off, not `processBlock`. Its guard
+is `PortAudioBackend.CallbackInvoker.invoke`: the device heartbeat and pure arithmetic
+before a `try`, the old body moved unchanged into a private `render`, and on any
+`Throwable` one bulk zero of the host extent (`silenceAfterFault`, never
+`framesPerBuffer`‑based), a single‑writer count, a last‑fault reference and
+`PA_CONTINUE` on every path; `invokeNarrowLong` wraps its delegation in a catch‑all that
+only returns `PA_CONTINUE`. ASIO's `AsioBufferSwitchShim.bufferSwitchUpcall` bulk‑zeroes
+the output half its cycle owned and counts. `AudioEngine.processBlock` on a stopped
+engine writes silence, records nothing and returns `false`. The JavaSound loop is today
+the one render drive every push backend runs, `EngineStreamPump.renderLoop`: a fault
+records `audio.render` and sinks silence; `haltThreshold` consecutive faulted blocks
+(one second counted in frames, at least 8), a `VirtualMachineError` that reaches the
+loop and any other throwable that escapes its own catches end the drive with one terminal
+`audio.render.halted` record, and `AudioEngine.isRenderDriveAlive()` reads `false`
+until the next `startAudioOutput()` reaps and reopens the stream. The
+drain's halt reaction acts only while `AudioEngine.isRenderDriveHalted()` reads the open
+stream's drive as the drive that halted itself — the pump's own halt fact, not the
+stream generation, which a resume keeps — and the stream is closed only by
+`AudioEngine.closeHaltedStream()`, which takes the lifecycle lock with `tryLock` and
+answers `LIFECYCLE_BUSY` rather than wait; a halt seen after its stream was replaced
+shows the halt notice without a context sentence and stops and closes nothing (story
+337, rulings E69 to E72). Otherwise the notice's context sentence says only what the
+halt's own Stop did (ruling E101): "Recording was stopped; …" when that Stop ended a
+take that had started recording, "Playback was stopped." when it found the transport
+not stopped and cancelled no take counting in, and none when it only cancelled a take
+being prepared over a stopped transport or a take counting in, or ran no Stop;
+`TransportController.stopForEngineHalt()` answers which it was. Counters on
+backend‑owned threads are pulled through
+`AudioBackend.threadCounters()`. The record is one `AudioHealthRecord` per engine
+(`AudioEngine.audioHealth()`) with one single‑writer `AudioHealthLane` per render thread
+— the drive and each pool worker run as a `RenderThread` that carries its lane — each
+with a 16‑slot ring that drops the newest descriptor when full. A lane publishes a
+failure's count last, so the count is the commit; its streaming categories may fill 12 of
+the 16 slots, the other 4 kept for `audio.automation`, `audio.config` and
+`audio.render.halted`; and a retired lane stays readable until a reading has taken its
+descriptors, at most 32 such lanes kept (rulings E79 to E81). An offline render never runs
+on the engine's worker pool (ruling E75). The drain, `AudioHealthDrain`, is a pulse
+participant of the window's dispatcher, not a continuous channel. It takes one reading per
+frame, `AudioHealthRecord.read`: every count, then every sample, then one report of each
+attached device; a drain frame reads each audio device's failure counters once, and in the
+rare frame in which a device is closed or reopened at that moment, it reads the open
+devices once more and uses only that second read (rulings E79, E82 and E98). Pulse
+isolation and bus escalation run through `FailureFunnel`'s isolated‑consumer policy: the
+production `FxDispatcher` is built on `FailureFunnel.pulseFailureSink()` and guards every
+participant, keyed runnable and channel drain, and `DefaultEventBus` requires a
+`SubscriberFailureSink`, the funnel's `busFailureSink()` in production.*
+
 ### 4.4 Engine health surfaces (story 338)
 
 **Design.** Four surfaces on one shared substrate.
@@ -672,6 +720,22 @@ backend‑agnostic by construction — it detects PortAudio upcall death, JavaSo
 death, ASIO driver stalls, and physical device disappearance identically, including on
 backends offering no error callback at all. Backend‑specific signals remain welcome as
 channel‑C producers; the watchdog is the floor, not the ceiling.
+
+*As built in story 337: the heartbeat is two monotonic period counters, not timestamps,
+and a watchdog samples them with its own monotonic clock (story 337, ruling E5). The
+render drive beats once per block after `sink` returns normally (`AudioHealthLane.beat`),
+so a `sink` that threw does not beat; `AudioHealthRecord.renderDriveBeats()` is the
+total across streams. PortAudio's `CallbackInvoker.invoke` and ASIO's
+`AsioBufferSwitchShim.bufferSwitchUpcall` count each device‑callback period at entry,
+before their guard's `try`, and the backend reports the count through
+`AudioBackend.threadCounters()`, read as `AudioHealthRecord.deviceCallbackPeriods()`. A
+backend with no device thread of its own reports no device heartbeat (an empty
+`OptionalLong`), and a watchdog then reads the render‑drive channel. The second channel
+is needed because, since story 316, the render drive keeps cycling when a callback
+backend's device stops: `CallbackBackendAdapter.awaitSinkCapacity` returns at its timeout
+whether or not the device drained the ring. `AudioHealthRecord.renderDriveEpoch()` counts
+the render drives claimed, one per render drive started (every stream open and every
+resume of a paused stream). The watchdog itself is story 338's.*
 
 ### 4.5 Production notification injection (story 339)
 
@@ -834,6 +898,23 @@ Row 4 surfaces nothing deliberately: a stop racing a callback is normal teardown
 | Clock lock          | backend shim (non‑RT)            | Flow publisher (C)  | ClockStatusIndicator        | locked      |
 | RT generation       | render loop (RT, atomic store)   | health record       | dispose‑after‑quiesce (§4.7)| current     |
 
+*As built in story 337: the callback heartbeat is two monotonic counters, not one
+atomic timestamp store (§4.4's note): the render drive's per‑block beat and the backend's
+device‑callback period count. The failure counters live in the engine's
+`AudioHealthRecord`: each render thread bumps the per‑category counters of its own lane
+with a load and a release store, never a CAS; backend‑owned threads keep single‑writer
+`volatile` counters (a device‑notification failure path uses an `AtomicLong` increment),
+which the record pulls through `AudioBackend.threadCounters()` while a stream is open and
+folds in at its close. Each writer stores its fault before its count (story 337, ruling
+E82). The fold is daw‑sdk's `BackendCounterLedger`, the one the backends use for their
+own per‑stream counters (ruling E90); the record pulls and folds every input device
+opened beside the stream the same way, as input failures (ruling E86), and reads every
+source through a guard, so a report that throws or is `null` counts nothing more from it
+until it is closed (rulings E78 and E95). Their consumer is `AudioHealthDrain`, a pulse
+participant. The RT
+generation row has no producer yet: story 340 adds it as one more single‑writer
+`volatile long` on the render drive's lane (story 337, ruling E24).*
+
 ### 5.4 Notification discipline
 
 | Rule                        | Contract                                                            |
@@ -894,6 +975,40 @@ SEVERE line. At most 256 fingerprints are kept, the least recently seen evicted 
 tail written to the log only. The sustained‑failure escalation to a persistent fault
 cell is not built in story 336; stories 337 and 338 own it.*
 
+*As built in story 337: the limiter counts a weight
+(`FingerprintRateLimiter.occur(fingerprint, message, weight)`), so one drain frame's
+delta of n failures counts as n in the totals, the re‑shows and the tails. A real‑time
+fingerprint is `category|site` (`Fingerprint.ofSite`) for the streaming categories and
+`category|subject` for `audio.automation` and `audio.config`. `AudioHealthDrain` shows a
+first occurrence as a WARNING at once, counts repeats inside the window and re‑shows
+after it with the weighted total. A fingerprint seen in 3 consecutive one‑second buckets
+of the drain's monotonic clock escalates once to an ERROR notice and latches the
+engine‑fault fact (`AudioHealthDrain.engineFaultProperty()`); from then on the limiter
+only counts that fingerprint (`occurEscalating`, `clearEscalation`) until the fact
+clears. An escalated fingerprint is not evicted while a fingerprint
+that is not escalated is kept (ruling E44). A render‑drive halt, and a
+backend input thread that ends on a fault (an input
+halt), escalate at once. On Java Sound an input halt is a throwing read, a read that
+returns no data while the stream is open, or a `VirtualMachineError` (ruling E83), and an
+input device opened beside the stream halts the same way (ruling E86). The notice quotes
+the fault of a device whose count grew — of several, the one attached last among those
+that kept a fault (rulings E94, E99 and E100). The persistent cell that renders the fact
+is story 338's. Pulse and bus failures take the isolated‑consumer policy
+(`occurIsolatedConsumer`): the first occurrence is one WARNING log record with no toast,
+the third (`ISOLATED_CONSUMER_THRESHOLD`) one WARNING toast with Open Log Folder, and the
+30 s window after that; a FATAL one, such as a `VirtualMachineError`, surfaces at once. A
+tail line is written at its last notice's level, WARNING after a WARNING notice; its
+history entry carries that notice's action, and the tail of an isolated consumer that
+never surfaced is log‑only. An occurrence folded into another notice of the same frame
+writes its own record without a toast (ruling E65). The fact clears after a successful
+restart — one that returned normally and, if a stream was open when it began, left one open
+(ruling E62) — or after one fault‑free second on a render drive started after the latch,
+a resumed one included (ruling E59), with no delta in a restart‑eligible category,
+`audio.render` or any latched category (ruling E63); for a halt, any render drive started
+after the halted one (ruling E71), and for an input halt only a drive on a stream opened
+after it, never a resumed one (ruling E87). Only an occurrence moves a fingerprint in the
+eviction order (ruling E88).*
+
 ### 6.3 The conformance gates
 
 Four permanent tests, in the repo's established source‑scan/sentinel idiom
@@ -916,6 +1031,35 @@ Four permanent tests, in the repo's established source‑scan/sentinel idiom
    `SubmissionPublisher`, `ReentrantLock`, logging, or collection iteration in RT
    methods — the contract the ASIO shim proves, asserted for PortAudio and JavaSound
    too.
+
+   *As built in story 337: gate 3 lives in `RealTimeSafeContractTest` (daw‑core), whose
+   class Javadoc lists fourteen invariants; 9 to 14 are this gate. The guard predicate
+   `RT_GUARD_INVOKE_OFFENDER` flags logging, `SubmissionPublisher`, every lock in
+   `java.util.concurrent.locks` but `LockSupport.unpark`, wait, notify and sleep, and
+   collection iteration, read as any `Iterable` or `java.util.stream` call and any other
+   `java.util` call but `Arrays`, `Objects`, the atomics and `LockSupport`; an atomic
+   read‑modify‑write clause and a clock‑read clause compose with it per root.
+   `everyRtCallbackBridgeIsGuardClean` walks the five device‑callback bridges in
+   `RT_CALLBACK_BRIDGES` — ASIO `bufferSwitch` and `bufferSwitchUpcall`,
+   `CallbackBackendAdapter.deviceCallback` and both exempt PortAudio entry points — under
+   both clauses; `theRenderDriveLoopIsGuardClean` (`EngineStreamPump.renderLoop`, the
+   JavaSound path) and `theWorkerPoolRootsAreGuardClean` (`AudioWorkerPool.invokeAll` and
+   `runTasks`) follow into the audio‑health package under exact allow‑lists;
+   `audioHealthRealTimeSafeMethodsHaveNoFindings` holds that package's `@RealTimeSafe`
+   methods to zero findings, and `audioHealthClassesAreAnnotatedBidirectionally` pins
+   which methods carry the annotation. `everyUpcallTargetCatchesEverything` asserts that
+   every potentially‑throwing instruction of each of the 17 methods an FFM upcall stub
+   binds (`UPCALL_TARGETS`) lies inside a catch‑any or `Throwable` range, and
+   `everyUpcallStubTargetIsListed` checks that list against every `upcallStub(…)` call
+   in main source. `theGuardWalkReportsEveryForbiddenKindFromTheHelper` and
+   `theUpcallGateRejectsATargetWithoutACatchAll` prove the checks are not vacuous. The
+   automation binder's `apply` and `MidiTrackRenderer`'s `renderMidiTrack` and
+   `allNotesOff` joined the story‑318 render roots. Invariant 14,
+   `everyBackendCounterWriterStoresItsFaultBeforeItsCount`, reads every backend‑owned
+   counter writer from the bytecode: each write of a count needs a store of its fault
+   after the previous write of that count, with no branch and no branch target between
+   that store and the write (story 337, ruling E82); invariant 12's pinned orders include
+   the lane's count, released last (ruling E79).*
 4. **Handler installation (story 336).** A startup wiring test asserting both
    handlers are installed and a deliberately thrown FX‑handler exception produces a
    log record and a notification (in‑process, headless — the repo's established
@@ -933,16 +1077,20 @@ the wizard was the proof of what happens otherwise.
 sink and its banner, then the default handler, then `zgc.conf`, all before
 `Application.launch`; a session‑memory setting it rejects, or a `zgc.conf` it cannot
 write, is a WARNING in the log and never stops the launch, and a rejected setting leaves an
-earlier `zgc.conf` as it was (story 336, ruling R992-8). `DawApplication.start` installs
-the FX‑thread handler right after
-the dispatcher, and `MainController.attachFailureFunnel` arms the toasts right after
-`setFxDispatcher`, before the window shows and before `showWelcomeIfNoProjectOpen` can
-open the first‑run wizard. Until then the funnel logs every surfaced failure, keeps the
-first 16 toasts, counts the rest and keeps the first FATAL one whichever it was, and at
-arming it posts once: the sink's WARNINGs, then the first FATAL toast, else the one
-failure's toast, else one summary. `DawApplication.stop()` disarms the toasts first;
-from then on failures are logged only, and a failure's toast still queued for the FX
-thread is dropped there, its record already in the log.*
+earlier `zgc.conf` as it was (story 336, ruling R992-8). `DawApplication.start` fetches
+the funnel first (`DawLauncher.failureFunnel()`), builds the dispatcher on the funnel's
+pulse failure sink, starts it and installs it as the default, installs the FX‑thread
+handler right after that, and then builds the event bus on the funnel's bus failure sink
+(story 337, rulings E32 and E37); `MainController.attachFailureFunnel` arms the toasts right
+after `setFxDispatcher` and then registers the audio health drain as a pulse participant
+(story 337, ruling E42), before the window shows and before
+`showWelcomeIfNoProjectOpen` can open the first‑run wizard. Until then the funnel logs
+every surfaced failure, keeps the first 16 toasts, counts the rest and keeps the first
+FATAL one whichever it was, and at arming it posts once: the sink's WARNINGs, then the
+first FATAL toast, else the one failure's toast, else one summary.
+`DawApplication.stop()` disarms the toasts first; from then on failures are logged only,
+and a failure's toast still queued for the FX thread is dropped there, its record already
+in the log.*
 
 ---
 
@@ -1037,6 +1185,26 @@ longer starves sibling channels.
 for trusting a session at all (RECORDING_RELIABILITY_DESIGN_BOOK's guarantee is void
 without it). The health record and guard hooks are the substrate Stage 5's watchdog,
 xrun feed, and dropped‑buffer reports read.
+
+*As built in story 337: gate 3 is the tests the §6.3 note names. A throwing callback
+gives silence, a count and continue on each path:
+`CallbackInvokerTest.aThrowingCallbackSilencesTheHostExtentCountsTheFaultAndContinues`
+and `anErrorFromTheCallbackNeverReachesTheNativeFrame` (PortAudio),
+`AsioBufferSwitchShimTest.aThrowingBufferSwitchSilencesTheOutputHalfAndCounts` (ASIO),
+and `EngineStreamPumpTest.processBlockFaultRendersSilenceAndLaterBlocksStillReachSink`
+(the render drive every push backend runs). The drive is never active and silent:
+`EngineStreamPumpTest.sustainedRenderFaultsHaltTheDriveWithATerminalRecord` and
+`AudioEngineRenderDriveHaltTest.aHaltedRenderDriveIsReportedDeadAndReapedByTheNextStart`,
+while `aTransientRenderFaultBelowTheThresholdLeavesTheDriveRunning` keeps a transient
+fault alive. A stopped engine renders silence with no exception and no record:
+`AudioEngineTest.processingOnAStoppedEngineRendersSilenceAndRecordsNothing` and
+`EngineStreamPumpTest.engineStoppingMidStreamExitsThePumpQuietly`. A throwing pulse
+consumer no longer starves its siblings:
+`FxDispatcherPulseIsolationTest.aThrowingKeyedRunnableAndChannelDrainDoNotStarveTheirSiblingsInTheSameFrame`.
+`AudioHealthDrainTest` proves the drain's escalation. Story 337 completes story 128's
+backend‑callback half. Story 096 left no copy in the tree, so the drain's sentences are
+the ones story 337's ruling E45 wrote. The substrate Stage 5 reads is named in the
+§4.4 and §5.3 notes.*
 
 ### Stage 4 — Production Notification Injection and Dialog‑Dismissibility Conformance (story 339)
 

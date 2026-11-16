@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.app.ui.vm.SelectionVM;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectType;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
@@ -85,7 +86,7 @@ class PluginSurfaceWiringTest {
 
     @BeforeEach
     void setUp() {
-        bus = DefaultEventBus.builder().uiExecutor(Runnable::run).build();
+        bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).uiExecutor(Runnable::run).build();
         EventBusPublisher.setDefault(bus);
 
         project = new DawProject("Test", AudioFormat.CD_QUALITY);

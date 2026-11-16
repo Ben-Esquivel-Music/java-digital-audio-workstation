@@ -11,6 +11,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.Flow;
 import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.locks.LockSupport;
@@ -82,6 +84,22 @@ public final class JavaxSoundBackend implements AudioBackend {
      * package-private constructor lets a test substitute a shorter bound.
      */
     static final long CAPTURE_EXIT_TIMEOUT_MILLIS = 2_000L;
+
+    /**
+     * Longest first line of an input halt's fault (story 337, ruling E85):
+     * the length the failure notice keeps of a reason, so a notice quoting
+     * the line shows it whole.
+     */
+    static final int MAX_HALT_LINE_LENGTH = 120;
+
+    /** An input halt's line, before the input's name. */
+    private static final String NAMED_INPUT_PREFIX = "input from “";
+
+    /** An input halt's line, after the input's name. */
+    private static final String NAMED_INPUT_SUFFIX = "” stopped delivering audio";
+
+    /** An input halt's line when the input has no name: the default capture line. */
+    private static final String UNNAMED_INPUT_STOPPED = "the audio input stopped delivering audio";
 
     private final AudioBackendSupport support = new AudioBackendSupport();
 
@@ -166,6 +184,47 @@ public final class JavaxSoundBackend implements AudioBackend {
      * open started is already running.</p>
      */
     private volatile int openedInputChannels;
+
+    /**
+     * Captured blocks the {@code javax-sound-capture} thread lost to a throw
+     * from {@code decode} or {@code publishInput} (story 337, ruling E17) —
+     * {@code audio.input}. The loop counts the block and continues, so one bad
+     * block is a counted one-block gap instead of a dead capture thread under
+     * a stream that still answers {@code isOpen()}. Single writer: the capture
+     * thread of the stream currently open ({@link #releaseInputLine()} joins it
+     * before another starts; a join that timed out can leave at worst one lost
+     * increment, never a torn value).
+     */
+    private volatile long inputBlocksLost;
+
+    /**
+     * Capture threads that ended on a fault they cannot continue past while
+     * their stream was open: a throw from {@code line.read} (a broken line;
+     * continuing would spin), a read that returned no data (on the JDK's line
+     * a native error or a stop, never "no data yet", which blocks), or a
+     * {@link VirtualMachineError} (story 337, rulings E17 and E83). A throw or
+     * an empty read while the stream is closing or the thread is interrupted
+     * is teardown and is not counted. Single writer, as
+     * {@link #inputBlocksLost}.
+     */
+    private volatile long inputHalts;
+
+    /**
+     * The newest fault behind {@link #inputBlocksLost} or {@link #inputHalts}.
+     * Each writer stores it before it bumps the count (story 337, ruling
+     * E82).
+     */
+    private volatile Throwable lastInputFault;
+
+    /**
+     * The name of the capture mixer the open stream reads, or blank for the
+     * Java Sound default capture line, which has no mixer to name. Written by
+     * {@code openDirections} before it starts the capture thread, and pinned by
+     * {@link #startCapture(AudioFormat, int)} for that thread's input-halt
+     * fault, so a halt names the input that stopped delivering (story 337,
+     * ruling E85).
+     */
+    private volatile String captureDeviceName = "";
 
     /** Creates a new Java Sound backend whose session input is the default capture line. */
     public JavaxSoundBackend() {
@@ -977,6 +1036,7 @@ public final class JavaxSoundBackend implements AudioBackend {
             this.inputLine.start();
             this.inputLineFormat = requireActualFormat(
                     this.inputLine.getFormat(), requestedInput, "capture");
+            this.captureDeviceName = inputMixer == null ? "" : inputMixer.getName();
             startCapture(captureFormat, bufferFrames);
             // Published only once the line is open, started AND the capture
             // thread is feeding support.publishInput: openedInputChannels() is
@@ -1351,6 +1411,20 @@ public final class JavaxSoundBackend implements AudioBackend {
      * once its line is closed; the pin is what makes a join that times out
      * harmless.</p>
      *
+     * <p>THE TERMINAL EXIT (story 337, rulings E17, E83 to E85): while its
+     * stream is live ({@link #captureStreamLive(SubmissionPublisher)}), a read
+     * that throws or returns no data ends the thread as an input halt, through
+     * {@link #haltCapture(SubmissionPublisher, Throwable)}. The JDK's read
+     * already blocks through "no data yet", so an empty read on a live stream
+     * is a native error or a stop nobody asked for; it is not retried, which
+     * would spin. The halt's fault names the input that stopped
+     * ({@link #stoppedMessage(String)}, from the device name pinned here
+     * beside {@code stream}); a throwing read's throwable is its cause, and a
+     * {@link VirtualMachineError} is kept as the fault itself. The halt also
+     * fails {@code stream}, so the engine's subscriber learns the input is
+     * gone. A read released by a close, which completes the stream and
+     * interrupts the thread first, is teardown and records nothing.</p>
+     *
      * <p>Package-private for the same testing reason as
      * {@link #rollBackFailedOutputOpen(Exception)}: a planted line can hold a
      * {@code read} on a test-controlled gate while this method starts exactly
@@ -1366,23 +1440,132 @@ public final class JavaxSoundBackend implements AudioBackend {
                 : pcmFormat(Encoding.PCM_SIGNED, format, Short.SIZE, false);
         final int bytes = Math.multiplyExact(bufferFrames, lineFormat.getFrameSize());
         // Pinned BEFORE the thread starts: this is the stream the thread was
-        // started for, and the only one it may ever publish into.
+        // started for, and the only one it may ever publish into or fail.
         final SubmissionPublisher<AudioBlock> stream = support.currentInputPublisher();
+        final String deviceName = this.captureDeviceName;
         Thread t = new Thread(() -> {
             byte[] buf = new byte[bytes];
-            while (support.isOpen() && !stream.isClosed()
-                    && !Thread.currentThread().isInterrupted()) {
-                int read = line.read(buf, 0, buf.length);
-                if (read <= 0) {
-                    break;
+            Throwable halt = null;
+            try {
+                while (captureStreamLive(stream)) {
+                    // Two exits end the capture on a live stream, both input
+                    // halts (story 337, rulings E17 and E83): a read that
+                    // throws (a broken line), through the catch below, and a
+                    // read that returns no data, here.
+                    int read = line.read(buf, 0, buf.length);
+                    if (read <= 0) {
+                        halt = new AudioBackendException(stoppedMessage(deviceName));
+                        break;
+                    }
+                    try {
+                        support.publishInput(stream, decode(buf, read, format, lineFormat));
+                    } catch (VirtualMachineError fatal) {
+                        throw fatal;
+                    } catch (Throwable lostBlock) {
+                        // Story 337, ruling E17: one lost block, counted; the
+                        // loop continues with the next read. The fault is
+                        // stored before its count (story 337, ruling E82).
+                        lastInputFault = lostBlock;
+                        inputBlocksLost++;
+                    }
                 }
-                AudioBlock block = decode(buf, read, format, lineFormat);
-                support.publishInput(stream, block);
+            } catch (Throwable terminal) {
+                halt = terminal instanceof VirtualMachineError
+                        ? terminal
+                        : new AudioBackendException(stoppedMessage(deviceName), terminal);
+            }
+            // Outside the try, so a throw from the halt itself leaves this
+            // thread through its uncaught-exception handler, never silently.
+            if (halt != null) {
+                haltCapture(stream, halt);
             }
         }, "javax-sound-capture");
         t.setDaemon(true);
         this.captureThread = t;
         t.start();
+    }
+
+    /**
+     * Whether the capture thread's own stream is still live: the backend is
+     * open, the thread's pinned publisher is not completed, and the thread is
+     * not interrupted. {@link #close()} completes the publisher and interrupts
+     * the thread before it stops and closes the line, so a read that the
+     * close released finds this {@code false} — teardown, not a fault (story
+     * 337, ruling E17, and the pump's ruling E7 applied to this thread).
+     *
+     * @param stream the publisher the capture thread pinned when it started
+     * @return {@code true} while a failure of this capture is the user's
+     *         problem rather than its own teardown
+     */
+    private boolean captureStreamLive(SubmissionPublisher<AudioBlock> stream) {
+        return support.isOpen() && !stream.isClosed()
+                && !Thread.currentThread().isInterrupted();
+    }
+
+    /**
+     * Ends the capture as an input halt (story 337, rulings E17, E82 to E84),
+     * unless its stream is no longer live: stores the fault, then counts one
+     * halt, then fails the stream's publisher with the same fault, so its
+     * subscribers — and any that subscribe to it later — learn the input is
+     * gone. Runs once, on the capture thread, as its last act. A throw from
+     * {@link SubmissionPublisher#closeExceptionally(Throwable)} is not caught:
+     * the count already stands, and the throw leaves the thread through its
+     * uncaught-exception handler.
+     *
+     * @param stream the publisher the capture thread pinned when it started
+     * @param fault  the halt's fault; never {@code null}
+     */
+    private void haltCapture(SubmissionPublisher<AudioBlock> stream, Throwable fault) {
+        if (!captureStreamLive(stream)) {
+            return;
+        }
+        lastInputFault = fault;
+        inputHalts++;
+        stream.closeExceptionally(fault);
+    }
+
+    /**
+     * The first line of an input halt's fault (story 337, ruling E85):
+     * {@code input from “<name>” stopped delivering audio}, or
+     * {@code the audio input stopped delivering audio} when the device has no
+     * name. A long name is cut, ending in "…", so the line is at most
+     * {@link #MAX_HALT_LINE_LENGTH} characters and a notice that quotes it
+     * keeps the words that say what happened.
+     *
+     * @param deviceName the capture mixer's name; blank or {@code null} for
+     *                   the default capture line
+     * @return the line; never blank
+     */
+    private static String stoppedMessage(String deviceName) {
+        if (deviceName == null || deviceName.isBlank()) {
+            return UNNAMED_INPUT_STOPPED;
+        }
+        String name = deviceName.strip();
+        int room = MAX_HALT_LINE_LENGTH - NAMED_INPUT_PREFIX.length() - NAMED_INPUT_SUFFIX.length();
+        if (name.length() > room) {
+            int cut = room - 1;
+            if (Character.isHighSurrogate(name.charAt(cut - 1))) {
+                cut--;
+            }
+            name = name.substring(0, cut) + "…";
+        }
+        return NAMED_INPUT_PREFIX + name + NAMED_INPUT_SUFFIX;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Java Sound counts the blocks its {@code javax-sound-capture} thread
+     * lost and the capture threads that ended on a fault or an empty read
+     * while their stream was open ({@code audio.input}; story 337, rulings E17
+     * and E83). It reports no device heartbeat: the engine's render drive is
+     * this backend's only clock (story 337, ruling E5).</p>
+     */
+    @Override
+    public BackendThreadCounters threadCounters() {
+        return new BackendThreadCounters(0L, inputBlocksLost, inputHalts, 0L,
+                OptionalLong.empty(), Optional.empty(),
+                Optional.ofNullable(lastInputFault), Optional.empty());
     }
 
     static AudioBlock decodePcm16(byte[] pcm, int bytes, AudioFormat format) {

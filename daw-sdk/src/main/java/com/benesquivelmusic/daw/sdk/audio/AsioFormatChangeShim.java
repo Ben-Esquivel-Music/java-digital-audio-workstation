@@ -287,7 +287,17 @@ final class AsioFormatChangeShim implements AutoCloseable {
         try {
             return (int) dispatch(selector, value);
         } catch (Throwable t) {
-            // Never let an exception propagate back into native code.
+            // Never let an exception propagate back into native code. The
+            // failure is counted, never silent (story 337, ruling E31): on the
+            // primary Windows + ASIO target this message carries driver reset
+            // requests, and a reset swallowed uncounted is a missed reconfigure.
+            // The call sits in its own catch-all so nothing can escape the
+            // handler either.
+            try {
+                backend.noteDeviceNotificationFault(t);
+            } catch (Throwable ignored) {
+                // Nothing may reach the driver's frame.
+            }
             return ASE_NOT_PRESENT;
         }
     }

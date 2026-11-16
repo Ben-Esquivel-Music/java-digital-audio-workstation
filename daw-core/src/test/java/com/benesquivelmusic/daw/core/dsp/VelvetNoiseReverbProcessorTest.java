@@ -1,11 +1,191 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureCategory;
+import com.benesquivelmusic.daw.core.audio.health.AudioFailureSample;
+import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
+import com.benesquivelmusic.daw.core.audio.health.LaneRole;
+import com.benesquivelmusic.daw.core.audio.health.RenderThread;
+
 import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class VelvetNoiseReverbProcessorTest {
+
+    // ── Late-segment failures (story 337, ruling E29) ─────────────────────
+
+    /**
+     * Stop's teardown interrupts the render drive; a late-segment wait that
+     * sees the interrupt restores the flag and records nothing — it is not a
+     * DSP fault. The default parameters give eight late segments, so the
+     * parallel path runs.
+     */
+    @Test
+    void anInterruptedRenderThreadKeepsItsInterruptAndRecordsNothing() throws Exception {
+        VelvetNoiseReverbProcessor reverb = new VelvetNoiseReverbProcessor(1, 44100.0);
+        AudioHealthRecord record = new AudioHealthRecord();
+        AtomicBoolean stillInterrupted = new AtomicBoolean();
+
+        onRenderThread(record, () -> {
+            Thread.currentThread().interrupt();
+            reverb.process(impulse(512), new float[1][512], 512);
+            stillInterrupted.set(Thread.currentThread().isInterrupted());
+        });
+
+        assertThat(stillInterrupted).as("the interrupt flag is restored for the stop that set it").isTrue();
+        assertThat(record.totals()).containsOnly(0L);
+    }
+
+    /**
+     * A late segment that fails midway is zeroed — its half-written buffer
+     * would sum into an audible click — and recorded as {@code audio.dsp}
+     * with the segment index, on a render thread only. The fault lands at
+     * frame {@value #FAULT_FRAME} of a non-silent block, so the frames before
+     * it really were written before the throw and only the catch's zeroing
+     * can leave the segment's buffer silent.
+     */
+    @Test
+    void aFailedLateSegmentIsZeroedAndRecordedOnARenderThread() throws Exception {
+        VelvetNoiseReverbProcessor reverb = new VelvetNoiseReverbProcessor(1, 44100.0);
+        reverb.process(impulse(512), new float[1][512], 512);
+        breakLateSegmentMidway(reverb, 2);
+        AudioHealthRecord record = new AudioHealthRecord();
+        float[][] output = new float[1][512];
+
+        onRenderThread(record, () -> reverb.process(constant(512, 0.5f), output, 512));
+
+        float[] failedSegment = ((float[][]) privateField(reverb, "segmentWorkBuffers"))[2];
+        for (int frame = 0; frame < 512; frame++) {
+            assertThat(failedSegment[frame])
+                    .as("frame %d of the failed segment, written before the fault, is zeroed", frame)
+                    .isEqualTo(0.0f);
+        }
+        assertThat(record.total(AudioFailureCategory.DSP)).isEqualTo(1);
+        List<AudioFailureSample> samples = new ArrayList<>();
+        record.read(samples::add);
+        assertThat(samples).singleElement().satisfies(sample -> {
+            assertThat(sample.detail()).as("the failed segment").isEqualTo(2);
+            assertThat(sample.subject()).contains(reverb);
+            assertThat(sample.failure()).get().isInstanceOf(ArrayIndexOutOfBoundsException.class);
+        });
+        for (float value : output[0]) {
+            assertThat(Float.isFinite(value)).isTrue();
+        }
+
+        reverb.process(impulse(512), new float[1][512], 512);
+        assertThat(record.total(AudioFailureCategory.DSP))
+                .as("off a render thread the same failure is survived and not recorded")
+                .isEqualTo(1);
+    }
+
+    /**
+     * Story 337, ruling E77: off a render thread — an offline render — the
+     * failed segment is zeroed exactly as on a render thread, and since it
+     * cannot be recorded it is logged at WARNING, naming the effect by its
+     * declared insert name and the segment it left out of the block.
+     */
+    @Test
+    void aFailedLateSegmentOffARenderThreadIsZeroedAndLoggedNamingTheSegment() throws Exception {
+        VelvetNoiseReverbProcessor reverb = new VelvetNoiseReverbProcessor(1, 44100.0);
+        reverb.process(impulse(512), new float[1][512], 512);
+        breakLateSegmentMidway(reverb, 2);
+        float[][] output = new float[1][512];
+        Logger reverbLog = Logger.getLogger(VelvetNoiseReverbProcessor.class.getName());
+        List<LogRecord> logged = new CopyOnWriteArrayList<>();
+        Handler handler = new Handler() {
+            @Override public void publish(LogRecord entry) { logged.add(entry); }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+
+        reverbLog.addHandler(handler);
+        try {
+            reverb.process(constant(512, 0.5f), output, 512);
+        } finally {
+            reverbLog.removeHandler(handler);
+        }
+
+        float[] failedSegment = ((float[][]) privateField(reverb, "segmentWorkBuffers"))[2];
+        for (int frame = 0; frame < 512; frame++) {
+            assertThat(failedSegment[frame])
+                    .as("frame %d of the failed segment, written before the fault, is zeroed", frame)
+                    .isEqualTo(0.0f);
+        }
+        assertThat(logged).singleElement().satisfies(entry -> {
+            assertThat(entry.getLevel()).isEqualTo(Level.WARNING);
+            assertThat(entry.getMessage()).isEqualTo(
+                    "Velvet Noise Reverb: late-reverb segment 2 failed and was left out of this block");
+            assertThat(entry.getThrown()).isInstanceOf(ArrayIndexOutOfBoundsException.class);
+        });
+        for (float value : output[0]) {
+            assertThat(Float.isFinite(value)).isTrue();
+        }
+    }
+
+    private static float[][] impulse(int frames) {
+        float[][] input = new float[1][frames];
+        input[0][0] = 1.0f;
+        return input;
+    }
+
+    private static float[][] constant(int frames, float value) {
+        float[][] input = new float[1][frames];
+        java.util.Arrays.fill(input[0], value);
+        return input;
+    }
+
+    /** The frame of the next block at which {@link #breakLateSegmentMidway} makes the segment throw. */
+    private static final int FAULT_FRAME = 64;
+
+    /**
+     * Makes one late segment fail midway through the next block: the write
+     * position moves {@value #FAULT_FRAME} frames short of the ring's end and
+     * pulse 0 of the segment gets a delay of
+     * {@code 2 * ringLength - FAULT_FRAME}. Frames {@code [0, FAULT_FRAME)}
+     * then read valid ring positions and are written; at frame
+     * {@value #FAULT_FRAME} the write position wraps to 0, the read position
+     * is {@code FAULT_FRAME - ringLength}, negative, and the segment task
+     * throws — a real fault inside it, after it wrote part of its buffer.
+     */
+    private static void breakLateSegmentMidway(VelvetNoiseReverbProcessor reverb, int segment)
+            throws ReflectiveOperationException {
+        int ringLength = (int) privateField(reverb, "ringLength");
+        ((int[]) privateField(reverb, "writePos"))[0] = ringLength - FAULT_FRAME;
+        ((int[][][]) privateField(reverb, "lateDelays"))[0][segment][0] = 2 * ringLength - FAULT_FRAME;
+    }
+
+    private static Object privateField(VelvetNoiseReverbProcessor reverb, String name)
+            throws ReflectiveOperationException {
+        java.lang.reflect.Field field = VelvetNoiseReverbProcessor.class.getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(reverb);
+    }
+
+    private static void onRenderThread(AudioHealthRecord record, Runnable body) throws Exception {
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        RenderThread thread = new RenderThread(record.claimLane(LaneRole.RENDER_DRIVE), () -> {
+            try {
+                body.run();
+            } catch (Throwable t) {
+                failure.set(t);
+            }
+        }, "velvet-render-thread");
+        thread.start();
+        thread.join(5_000L);
+        assertThat(thread.isAlive()).as("the render thread finished within the guard budget").isFalse();
+        assertThat(failure.get()).as("nothing escaped the render thread").isNull();
+    }
 
     @Test
     void shouldCreateWithDefaults() {

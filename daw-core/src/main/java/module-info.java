@@ -140,6 +140,11 @@ module daw.core {
     exports com.benesquivelmusic.daw.core.transport;
     exports com.benesquivelmusic.daw.core.undo;
 
+    // Story 337 — the audio health record (failure-surfacing book §3.2
+    // channel B), read by daw.app's audio health drain. Qualified: no other
+    // module reads the real-time failure counters.
+    exports com.benesquivelmusic.daw.core.audio.health to daw.app;
+
     // ---------------------------------------------------------------------
     // Built-in plugin discovery via ServiceLoader (replaces the sealed-type
     // getPermittedSubclasses() enumeration in BuiltInDawPlugin.discoverAll()).

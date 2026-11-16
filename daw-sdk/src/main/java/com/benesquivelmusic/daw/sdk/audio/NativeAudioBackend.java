@@ -173,6 +173,23 @@ public interface NativeAudioBackend extends AutoCloseable {
     }
 
     /**
+     * Returns the failure counters this backend keeps on the threads it owns,
+     * pulled exactly as {@link AudioBackend#threadCounters()} documents
+     * (story 337, ruling E4) — so an adapter that presents a callback-model
+     * backend as an {@link AudioBackend} can add its own drain's counts to
+     * the wrapped backend's.
+     *
+     * <p>Never called from a real-time thread: building the value allocates.</p>
+     *
+     * @return the counters; never {@code null}. The default is
+     *         {@link BackendThreadCounters#NONE} — "no own threads, zero
+     *         counts"
+     */
+    default BackendThreadCounters threadCounters() {
+        return BackendThreadCounters.NONE;
+    }
+
+    /**
      * Terminates the backend and releases all resources.
      */
     @Override

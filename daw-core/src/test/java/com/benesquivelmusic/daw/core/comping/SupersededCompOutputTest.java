@@ -9,6 +9,7 @@ import com.benesquivelmusic.daw.core.audio.RemoveClipAction;
 import com.benesquivelmusic.daw.core.audio.SplitClipAction;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
 import com.benesquivelmusic.daw.core.project.edit.RippleEditService;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -546,7 +547,7 @@ class SupersededCompOutputTest {
      */
     private static final class ClipEventCapture implements AutoCloseable {
 
-        private final DefaultEventBus bus = DefaultEventBus.builder().build();
+        private final DefaultEventBus bus = DefaultEventBus.builder(SubscriberFailureSink.LOG_ONLY).build();
         private final List<ClipEvent> events = new CopyOnWriteArrayList<>();
         private volatile ClipEvent marker;
         private volatile CountDownLatch markerDelivered;

@@ -354,7 +354,17 @@ final class RecordCoordinator {
         closeCapturePeaks();
     }
 
-    void stopAudioTake() {
+    /**
+     * The take half of a Stop: ends a count-in, a recording take or the
+     * DEVICE_LOST state as the Stop does. FX thread.
+     *
+     * @return whether this Stop ends a take that had started recording — past
+     *         its preparation and any count-in, a count-in that fired before
+     *         this Stop included — rather than cancelling a count-in or
+     *         finding no started take; a render-drive halt's notice tells the
+     *         engineer only this (story 337, ruling E101)
+     */
+    boolean stopAudioTake() {
         requireFxThread();
         CountInSchedule ending = countInSchedule;
         CountInEnd verdict = endCountIn();
@@ -378,14 +388,14 @@ final class RecordCoordinator {
                 // The render thread may still be inside that window: look
                 // again on later FX turns (story 328 review).
                 lookAgainAtTheEndedCountIn(ending);
-                return;
+                return false;
             }
             RecordingPipeline stopping = recordingPipeline;
             recordingPipeline = null;
             CompletionStage<Void> written = requestTakeStop(stopping, TakeManifest.SealedBy.STOP);
             publishWhenWritten(stopping, written);
             stillWritingDelay.after(TAKE_STILL_WRITING_DELAY, () -> warnTakeStillWriting(stopping));
-            return;
+            return false;
         }
         if (verdict == CountInEnd.FIRED && recordingPipeline == null) {
             // A MIDI-only count-in the render thread won: its record start
@@ -408,8 +418,11 @@ final class RecordCoordinator {
             // the machine can never hold an active pipeline with no exit.
             transition(RecordState.FINALIZING);
             settle();
-            return;
+            return false;
         }
+        // DEVICE_LOST is entered only from RECORDING, so an active take it still holds had started too.
+        boolean endsAStartedTake = isRecordingInFlight()
+                && (state.get() == RecordState.RECORDING || state.get() == RecordState.DEVICE_LOST);
         if (isRecordingInFlight() && state.get() != RecordState.ABORTED) transition(RecordState.FINALIZING);
         if (recordingPipeline != null && recordingPipeline.isActive()) {
             RecordingPipeline stopping = recordingPipeline;
@@ -419,6 +432,7 @@ final class RecordCoordinator {
             publishWhenWritten(stopping, written);
             stillWritingDelay.after(TAKE_STILL_WRITING_DELAY, () -> warnTakeStillWriting(stopping));
         }
+        return endsAStartedTake;
     }
 
     /**
@@ -2465,21 +2479,43 @@ final class RecordCoordinator {
     }
 
     boolean deferInputStreamStop() {
+        // One predicate says whether a take defers the stop; this only acts on what it found (story 337,
+        // ruling E68).
+        if (!isInputStreamStopDeferred()) return false;
         if (unannouncedTake != null && !unannouncedStreamClosed) {
             if (unannouncedStart.filesCleanupComplete && !unannouncedCleanupRunning) finishWrittenTake(unannouncedTake);
             return true;
         }
         PendingStart start = pendingStart != null ? pendingStart : abandonedStart;
+        if (start.streamPrepared && !start.inputCleanupRunning
+                && (start.failure == null || start.filesCleanupComplete)) {
+            cleanUpPreparedInputStream(start);
+        }
+        return true;
+    }
+
+    /**
+     * Whether a take still defers the input-stream stop — the answer of
+     * {@link #deferInputStreamStop()} without its side effects: it never
+     * starts the input-stream cleanup and never finishes a written take, so
+     * asking again never restarts a failed cleanup or repeats its toast.
+     * {@link #deferInputStreamStop()} answers through it and only adds its
+     * actions, so the two cannot drift (story 337, ruling E68). The
+     * engine-halt close retries through it (story 337, ruling E66). FX
+     * thread.
+     *
+     * @return {@code true} exactly when {@link #deferInputStreamStop()} would return {@code true}
+     */
+    boolean isInputStreamStopDeferred() {
+        if (unannouncedTake != null && !unannouncedStreamClosed) return true;
+        PendingStart start = pendingStart != null ? pendingStart : abandonedStart;
         if (start == null) return false;
         if (!start.streamPrepared || start.inputCleanupRunning) return true;
         if (start.failure != null && !start.filesCleanupComplete) return true;
-        if (start.inputCleanupFailed || start.failure != null || start.cancelled
-                && (retired || !transport.hasGraphInstruments() && project.getTransport().getState() != TransportState.PLAYING)) {
-            cleanUpPreparedInputStream(start);
-            return true;
-        }
-        return false;
+        return start.inputCleanupFailed || start.failure != null || start.cancelled
+                && (retired || !transport.hasGraphInstruments() && project.getTransport().getState() != TransportState.PLAYING);
     }
+
     private void cleanUpPreparedInputStream(PendingStart start) {
         if (start.inputCleanupRunning || start.inputCleanupComplete) return;
         start.inputCleanupRunning = true;
