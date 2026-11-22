@@ -21,6 +21,7 @@ import com.benesquivelmusic.daw.app.ui.status.SessionStatusStrip;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.app.ui.theme.UiScale;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.audio.OpenedStream;
 import com.benesquivelmusic.daw.core.event.DefaultEventBus;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.event.SubscriberFailureSink;
@@ -296,6 +297,7 @@ class UiScaleLayoutTest {
             targets.put("time display", window.node("timeDisplay", Label.class));
             targets.put("tempo label", window.node("tempoLabel", Label.class));
             targets.put("status label", window.node("statusLabel", Label.class));
+            targets.put("clock badge", window.node("clockStatusIndicator", ClockStatusIndicator.class));
             targets.put("bar background", window.node("transportBar", HBox.class));
             // A press on the scroll bar outside its track, thumb and arrows reaches the bar itself.
             targets.put("scroll bar", horizontalBar);
@@ -753,6 +755,14 @@ class UiScaleLayoutTest {
         MainWindow window = new MainWindow(root, menuBar, statusStrip, notificationBar, namespace);
         MainController.installTransportBarScroll(window.node("transportBarScroller", ScrollPane.class),
                 window.node("transportBar", HBox.class));
+        ClockStatusIndicator clockBadge = shownClockBadge();
+        MainController.mountClockStatusIndicator(window.node("transportBar", HBox.class),
+                window.node("statusLabel", Label.class), clockBadge);
+        namespace.put("clockStatusIndicator", clockBadge);
+        List<Node> transportChildren = window.node("transportBar", HBox.class).getChildren();
+        assertThat(transportChildren.indexOf(clockBadge) + 1)
+                .as("the badge sits immediately before the transport status (ruling E32)")
+                .isEqualTo(transportChildren.indexOf(window.node("statusLabel", Label.class)));
         new ToolbarAppearanceController(
                 new ToolbarAppearanceController.TransportButtons(
                         window.node("skipBackButton", Button.class), window.node("playButton", Button.class),
@@ -779,6 +789,50 @@ class UiScaleLayoutTest {
         show(scene);
         settle(root);
         return window;
+    }
+
+    /** The clock badge as it shows an internal source on an open stream, "INT 48k"; FX thread. */
+    private static ClockStatusIndicator shownClockBadge() {
+        ClockStatusIndicator.ClockReading reading = new ClockStatusIndicator.ClockReading(
+                new com.benesquivelmusic.daw.sdk.audio.DeviceId("Mock", "Interface"),
+                List.of(new com.benesquivelmusic.daw.sdk.audio.ClockSource(0, "Internal", true,
+                        new com.benesquivelmusic.daw.sdk.audio.ClockKind.Internal())), 48_000);
+        ClockStatusIndicator badge = new ClockStatusIndicator(_ -> { }, ClockStatusIndicator.takeMarksOf(() -> null),
+                new ClockStatusIndicator.StreamClock() {
+                    @Override
+                    public boolean streamOpen() {
+                        return true;
+                    }
+
+                    @Override
+                    public boolean deviceLost() {
+                        return false;
+                    }
+
+                    @Override
+                    public Optional<com.benesquivelmusic.daw.sdk.audio.ClockLockStatus> lockStatus() {
+                        return Optional.empty();
+                    }
+
+                    @Override
+                    public Optional<OpenedStream> lastOpened() {
+                        return Optional.of(new OpenedStream(1L, reading.device(), reading.sampleRate()));
+                    }
+
+                    @Override
+                    public Optional<ClockStatusIndicator.ClockReading> read() {
+                        return Optional.of(reading);
+                    }
+
+                    @Override
+                    public Optional<ClockStatusIndicator.ClockReading> read(
+                            com.benesquivelmusic.daw.sdk.audio.DeviceId device) {
+                        return Optional.of(reading);
+                    }
+                }, null, Runnable::run);
+        badge.refresh();
+        assertThat(badge.getText()).as("fixture: the badge shows its source").isEqualTo("INT 48k");
+        return badge;
     }
 
     private void show(Scene scene) {

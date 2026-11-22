@@ -128,6 +128,76 @@ class ClockSourceTest {
         }
     }
 
+    /**
+     * The clock publisher belongs to the backend, not to one stream, like the
+     * device-event publisher: a subscriber still receives events after
+     * {@code close()}, and every event carries the evidence time.
+     */
+    @Test
+    void mockClockLockPublisherOutlivesCloseAndStampsTheEvidenceTime() throws InterruptedException {
+        MockAudioBackend backend = new MockAudioBackend();
+        DeviceId device = new DeviceId(MockAudioBackend.NAME, "Mock Device");
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<ClockLockEvent> received = new AtomicReference<>();
+        backend.clockLockEvents().subscribe(new Flow.Subscriber<>() {
+            @Override public void onSubscribe(Flow.Subscription s) { s.request(Long.MAX_VALUE); }
+            @Override public void onNext(ClockLockEvent e) {
+                received.set(e);
+                latch.countDown();
+            }
+            @Override public void onError(Throwable t) { /* unused */ }
+            @Override public void onComplete() { /* unused */ }
+        });
+
+        backend.close();
+        long before = System.nanoTime();
+        backend.simulateClockLock(device, 1, false);
+        long after = System.nanoTime();
+
+        assertTrue(latch.await(2, TimeUnit.SECONDS), "the event published after close() arrives");
+        ClockLockEvent event = received.get();
+        assertFalse(event.locked());
+        assertTrue(event.evidenceNanos() - before >= 0 && after - event.evidenceNanos() >= 0,
+                "the mock stamps the event with the time it was simulated");
+    }
+
+    @Test
+    void aClockLockEventBuiltWithoutEvidenceReadsUnknown() {
+        ClockLockEvent event = new ClockLockEvent(new DeviceId("ASIO", "Driver"), 2, true);
+
+        assertEquals(0L, event.evidenceNanos());
+        assertEquals(new ClockLockEvent(new DeviceId("ASIO", "Driver"), 2, true, 0L), event);
+    }
+
+    /**
+     * The mock reports what its input publisher dropped for a subscriber that
+     * never requests, and claims no output-starvation signal.
+     */
+    @Test
+    void mockDropoutCountersReportTheInputPublishersDrops() {
+        try (MockAudioBackend backend = new MockAudioBackend()) {
+            backend.open(new DeviceId(MockAudioBackend.NAME, "Mock Device"),
+                    new AudioFormat(48_000.0, 2, 16), 64);
+            backend.inputBlocks().subscribe(new Flow.Subscriber<>() {
+                @Override public void onSubscribe(Flow.Subscription s) { /* never requests */ }
+                @Override public void onNext(AudioBlock block) { /* unused */ }
+                @Override public void onError(Throwable t) { /* unused */ }
+                @Override public void onComplete() { /* unused */ }
+            });
+            assertEquals(0L, backend.dropoutCounters().inputBlocksDropped());
+
+            for (int i = 0; i < Flow.defaultBufferSize() * 2; i++) {
+                backend.pumpInput(64);
+            }
+
+            BackendDropoutCounters counters = backend.dropoutCounters();
+            assertTrue(counters.inputBlocksDropped() > 0,
+                    "blocks past the subscriber's buffer were dropped and counted");
+            assertFalse(counters.reportsOutputStarvation());
+            assertEquals(0L, counters.outputStarvedPeriods());
+        }
+    }
+
     @Test
     void clockSourceSelectionIsRememberedAcrossRestarts(@TempDir Path dir) throws IOException {
         Path file = dir.resolve("audio-settings.json");

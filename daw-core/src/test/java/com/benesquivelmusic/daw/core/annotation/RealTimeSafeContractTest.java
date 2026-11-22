@@ -164,7 +164,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       callee.</li>
  *   <li>Story 337 — the render drive every push backend runs,
  *       {@code EngineStreamPump.renderLoop}, followed into the audio-health
- *       package, holds to the guard predicate with its read-modify-write
+ *       package, into {@code XrunDetector} and into the engine methods it
+ *       calls on its own thread ({@link #RENDER_DRIVE_ENGINE_CALLS}), holds to the guard predicate with its read-modify-write
  *       clause, allocates nothing and enters no monitor, modulo an exact
  *       allow-list of two pre-existing calls
  *       ({@link #RENDER_DRIVE_INVOKE_ALLOWLIST}).</li>
@@ -197,7 +198,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       list.</li>
  *   <li>Story 337, ruling E82 — every backend-owned failure counter
  *       ({@link #BACKEND_COUNTER_WRITERS}: the device-callback, input-drain,
- *       capture and device-notification counters of the backends) is
+ *       capture and device-notification counters of the backends, and the
+ *       engine's count of the capture inputs it declared stalled) is
  *       written after the store of its fault on every path: in every method
  *       of its class but the constructor, lambda bodies included, each write
  *       of the count — a store of the field, or an {@code AtomicLong}
@@ -1116,6 +1118,18 @@ class RealTimeSafeContractTest {
                                                BiPredicate<String, String> invokeOffender,
                                                Predicate<String> followOwner)
             throws Exception {
+        return walkReachableCalls(rootClass, isRoot, invokeOffender, (owner, name) -> followOwner.test(owner));
+    }
+
+    /**
+     * The walk of {@link #walkReachable(Class, Predicate, BiPredicate, Predicate)}
+     * with the follow rule over the callee's owner and name, so a walk can
+     * follow single methods of a class whose other methods it must not scan.
+     */
+    private static ReachableScan walkReachableCalls(Class<?> rootClass, Predicate<MethodModel> isRoot,
+                                                    BiPredicate<String, String> invokeOffender,
+                                                    BiPredicate<String, String> followCall)
+            throws Exception {
         Map<String, ClassModel> models = new HashMap<>();
         ClassModel rootModel = modelOf(rootClass.getName().replace('.', '/'), models);
         String rootInternal = rootModel.thisClass().asInternalName();
@@ -1164,7 +1178,7 @@ class RealTimeSafeContractTest {
                         if (invokeOffender.test(owner, name)) {
                             invokes.add(new Finding(where, "invokes " + owner + "#" + name));
                         }
-                        if (followOwner.test(owner)) {
+                        if (followCall.test(owner, name)) {
                             MethodRef callee = new MethodRef(owner, name, invoke.type().stringValue());
                             if (reached.add(callee.key())) {
                                 pending.add(callee);
@@ -1703,10 +1717,30 @@ class RealTimeSafeContractTest {
                     + "drain thread");
 
     /**
+     * The deadline detector the render drive ticks once per rendered block;
+     * the render-drive walk follows into it.
+     */
+    private static final String XRUN_DETECTOR_INTERNAL =
+            "com/benesquivelmusic/daw/core/audio/performance/XrunDetector";
+
+    /** The engine, whose methods the render drive calls; only {@link #RENDER_DRIVE_ENGINE_CALLS} are followed. */
+    private static final String AUDIO_ENGINE_INTERNAL = "com/benesquivelmusic/daw/core/audio/AudioEngine";
+
+    /**
+     * Story 338 — the engine methods the render drive calls on its own thread
+     * outside {@code processBlock} (whose render path {@link #RENDER_PATH_ROOTS}
+     * walks): the pump stamps whether the block it renders has captured input
+     * behind it. The walk follows exactly these and must reach each.
+     */
+    private static final Set<String> RENDER_DRIVE_ENGINE_CALLS = Set.of("setCapturedInputStarved");
+
+    /**
      * Story 337, rulings E9, E14 and E46 (item 2) — the render drive records
      * into its lane and never logs, locks, publishes or CASes: from
-     * {@code EngineStreamPump.renderLoop}, through the pump's own methods and
-     * into the audio-health package, the guard predicate with its
+     * {@code EngineStreamPump.renderLoop}, through the pump's own methods,
+     * into the audio-health package and into {@code XrunDetector} (whose
+     * {@code recordTick} the drive calls per rendered block; its events are
+     * published off the drive), the guard predicate with its
      * read-modify-write clause finds exactly {@link #RENDER_DRIVE_INVOKE_ALLOWLIST},
      * and nothing reachable allocates, enters a monitor or is
      * {@code synchronized}.
@@ -1715,8 +1749,10 @@ class RealTimeSafeContractTest {
     void theRenderDriveLoopIsGuardClean() throws Exception {
         Class<?> pump = Class.forName(RENDER_DRIVE_CLASS);
         String pumpInternal = pump.getName().replace('.', '/');
-        ReachableScan scan = walkReachable(pump, named(RENDER_DRIVE_ROOT), RT_GUARD_WITH_RMW,
-                owner -> owner.equals(pumpInternal) || owner.startsWith(AUDIO_HEALTH_INTERNAL_PREFIX));
+        ReachableScan scan = walkReachableCalls(pump, named(RENDER_DRIVE_ROOT), RT_GUARD_WITH_RMW,
+                (owner, name) -> owner.equals(pumpInternal) || owner.startsWith(AUDIO_HEALTH_INTERNAL_PREFIX)
+                        || owner.equals(XRUN_DETECTOR_INTERNAL)
+                        || owner.equals(AUDIO_ENGINE_INTERNAL) && RENDER_DRIVE_ENGINE_CALLS.contains(name));
         assertThat(scan.scannedRoots())
                 .as("no method named %s with a Code attribute was found on %s — the render drive's "
                         + "loop was renamed and this sentinel would pass vacuously; update "
@@ -1726,6 +1762,16 @@ class RealTimeSafeContractTest {
                 .as("the walk must follow the drive into its health lane, or the health half of "
                         + "this sentinel is vacuous")
                 .anyMatch(key -> key.startsWith(AUDIO_HEALTH_INTERNAL_PREFIX + "AudioHealthLane#record("));
+        assertThat(scan.reached())
+                .as("the walk must follow the drive into the detector's tick, or the detector half "
+                        + "of this sentinel is vacuous")
+                .anyMatch(key -> key.startsWith(XRUN_DETECTOR_INTERNAL + "#recordTick("));
+        for (String engineCall : RENDER_DRIVE_ENGINE_CALLS) {
+            assertThat(scan.reached())
+                    .as("the walk must follow the drive into AudioEngine#%s, which it calls on its own thread",
+                            engineCall)
+                    .anyMatch(key -> key.startsWith(AUDIO_ENGINE_INTERNAL + "#" + engineCall + "("));
+        }
         assertThat(notAllowed(scan.invokeFindings(), RENDER_DRIVE_INVOKE_ALLOWLIST))
                 .as("the render drive (reached: %s) must record into its lane and never log, lock, "
                         + "publish, wait, sleep, iterate a collection or CAS (book §6.3 gate 3; story "
@@ -2627,6 +2673,9 @@ class RealTimeSafeContractTest {
             CAPTURE_CALLBACK + "#fillBlock", CAPTURE_CALLBACK + "#publishAndLeave",
             CAPTURE_RING + "#enterProducer", CAPTURE_RING + "#producerOpen", CAPTURE_RING + "#exitProducer",
             CAPTURE_RING + "#claim", CAPTURE_RING + "#publish", CAPTURE_SLOT + "#copySource",
+            CAPTURE_SLOT + "#setInputStarved", CAPTURE_SLOT + "#setOutputClockFrame",
+            CAPTURE_SLOT + "#setLoopStartFrame", CAPTURE_SLOT + "#setLoopEndFrame",
+            AUDIO_ENGINE + "#isCapturedInputStarved",
             CAPTURE_FLUSH + "#signal", AUDIO_ENGINE + "#graphInstrumentRecordingBuffer",
             RENDER_PIPELINE + "#graphInstrumentRecordingBuffer", TRANSPORT + "#getPositionInBeats",
             TRANSPORT + "#getPositionSeek", TRANSPORT + "#hasPendingPositionSeek",
@@ -3347,8 +3396,9 @@ class RealTimeSafeContractTest {
      * stored before it: the Java Sound capture thread's lost blocks and input
      * halts, the native input drain's lost blocks, the ASIO buffer-switch
      * upcall's faults and its input drain's drops, the PortAudio callback
-     * guard's faults, and the three device-notification counters. A writer
-     * added later joins this list.
+     * guard's faults, the three device-notification counters, and the
+     * engine's own count of the capture inputs it declared stalled (story 338,
+     * rulings E11 and E15). A writer added later joins this list.
      */
     private static final List<BackendCounterWriter> BACKEND_COUNTER_WRITERS = List.of(
             new BackendCounterWriter("com.benesquivelmusic.daw.sdk.audio.JavaxSoundBackend",
@@ -3366,7 +3416,9 @@ class RealTimeSafeContractTest {
             new BackendCounterWriter("com.benesquivelmusic.daw.sdk.audio.WasapiBackend",
                     "deviceNotificationFaults", "lastDeviceNotificationFault"),
             new BackendCounterWriter("com.benesquivelmusic.daw.sdk.audio.CoreAudioBackend",
-                    "deviceNotificationFaults", "lastDeviceNotificationFault"));
+                    "deviceNotificationFaults", "lastDeviceNotificationFault"),
+            new BackendCounterWriter("com.benesquivelmusic.daw.core.audio.InputStallLedger",
+                    "declaredStalls", "lastStallFault"));
 
     /**
      * Story 337, ruling E82 (invariant 14) — every backend counter writer
@@ -3787,6 +3839,7 @@ class RealTimeSafeContractTest {
                 ring.getDeclaredMethod("noteTruncatedFrames", int.class),
                 flush.getDeclaredMethod("signal"),
                 engine.getDeclaredMethod("graphInstrumentRecordingBuffer", track),
+                engine.getDeclaredMethod("isCapturedInputStarved"),
                 Class.forName(RECORDING_CALLBACK.replace('/', '.'))
                         .getDeclaredMethod(CAPTURE_CALLBACK_ROOT, float[][].class, int.class),
                 transport.getDeclaredMethod("getPositionInBeats"),

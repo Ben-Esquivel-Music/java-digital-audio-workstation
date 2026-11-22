@@ -60,6 +60,7 @@ class FailureFunnelRealTimeReportTest {
     private static final Fingerprint CALLBACK = Fingerprint.ofSite("audio.callback", SITE);
     private static final Fingerprint WORKER = Fingerprint.ofSite("audio.worker", "worker-pool");
     private static final Fingerprint CONFIG = Fingerprint.ofSite("audio.config", "returnBusCap");
+    private static final Fingerprint INPUT = Fingerprint.ofSite("audio.input", "input-capture");
     private static final String FIRST = "The audio callback for “Test Interface” failed, so a block of output was"
             + " played as silence: the driver returned a short buffer. Audio continues.";
     private static final String FAULT = "Audio engine fault — 12 callback errors since 12:00:00: the driver returned"
@@ -198,6 +199,52 @@ class FailureFunnelRealTimeReportTest {
                     .containsEntry(WORKER.key(), 5L);
             assertThat(entries(spine, workerText)).as("no toast, no bar entry").isEmpty();
             assertThat(spine.history().getEntries()).as("nothing reached the bar at all").isEmpty();
+        }
+    }
+
+    /**
+     * A report that is part of a device loss is counted as a fold is, with no toast and a record that says it is
+     * part of the loss; its sentence is the one a later tail of its fingerprint repeats (story 338, rulings E155
+     * and E156).
+     */
+    @Test
+    void aDeviceLossFoldsRecordSaysItIsPartOfTheLossAndItsSentenceIsTheOneATailRepeats(@TempDir Path settings)
+            throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            IllegalStateException lineClosed = new IllegalStateException("the input line closed");
+            String inputText = "Input from “Test Interface” was lost for a block: the input line closed. If you are"
+                    + " recording, the take has a gap there.";
+
+            runOnFx(() -> spine.funnel().foldIntoDeviceLoss(new RealTimeReport(FailureFact.Origin.RT_GUARD,
+                    FailureFact.Severity.WARNING, INPUT, 1, Optional.of(lineClosed), List.of(), "input-capture",
+                    inputText, restart)));
+            runOnFx(() -> { });
+
+            assertThat(records(spine, INPUT)).singleElement().satisfies(record -> {
+                assertThat(record.getLevel()).isEqualTo(Level.WARNING);
+                assertThat(record.getMessage()).isEqualTo("Failure audio.input (WARNING) at \"input-capture\","
+                        + " occurrence 1, fingerprint audio.input|input-capture, part of the device loss; no toast of"
+                        + " its own (story 338, ruling E70)");
+                assertThat(record.getThrown()).isSameAs(lineClosed);
+            });
+            assertThat(spine.history().getEntries()).as("no toast").isEmpty();
+
+            advance(Duration.ofSeconds(5));
+            Instant counted = wall.get();
+            report(spine, new RealTimeReport(FailureFact.Origin.RT_GUARD, FailureFact.Severity.WARNING, INPUT, 1,
+                    Optional.empty(), List.of(), "input-capture", "Input from “Test Interface” was lost for a block:"
+                            + " input-capture. If you are recording, the take has a gap there.", restart));
+            advance(Duration.ofSeconds(30));
+            spine.pulse();
+            runOnFx(() -> { });
+
+            assertThat(spine.history().getEntries()).as("inside the window: no toast; then the tail, history only")
+                    .singleElement().satisfies(tail -> {
+                        assertThat(tail.message()).isEqualTo(inputText + " It happened once more after that notice,"
+                                + " the last time at " + CLOCK.format(counted.atZone(ZONE)) + ".");
+                        assertThat(tail.level()).isEqualTo(NotificationLevel.WARNING);
+                        assertThat(tail.actionLabel()).hasValue("Restart Audio Engine");
+                    });
         }
     }
 

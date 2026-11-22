@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.analysis.InputSourceAvailability;
 import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer;
+import com.benesquivelmusic.daw.core.audio.performance.XrunDetector;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 import com.benesquivelmusic.daw.core.metering.MeteringTapBus;
@@ -29,6 +30,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
@@ -368,6 +370,7 @@ public final class AudioEngine {
                         // Story 337, ruling E86: the device's own-thread failures count as input
                         // failures until it closes; closeAdditionalInputs folds them.
                         audioHealth.attachInputCounters(sibling, source.device()::name, sibling::threadCounters);
+                        capturedInputLoss.attach(sibling);
                     }
                     if (sibling.openedInputChannels() == 0) {
                         if (!proven) throw new AudioBackendException("No capture from '" + source.device().name() + "'");
@@ -378,9 +381,11 @@ public final class AudioEngine {
                     double captureRate = sibling.openedInputSampleRate();
                     if (Double.isFinite(captureRate) && Double.compare(captureRate, openSdkFormat.sampleRate()) != 0)
                         throw new AudioBackendException("Input device '" + source.device().name() + "' opened at " + captureRate + " Hz; the take requires " + openSdkFormat.sampleRate() + " Hz");
-                    AdditionalInputSubscriber subscriber = new AdditionalInputSubscriber(i, sibling.openedInputChannels(), meterSources, modes);
+                    AdditionalInputSubscriber subscriber = new AdditionalInputSubscriber(i, sibling.openedInputChannels(),
+                            meterSources, modes, source.device().name());
                     additionalSubscribers.add(subscriber);
                     sibling.inputBlocks().subscribe(subscriber);
+                    liveInputSubscribers = additionalSubscribers.toArray(new AdditionalInputSubscriber[0]);
                 }
             } catch (RuntimeException | Error failure) {
                 try { stopAudioOutputLocked(announcements); } catch (RuntimeException close) { failure.addSuppressed(close); }
@@ -416,6 +421,7 @@ public final class AudioEngine {
     private void closeAdditionalInputs() {
         inputSourceModes = NO_INPUT_SOURCE_MODES;
         additionalRecordingCallbacks = new RecordingCallback[0];
+        liveInputSubscribers = new AdditionalInputSubscriber[0];
         for (AdditionalInputSubscriber subscriber : additionalSubscribers) subscriber.deactivate();
         additionalSubscribers.clear();
         RuntimeException failure = null;
@@ -425,6 +431,7 @@ public final class AudioEngine {
                 backend.close();
                 if (backend.isReleasePending()) throw new AudioBackendException("Input handle is still held by " + backend.name());
                 audioHealth.detachInputCounters(backend); // story 337, ruling E86: the close-time fold
+                capturedInputLoss.detach(backend);
                 additionalInputs.remove(i);
             } catch (RuntimeException e) { if (failure == null) failure = e; else failure.addSuppressed(e); }
         }
@@ -444,9 +451,15 @@ public final class AudioEngine {
         private final InputSourceAvailability availability;
         /** This subscriber's own plan's record, bound at construction, never the engine's current one. */
         private final InputSourceModes modes;
+        /** The input device's name, as the plan names it. */
+        private final String name;
+        /** Blocks the device handed this subscriber, counted on arrival: the input's heartbeat (story 338). */
+        private final AtomicLong deliveredBlocks = new AtomicLong();
         private volatile java.util.concurrent.Flow.Subscription subscription;
-        AdditionalInputSubscriber(int source, int width, CaptureMeterSources meterSources, InputSourceModes modes) {
+        AdditionalInputSubscriber(int source, int width, CaptureMeterSources meterSources, InputSourceModes modes,
+                                  String name) {
             this.source = source;
+            this.name = name;
             this.generation = meterSources.plan();
             this.availability = meterSources.availability().get(source);
             this.modes = modes;
@@ -469,7 +482,16 @@ public final class AudioEngine {
          * signal that lands during the claim is completed by the {@code finally} release, so the output
          * callback clocks this source only after the block has left its callback.
          */
+        AudioEngine owner() {
+            return AudioEngine.this;
+        }
+        /** Whether this subscriber's plan is current and its publisher still owns its source. */
+        boolean isLive() {
+            int state = modes.states().get(source);
+            return captureRoutingPlan == generation && (state == SOURCE_LIVE || state == SOURCE_DELIVERING);
+        }
         @Override public void onNext(com.benesquivelmusic.daw.sdk.audio.AudioBlock block) {
+            deliveredBlocks.incrementAndGet();
             if (captureRoutingPlan != generation || !modes.claim(source)) return;
             try {
                 int frames = Math.min(block.frames(), planes[0].length);
@@ -507,11 +529,45 @@ public final class AudioEngine {
     /** Device identity of the tracked stream (the winning rung's device). */
     private volatile DeviceId openDevice;
 
+    /**
+     * The stream this engine last opened, or {@code null} before the first
+     * open. Written only inside {@link #lifecycleLock}, before the stream
+     * reads as open, and replaced only by a later open's: it stays after the
+     * stream closes or fails to start.
+     */
+    private volatile OpenedStream lastOpenedStream;
+
+    /** The serial of {@link #lastOpenedStream}'s latest open; guarded by {@link #lifecycleLock}. */
+    private long openedStreamSerial;
+
     /** Negotiated SDK format the tracked stream was actually opened with. */
     private volatile com.benesquivelmusic.daw.sdk.audio.AudioFormat openSdkFormat;
 
     /** Render pump of the open stream; non-null only while RUNNING. */
     private volatile EngineStreamPump pump;
+
+    /**
+     * The subscribers of the inputs opened beside the stream, for
+     * {@link #captureInputs()}: replaced, never mutated, in the subscribe
+     * loop of a record start and emptied when the inputs close, so a reader
+     * on any thread never iterates the engine's own lists.
+     */
+    private volatile AdditionalInputSubscriber[] liveInputSubscribers = new AdditionalInputSubscriber[0];
+
+    /**
+     * Render thread only: the block {@link #processBlock} is rendering has
+     * no captured input block behind it while the stream's input is live
+     * (story 338, amendment A6). The pump sets it before {@code processBlock}
+     * and clears it after; the take's capture callback reads it inside, on
+     * the same thread. A plain field: it never crosses a thread.
+     */
+    private boolean capturedInputStarved;
+
+    /** The engine's own input-halt counter source (story 338, rulings E11 and E15). */
+    private final InputStallLedger inputStallLedger = new InputStallLedger();
+
+    /** Captured input blocks lost before the capture ring, for the engine's life. */
+    private final CapturedInputLoss capturedInputLoss = new CapturedInputLoss();
 
     /**
      * Notified whenever an open COMPLETES, with the rung that actually won
@@ -1115,6 +1171,18 @@ public final class AudioEngine {
      *             it would have done.
      *             ALLOWED in
      *             {@code AudioEngineLifecycleLockContractTest} by type.</li>
+     *         <li>The engine's count of captured input blocks lost before
+     *             the capture ring (story 338, ruling E25): at the same
+     *             open and close sites as the record's attach and detach
+     *             (the stream's in {@link #startOpenedStream} and
+     *             {@link #clearOpenStream()}, each input device's in the
+     *             record start and {@link #closeAdditionalInputs()}) it reads
+     *             that backend's {@link AudioBackend#dropoutCounters()} once
+     *             — an SDK call priced with seam (2), which by contract never
+     *             blocks or throws, and a throw counts nothing — under a
+     *             private monitor of the nested {@code CapturedInputLoss}
+     *             that only these writers take; its reader takes no lock.
+     *             ALLOWED as a nested class.</li>
      *       </ol></li>
      *   <li><strong>How long it can block — the honest budget.</strong> Not
      *       "no unbounded wait". The general truth first, because it is the
@@ -1293,6 +1361,12 @@ public final class AudioEngine {
      * {@link CountInSchedule#cancel()} is one volatile store and one volatile load;
      * it never runs the schedule's record start (that {@code Runnable} is the render
      * thread's alone, and only on a fire), so nothing outward happens under the lock.</p>
+     * <p>Story 338: {@code startAudioOutputLocked} builds the
+     * {@link OpenedStream} it publishes as {@link #lastOpenedStream()}, and
+     * the allow-list admits that whole type: it is an immutable record of a
+     * number, a {@link DeviceId} and a number, with no behaviour beyond its
+     * accessors and the record methods, so no call on it can reach outward
+     * under the lock.</p>
      */
     private final ReentrantLock lifecycleLock = new ReentrantLock();
 
@@ -1313,6 +1387,9 @@ public final class AudioEngine {
 
     // Optional performance monitor for CPU load and underrun tracking
     private volatile PerformanceMonitor performanceMonitor;
+
+    // Optional deadline detector the render drive ticks; read by each pump at construction
+    private volatile XrunDetector xrunDetector;
 
     // Optional per-track CPU budget enforcer for graceful degradation
     private volatile TrackCpuBudgetEnforcer cpuBudgetEnforcer;
@@ -1434,6 +1511,7 @@ public final class AudioEngine {
     public AudioEngine(AudioFormat format) {
         this.format = Objects.requireNonNull(format, "format must not be null");
         this.masteringChain = new MasteringChain();
+        attachInputStallCounters();
     }
 
     /**
@@ -1452,6 +1530,17 @@ public final class AudioEngine {
         this.masteringChain = new MasteringChain();
         this.engineSettings = Objects.requireNonNull(
                 engineSettings, "engineSettings must not be null");
+        attachInputStallCounters();
+    }
+
+    /**
+     * Story 338, rulings E11 and E15: the engine's declared input stalls count as
+     * input halts in its health record, once, for the engine's life — never
+     * detached, so no fold, and attached before any stream exists.
+     */
+    private void attachInputStallCounters() {
+        audioHealth.attachInputCounters(inputStallLedger, InputStallLedger::sourceName,
+                inputStallLedger::counters);
     }
 
     /**
@@ -2195,6 +2284,35 @@ public final class AudioEngine {
     }
 
     /**
+     * The stream this engine last opened: its serial, device and rate. It
+     * is published before the stream reads as open and replaced only by a
+     * later open's, so its serial only rises: it stays after the stream
+     * closes, and also when the stream's start fails after its open. A
+     * reader that saw {@link #isStreamOpen()} answer {@code true} and then
+     * reads this gets that stream or a later one, never an earlier one. A
+     * resume of a paused stream is the same stream and publishes nothing.
+     * One volatile read, no lock, any thread.
+     *
+     * @return the last opened stream, empty before the first open
+     */
+    public Optional<OpenedStream> lastOpenedStream() {
+        return Optional.ofNullable(lastOpenedStream);
+    }
+
+    /**
+     * The OPEN stream's external-clock lock state, as its backend measures it
+     * ({@link AudioBackend#clockLockStatus()}); empty when no stream is open
+     * or its backend measures no lock. Volatile reads only, never the
+     * lifecycle lock: safe on the JavaFX thread every frame.
+     *
+     * @return the open stream's clock-lock status
+     */
+    public Optional<ClockLockStatus> openStreamClockLockStatus() {
+        AudioBackend backend = this.openBackend;
+        return backend != null && isStreamOpen() ? backend.clockLockStatus() : Optional.empty();
+    }
+
+    /**
      * Takes the complete attribution bound to one failed stream-start
      * invocation, consuming that one-shot context.
      *
@@ -2244,6 +2362,7 @@ public final class AudioEngine {
      * is forgotten whatever the backend's report does.
      */
     private void clearOpenStream() {
+        AudioBackend closing = this.openBackend;
         this.openBackend = null;
         this.openDevice = null;
         this.openSdkFormat = null;
@@ -2251,6 +2370,9 @@ public final class AudioEngine {
         cancelPendingCountIn();
         // Story 337, ruling E4: the close-time fold of the backend's counters.
         audioHealth.detachBackendCounters();
+        if (closing != null) {
+            capturedInputLoss.detach(closing);
+        }
     }
 
     /**
@@ -2498,6 +2620,84 @@ public final class AudioEngine {
         }
     }
 
+    /** What {@link #reopenAndPark(DeviceId)} did. */
+    public enum ParkedReopen {
+        /**
+         * This call opened the stream on the wanted device and parked it. A
+         * pause the pump did not join in time is logged and leaves the stream
+         * RUNNING, as {@link #pauseAudioOutput()} documents.
+         */
+        PARKED,
+        /**
+         * This call's open landed on another device than the wanted one and
+         * was closed again in the same section; its stream-open announcement
+         * is not delivered unless the close was deferred and the stream is
+         * still open.
+         */
+        CLOSED_ON_ANOTHER_DEVICE,
+        /** A stream was already open, or another caller's open won: nothing was opened, parked or closed. */
+        OPENED_BY_ANOTHER
+    }
+
+    /**
+     * Opens output, checks that it landed on {@code wanted}, and parks it —
+     * or, on another device, closes it again — in ONE section of
+     * {@link #lifecycleLock}, so no other caller can find this open's stream
+     * RUNNING before it is parked or closed: a Play that waited behind it
+     * finds a PAUSED stream, which its own open resumes, or none, which it
+     * opens itself. A stream already open (running or paused) when the lock
+     * is taken is left as it is. The announcements are delivered after the
+     * unlock, on every path, as {@link #startAudioOutput()} delivers them.
+     *
+     * @param wanted the device the stream must open on — the same id or the
+     *               same name, as the application layer matches devices — or
+     *               {@code null} for whichever rung the provision ladder opens
+     * @return what this call did
+     * @throws AudioBackendException as {@link #startAudioOutput()} does
+     */
+    public ParkedReopen reopenAndPark(DeviceId wanted) {
+        Object attempt = new Object();
+        beginStreamStartInvocation();
+        PendingAnnouncements announcements = new PendingAnnouncements();
+        lifecycleLock.lock();
+        try {
+            return reopenAndParkLocked(attempt, wanted, announcements);
+        } catch (RuntimeException | Error failure) {
+            bindFailedStreamStart(failure);
+            throw failure;
+        } finally {
+            pendingStreamGeneration = null;
+            lifecycleLock.unlock();
+            announcements.deliver();
+            finishStreamStartInvocation();
+        }
+    }
+
+    private ParkedReopen reopenAndParkLocked(Object attempt, DeviceId wanted, PendingAnnouncements announcements) {
+        if (isStreamOpen()) {
+            return ParkedReopen.OPENED_BY_ANOTHER;
+        }
+        if (streamState == StreamState.CLOSED) {
+            streamGeneration = attempt;
+        }
+        pendingStreamGeneration = attempt;
+        startAudioOutputLocked(announcements, CaptureRequirement.OPTIONAL);
+        if (streamGeneration != attempt) {
+            return ParkedReopen.OPENED_BY_ANOTHER;
+        }
+        DeviceId opened = this.openDevice;
+        if (wanted != null && (opened == null
+                || !(wanted.equals(opened) || wanted.name().equals(opened.name())))) {
+            stopAudioOutputLocked(announcements);
+            if (!isStreamOpen()) {
+                announcements.streamClosedAgain();
+            }
+            return ParkedReopen.CLOSED_ON_ANOTHER_DEVICE;
+        }
+        pauseAudioOutputLocked(announcements);
+        return ParkedReopen.PARKED;
+    }
+
     public void startAudioOutput() {
         beginStreamStartInvocation();
         try {
@@ -2586,7 +2786,7 @@ public final class AudioEngine {
                 // clock claimed. Never open over it (story 337, ruling E61).
                 // The refusal names the requested endpoint, as every other refusal of this invocation does.
                 rememberRequestedStreamStartAttempt(this.streamingProvision);
-                throw new AudioBackendException(
+                throw new StreamOpenRefusedException(StreamOpenRefusedException.Reason.PREVIOUS_STREAM_NOT_RELEASED,
                         "Cannot start audio output: the previous render pump has not exited yet,"
                                 + " so its stream could not be closed; retry once the pump unblocks");
             }
@@ -2624,7 +2824,7 @@ public final class AudioEngine {
         if (provision == null) {
             String purpose = capture == CaptureRequirement.REQUIRED
                     ? "recording" : "playback";
-            throw new AudioBackendException(
+            throw new StreamOpenRefusedException(StreamOpenRefusedException.Reason.NOT_AVAILABLE,
                     "Cannot open a " + purpose + " stream: no audio backend is configured,"
                             + " so no device can be opened. Select an audio device in Audio"
                             + " Settings before " + purpose);
@@ -2650,6 +2850,9 @@ public final class AudioEngine {
         this.openBackend = opened.rung().backend();
         this.openDevice = opened.rung().device();
         this.openSdkFormat = opened.negotiatedFormat();
+        // Before startOpenedStream makes the stream read as open: a reader that sees it open gets this record.
+        this.lastOpenedStream = new OpenedStream(++openedStreamSerial, opened.rung().device(),
+                (int) Math.round(format.sampleRate()));
         try {
             startOpenedStream(opened.rung().backend(), opened.negotiatedFormat(),
                     announcements);
@@ -2885,6 +3088,12 @@ public final class AudioEngine {
             this.openedDevice = device;
         }
 
+        /** Forgets the winning rung: the same section closed its stream again, so there is no open to announce. */
+        void streamClosedAgain() {
+            this.openedBackend = null;
+            this.openedDevice = null;
+        }
+
         /**
          * Delivers everything recorded, in the order the pre-lock code used:
          * the RT-clock release first (it happened at the transition point,
@@ -2967,7 +3176,7 @@ public final class AudioEngine {
      */
     private void requireQuiescedPump() {
         if (!stopPump()) {
-            throw new AudioBackendException(
+            throw new StreamOpenRefusedException(StreamOpenRefusedException.Reason.PREVIOUS_STREAM_NOT_RELEASED,
                     "Cannot start audio output: the previous render pump has not exited yet"
                             + " and may still be inside processBlock; retry once it unblocks");
         }
@@ -3349,7 +3558,7 @@ public final class AudioEngine {
                                     + rung.device().name() + "'. The ladder walk is ABANDONED"
                                     + " rather than continued onto a fallback rung",
                             hopFailure);
-                    throw new AudioBackendException(
+                    throw new StreamOpenRefusedException(StreamOpenRefusedException.Reason.PREVIOUS_STREAM_NOT_RELEASED,
                             "Cannot open an audio stream: " + rung.backend().name()
                                     + " failed to open device '" + rung.device().name()
                                     + "' and its handle could not be released, so it may"
@@ -3584,7 +3793,7 @@ public final class AudioEngine {
         if (rung.backend().supportsStreaming()) {
             return;
         }
-        throw new AudioBackendException(
+        throw new StreamOpenRefusedException(StreamOpenRefusedException.Reason.NOT_AVAILABLE,
                 rung.backend().name() + " cannot stream on this host: its streaming"
                         + " path is unavailable, so the ladder skipped it");
     }
@@ -3627,7 +3836,7 @@ public final class AudioEngine {
         String differed = channelsDiffer && rateDiffers
                 ? "the channel count and the sample rate differ"
                 : channelsDiffer ? "the channel count differs" : "the sample rate differs";
-        throw new AudioBackendException(
+        throw new StreamOpenRefusedException(StreamOpenRefusedException.Reason.UNUSABLE_FORMAT,
                 "Backend " + rung.backend().name() + " negotiated a format the engine"
                         + " cannot render: requested " + requested + " but negotiated "
                         + negotiated + " — " + differed
@@ -3819,6 +4028,7 @@ public final class AudioEngine {
             // VirtualMachineError from the backend's report closes the opened
             // handle and fails the start like any other start failure.
             audioHealth.attachBackendCounters(backend::name, backend::threadCounters);
+            capturedInputLoss.attach(backend);
             EngineStreamPump newPump =
                     new EngineStreamPump(backend, this, format, negotiatedFormat);
             newPump.start();
@@ -3911,7 +4121,7 @@ public final class AudioEngine {
      */
     private void releaseRetainedStreamHandle(AudioBackend backend) {
         if (controlPanelOpenOn(backend)) {
-            throw new AudioBackendException(
+            throw new StreamOpenRefusedException(StreamOpenRefusedException.Reason.PREVIOUS_STREAM_NOT_RELEASED,
                     "Cannot open a new audio stream: the previous stream's handle is still"
                             + " held by " + backend.name() + ", whose native control panel"
                             + " is open — closing the handle would free the native state"
@@ -3922,7 +4132,7 @@ public final class AudioEngine {
         try {
             backend.close();
         } catch (RuntimeException closeFailure) {
-            throw new AudioBackendException(
+            throw new StreamOpenRefusedException(StreamOpenRefusedException.Reason.PREVIOUS_STREAM_NOT_RELEASED,
                     "Cannot open a new audio stream: the previous stream's handle is still"
                             + " held by " + backend.name()
                             + " and could not be released",
@@ -3934,7 +4144,7 @@ public final class AudioEngine {
             // Neither the state nor the tracking is touched: this method is
             // only ever called in RELEASE_PENDING with `backend` tracked, and
             // leaving both standing is what keeps the retry reachable.
-            throw new AudioBackendException(
+            throw new StreamOpenRefusedException(StreamOpenRefusedException.Reason.PREVIOUS_STREAM_NOT_RELEASED,
                     "Cannot open a new audio stream: the previous stream's handle is still"
                             + " held by " + backend.name() + ", which returned from close()"
                             + " with the release DEFERRED — its driver teardown is queued"
@@ -5242,12 +5452,16 @@ public final class AudioEngine {
      * again.
      *
      * <p>Story 327 (PR #982 review): the device-loss path calls this on the
-     * device-event thread, inside {@code onDeviceRemoved}, BEFORE the lost
-     * stream is closed — a reopen needs a closed stream, so the halt
-     * precedes every reopen, the lost device's return included — because
-     * {@link #stop()} leaves the recording callback installed and the
-     * pipeline's own stop runs later, on the FX thread; a stream reopened in
-     * between would otherwise have published into the take being rescued.
+     * thread that declares the loss, before it publishes {@code DEVICE_LOST}
+     * — the device-event thread for a removal, the engine-health monitor's
+     * for a stall, the format-change worker for a driver reset whose reopen
+     * failed (story 338) — because {@link #stop()} leaves the recording
+     * callback installed and the pipeline's own stop runs later, on the FX
+     * thread; a stream reopened in between would otherwise have published
+     * into the take being rescued. For a removal or a stall the halt comes
+     * BEFORE the lost stream is closed — a reopen needs a closed stream, so
+     * the halt precedes every reopen, the lost device's return included;
+     * after a failed reset, the reset had already closed the stream.
      * The stores are volatile: the pump's next
      * {@link #processBlock(float[][], float[][], int, float[])} loads
      * {@code null}; a callback in flight read the gate before this store or
@@ -5354,6 +5568,277 @@ public final class AudioEngine {
      */
     public PerformanceMonitor getPerformanceMonitor() {
         return performanceMonitor;
+    }
+
+    /**
+     * Sets the detector the render drive records each rendered block's
+     * processing time into. A pump reads it once, when it is built, so a new
+     * detector takes effect at the next stream open or resume; set it while
+     * no pump runs (after a confirmed stop) to keep the render drive its only
+     * tick writer. Lock-free; any non-real-time thread.
+     *
+     * @param detector the detector, or {@code null} for no ticks
+     */
+    public void setXrunDetector(XrunDetector detector) {
+        this.xrunDetector = detector;
+    }
+
+    /**
+     * Returns the detector set by {@link #setXrunDetector(XrunDetector)}, or
+     * {@code null}. Lock-free; any thread.
+     *
+     * @return the detector, or {@code null}
+     */
+    public XrunDetector getXrunDetector() {
+        return xrunDetector;
+    }
+
+    /**
+     * Returns the observed-drop counts of the open stream's backend
+     * ({@link AudioBackend#dropoutCounters()}), or
+     * {@link BackendDropoutCounters#NONE} while no stream is open. The counts
+     * are monotonic per backend object, so a reader re-baselines when the
+     * stream is reopened or a count decreases. Lock-free; any non-real-time
+     * thread; never throws.
+     *
+     * @return the counts, never {@code null}
+     */
+    public BackendDropoutCounters dropoutCounters() {
+        AudioBackend backend = this.openBackend;
+        if (backend == null || !isStreamOpen()) {
+            return BackendDropoutCounters.NONE;
+        }
+        try {
+            BackendDropoutCounters counters = backend.dropoutCounters();
+            return counters != null ? counters : BackendDropoutCounters.NONE;
+        } catch (RuntimeException brokenContract) {
+            LOG.log(Level.FINE, "dropoutCounters() of " + backend.getClass().getName() + " threw",
+                    brokenContract);
+            return BackendDropoutCounters.NONE;
+        }
+    }
+
+    /**
+     * When the open stream's backend received its newest driver resync
+     * message ({@link AudioBackend#newestDriverResyncNanos()}), as a
+     * {@link System#nanoTime()} reading; empty while no stream is open or
+     * when the backend does not know. Lock-free; any non-real-time thread;
+     * never throws.
+     *
+     * @return the arrival time, if known
+     */
+    public OptionalLong newestDriverResyncNanos() {
+        AudioBackend backend = this.openBackend;
+        if (backend == null || !isStreamOpen()) {
+            return OptionalLong.empty();
+        }
+        try {
+            OptionalLong arrived = backend.newestDriverResyncNanos();
+            return arrived != null ? arrived : OptionalLong.empty();
+        } catch (RuntimeException brokenContract) {
+            LOG.log(Level.FINE, "newestDriverResyncNanos() of " + backend.getClass().getName() + " threw",
+                    brokenContract);
+            return OptionalLong.empty();
+        }
+    }
+
+    /**
+     * The open stream's capture inputs and how many blocks each has
+     * delivered so far (story 338): the stream's own input
+     * while its render drive runs, has an opened input and the input has not
+     * ended, then each input opened beside the stream whose publisher still
+     * owns its source. A delivery is counted when the block arrives, whatever
+     * its content (ruling E53). Each call reads the counts anew; a handle
+     * stays the same object for the life of its input, so a reader keys on
+     * it. Lock-free; any non-real-time thread.
+     *
+     * @return the inputs, immutable; empty while nothing captures
+     */
+    public List<CaptureInputSnapshot> captureInputs() {
+        List<CaptureInputSnapshot> inputs = new ArrayList<>();
+        EngineStreamPump current = this.pump;
+        if (current != null && current.hasOwnInput() && current.inputLive()) {
+            inputs.add(new CaptureInputSnapshot(current, primaryInputName(),
+                    current.deliveredInputBlocks(), true));
+        }
+        for (AdditionalInputSubscriber subscriber : liveInputSubscribers) {
+            if (subscriber.isLive()) {
+                inputs.add(new CaptureInputSnapshot(subscriber, subscriber.name,
+                        subscriber.deliveredBlocks.get(), false));
+            }
+        }
+        return List.copyOf(inputs);
+    }
+
+    /**
+     * Ends a capture input the engine's watchdog found stalled (story 338,
+     * amendment A10). It acts on {@code handle}'s own object —
+     * the stream's own input through its render pump, an input opened beside
+     * the stream through its own subscriber — so a stream reopened between
+     * the verdict and this call keeps its input. The take then flags the
+     * input's tracks and warns once, as for an input whose publisher closed
+     * (story 326). An input that {@code STOPPED} also counts one input halt
+     * in the engine's health record, with the fault
+     * {@code input from “<name>” stopped delivering audio} (ruling E11); one
+     * that {@code NEVER_DELIVERED} does not (ruling E52). Idempotent; any
+     * non-real-time thread; lock-free.
+     *
+     * @param handle a {@link CaptureInputSnapshot#handle()} of this engine
+     * @param kind   how the input stalled
+     * @return {@code true} only for the call that ended a live input
+     * @throws IllegalArgumentException if {@code handle} is not a capture
+     *                                  input handle of this engine
+     */
+    public boolean declareInputStalled(Object handle, InputStallKind kind) {
+        Objects.requireNonNull(handle, "handle must not be null");
+        Objects.requireNonNull(kind, "kind must not be null");
+        String name;
+        boolean ended;
+        if (handle instanceof EngineStreamPump streamPump && streamPump.belongsTo(this)) {
+            ended = streamPump.declareInputStalled();
+            name = ended ? primaryInputName() : null;
+        } else if (handle instanceof AdditionalInputSubscriber subscriber && subscriber.owner() == this) {
+            ended = subscriber.terminateInputSource();
+            name = subscriber.name;
+        } else {
+            throw new IllegalArgumentException("not a capture input of this engine: " + handle);
+        }
+        if (ended && kind == InputStallKind.STOPPED) {
+            inputStallLedger.recordStall(name);
+        }
+        return ended;
+    }
+
+    /** The name the plan gives the stream's own input, else the open device's; empty when there is none. */
+    private String primaryInputName() {
+        CaptureRoutingPlan plan = captureRoutingPlan;
+        if (plan != null && !plan.sources().isEmpty()) {
+            return plan.sources().get(0).device().name();
+        }
+        DeviceId device = this.openDevice;
+        return device == null ? "" : device.name();
+    }
+
+    /**
+     * Whether a take's recording callback is installed (story 338, rulings
+     * E7 and E15): true from a record start, through its count-in, until the take
+     * stops or a device loss halts capture. One volatile read; any thread.
+     */
+    public boolean isRecordingCaptureActive() {
+        return recordingCallback != null;
+    }
+
+    /**
+     * Captured input blocks lost before they reached a capture ring, for the
+     * life of this engine (story 338, rulings E25 and E45): blocks the
+     * render pump's input queue refused, and the
+     * {@link BackendDropoutCounters#inputBlocksDropped()} of the stream's
+     * backend and of every input opened beside it, each counted from the
+     * open of its stream and kept when the stream closes. Monotonic: a reader
+     * baselines it when a take starts. Lock-free; any non-real-time thread.
+     */
+    public long capturedInputBlocksLost() {
+        return capturedInputLoss.total();
+    }
+
+    /** Called by the render pump's input subscriber when its queue refused a block. */
+    void noteCapturedInputBlockLost() {
+        capturedInputLoss.noteQueueDrop();
+    }
+
+    /** Pump thread only, on the render drive around {@link #processBlock}: see {@link #capturedInputStarved}. */
+    @RealTimeSafe
+    void setCapturedInputStarved(boolean starved) {
+        capturedInputStarved = starved;
+    }
+
+    /**
+     * Whether the block being rendered has no captured input behind it while
+     * the stream's input is live (story 338, amendment A6). Read only by the
+     * take's capture callback for the stream's own input, on the render
+     * thread inside {@link #processBlock}; {@code false} for every block not
+     * rendered by the engine's own pump.
+     */
+    @RealTimeSafe
+    public boolean isCapturedInputStarved() {
+        return capturedInputStarved;
+    }
+
+    /**
+     * Captured blocks lost before the capture ring: the pump's queue drops,
+     * counted where they happen, and each attached backend's own count from
+     * the open that attached it. A backend's count moves into the folded
+     * total when its stream closes. Writers are the lifecycle paths under the
+     * engine's lifecycle lock; the reader takes no lock and retries while a
+     * fold is half done, so the total never counts a fold twice or loses it.
+     */
+    private static final class CapturedInputLoss {
+
+        private record Source(AudioBackend backend, long baseline) { }
+
+        private final AtomicLong queueDrops = new AtomicLong();
+        /** Odd while a writer moves a backend's count into {@link #folded}. */
+        private final AtomicLong version = new AtomicLong();
+        private volatile long folded;
+        private volatile Source[] sources = new Source[0];
+
+        void noteQueueDrop() {
+            queueDrops.incrementAndGet();
+        }
+
+        synchronized void attach(AudioBackend backend) {
+            for (Source source : sources) {
+                if (source.backend() == backend) {
+                    return;
+                }
+            }
+            Source[] grown = java.util.Arrays.copyOf(sources, sources.length + 1);
+            grown[sources.length] = new Source(backend, inputBlocksDropped(backend));
+            sources = grown;
+        }
+
+        synchronized void detach(AudioBackend backend) {
+            for (int i = 0; i < sources.length; i++) {
+                Source source = sources[i];
+                if (source.backend() != backend) {
+                    continue;
+                }
+                long lost = Math.max(0L, inputBlocksDropped(backend) - source.baseline());
+                Source[] shrunk = new Source[sources.length - 1];
+                System.arraycopy(sources, 0, shrunk, 0, i);
+                System.arraycopy(sources, i + 1, shrunk, i, sources.length - i - 1);
+                version.incrementAndGet();
+                folded = folded + lost;
+                sources = shrunk;
+                version.incrementAndGet();
+                return;
+            }
+        }
+
+        long total() {
+            while (true) {
+                long before = version.get();
+                if ((before & 1L) == 0L) {
+                    long sum = folded;
+                    for (Source source : sources) {
+                        sum += Math.max(0L, inputBlocksDropped(source.backend()) - source.baseline());
+                    }
+                    if (version.get() == before) {
+                        return sum + queueDrops.get();
+                    }
+                }
+                Thread.onSpinWait();
+            }
+        }
+
+        private static long inputBlocksDropped(AudioBackend backend) {
+            try {
+                BackendDropoutCounters counters = backend.dropoutCounters();
+                return counters == null ? 0L : counters.inputBlocksDropped();
+            } catch (RuntimeException brokenContract) {
+                return 0L;
+            }
+        }
     }
 
     /**

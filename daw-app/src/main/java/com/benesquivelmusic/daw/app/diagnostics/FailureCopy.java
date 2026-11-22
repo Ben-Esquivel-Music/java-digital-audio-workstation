@@ -89,6 +89,7 @@ public final class FailureCopy {
     static final String AUDIO_DEVICE = "failure.audio.device";
     static final String AUDIO_FAULT = "failure.audio.fault";
     static final String AUDIO_FAULT_DEVICE = "failure.audio.fault.device";
+    static final String AUDIO_FAULT_DEVICE_UNNAMED = "failure.audio.fault.device.unnamed";
     static final String AUDIO_FAULT_PROCESSING = "failure.audio.fault.processing";
     static final String AUDIO_FAULT_PROCESSING_NAMED = "failure.audio.fault.processing.named";
     static final String AUDIO_FAULT_PLUGIN = "failure.audio.fault.plugin";
@@ -106,14 +107,18 @@ public final class FailureCopy {
     static final String UI_PULSE = "failure.ui.pulse";
     static final String BUS_SUBSCRIBER = "failure.bus.subscriber";
 
-    /** The keys of this family, in the bundle's order: story 336's fifteen, then story 337's thirty-six. */
+    /**
+     * The keys of this family, in the bundle's order: story 336's fifteen, then story 337's thirty-six with
+     * the unnamed device fault beside the named one (story 338, ruling E128).
+     */
     static final List<String> KEYS = List.of(UI, UI_NAMED, TASK, TASK_UNNAMED, FATAL, FATAL_MEMORY, REPEATED,
             REPEATED_TAIL, ACTION_OPEN_LOG_FOLDER, MENU_OPEN_LOG_FOLDER, LOG_FOLDER_OPEN_FAILED,
             LOG_SINK_UNAVAILABLE, LOG_SINK_WRITE_FAILED, STARTUP, PLUGIN_DISPOSE,
             ACTION_RESTART_AUDIO_ENGINE, AUDIO_CALLBACK, AUDIO_RENDER, AUDIO_RENDER_NAMED, AUDIO_SINK, AUDIO_PACING,
             AUDIO_INPUT, AUDIO_WORKER, AUDIO_DSP, AUDIO_DSP_UNNAMED, AUDIO_MIDI, AUDIO_PLUGIN, AUDIO_PLUGIN_UNNAMED,
             AUDIO_AUTOMATION, AUDIO_AUTOMATION_UNNAMED, AUDIO_CONFIG, AUDIO_CONFIG_UNKNOWN, AUDIO_DEVICE,
-            AUDIO_FAULT, AUDIO_FAULT_DEVICE, AUDIO_FAULT_PROCESSING, AUDIO_FAULT_PROCESSING_NAMED, AUDIO_FAULT_PLUGIN,
+            AUDIO_FAULT, AUDIO_FAULT_DEVICE, AUDIO_FAULT_DEVICE_UNNAMED, AUDIO_FAULT_PROCESSING,
+            AUDIO_FAULT_PROCESSING_NAMED, AUDIO_FAULT_PLUGIN,
             AUDIO_FAULT_WORKER, AUDIO_FAULT_DSP, AUDIO_FAULT_DSP_UNNAMED, AUDIO_FAULT_MIDI, AUDIO_FAULT_PLUGIN_UNNAMED,
             AUDIO_HALTED, AUDIO_HALTED_NAMED, AUDIO_HALTED_PLAYBACK, AUDIO_HALTED_RECORDING, AUDIO_HALTED_NEXT,
             AUDIO_HALTED_NEXT_NAMED, UI_PULSE, BUS_SUBSCRIBER);
@@ -180,9 +185,10 @@ public final class FailureCopy {
      *   <li>any other category with a declared subject: {@code failure.task}, the subject as the task.
      *       Story 337's categories do not reach this table: the audio categories have their own copy
      *       ({@link #audioFirst}, {@link #audioSustained}, {@link #audioHalted}), and so do {@code ui.pulse}
-     *       and {@code bus.subscriber} ({@link #isolatedConsumer}); the later stages (stories 338–340)
+     *       and {@code bus.subscriber} ({@link #isolatedConsumer}); the later stages (stories 339–340)
      *       give their categories copy of their own in the same way, rather than reusing
-     *       "background task";</li>
+     *       "background task". The engine-health watchdog and the xrun feed add no category: their
+     *       slugs are log-only and their notices are the controller's;</li>
      *   <li>a thread whose name states its purpose ({@link #taskName}): {@code failure.task};</li>
      *   <li>otherwise {@code failure.task.unnamed}.</li>
      * </ol>
@@ -320,7 +326,7 @@ public final class FailureCopy {
      * @param category the category
      * @param name     the component the failure's sample names — a plugin or processor display name, or a
      *                 parameter's display name for AUTOMATION — if any
-     * @param device   the open device's display name, or the backend's
+     * @param device   the open device's display name, or the backend's; blank when there is neither
      * @param reason   the newest sampled throwable's reason ({@link GuardedThrowables#reason})
      * @param detail   the category's detail: for CONFIG the return-bus count, or {@code 0} when no sample
      *                 carried one; otherwise unused
@@ -355,7 +361,9 @@ public final class FailureCopy {
      * The ERROR fact of a sustained real-time fault (story 337, rulings E41,
      * E44, E45 and E64), a sentence true for its own category:
      * {@code failure.audio.fault} for CALLBACK;
-     * {@code failure.audio.fault.device} for SINK, PACING, INPUT and DEVICE;
+     * {@code failure.audio.fault.device} for SINK, PACING, INPUT and DEVICE,
+     * {@code failure.audio.fault.device.unnamed} for those when there is no
+     * device or backend name at all (story 338, ruling E128);
      * {@code failure.audio.fault.plugin} for a named PLUGIN and
      * {@code failure.audio.fault.plugin.unnamed} for an unnamed one;
      * {@code failure.audio.fault.worker} for WORKER, whatever the name;
@@ -368,7 +376,7 @@ public final class FailureCopy {
      *
      * @param category the category
      * @param name     the component the failure's sample names, if any
-     * @param device   the open device's display name, or the backend's
+     * @param device   the open device's display name, or the backend's; blank when there is neither
      * @param count    the occurrences counted for its fingerprint so far
      * @param since    when its fingerprint was first seen
      * @param reason   the newest sampled throwable's reason
@@ -385,7 +393,9 @@ public final class FailureCopy {
         String shownSince = clock(since);
         return switch (category) {
             case CALLBACK -> format(AUDIO_FAULT, total, shownSince, reason);
-            case SINK, PACING, INPUT, DEVICE -> format(AUDIO_FAULT_DEVICE, total, device, shownSince, reason);
+            case SINK, PACING, INPUT, DEVICE -> device.isBlank()
+                    ? format(AUDIO_FAULT_DEVICE_UNNAMED, total, shownSince, reason)
+                    : format(AUDIO_FAULT_DEVICE, total, device, shownSince, reason);
             case PLUGIN -> name.map(named -> format(AUDIO_FAULT_PLUGIN, named, total, shownSince, reason))
                     .orElseGet(() -> format(AUDIO_FAULT_PLUGIN_UNNAMED, total, shownSince, reason));
             case WORKER -> format(AUDIO_FAULT_WORKER, total, shownSince, reason);

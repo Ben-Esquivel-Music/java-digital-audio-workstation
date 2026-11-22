@@ -2230,6 +2230,38 @@ class JavaxSoundBackendTest {
         }
     }
 
+    /**
+     * Java Sound reports the blocks its input publisher dropped for a
+     * subscriber that could not keep up, read from the support its capture
+     * thread publishes through, and claims no output-starvation signal.
+     */
+    @Test
+    void dropoutCountersReportTheInputPublishersDrops() throws Exception {
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        Field supportField = JavaxSoundBackend.class.getDeclaredField("support");
+        supportField.setAccessible(true);
+        AudioBackendSupport support = (AudioBackendSupport) supportField.get(backend);
+        support.markOpen(new AudioFormat(48_000.0, 2, 16), 64);
+        support.inputBlocks().subscribe(new Flow.Subscriber<>() {
+            @Override public void onSubscribe(Flow.Subscription s) { /* never requests */ }
+            @Override public void onNext(AudioBlock block) { /* unused */ }
+            @Override public void onError(Throwable t) { /* unused */ }
+            @Override public void onComplete() { /* unused */ }
+        });
+        assertThat(backend.dropoutCounters()).isEqualTo(BackendDropoutCounters.NONE);
+
+        for (int i = 0; i < Flow.defaultBufferSize() * 2; i++) {
+            support.publishInput(AudioBlock.silence(48_000.0, 2, 64));
+        }
+
+        BackendDropoutCounters counters = backend.dropoutCounters();
+        assertThat(counters.inputBlocksDropped())
+                .isPositive()
+                .isEqualTo(support.inputBlocksDropped());
+        assertThat(counters.reportsOutputStarvation()).isFalse();
+        support.close();
+    }
+
     /** Replaces the open stream's input publisher through the support's own field. */
     private static void replaceInputPublisher(JavaxSoundBackend backend,
                                               SubmissionPublisher<AudioBlock> publisher)

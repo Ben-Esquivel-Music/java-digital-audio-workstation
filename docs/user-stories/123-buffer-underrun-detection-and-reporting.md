@@ -26,3 +26,14 @@ The codebase has the hooks to detect this: `AudioBufferPool` and the render loop
 - Deterministic real-time scheduling via OS priority APIs — backend-specific and out of scope here.
 - Automatic plugin removal on overload — only bypass, and only with user opt-in.
 - Long-term performance telemetry collection to a remote service.
+
+## Note from Story 338
+
+Story 338 built the feeding half and the counter UI of this story, in the shape its studio engineer ruled, which differs from the Goals above:
+
+- **The detector does not wrap the render callback or publish from it.** The render drive hands each rendered block's processing time to `XrunDetector.recordTick`, which only stores plain fields, and `publishPending()` offers the events off the real-time thread; `beginTick`, `Tick` and `reset()` are gone. `AudioEngineController.xrunEvents()` is fed, and no window surface subscribes to it.
+- **No `XrunCounterLabel`.** The counter is the session status strip's Xruns cell ("Xruns N"), and its click, Enter or Space opens `XrunLogDialog` ("Xrun Log", the newest 100 entries). An entry names a track, never a node id.
+- **What counts.** The number counts observed gaps only: silenced callback periods and render blocks, refused blocks, rendered blocks never played, device periods that found the output buffer empty, and the driver's overload and resync messages. A late block is a log entry and never raises it (story 338, rulings E17, E38 and E72).
+- **No rolling 30-second count, and no reset at transport start or stop.** The cell shows the count since its last reset, in the warning accent while it grew in the last 30 seconds; it restarts when a reconfigure rebuilds the detector (a Settings apply, Restart Audio Engine or a driver's reopen), and at the log's Clear, never at Play, Stop or Reconnect (rulings E22 and E71).
+- **No `GraphOverload` is published**: `XrunDetector.reportGraphOverload` has no production caller. The CPU budget enforcer's degradations are logged as "Shed" entries that name the track and what was done, and never raise the number (rulings E21 and E42).
+- **Not built:** the warning after three overloads in five seconds with the opt-in bypass of the most expensive insert, and the 60-second render test. They are future story [462](future/462-repeated-graph-overloads-raise-a-warning-with-an-opt-in-bypass.md).

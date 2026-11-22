@@ -24,7 +24,10 @@ import java.util.Objects;
  * {@code null} claim is a counted overflow and an immediate return — the
  * callback never blocks), stamps the header — the transport's beat position,
  * the start frame derived from it, the punch snapshot from one load of the
- * transport's punch region, the loop flag — copies the device block and each
+ * transport's punch region, the loop flag, and for the stream's own input the
+ * engine's input-starved flag (the render had no captured block for it), or
+ * for a sibling input the output clock drives the transport frame of the
+ * render block that clocked it — copies the device block and each
  * armed graph-instrument buffer (only valid inside this callback), publishes
  * if its final gate read observes open, wakes the flush thread, and leaves
  * the gate. No
@@ -81,10 +84,11 @@ import java.util.Objects;
  * so a successful wait includes that late publication in the sealed take.
  * See {@link CaptureRing} for the bounded wait and the gate argument. On a
  * device loss the gate is closed earlier, by the engine's
- * {@link AudioEngine#haltRecordingCapture()} on the device-event thread
- * ({@link #onCaptureHalted()}), before the lost stream is closed and so
- * before any stream can be reopened; the pipeline's stop then closes it
- * again.</p>
+ * {@link AudioEngine#haltRecordingCapture()} on the thread that declares the
+ * loss ({@link #onCaptureHalted()}), before the loss is published: for a
+ * removal or a stall also before the lost stream is closed and so before any
+ * stream can be reopened; for a driver reset whose reopen failed, after the
+ * reset had closed it. The pipeline's stop then closes the gate again.</p>
  */
 final class CaptureCallback implements AudioEngine.RecordingCallback {
 
@@ -200,14 +204,14 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
     /**
      * The engine removed this callback through
      * {@link AudioEngine#haltRecordingCapture()} — the device-loss path, on
-     * the device-event thread (story 327, PR #982 review): closes the ring's
-     * producer gate, one volatile store, so a later call of this callback —
-     * a pump a reopened stream starts before the pipeline's own stop has
-     * run on the FX thread — claims nothing, and a call already inside drops
-     * its block if its final gate read observes the close. Not the audio
-     * thread's, and not reachable from {@link #onAudioCaptured}: it carries
-     * no {@code @RealTimeSafe}. The pipeline's stop closes the same gate
-     * again, harmlessly.
+     * the thread that declares the loss (story 327, PR #982 review): closes
+     * the ring's producer gate, one volatile store, so a later call of this
+     * callback — a pump a reopened stream starts before the pipeline's own
+     * stop has run on the FX thread — claims nothing, and a call already
+     * inside drops its block if its final gate read observes the close. Not
+     * the audio thread's, and not reachable from {@link #onAudioCaptured}: it
+     * carries no {@code @RealTimeSafe}. The pipeline's stop closes the same
+     * gate again, harmlessly.
      *
      * <p>A take still counting in (story 328) has its count-in cancelled
      * first, so the record start never runs on the halted take — unless the
@@ -286,6 +290,19 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
             slot.setPunchEnabled(false);
         }
         slot.setLoopEnabled(loop.enabled());
+        if (loop.enabled() && loop.endInBeats() > loop.startInBeats()) {
+            slot.setLoopStartFrame(startFrameOf(loop.startInBeats()));
+            slot.setLoopEndFrame(startFrameOf(loop.endInBeats()));
+        }
+        if (!independentFrameCursor) {
+            // Set and read on the render thread that runs this callback; a
+            // sibling's own publisher thread never reads it.
+            slot.setInputStarved(audioEngine.isCapturedInputStarved());
+        } else if (inputBuffer.length == 0) {
+            // Only the output clock delivers a zero-width sibling block, on
+            // the render thread, before the transport advances past it.
+            slot.setOutputClockFrame(startFrameOf(transport.getPositionInBeats()));
+        }
 
         slot.setNumFrames(numFrames);
         int excess = numFrames - slot.slotFrames();

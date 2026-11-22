@@ -574,6 +574,33 @@
     -fx-font-weight: bold;
 }
 
+/* The transport bar's clock badge (story 338): dim while the lock is not measured. */
+.clock-status-indicator {
+    -fx-padding: 2 8 2 8;
+    -fx-background-radius: 8;
+    -fx-font-size: 10px;
+}
+
+.clock-status-indicator.clock-locked {
+    -fx-background-color: -surface-3;
+    -fx-text-fill: -text;
+}
+
+.clock-status-indicator.clock-dim {
+    -fx-background-color: -surface-2;
+    -fx-text-fill: -text-mute;
+}
+
+.clock-status-indicator.clock-unlocked {
+    -fx-background-color: -danger;
+    -fx-text-fill: -text-on-accent;
+    -fx-font-weight: bold;
+}
+
+.clock-status-indicator.clock-unlocked:flash {
+    -fx-opacity: 0.6;
+}
+
 /* ── Time Display ── */
 .time-display {
     /* Typography (mono, 14 px, weight 500) now comes from the
@@ -1219,6 +1246,7 @@
     -ssc-warn: -warn;
     -ssc-critical: -danger;
     -ssc-flash: -accent-soft;
+    -ssc-focus: -focus-ring;
 }
 
 /* Forward role tokens onto the checkpoint-countdown canvas; its Java draw

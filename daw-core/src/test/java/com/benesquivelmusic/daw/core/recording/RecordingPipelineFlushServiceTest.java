@@ -719,6 +719,7 @@ class RecordingPipelineFlushServiceTest {
         }
         pipeline.awaitFlushed();
         assertThat(pipeline.getTruncatedFrames()).isEqualTo(3 * 256L);
+        assertThat(pipeline.getTruncationEpisodes()).as("three over-long blocks in a row are one episode").isEqualTo(1);
         assertThat(TakeManifest.read(pipeline.getTakeManifestPath()).gaps()).hasSize(1);
         assertThat(warnings).hasSize(1);
 
@@ -729,6 +730,7 @@ class RecordingPipelineFlushServiceTest {
         advanceOneBlock(transport);
         pipeline.awaitFlushed();
         assertThat(pipeline.getTruncatedFrames()).isEqualTo(4 * 256L);
+        assertThat(pipeline.getTruncationEpisodes()).isEqualTo(2);
         assertThat(warnings).hasSize(2);
         assertThat(TakeManifest.read(pipeline.getTakeManifestPath()).gaps()).containsExactly(
                 new TakeManifest.GapEntry(TakeManifest.GapEntry.ALL_TRACKS, 256, 0),

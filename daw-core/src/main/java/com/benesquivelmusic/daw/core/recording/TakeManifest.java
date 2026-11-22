@@ -27,8 +27,9 @@ import java.util.regex.Pattern;
  * Reliability book §3.3; story 323): an immutable value written by the
  * {@code capture-flush} thread at take start (the take's initialisation),
  * whenever a segment opens, seals or is discarded (rotation, lane seal), on
- * every overflow episode, at the start of every truncation episode, and at
- * the final seal, so a recovery scan can rebuild the take without the
+ * every overflow episode, at the start of every truncation episode, when an
+ * input stops delivering, when a run of input-starved blocks ends, after a
+ * clock event, and at the final seal, so a recovery scan can rebuild the take without the
  * project file.
  *
  * <p><strong>Thread.</strong> {@link #write(Path)} is called on the
@@ -55,7 +56,25 @@ import java.util.regex.Pattern;
  * ring-frames=&lt;int&gt;
  * track=&lt;trackId&gt;|&lt;channels&gt;|&lt;compensation-frames&gt;                 (one per armed track, armed order)
  * segment=&lt;trackId&gt;|&lt;lane&gt;|&lt;index&gt;|&lt;relative path, '/'&gt;|&lt;frames or -1&gt;|&lt;streaming|sealed&gt;
- * gap=&lt;trackId or *&gt;|&lt;startFrame&gt;|&lt;dropped-blocks&gt;                  (one per overflow episode; dropped-blocks 0 = a truncation episode)
+ * routing-unavailable=&lt;trackId&gt;|&lt;device, Base64url UTF-8&gt;|&lt;firstChannel&gt;|&lt;channelCount&gt;|&lt;availableChannels&gt;
+ *                                                                  (one per track whose route the input could not
+ *                                                                   fill; channels are input channel indices and counts)
+ * gap=&lt;trackId or *&gt;|&lt;startFrame&gt;|&lt;dropped-blocks&gt;                  (one per overflow episode; dropped-blocks 0 = a truncation episode;
+ *                                                                   startFrame a transport frame at the take's rate)
+ * input-stopped=&lt;trackId&gt;|&lt;stopFrame&gt;|&lt;resumeFrame&gt;               (one per track whose input stopped delivering or never
+ *                                                                   delivered; transport frames at the take's rate, inside
+ *                                                                   the loop range in a loop take, or in lap 1's pre-roll
+ *                                                                   from the take's start frame, where resumeFrame may be
+ *                                                                   smaller than stopFrame; absent in older files: reads as
+ *                                                                   empty)
+ * input-silence=&lt;trackId&gt;|&lt;startFrame&gt;|&lt;frames&gt;                  (one per part of a run of blocks rendered with no captured
+ *                                                                   input, as the file received it: inside the punch region,
+ *                                                                   and cut at the loop end; startFrame a transport frame
+ *                                                                   and frames a count of frames, both at the take's rate;
+ *                                                                   absent in older files: reads as empty)
+ * clock=&lt;unlocked|locked|resync&gt;|&lt;frame&gt;                           (one per clock event during the take; frame a transport
+ *                                                                   frame at the take's rate; absent in older files: reads
+ *                                                                   as empty)
  * overflow-blocks=&lt;long&gt;
  * truncated-frames=&lt;long&gt;                                          (absent in older files: reads as 0)
  * seal-status=streaming|sealed|aborted
@@ -440,6 +459,112 @@ public final class TakeManifest {
         }
     }
 
+    /**
+     * A track whose input stopped delivering blocks during the take, or never
+     * delivered one (story 338, rulings E13, E15, E50 and E55). The track's
+     * file holds silence from the stop on; the routing flag of the same track
+     * says so for the whole track, this entry says from where.
+     *
+     * <p>In a loop take both frames lie inside the loop range, or before the
+     * loop start but not before the take's start frame, in lap 1's pre-roll,
+     * which the file holds (ruling E115); a {@code resumeFrame} smaller than
+     * {@code stopFrame} means the loop wrapped between them: valid, and never
+     * reordered (ruling E89). In a
+     * punch take the stop is the first frame of the file's silence, the
+     * punch-in frame when the input's last delivered frame lies outside the
+     * region (rulings E77 and E88).</p>
+     *
+     * @param trackId     the affected track
+     * @param stopFrame   the transport frame after the last block the input
+     *                    delivered, or the take's start frame for an input that
+     *                    delivered nothing; non-negative
+     * @param resumeFrame the transport frame from which the stream's clock
+     *                    wrote the track's silence: {@code stopFrame} for the
+     *                    stream's own input; for an input opened beside the
+     *                    stream, the stream's frame at the hand-off, so that
+     *                    track's file is shorter than the window it missed by
+     *                    the frames from {@code stopFrame} to
+     *                    {@code resumeFrame} (across the wrap, when it is the
+     *                    smaller); non-negative
+     */
+    public record InputStopped(String trackId, long stopFrame, long resumeFrame) {
+        public InputStopped {
+            requireField(trackId, "trackId");
+            if (stopFrame < 0 || resumeFrame < 0) {
+                throw new IllegalArgumentException(
+                        "input-stopped frames must not be negative: " + stopFrame + ", " + resumeFrame);
+            }
+        }
+    }
+
+    /**
+     * A run of blocks the stream rendered while its own input delivered
+     * nothing, so the track holds silence there in place of captured audio
+     * (story 338, rulings E3, E34, E43 and E48): only the frames the file
+     * received inside the punch region, and one entry per part when the run
+     * crossed the loop end, so that no entry runs past it (rulings E75, E76
+     * and E87).
+     *
+     * @param trackId    the affected track
+     * @param startFrame the transport frame of the part's first frame; non-negative
+     * @param frames     the frames the part covers; positive
+     */
+    public record InputSilence(String trackId, long startFrame, long frames) {
+        public InputSilence {
+            requireField(trackId, "trackId");
+            if (startFrame < 0) {
+                throw new IllegalArgumentException("startFrame must not be negative: " + startFrame);
+            }
+            if (frames <= 0) {
+                throw new IllegalArgumentException("frames must be positive: " + frames);
+            }
+        }
+    }
+
+    /** What the interface's clock did (story 338, rulings E30, E40 and E62). */
+    public enum ClockEvent {
+        /** The external clock was declared lost, dated by the first bad answer of its run. */
+        UNLOCKED("unlocked"),
+        /** The external clock was declared locked again. */
+        LOCKED("locked"),
+        /** The driver asked to resynchronize. */
+        RESYNC("resync");
+
+        private final String token;
+
+        ClockEvent(String token) {
+            this.token = token;
+        }
+
+        String token() {
+            return token;
+        }
+
+        static ClockEvent parse(String token) throws IOException {
+            for (ClockEvent event : values()) {
+                if (event.token.equals(token)) {
+                    return event;
+                }
+            }
+            throw new IOException("unknown clock event '" + token + "'");
+        }
+    }
+
+    /**
+     * A clock event during the take.
+     *
+     * @param event what happened; not {@code null}
+     * @param frame the transport frame it is dated at; non-negative
+     */
+    public record ClockMark(ClockEvent event, long frame) {
+        public ClockMark {
+            Objects.requireNonNull(event, "event must not be null");
+            if (frame < 0) {
+                throw new IllegalArgumentException("frame must not be negative: " + frame);
+            }
+        }
+    }
+
     private final String take;
     private final Instant startedAt;
     private final double sampleRate;
@@ -454,6 +579,9 @@ public final class TakeManifest {
     private final List<SegmentEntry> segments;
     private final List<GapEntry> gaps;
     private final List<RoutingFlag> routingFlags;
+    private final List<InputStopped> inputStops;
+    private final List<InputSilence> inputSilences;
+    private final List<ClockMark> clockMarks;
     private final long overflowBlocks;
     private final long truncatedFrames;
     private final SealStatus sealStatus;
@@ -511,6 +639,9 @@ public final class TakeManifest {
         this.segments = canonicalOrder(this.tracks, b.segments);
         this.gaps = List.copyOf(b.gaps);
         this.routingFlags = List.copyOf(b.routingFlags);
+        this.inputStops = List.copyOf(b.inputStops);
+        this.inputSilences = List.copyOf(b.inputSilences);
+        this.clockMarks = List.copyOf(b.clockMarks);
         this.overflowBlocks = b.overflowBlocks;
         this.truncatedFrames = b.truncatedFrames;
         this.sealStatus = b.sealStatus;
@@ -540,6 +671,9 @@ public final class TakeManifest {
         b.segments.addAll(segments);
         b.gaps.addAll(gaps);
         b.routingFlags.addAll(routingFlags);
+        b.inputStops.addAll(inputStops);
+        b.inputSilences.addAll(inputSilences);
+        b.clockMarks.addAll(clockMarks);
         b.overflowBlocks = overflowBlocks;
         b.truncatedFrames = truncatedFrames;
         b.sealStatus = sealStatus;
@@ -627,6 +761,21 @@ public final class TakeManifest {
 
     /** Returns the unavailable input routes in the order recorded. */
     public List<RoutingFlag> routingFlags() { return routingFlags; }
+
+    /** Returns the tracks whose input stopped delivering, or never delivered, in the order recorded. */
+    public List<InputStopped> inputStops() {
+        return inputStops;
+    }
+
+    /** Returns the runs of blocks rendered with no captured input, in the order recorded. */
+    public List<InputSilence> inputSilences() {
+        return inputSilences;
+    }
+
+    /** Returns the clock events of the take, in the order recorded. */
+    public List<ClockMark> clockMarks() {
+        return clockMarks;
+    }
 
     /** Returns the loss episodes (ring overflows and truncation episodes) in the order recorded. */
     public List<GapEntry> gaps() {
@@ -745,6 +894,15 @@ public final class TakeManifest {
         for (GapEntry g : gaps) {
             line(sb, "gap", g.trackId() + "|" + g.startFrame() + "|" + g.droppedBlocks());
         }
+        for (InputStopped stop : inputStops) {
+            line(sb, "input-stopped", stop.trackId() + "|" + stop.stopFrame() + "|" + stop.resumeFrame());
+        }
+        for (InputSilence silence : inputSilences) {
+            line(sb, "input-silence", silence.trackId() + "|" + silence.startFrame() + "|" + silence.frames());
+        }
+        for (ClockMark mark : clockMarks) {
+            line(sb, "clock", mark.event().token() + "|" + mark.frame());
+        }
         line(sb, "overflow-blocks", Long.toString(overflowBlocks));
         line(sb, "truncated-frames", Long.toString(truncatedFrames));
         line(sb, "seal-status", sealStatus.token());
@@ -760,8 +918,10 @@ public final class TakeManifest {
     /**
      * Parses a manifest file. Unknown keys are ignored; a missing
      * {@code seal-status} reads as {@link SealStatus#STREAMING}; missing
-     * {@code track}/{@code segment}/{@code gap}/{@code overflow-blocks}/
-     * {@code truncated-frames} read as empty / zero, and a missing
+     * {@code track}/{@code segment}/{@code gap}/{@code routing-unavailable}/
+     * {@code input-stopped}/{@code input-silence}/{@code clock}/
+     * {@code overflow-blocks}/{@code truncated-frames} read as empty / zero,
+     * and a missing
      * {@code sealed-at} as {@link #sealedAt() empty}. The format keys are
      * required.
      *
@@ -803,6 +963,9 @@ public final class TakeManifest {
                 case "track" -> b.addTrack(parseTrack(value, source, lineNo));
                 case "segment" -> b.addSegment(parseSegment(value, source, lineNo));
                 case "gap" -> b.addGap(parseGap(value, source, lineNo));
+                case "input-stopped" -> b.addInputStopped(parseInputStopped(value, source, lineNo));
+                case "input-silence" -> b.addInputSilence(parseInputSilence(value, source, lineNo));
+                case "clock" -> b.addClockMark(parseClockMark(value, source, lineNo));
                 case "routing-unavailable" -> {
                     try {
                         String[] fields = value.split("\\|", -1);
@@ -875,6 +1038,9 @@ public final class TakeManifest {
         private final List<SegmentEntry> segments = new ArrayList<>();
         private final List<GapEntry> gaps = new ArrayList<>();
         private final List<RoutingFlag> routingFlags = new ArrayList<>();
+        private final List<InputStopped> inputStops = new ArrayList<>();
+        private final List<InputSilence> inputSilences = new ArrayList<>();
+        private final List<ClockMark> clockMarks = new ArrayList<>();
         public Builder addRoutingFlag(RoutingFlag flag) {
             Objects.requireNonNull(flag);
             if (routingFlags.stream().noneMatch(f -> f.trackId().equals(flag.trackId()))) routingFlags.add(flag);
@@ -1005,6 +1171,25 @@ public final class TakeManifest {
             return this;
         }
 
+        /** Adds a track's input stop; a later one for the same track is ignored, as a later routing flag is. */
+        public Builder addInputStopped(InputStopped stop) {
+            Objects.requireNonNull(stop, "stop must not be null");
+            if (inputStops.stream().noneMatch(s -> s.trackId().equals(stop.trackId()))) {
+                inputStops.add(stop);
+            }
+            return this;
+        }
+
+        public Builder addInputSilence(InputSilence silence) {
+            inputSilences.add(Objects.requireNonNull(silence, "silence must not be null"));
+            return this;
+        }
+
+        public Builder addClockMark(ClockMark mark) {
+            clockMarks.add(Objects.requireNonNull(mark, "mark must not be null"));
+            return this;
+        }
+
         public Builder gaps(List<GapEntry> gaps) {
             this.gaps.clear();
             this.gaps.addAll(Objects.requireNonNull(gaps, "gaps must not be null"));
@@ -1087,6 +1272,35 @@ public final class TakeManifest {
             return new GapEntry(f[0], parseLong(f[1], "gap.start-frame", source),
                     parseLong(f[2], "gap.dropped-blocks", source));
         } catch (IllegalArgumentException e) {
+            throw new IOException(source + ":" + lineNo + ": " + e.getMessage(), e);
+        }
+    }
+
+    private static InputStopped parseInputStopped(String value, String source, int lineNo) throws IOException {
+        String[] f = fields(value, 3, "input-stopped", source, lineNo);
+        try {
+            return new InputStopped(f[0], parseLong(f[1], "input-stopped.stop-frame", source),
+                    parseLong(f[2], "input-stopped.resume-frame", source));
+        } catch (IllegalArgumentException e) {
+            throw new IOException(source + ":" + lineNo + ": " + e.getMessage(), e);
+        }
+    }
+
+    private static InputSilence parseInputSilence(String value, String source, int lineNo) throws IOException {
+        String[] f = fields(value, 3, "input-silence", source, lineNo);
+        try {
+            return new InputSilence(f[0], parseLong(f[1], "input-silence.start-frame", source),
+                    parseLong(f[2], "input-silence.frames", source));
+        } catch (IllegalArgumentException e) {
+            throw new IOException(source + ":" + lineNo + ": " + e.getMessage(), e);
+        }
+    }
+
+    private static ClockMark parseClockMark(String value, String source, int lineNo) throws IOException {
+        String[] f = fields(value, 2, "clock", source, lineNo);
+        try {
+            return new ClockMark(ClockEvent.parse(f[0]), parseLong(f[1], "clock.frame", source));
+        } catch (IllegalArgumentException | IOException e) {
             throw new IOException(source + ":" + lineNo + ": " + e.getMessage(), e);
         }
     }
@@ -1229,6 +1443,9 @@ public final class TakeManifest {
                 && segments.equals(that.segments)
                 && gaps.equals(that.gaps)
                 && routingFlags.equals(that.routingFlags)
+                && inputStops.equals(that.inputStops)
+                && inputSilences.equals(that.inputSilences)
+                && clockMarks.equals(that.clockMarks)
                 && sealStatus == that.sealStatus
                 && sealedBy == that.sealedBy
                 && Objects.equals(sealedAt, that.sealedAt);
@@ -1238,7 +1455,7 @@ public final class TakeManifest {
     public int hashCode() {
         return Objects.hash(take, startedAt, sampleRate, bitDepth, streamChannels, startBeat,
                 startFrame, forceCadenceMillis, ringSlots, ringFrames, tracks, segments, gaps, routingFlags,
-                overflowBlocks, truncatedFrames, sealStatus, sealedBy, sealedAt);
+                inputStops, inputSilences, clockMarks, overflowBlocks, truncatedFrames, sealStatus, sealedBy, sealedAt);
     }
 
     @Override

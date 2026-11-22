@@ -63,6 +63,23 @@ class InputLevelMonitorRegistryTest {
     }
 
     @Test
+    void silenceAllDropsEveryMonitorToTheFloor() {
+        InputLevelMonitorRegistry registry = new InputLevelMonitorRegistry();
+        float[] loud = new float[64];
+        java.util.Arrays.fill(loud, .5f);
+        for (String id : new String[]{"a", "b"}) {
+            registry.getOrCreate(id).process(loud);
+        }
+
+        registry.silenceAll();
+
+        for (String id : new String[]{"a", "b"}) {
+            assertThat(registry.get(id).snapshot().peakDbfs())
+                    .isEqualTo(com.benesquivelmusic.daw.sdk.analysis.InputLevelMeter.DB_FLOOR);
+        }
+    }
+
+    @Test
     void clearDiscardsAllMonitors() {
         InputLevelMonitorRegistry registry = new InputLevelMonitorRegistry();
         registry.getOrCreate("a");

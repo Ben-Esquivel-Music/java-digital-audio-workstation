@@ -574,6 +574,205 @@ class AsioBufferSwitchShimTest {
     }
 
     // ------------------------------------------------------------------
+    // Observed dropouts: output starvation and capture-ring overflow
+    // ------------------------------------------------------------------
+
+    @Test
+    void anEmptyRingAfterTheFirstPlayedBlockCountsOneStarvedPeriod() {
+        buildShim(FLOAT32_LSB);
+        writeRenderedBlock();
+
+        shim.bufferSwitch(0, 1);
+        shim.bufferSwitch(1, 1);
+
+        assertThat(shim.outputStarvedPeriods())
+                .as("the second callback found nothing rendered and played silence")
+                .isEqualTo(1L);
+    }
+
+    @Test
+    void aCallbackThatPlaysARenderedBlockIsNotStarved() {
+        buildShim(FLOAT32_LSB);
+        writeRenderedBlock();
+        shim.bufferSwitch(0, 1);
+        writeRenderedBlock();
+
+        shim.bufferSwitch(1, 1);
+
+        assertThat(shim.outputStarvedPeriods()).isZero();
+    }
+
+    @Test
+    void emptyCallbacksBeforeTheFirstRenderedBlockAreStartUpNotStarvation() {
+        buildShim(FLOAT32_LSB);
+
+        shim.bufferSwitch(0, 1);
+        shim.bufferSwitch(1, 1);
+
+        assertThat(shim.outputStarvedPeriods())
+                .as("ASIOStart precedes the pump's first block, so these periods are start-up")
+                .isZero();
+    }
+
+    /**
+     * The early returns (a bad half, a quiesced bridge) never count as
+     * starvation although the device heartbeat still advances, which is why
+     * the starved count cannot be derived from the heartbeat.
+     */
+    @Test
+    void earlyReturnsCountNoStarvationWhileTheHeartbeatAdvances() {
+        buildShim(FLOAT32_LSB);
+        writeRenderedBlock();
+        shim.bufferSwitchUpcall(0, 1);
+
+        shim.bufferSwitchUpcall(-1, 1);
+        shim.bufferSwitchUpcall(2, 1);
+        shim.stopStreaming();
+        shim.bufferSwitchUpcall(1, 1);
+
+        assertThat(shim.deviceCallbackPeriods()).isEqualTo(4L);
+        assertThat(shim.outputStarvedPeriods()).isZero();
+    }
+
+    /**
+     * A drain thread held inside its publish leaves the capture ring to fill;
+     * each callback past its capacity loses its block and counts it.
+     */
+    @Test
+    void aFullCaptureRingCountsEachBlockItLoses() throws Exception {
+        CountDownLatch drainBlocked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        SubmissionPublisher<AudioBlock> holdingPublisher = new SubmissionPublisher<>() {
+            @Override
+            public int offer(AudioBlock item,
+                             java.util.function.BiPredicate<Flow.Subscriber<? super AudioBlock>,
+                                     ? super AudioBlock> onDrop) {
+                drainBlocked.countDown();
+                try {
+                    release.await(AWAIT_SECONDS, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+                return super.offer(item, onDrop);
+            }
+        };
+        support.close();
+        support = new AudioBackendSupport(holdingPublisher, new SubmissionPublisher<>());
+        support.markOpen(format, frames);
+        buildShim(FLOAT32_LSB);
+        try {
+            shim.bufferSwitch(0, 1);
+            assertThat(drainBlocked.await(AWAIT_SECONDS, TimeUnit.SECONDS))
+                    .as("the drain thread took the first block and is held in its publish")
+                    .isTrue();
+            for (int i = 0; i < 32; i++) {
+                shim.bufferSwitch(i & 1, 1);
+            }
+            assertThat(shim.inputRingOverflows())
+                    .as("32 blocks fit the empty 32-slot ring")
+                    .isZero();
+
+            shim.bufferSwitch(0, 1);
+            shim.bufferSwitch(1, 1);
+            shim.bufferSwitch(0, 1);
+
+            assertThat(shim.inputRingOverflows()).isEqualTo(3L);
+        } finally {
+            release.countDown();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Observed dropouts: rendered blocks discarded unplayed
+    // ------------------------------------------------------------------
+
+    /** Once playing, every block a full four-slot output ring refuses counts. */
+    @Test
+    void aFullOutputRingCountsEachRefusedBlockOnceTheBridgeHasPlayed() {
+        buildShim(FLOAT32_LSB);
+        writeRenderedBlock();
+        shim.bufferSwitch(0, 1);
+        for (int i = 0; i < 4; i++) {
+            writeRenderedBlock();
+        }
+        assertThat(shim.outputDiscardedBlocks()).as("four blocks fit the empty ring").isZero();
+
+        writeRenderedBlock();
+        writeRenderedBlock();
+
+        assertThat(shim.outputDiscardedBlocks()).isEqualTo(2L);
+    }
+
+    /** A late callback plays the newest queued block; the older ones it consumed count. */
+    @Test
+    void olderBlocksACallbackSkipsToPlayTheNewestAreCounted() {
+        buildShim(FLOAT32_LSB);
+        writeRenderedBlock();
+        shim.bufferSwitch(0, 1);
+        writeRenderedBlock();
+        writeRenderedBlock();
+        writeRenderedBlock();
+
+        shim.bufferSwitch(1, 1);
+
+        assertThat(shim.outputDiscardedBlocks())
+                .as("three queued, the newest played, two discarded unheard")
+                .isEqualTo(2L);
+        assertThat(shim.renderedBlocksConsumed()).isEqualTo(2L);
+    }
+
+    /**
+     * The pump runs ahead of {@code ASIOStart}: before the first played block
+     * neither the refused blocks nor the ones the first callback skips are a
+     * gap.
+     */
+    @Test
+    void blocksQueuedBeforeTheFirstPlayedBlockAreStartUpNotDiscards() {
+        buildShim(FLOAT32_LSB);
+        for (int i = 0; i < 6; i++) {
+            writeRenderedBlock();
+        }
+        assertThat(shim.outputDiscardedBlocks()).as("two refused before priming").isZero();
+
+        shim.bufferSwitch(0, 1);
+
+        assertThat(shim.outputDiscardedBlocks()).as("three skipped by the priming callback").isZero();
+    }
+
+    @Test
+    void aQuiescedBridgeCountsNoDiscardedBlocks() {
+        buildShim(FLOAT32_LSB);
+        writeRenderedBlock();
+        shim.bufferSwitch(0, 1);
+        shim.stopStreaming();
+
+        for (int i = 0; i < 6; i++) {
+            writeRenderedBlock();
+        }
+        shim.bufferSwitch(1, 1);
+
+        assertThat(shim.outputDiscardedBlocks()).isZero();
+    }
+
+    /** Negative control: one block per callback, the paced steady state, discards nothing. */
+    @Test
+    void aStreamThatPlaysEveryBlockItRendersDiscardsNothing() {
+        buildShim(FLOAT32_LSB);
+        for (int i = 0; i < 16; i++) {
+            writeRenderedBlock();
+            shim.bufferSwitch(i & 1, 1);
+        }
+
+        assertThat(shim.outputDiscardedBlocks()).isZero();
+        assertThat(shim.renderedBlocksConsumed()).isEqualTo(16L);
+    }
+
+    private void writeRenderedBlock() {
+        shim.write(new AudioBlock(format.sampleRate(), channels, frames, new float[] {
+                1f, 2f, 1f, 2f, 1f, 2f, 1f, 2f}));
+    }
+
+    // ------------------------------------------------------------------
     // Render-pump pacing gate (story 316 review)
     // ------------------------------------------------------------------
 

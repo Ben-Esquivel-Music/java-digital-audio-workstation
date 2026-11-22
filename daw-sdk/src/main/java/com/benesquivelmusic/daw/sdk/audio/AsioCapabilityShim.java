@@ -33,6 +33,21 @@ import java.util.Optional;
  *       not provide a control panel ({@code ASE_NotPresent}), or a
  *       negative value for any other {@code ASIOError}. Optional —
  *       older shim builds without this symbol degrade gracefully.</li>
+ *   <li>{@code int asioshim_getClockSources(void* outArray, int* outCount)} and
+ *       {@code int asioshim_setClockSource(int reference)} (story 216)
+ *       &rarr; wrap {@code ASIOGetClockSources} / {@code ASIOSetClockSource}.
+ *       Optional.</li>
+ *   <li>{@code int asioshim_getChannelCount(int* outInputs, int* outOutputs)} and
+ *       {@code int asioshim_getChannelInfo(int channel, int isInput, void* outInfo)}
+ *       (story 215) &rarr; wrap {@code ASIOGetChannels} /
+ *       {@code ASIOGetChannelInfo}. Optional.</li>
+ *   <li>{@code int asioshim_getSamplePosition(int64_t* outSamplePosition, int64_t* outSystemTimeNanos)}
+ *       &rarr; wraps {@code ASIOGetSamplePosition}, both outputs converted
+ *       natively to {@code int64_t}; returns the raw {@code ASIOError} (0 on
+ *       {@code ASE_OK}; {@code ASE_NotPresent} while no driver is loaded or
+ *       the driver is not started). The clock-lock poll reads it. Optional —
+ *       without it the backend polls nothing and publishes no lock
+ *       events.</li>
  * </ul>
  *
  * <p>Construction never throws: when the {@code asioshim} library is
@@ -95,6 +110,11 @@ class AsioCapabilityShim implements AutoCloseable {
      * {@code null} if the symbol is not present in the shim build.
      */
     private final MethodHandle getChannelInfo;
+    /**
+     * Optional handle for {@code asioshim_getSamplePosition}. {@code null} if
+     * the symbol is not present in the shim build.
+     */
+    private final MethodHandle getSamplePosition;
     private boolean closed;
 
     /**
@@ -114,6 +134,7 @@ class AsioCapabilityShim implements AutoCloseable {
         MethodHandle scs = null;
         MethodHandle gcc = null;
         MethodHandle gci = null;
+        MethodHandle gsp = null;
         SymbolLookup lookup = null;
         Linker linker = null;
         try {
@@ -209,6 +230,22 @@ class AsioCapabilityShim implements AutoCloseable {
                 gci = null;
             }
         }
+        // Optional: an older shim build without the sample-position export
+        // leaves the clock-lock poll off. The ABI's outputs are int64_t, so
+        // JAVA_LONG is exact here (this is not a C long).
+        if (ok && lookup != null && linker != null) {
+            try {
+                gsp = linker.downcallHandle(
+                        lookup.find("asioshim_getSamplePosition").orElseThrow(
+                                () -> new UnsatisfiedLinkError("asioshim_getSamplePosition")),
+                        FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+            } catch (IllegalArgumentException | UnsatisfiedLinkError ignored) {
+                gsp = null;
+            } catch (Throwable ignored) {
+                gsp = null;
+            }
+        }
         this.available = ok;
         this.getBufferSize = gbs;
         this.canSampleRate = csr;
@@ -219,6 +256,7 @@ class AsioCapabilityShim implements AutoCloseable {
         this.setClockSource = scs;
         this.getChannelCount = gcc;
         this.getChannelInfo = gci;
+        this.getSamplePosition = gsp;
     }
 
     /** Returns {@code true} when all core capability entry points resolved. */
@@ -588,6 +626,77 @@ class AsioCapabilityShim implements AutoCloseable {
             return Optional.empty();
         } catch (Throwable ignored) {
             return Optional.empty();
+        }
+    }
+
+    /**
+     * One answer of {@code ASIOGetSamplePosition}, as
+     * {@code asioshim_getSamplePosition} returns it.
+     *
+     * @param error           the raw {@code ASIOError}: {@link #ASE_OK} (0),
+     *                        {@code ASE_SPNotAdvancing} (-996),
+     *                        {@code ASE_NoClock} (-995), or another SDK code;
+     *                        {@code ASE_NotPresent} (-1000) while no driver is
+     *                        loaded or it is not started
+     * @param samplePosition  the driver's sample position; 0 unless
+     *                        {@code error} is {@link #ASE_OK}
+     * @param systemTimeNanos the driver's system time of that position, in
+     *                        nanoseconds; 0 unless {@code error} is
+     *                        {@link #ASE_OK}
+     */
+    record SamplePosition(int error, long samplePosition, long systemTimeNanos) {
+        /** The SDK's {@code ASE_OK}: this ABI returns the raw error, not the 1/0 convention. */
+        static final int ASE_OK = 0;
+    }
+
+    /**
+     * Returns {@code true} when the optional {@code asioshim_getSamplePosition}
+     * symbol resolved at construction and a driver is loaded.
+     */
+    boolean isSamplePositionAvailable() {
+        return isAvailable() && AsioDriverShim.isDriverLoaded()
+                && getSamplePosition != null;
+    }
+
+    /**
+     * Calls {@code ASIOGetSamplePosition} via the shim, on
+     * {@link AsioControlThread} within its default budget.
+     *
+     * <p>A returned value is an ANSWER from the driver, good or bad. A throw
+     * is NO answer: the symbol is absent, the control thread refused the call
+     * or its budget expired (for example while the driver's modal control
+     * panel owns the thread), the wait was interrupted, or the FFM call
+     * failed. The clock-lock poll must never read a throw as a bad
+     * answer.</p>
+     *
+     * @return the driver's answer; never {@code null}
+     * @throws AudioBackendException when the driver gave no answer
+     */
+    SamplePosition samplePosition() {
+        if (!isSamplePositionAvailable()) {
+            throw new AudioBackendException(
+                    "ASIO sample position is unavailable: no driver is loaded, or the"
+                            + " asioshim build does not export asioshim_getSamplePosition.");
+        }
+        try {
+            return AsioControlThread.call(() -> {
+                try (Arena call = Arena.ofConfined()) {
+                    MemorySegment position = call.allocate(ValueLayout.JAVA_LONG);
+                    MemorySegment systemTime = call.allocate(ValueLayout.JAVA_LONG);
+                    int rc = (int) getSamplePosition.invokeExact(position, systemTime);
+                    return new SamplePosition(rc,
+                            position.get(ValueLayout.JAVA_LONG, 0),
+                            systemTime.get(ValueLayout.JAVA_LONG, 0));
+                }
+            });
+        } catch (AudioBackendException noAnswer) {
+            throw noAnswer;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AudioBackendException(
+                    "ASIO sample-position query was interrupted", interrupted);
+        } catch (Throwable failure) {
+            throw new AudioBackendException("ASIO sample-position query failed", failure);
         }
     }
 

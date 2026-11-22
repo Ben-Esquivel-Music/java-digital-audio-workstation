@@ -904,7 +904,8 @@ class AudioEngineOutputTest {
 
         assertThatThrownBy(engine::startAudioOutput)
                 .as("a second pump into the shared render pipeline is a hard failure")
-                .isInstanceOf(AudioBackendException.class)
+                .isInstanceOfSatisfying(StreamOpenRefusedException.class, refused -> assertThat(refused.reason())
+                        .isEqualTo(StreamOpenRefusedException.Reason.PREVIOUS_STREAM_NOT_RELEASED))
                 .hasMessageContaining("previous render pump has not exited yet");
         assertThat(backend.openCount.get())
                 .as("no second open — the refusal happens before the ladder is walked")
@@ -979,7 +980,8 @@ class AudioEngineOutputTest {
             Throwable refusal = catchThrowable(engine::startAudioOutput);
             assertThat(refusal)
                     .as("the reap's join timed out too, so the start refuses to open over the stream")
-                    .isInstanceOf(AudioBackendException.class)
+                    .isInstanceOfSatisfying(StreamOpenRefusedException.class, refused -> assertThat(refused.reason())
+                        .isEqualTo(StreamOpenRefusedException.Reason.PREVIOUS_STREAM_NOT_RELEASED))
                     .hasMessageContaining("its stream could not be closed");
             assertThat(engine.takeFailedStreamStart(refusal))
                     .as("the refusal names the requested endpoint, like every refusal of a start")
@@ -1701,7 +1703,8 @@ class AudioEngineOutputTest {
 
             assertThatThrownBy(engine::startAudioOutput)
                     .as("the walk is abandoned, and the refusal says why")
-                    .isInstanceOf(AudioBackendException.class)
+                    .isInstanceOfSatisfying(StreamOpenRefusedException.class, refused -> assertThat(refused.reason())
+                        .isEqualTo(StreamOpenRefusedException.Reason.PREVIOUS_STREAM_NOT_RELEASED))
                     .hasMessageContaining("First")
                     .hasMessageContaining("could not be released")
                     .hasMessageContaining("two backends on one device")
@@ -1818,7 +1821,8 @@ class AudioEngineOutputTest {
         assertThatThrownBy(engine::startAudioOutput)
                 .as("opening now would put a second stream on the device the panel's"
                         + " backend still holds")
-                .isInstanceOf(AudioBackendException.class)
+                .isInstanceOfSatisfying(StreamOpenRefusedException.class, refused -> assertThat(refused.reason())
+                        .isEqualTo(StreamOpenRefusedException.Reason.PREVIOUS_STREAM_NOT_RELEASED))
                 .hasMessageContaining("control panel");
         assertThat(backend.openCount.get())
                 .as("no second open reached the device")
@@ -2045,7 +2049,8 @@ class AudioEngineOutputTest {
                         + " before a fresh open and refuses the open while the release is"
                         + " still outstanding — opening now would put a second backend on"
                         + " the device this one has not let go of")
-                .isInstanceOf(AudioBackendException.class)
+                .isInstanceOfSatisfying(StreamOpenRefusedException.class, refused -> assertThat(refused.reason())
+                        .isEqualTo(StreamOpenRefusedException.Reason.PREVIOUS_STREAM_NOT_RELEASED))
                 .hasMessageContaining("still")
                 .hasMessageContaining("DEFERRED");
         assertThat(backend.openCount.get())
@@ -2671,6 +2676,15 @@ class AudioEngineOutputTest {
         public BackendThreadCounters threadCounters() {
             Supplier<BackendThreadCounters> script = counterReport;
             return script == null ? BackendThreadCounters.NONE : script.get();
+        }
+
+        /** What {@link #dropoutCounters()} answers; {@code null} reports the interface default. */
+        volatile Supplier<com.benesquivelmusic.daw.sdk.audio.BackendDropoutCounters> dropoutReport;
+
+        @Override
+        public com.benesquivelmusic.daw.sdk.audio.BackendDropoutCounters dropoutCounters() {
+            Supplier<com.benesquivelmusic.daw.sdk.audio.BackendDropoutCounters> script = dropoutReport;
+            return script == null ? AudioBackend.super.dropoutCounters() : script.get();
         }
 
         @Override

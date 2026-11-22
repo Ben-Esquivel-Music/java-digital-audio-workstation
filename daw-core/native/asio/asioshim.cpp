@@ -698,6 +698,54 @@ ASIOSHIM_EXPORT int asioshim_setClockSource(int reference) {
     return static_cast<int>(ASIOSetClockSource(static_cast<long>(reference)));
 }
 
+namespace {
+    // ASIOSamples and ASIOTimeStamp are a native 64-bit integer when the SDK
+    // is configured NATIVE_INT64, and a {hi, lo} pair of 32-bit halves
+    // otherwise (the Windows default).
+#if NATIVE_INT64
+    template <typename Asio64>
+    int64_t asio64ToInt64(Asio64 value) {
+        return static_cast<int64_t>(value);
+    }
+#else
+    template <typename Asio64>
+    int64_t asio64ToInt64(const Asio64& value) {
+        const uint64_t hi = static_cast<uint64_t>(static_cast<uint32_t>(value.hi));
+        const uint64_t lo = static_cast<uint64_t>(static_cast<uint32_t>(value.lo));
+        return static_cast<int64_t>((hi << 32) | lo);
+    }
+#endif
+}
+
+// Wraps ASIOGetSamplePosition for the host's clock-lock poll. Returns the raw
+// ASIOError like asioshim_setClockSource, so ASE_SPNotAdvancing (-996) and
+// ASE_NoClock (-995) reach the Java side unchanged. Gated on g_started as
+// well as on a loaded driver: before ASIOStart, or after a reset teardown's
+// ASIOStop, a driver answers "not advancing", which the poll would read as a
+// lost clock. Takes g_driverMutex like every host-called export, so it is
+// never called from a driver thread.
+ASIOSHIM_EXPORT int asioshim_getSamplePosition(int64_t* outSamplePosition,
+                                               int64_t* outSystemTimeNanos) {
+    if (!outSamplePosition || !outSystemTimeNanos) {
+        return static_cast<int>(ASE_InvalidParameter);
+    }
+    std::lock_guard<std::mutex> lock(g_driverMutex);
+    *outSamplePosition = 0;
+    *outSystemTimeNanos = 0;
+    if (!g_driverLoaded || !g_started) {
+        return static_cast<int>(ASE_NotPresent);
+    }
+    ASIOSamples position{};
+    ASIOTimeStamp systemTime{};
+    ASIOError err = ASIOGetSamplePosition(&position, &systemTime);
+    if (err != ASE_OK) {
+        return static_cast<int>(err);
+    }
+    *outSamplePosition = asio64ToInt64(position);
+    *outSystemTimeNanos = asio64ToInt64(systemTime);
+    return static_cast<int>(ASE_OK);
+}
+
 // ─── Channel-info bridge (story 215) ────────────────────────────────
 //
 // asioshim_getChannelCount mirrors ASIOGetChannels(numInputs, numOutputs)
@@ -792,8 +840,10 @@ ASIOSHIM_EXPORT int asioshim_getChannelInfo(int channelIndex, int isInput,
 // guarantees that Java's JAVA_INT descriptor remains ABI-exact. We store it
 // in a process-global slot the SDK's installed callback table
 // reads when the driver fires kAsioResetRequest / kAsioBufferSizeChange
-// / kAsioResyncRequest. The Java upcall is responsible for mapping
-// each selector onto AudioDeviceEvent.FormatChangeRequested.
+// / kAsioResyncRequest / kAsioOverload. The Java upcall decides what each
+// selector means: a reset or buffer-size change becomes an
+// AudioDeviceEvent.FormatChangeRequested; a resync or an overload is counted
+// on the backend and nothing is published.
 
 namespace {
     std::atomic<asio_message_fn> g_asioMessageCallback{nullptr};

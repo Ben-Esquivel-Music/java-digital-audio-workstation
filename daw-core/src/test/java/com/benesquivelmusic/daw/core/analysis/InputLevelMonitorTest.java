@@ -237,6 +237,27 @@ class InputLevelMonitorTest {
     }
 
     @Test
+    void silenceDropsTheLevelToTheFloorAndKeepsTheClipLatch() {
+        InputLevelMonitor monitor = new InputLevelMonitor();
+        float[] clipping = new float[64];
+        for (int i = 0; i < clipping.length; i++) {
+            clipping[i] = (i % 2 == 0) ? 1.0f : -1.0f;
+        }
+        monitor.process(clipping);
+        InputLevelMeter loud = monitor.snapshot();
+        assertThat(loud.clippedSinceReset()).isTrue();
+
+        monitor.silence();
+
+        InputLevelMeter silent = monitor.snapshot();
+        assertThat(silent.peakDbfs()).isEqualTo(InputLevelMeter.DB_FLOOR);
+        assertThat(silent.rmsDbfs()).isEqualTo(InputLevelMeter.DB_FLOOR);
+        assertThat(silent.clippedSinceReset()).as("a lost device keeps its clip LED lit (E64)").isTrue();
+        assertThat(silent.lastClipFrameIndex()).isEqualTo(loud.lastClipFrameIndex());
+        assertThat(monitor.isClippedSinceReset()).isTrue();
+    }
+
+    @Test
     void resetPreservesCurrentPeakAndRmsValues() {
         InputLevelMonitor monitor = new InputLevelMonitor();
         float[] samples = new float[128];

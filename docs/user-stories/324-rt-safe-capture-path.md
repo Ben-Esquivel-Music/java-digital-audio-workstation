@@ -177,3 +177,7 @@ mvn -o -B -DskipNativeBuild=true -DskipNoticesGeneration=true -Dsnapshots.autoBa
 **Flakiness.** `StopFenceTailIntegrityContractTest`, `FailedCaptureStartClosesTheProducerGateContractTest` and `LoopStandbyLifecycleContractTest` were run three times together with 0 failures. `RecordedAudioLoadsOffTheFxThreadContractTest` was found order-dependent during review — it failed when its class was the first in the JVM — and was fixed in the test, which now holds the controller's logger strongly; it was then green alone three times and after another controller test.
 
 **Not validated.** No run on real audio hardware; no manual long-take recording session; the full suite on Linux; macOS.
+
+## Note from Story 338
+
+The capture ring's overflow and truncation counts now reach the person as the take's dropout figures: the session status strip's Xruns cell reads "Xruns N · Take dropouts K" while the take records and "Xruns N · Last take dropouts K" after it, and the xrun log reads "This take: K dropouts (B blocks lost, F frames truncated)" (story 338, rulings E24 and E92). In a punch take an overflow counts only when its gap reaches into the punch region, and truncated frames only inside it (rulings E86 and E104). The warnings the pipeline's warning sink carries, and their visibility, are unchanged and stay story 339's.

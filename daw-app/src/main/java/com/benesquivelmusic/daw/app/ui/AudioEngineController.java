@@ -368,11 +368,12 @@ public interface AudioEngineController {
      * whenever the audio engine detects a late buffer, a dropped
      * buffer, or a graph-wide CPU overload.
      *
-     * <p>UI components (for example an xrun counter in the transport
-     * bar) subscribe to this publisher so they never have to poll the
-     * audio thread. The default implementation returns an empty
-     * publisher that never emits, which is safe for test doubles that
-     * do not need xrun reporting.</p>
+     * <p>Subscribers never poll the audio thread. The engine controller
+     * offers the events from its health monitor, off the audio thread: the
+     * late and dropped blocks the render drive timed, and one dropped-buffer
+     * event for each batch of gaps its xrun feed observed. The default
+     * implementation returns an empty publisher that never emits, which is
+     * safe for test doubles that do not need xrun reporting.</p>
      *
      * @return a publisher of {@link XrunEvent}s; never {@code null}
      */
@@ -438,6 +439,20 @@ public interface AudioEngineController {
      */
     default EngineState engineState() {
         return EngineState.STOPPED;
+    }
+
+    /**
+     * Whether the device is lost: {@link EngineState#DEVICE_LOST}, or a loss
+     * is being declared, its stream closing or already closed (story 338). A
+     * surface that must never read a lost device as an ordinary Stop asks
+     * this rather than {@link #engineState()}. Lock-free; any thread.
+     *
+     * <p>The default reads {@link #engineState()} alone.</p>
+     *
+     * @return whether the device is lost or being declared lost
+     */
+    default boolean isDeviceLost() {
+        return engineState() == EngineState.DEVICE_LOST;
     }
 
     /**
@@ -633,19 +648,22 @@ public interface AudioEngineController {
     /**
      * Returns a {@link Flow.Publisher} that emits a
      * {@link com.benesquivelmusic.daw.sdk.audio.ClockLockEvent} every
-     * time a driver reports a change in external-clock lock state. The
-     * transport-bar clock-status indicator subscribes to this so it can
-     * flash red on lock failure; the engine additionally pauses
-     * recording (not playback) on a lock-loss event.
+     * time a driver reports a change in external-clock lock state, and
+     * once ({@code locked = true}) at the first good measurement of a
+     * stream or of a newly selected source, which is not a relock (story
+     * 338, rulings E82 and E83). The transport-bar clock-status indicator
+     * does not follow these events: it reads {@link #clockLockStatus()} on
+     * every pulse, so no change can be missed. A clock event never stops
+     * or pauses a take (story 338, ruling E30).
      *
      * <p>Story 316 review — deliberately not called "the ACTIVE backend's"
-     * events: this seam names no backend and takes no backend name, and no
-     * production implementation overrides it, so the publisher every caller
-     * gets today is the never-emitting default below. Only a driver that
-     * holds the device can report clock lock, so an implementation that
-     * forwards real events must forward those of the backend carrying the
-     * OPEN stream ({@link AudioBackend#clockLockEvents()}, the active fact
-     * of book &sect;3.2) and re-bind that subscription on every open.</p>
+     * events: this seam names no backend and takes no backend name. Only a
+     * driver that holds the device can report clock lock, so an
+     * implementation that forwards real events forwards those of the backend
+     * carrying the OPEN stream ({@link AudioBackend#clockLockEvents()}, the
+     * active fact of book &sect;3.2) and re-binds that subscription on every
+     * open; {@code DefaultAudioEngineController} does (story 338), with one
+     * publisher for its life.</p>
      *
      * <p>The default implementation returns an empty publisher that
      * never emits, which is safe for test doubles.</p>
@@ -659,6 +677,23 @@ public interface AudioEngineController {
                 @Override public void cancel() { /* no-op */ }
             });
         };
+    }
+
+    /**
+     * The OPEN stream's external-clock lock state as its backend measures it
+     * ({@link AudioBackend#clockLockStatus()}): the level from which the
+     * transport-bar clock badge derives, on every pulse, what it shows,
+     * notifies and marks.
+     * Volatile reads only: never the controller's monitor, never a driver
+     * call, so the JavaFX thread may call it every frame.
+     *
+     * <p>The default reports none, which is safe for test doubles.</p>
+     *
+     * @return the open stream's status; empty when no stream is open or its
+     *         backend measures no lock
+     */
+    default Optional<com.benesquivelmusic.daw.sdk.audio.ClockLockStatus> clockLockStatus() {
+        return Optional.empty();
     }
 
     /**

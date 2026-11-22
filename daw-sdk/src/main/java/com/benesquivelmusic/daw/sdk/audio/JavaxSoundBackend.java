@@ -1568,6 +1568,20 @@ public final class JavaxSoundBackend implements AudioBackend {
                 Optional.ofNullable(lastInputFault), Optional.empty());
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Java Sound reports the captured blocks its input publisher dropped
+     * for a subscriber that could not keep up. The JDK mixer gives no
+     * output-starvation, overload or resync signal, so those counts are zero
+     * and {@link BackendDropoutCounters#reportsOutputStarvation()} is
+     * {@code false}.</p>
+     */
+    @Override
+    public BackendDropoutCounters dropoutCounters() {
+        return new BackendDropoutCounters(0L, 0L, 0L, 0L, support.inputBlocksDropped(), false);
+    }
+
     static AudioBlock decodePcm16(byte[] pcm, int bytes, AudioFormat format) {
         return decode(pcm, bytes, format,
                 pcmFormat(Encoding.PCM_SIGNED, format, Short.SIZE, false));

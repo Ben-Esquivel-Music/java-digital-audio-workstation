@@ -183,8 +183,10 @@ final class AsioControlThread {
 
     /**
      * True while {@link #callUnbounded(Operation)} is executing — i.e. while
-     * the driver's modal control panel owns the control thread. Read only to
-     * make a timeout message truthful about WHY the thread was busy.
+     * the driver's modal control panel owns the control thread. Read to make
+     * a timeout message truthful about WHY the thread was busy, and by the
+     * clock-lock poll, which sends nothing while the panel is open
+     * ({@link #isControlPanelOpen()}).
      *
      * <p>It is cleared only once the native call has REALLY returned (story
      * 316 re-review). That is a property of the uninterruptible wait behind
@@ -265,6 +267,17 @@ final class AsioControlThread {
         } finally {
             controlPanelOpen = false;
         }
+    }
+
+    /**
+     * Whether a driver's modal control panel owns the control thread: a call
+     * through {@link #callUnbounded(Operation)} has not returned. One volatile
+     * read; any thread.
+     *
+     * @return {@code true} while the panel's downcall runs
+     */
+    static boolean isControlPanelOpen() {
+        return controlPanelOpen;
     }
 
     /**

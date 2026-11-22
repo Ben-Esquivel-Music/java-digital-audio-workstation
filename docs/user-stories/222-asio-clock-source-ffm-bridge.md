@@ -51,3 +51,7 @@ The ASIO SDK exposes `ASIOError ASIOGetClockSources(ASIOClockSource sources[], l
 - Files: `daw-sdk/src/main/java/com/benesquivelmusic/daw/sdk/audio/AsioBackend.java` (clockSources + selectClockSource), `daw-core/native/asio/asioshim.cpp` (export getClockSources + setClockSource), `daw-app/src/main/java/com/benesquivelmusic/daw/app/ui/ClockStatusIndicator.java` (instantiate + refresh logic), `daw-app/src/main/java/com/benesquivelmusic/daw/app/ui/MainController.java` (mount the indicator). The existing `ClockSource` record + `ClockKind` enum live in `daw-sdk` and need no shape change.
 - The ASIO SDK uses `int32` for source ids; persist as `int` accordingly.
 - Reference original story: **216 — Hardware Clock Source Selection**.
+
+## Note from Story 338
+
+`ClockStatusIndicator` is built and mounted, immediately before the transport status label rather than next to the buffer-size readout (story 338, ruling E32). It reads the device's clock sources through `DefaultAudioEngineController.clockSources` off the FX thread: when a stream opens, after every Settings apply or driver reconfigure (the window's post-reconfigure callback), and after every clock-source selection (the controller's clock-source-selected callback). It does not refresh on `FormatChangeRequested.ClockSourceChange`: a resync request no longer publishes one (ruling E37). The lock health this story leaves out is story 338's `AsioClockLockMonitor` (story 216's Note from Story 338).

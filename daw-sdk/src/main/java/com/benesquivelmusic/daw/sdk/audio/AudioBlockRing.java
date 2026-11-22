@@ -31,7 +31,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * rather than block). {@code daw-sdk} is the API floor and must not depend on
  * {@code daw-core}, so the idiom is re-implemented here rather than reused.</p>
  *
- * <p>A single ring must use exactly one of {@link #drainLatestInto(float[])} or
+ * <p>A single ring must use exactly one of {@link #drainLatestInto(float[])}
+ * (or its counting form {@link #drainLatestCountingInto(float[])}) or
  * {@link #readInto(float[])}: they are alternative consumer disciplines over
  * the same single consumer index, not composable operations.</p>
  */
@@ -134,13 +135,28 @@ final class AudioBlockRing {
      */
     @RealTimeSafe
     boolean drainLatestInto(float[] destination) {
+        return drainLatestCountingInto(destination) > 0;
+    }
+
+    /**
+     * {@link #drainLatestInto(float[])} that also says how many queued slots
+     * the call consumed, so a caller can count the older blocks it discarded
+     * unheard ({@code consumed - 1}). The count is taken from the same head and
+     * tail the drain advances, so it is exact under a concurrent producer.
+     *
+     * @param destination interleaved buffer to fill; must not be null
+     * @return the slots consumed: {@code 0} when the ring was empty or
+     *         {@code destination} is null, otherwise at least {@code 1}
+     */
+    @RealTimeSafe
+    int drainLatestCountingInto(float[] destination) {
         if (destination == null) {
-            return false;
+            return 0;
         }
         long h = head.get();
         long t = tail.get();
         if (h >= t) {
-            return false; // empty
+            return 0; // empty
         }
         float[] latest = slots[(int) ((t - 1) & mask)];
         int copied = Math.min(destination.length, latest.length);
@@ -151,7 +167,7 @@ final class AudioBlockRing {
         // Release store after the copy: the producer may only reuse the
         // slots once it observes the advanced head.
         head.lazySet(t);
-        return true;
+        return (int) (t - h);
     }
 
     /**

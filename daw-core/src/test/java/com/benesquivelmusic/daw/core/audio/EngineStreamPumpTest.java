@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.audio;
 
 import com.benesquivelmusic.daw.core.audio.health.AudioFailureCategory;
 import com.benesquivelmusic.daw.core.audio.health.AudioFailureSample;
+import com.benesquivelmusic.daw.core.audio.performance.XrunDetector;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioBlock;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
@@ -88,6 +89,12 @@ class EngineStreamPumpTest {
      */
     private static final AudioFormat WHOLE_MILLIS_FORMAT =
             new AudioFormat(48_000.0, 2, 24, 960);
+
+    /**
+     * How long the slow-block tests' callback parks: 7 ms, more than twice
+     * {@link #FORMAT}'s ~2.67 ms period, so every such block is a dropped tick.
+     */
+    private static final long SLOW_BLOCK_NANOS = TimeUnit.MILLISECONDS.toNanos(7);
 
     /** Guard budget — generous, never inner-inflated. */
     private static final long GUARD_BUDGET_MILLIS = 5_000L;
@@ -401,6 +408,103 @@ class EngineStreamPumpTest {
         assertThat(engine.audioHealth().lastFailure(AudioFailureCategory.RENDER))
                 .get().isInstanceOf(IOException.class);
         assertThat(engine.audioHealth().total(AudioFailureCategory.RENDER_HALTED)).isZero();
+    }
+
+    /**
+     * The render drive hands every rendered block's processing time to the
+     * engine's detector: a block that takes more than twice its period is a
+     * dropped tick. The detector reaches the pump through the engine's setter.
+     */
+    @Test
+    void aRenderedBlockSlowerThanTwoPeriodsTicksTheEnginesDetectorAsDropped() {
+        RecordingBackend backend = new RecordingBackend();
+        XrunDetector detector = new XrunDetector(FORMAT.sampleRate(), FORMAT.bufferSize());
+        engine = new AudioEngine(FORMAT);
+        engine.setXrunDetector(detector);
+        engine.setRecordingCallback((inputBuffer, numFrames) ->
+                LockSupport.parkNanos(SLOW_BLOCK_NANOS));
+        engine.start();
+        pump = new EngineStreamPump(backend, engine, FORMAT, SDK_FORMAT);
+        pump.start();
+
+        awaitCondition(() -> detector.getDroppedCount() >= 3,
+                "blocks rendered in more than twice the period are dropped ticks");
+        assertThat(detector.getTickCount()).isGreaterThanOrEqualTo(detector.getDroppedCount());
+        assertThat(pump.renderFaults()).isZero();
+        detector.close();
+    }
+
+    /**
+     * A faulted block is a render fault, never a tick as well: the same slow
+     * block that throws must leave the detector's counts at zero.
+     */
+    @Test
+    void aFaultedBlockIsARenderFaultAndNeverATick() {
+        RecordingBackend backend = new RecordingBackend();
+        XrunDetector detector = new XrunDetector(FORMAT.sampleRate(), FORMAT.bufferSize());
+        engine = new AudioEngine(FORMAT);
+        engine.setXrunDetector(detector);
+        engine.setRecordingCallback((inputBuffer, numFrames) -> {
+            LockSupport.parkNanos(SLOW_BLOCK_NANOS);
+            throw new IllegalStateException("insert failed after a slow block");
+        });
+        engine.start();
+        pump = new EngineStreamPump(backend, engine, FORMAT, SDK_FORMAT);
+        pump.start();
+
+        awaitCondition(() -> pump.renderFaults() >= 3, "the slow faulted blocks are render faults");
+        assertThat(detector.getTickCount()).isZero();
+        assertThat(detector.getLateCount() + detector.getDroppedCount())
+                .as("a faulted block is counted once, as a render fault")
+                .isZero();
+        detector.close();
+    }
+
+    /**
+     * Story 338, ruling E33: a throwable that kills the pump thread past its
+     * catch-all is logged and then recorded as the drive's halt, once. The
+     * pump is never started, so the test thread that runs its handler is the
+     * lane's only writer; the handler is read from the pump's thread in test
+     * code.
+     */
+    @Test
+    void aLastResortThreadDeathIsLoggedThenRecordedAsTheDrivesHalt() throws Exception {
+        RecordingBackend backend = new RecordingBackend();
+        engine = new AudioEngine(FORMAT);
+        engine.start();
+        pump = new EngineStreamPump(backend, engine, FORMAT, SDK_FORMAT);
+        java.lang.reflect.Field threadField = EngineStreamPump.class.getDeclaredField("thread");
+        threadField.setAccessible(true);
+        Thread pumpThread = (Thread) threadField.get(pump);
+        Thread.UncaughtExceptionHandler handler = pumpThread.getUncaughtExceptionHandler();
+        StackOverflowError death = new StackOverflowError("backstop");
+        List<Long> haltsWhenLogged = new CopyOnWriteArrayList<>();
+
+        try (CapturedPumpLog log = CapturedPumpLog.attach(
+                () -> haltsWhenLogged.add(engine.audioHealth().total(AudioFailureCategory.RENDER_HALTED)))) {
+            Thread dying = new Thread(() -> {
+                throw death;
+            });
+            dying.setUncaughtExceptionHandler(handler);
+            dying.start();
+            dying.join(GUARD_BUDGET_MILLIS);
+
+            assertThat(log.threadDeaths()).isEqualTo(1);
+            assertThat(log.records())
+                    .filteredOn(entry -> entry.getThrown() == death)
+                    .singleElement().satisfies(entry -> {
+                assertThat(entry.getLevel()).isEqualTo(java.util.logging.Level.SEVERE);
+                assertThat(entry.getThrown()).isSameAs(death);
+            });
+            assertThat(haltsWhenLogged)
+                    .as("the SEVERE line is written before the halt is recorded")
+                    .containsExactly(0L);
+        }
+        assertThat(engine.audioHealth().total(AudioFailureCategory.RENDER_HALTED)).isEqualTo(1);
+        assertThat(engine.audioHealth().lastFailure(AudioFailureCategory.RENDER_HALTED)).containsSame(death);
+        assertThat(pump.hasHalted()).isTrue();
+        assertThat(pump.isRunning()).isFalse();
+        assertThat(pump.stop()).isTrue();
     }
 
     /** Story 337, ruling E18: a stopped pump's counts outlive it in the engine's record. */
@@ -915,11 +1019,25 @@ class EngineStreamPumpTest {
         private static final Logger PUMP_LOG = Logger.getLogger(EngineStreamPump.class.getName());
 
         private final List<LogRecord> records = new CopyOnWriteArrayList<>();
+        private final Runnable onPublish;
+
+        private CapturedPumpLog(Runnable onPublish) {
+            this.onPublish = onPublish;
+        }
 
         static CapturedPumpLog attach() {
-            CapturedPumpLog log = new CapturedPumpLog();
+            return attach(() -> { });
+        }
+
+        /** Attaches a capture that also runs {@code onPublish} as each record is published. */
+        static CapturedPumpLog attach(Runnable onPublish) {
+            CapturedPumpLog log = new CapturedPumpLog(onPublish);
             PUMP_LOG.addHandler(log);
             return log;
+        }
+
+        List<LogRecord> records() {
+            return records;
         }
 
         long threadDeaths() {
@@ -931,6 +1049,7 @@ class EngineStreamPumpTest {
 
         @Override
         public void publish(LogRecord entry) {
+            onPublish.run();
             records.add(entry);
         }
 

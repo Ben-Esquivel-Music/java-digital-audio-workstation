@@ -137,6 +137,9 @@ public final class CaptureRing {
     /** Value of {@link #droppedAfterSequence()} while no block has ever been dropped. */
     public static final long NO_DROP = -1L;
 
+    /** Value of {@link Slot#outputClockFrame()} for a block its input delivered itself. */
+    public static final long NO_OUTPUT_CLOCK_FRAME = -1L;
+
     /** Park step of {@link #awaitProducerQuiescent(long)} while a callback is inside the producer gate. */
     static final long QUIESCENCE_POLL_NANOS = 100_000L;
 
@@ -580,6 +583,10 @@ public final class CaptureRing {
         private long punchStartFrames;
         private long punchEndFrames;
         private boolean loopEnabled;
+        private long loopStartFrame;
+        private long loopEndFrame;
+        private boolean inputStarved;
+        private long outputClockFrame = NO_OUTPUT_CLOCK_FRAME;
 
         private Slot(int slotFrames, int channelsPerSource, int sourceCount) {
             this.slotFrames = slotFrames;
@@ -606,6 +613,10 @@ public final class CaptureRing {
             this.punchStartFrames = 0;
             this.punchEndFrames = 0;
             this.loopEnabled = false;
+            this.loopStartFrame = 0;
+            this.loopEndFrame = 0;
+            this.inputStarved = false;
+            this.outputClockFrame = NO_OUTPUT_CLOCK_FRAME;
             Arrays.fill(sourceChannels, 0);
         }
 
@@ -701,6 +712,60 @@ public final class CaptureRing {
         /** Sets the loop-enabled snapshot. */
         public void setLoopEnabled(boolean loopEnabled) {
             this.loopEnabled = loopEnabled;
+        }
+
+        /**
+         * Returns the loop start as a transport frame at the take's rate,
+         * read from the same loop window as {@link #loopEndFrame()}; both are
+         * {@code 0} for a block captured with no loop.
+         */
+        public long loopStartFrame() {
+            return loopStartFrame;
+        }
+
+        /** Sets the loop start frame snapshot. */
+        public void setLoopStartFrame(long loopStartFrame) {
+            this.loopStartFrame = loopStartFrame;
+        }
+
+        /** Returns the loop end as a transport frame at the take's rate; see {@link #loopStartFrame()}. */
+        public long loopEndFrame() {
+            return loopEndFrame;
+        }
+
+        /** Sets the loop end frame snapshot. */
+        public void setLoopEndFrame(long loopEndFrame) {
+            this.loopEndFrame = loopEndFrame;
+        }
+
+        /**
+         * Returns whether the stream rendered this block with no captured
+         * input block behind it, so its input rows are zeros the device never
+         * delivered (story 338, amendment A6). Only the stream's own input is
+         * ever stamped.
+         */
+        public boolean inputStarved() {
+            return inputStarved;
+        }
+
+        /** Sets the input-starved stamp. */
+        public void setInputStarved(boolean inputStarved) {
+            this.inputStarved = inputStarved;
+        }
+
+        /**
+         * Returns the transport frame of the render block that clocked this
+         * slot for an input opened beside the stream whose own publisher had
+         * ended, or {@link #NO_OUTPUT_CLOCK_FRAME} for a block the input
+         * delivered itself and for the stream's own input.
+         */
+        public long outputClockFrame() {
+            return outputClockFrame;
+        }
+
+        /** Sets the transport frame of the render block that clocked this slot. */
+        public void setOutputClockFrame(long outputClockFrame) {
+            this.outputClockFrame = outputClockFrame;
         }
 
         /** Returns the number of sources this slot carries. */

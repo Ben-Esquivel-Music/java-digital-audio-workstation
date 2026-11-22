@@ -7,7 +7,8 @@ import java.util.Optional;
 /**
  * The audio health drain's report of one fingerprint for one frame (story
  * 337, rulings E39, E40 and E43): what {@link FailureFunnel#reportRealTime},
- * {@link FailureFunnel#escalateRealTime} and {@link FailureFunnel#foldRealTime}
+ * {@link FailureFunnel#escalateRealTime}, {@link FailureFunnel#foldRealTime}
+ * and {@link FailureFunnel#foldIntoDeviceLoss}
  * turn into a failure fact. The drain reads counters the real-time threads
  * recorded (Failure Surfacing book §2.3 "The RT thread records; it never
  * surfaces"), so the report names the guard site rather than the FX thread

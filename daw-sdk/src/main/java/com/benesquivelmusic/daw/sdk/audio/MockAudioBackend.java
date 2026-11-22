@@ -46,6 +46,7 @@ public final class MockAudioBackend implements AudioBackend {
     private volatile List<ClockSource> clockSources = List.of();
     private final java.util.concurrent.SubmissionPublisher<ClockLockEvent> clockLockPublisher =
             new java.util.concurrent.SubmissionPublisher<>();
+    private volatile ClockLockStatus clockLockStatus;
     private final java.util.List<Integer> clockSourceSelections =
             java.util.Collections.synchronizedList(new java.util.ArrayList<>());
     private volatile RoundTripLatency reportedLatency = RoundTripLatency.UNKNOWN;
@@ -131,10 +132,26 @@ public final class MockAudioBackend implements AudioBackend {
                 0.0));
     }
 
+    /**
+     * While set, every {@code open} throws {@code failure} and opens nothing:
+     * a device that is gone. {@code null} opens again.
+     *
+     * @param failure what the next opens throw, or {@code null}
+     */
+    public void failOpensWith(AudioBackendException failure) {
+        this.openFailure = failure;
+    }
+
+    private volatile AudioBackendException openFailure;
+
     @Override
     public void open(DeviceId device, AudioFormat format, int bufferFrames) {
         Objects.requireNonNull(device, "device must not be null");
         Objects.requireNonNull(format, "format must not be null");
+        AudioBackendException failure = openFailure;
+        if (failure != null) {
+            throw failure;
+        }
         support.markOpen(format, bufferFrames);
         this.captureWidth = format.channels();
         this.inputCursor = 0;
@@ -286,8 +303,7 @@ public final class MockAudioBackend implements AudioBackend {
     /**
      * Simulates the driver issuing a structured "drop and reopen"
      * request mid-session — the equivalent of ASIO's
-     * {@code kAsioResetRequest} / {@code kAsioBufferSizeChange} /
-     * {@code kAsioResyncRequest}, CoreAudio's
+     * {@code kAsioResetRequest} / {@code kAsioBufferSizeChange}, CoreAudio's
      * {@code kAudioDevicePropertyNominalSampleRate} listener firing,
      * or WASAPI invalidating the active {@code IAudioClient} — so
      * tests can drive the
@@ -507,7 +523,9 @@ public final class MockAudioBackend implements AudioBackend {
      * Returns a {@link Flow.Publisher} that re-publishes
      * {@link ClockLockEvent}s the test fixture pushes via
      * {@link #simulateClockLock(DeviceId, int, boolean)}. Subscribers
-     * receive every event published after they subscribe.
+     * receive every event published after they subscribe. Like a real
+     * backend's, the publisher belongs to the backend rather than to one
+     * stream: {@link #close()} does not complete it.
      */
     @Override
     public Flow.Publisher<ClockLockEvent> clockLockEvents() {
@@ -515,9 +533,11 @@ public final class MockAudioBackend implements AudioBackend {
     }
 
     /**
-     * Simulates the driver reporting a clock-lock state change so
-     * tests can drive the transport-bar indicator and the
-     * "lock-loss during recording" flow without real hardware.
+     * Simulates the driver reporting a clock-lock state change on
+     * {@link #clockLockEvents()} without real hardware; it does not change
+     * {@link #clockLockStatus()}, which is what the transport-bar indicator
+     * reads ({@link #setClockLockStatus(ClockLockStatus)}). The event's
+     * evidence is stamped with the current {@link System#nanoTime()}.
      *
      * @param device   the affected device id; must not be null
      * @param sourceId the driver-defined id of the affected clock source
@@ -525,13 +545,43 @@ public final class MockAudioBackend implements AudioBackend {
      */
     public void simulateClockLock(DeviceId device, int sourceId, boolean locked) {
         Objects.requireNonNull(device, "device must not be null");
-        clockLockPublisher.submit(new ClockLockEvent(device, sourceId, locked));
+        clockLockPublisher.submit(new ClockLockEvent(device, sourceId, locked, System.nanoTime()));
+    }
+
+    /**
+     * The status set by {@link #setClockLockStatus(ClockLockStatus)}: one
+     * volatile read, as the contract asks.
+     */
+    @Override
+    public Optional<ClockLockStatus> clockLockStatus() {
+        return Optional.ofNullable(clockLockStatus);
+    }
+
+    /**
+     * Sets what {@link #clockLockStatus()} reports, as a measuring driver
+     * side would publish it, so tests can drive the transport-bar indicator
+     * and the clock marks of a take without real hardware. Any thread.
+     *
+     * @param status the status, or {@code null} for none
+     */
+    public void setClockLockStatus(ClockLockStatus status) {
+        this.clockLockStatus = status;
     }
 
     @Override
     public void close() {
         support.close();
-        clockLockPublisher.close();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The mock reports the captured blocks its input publisher dropped for
+     * a subscriber that could not keep up; it observes nothing else.</p>
+     */
+    @Override
+    public BackendDropoutCounters dropoutCounters() {
+        return new BackendDropoutCounters(0L, 0L, 0L, 0L, support.inputBlocksDropped(), false);
     }
 
     /**

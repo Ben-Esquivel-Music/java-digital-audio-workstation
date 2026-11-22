@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.recording;
 
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.audio.InputNames;
 import com.benesquivelmusic.daw.core.audio.InputRouting;
 import com.benesquivelmusic.daw.core.recording.TakeManifest.GapEntry;
 import com.benesquivelmusic.daw.core.recording.TakeManifest.SealedBy;
@@ -170,6 +171,25 @@ import java.util.logging.Logger;
  * block applied, with a warning, if it is in the ring once the lanes have
  * been sealed.</p>
  *
+ * <p><strong>Silence the input did not deliver is marked</strong> (story
+ * 338). The render stamps each block of the stream's own input it rendered
+ * with no captured block behind it ({@link CaptureRing.Slot#inputStarved()}).
+ * Only the frames of such blocks the take's file received inside the punch
+ * region count. A run of them that a delivered block ends is written as
+ * {@code input-silence} entries per track of that input, cut at the loop end
+ * so that no entry runs past it, and counted into the take's dropouts
+ * ({@link #starvedInputBlocks()}); the run still open at the seal is written
+ * there, up to the last block the file received, and counted unless a device
+ * loss sealed the take; a run that ends in the input's stop is not written,
+ * because the stop covers it. When an input ends mid-take its tracks' next
+ * block has zero width: each track is flagged once, gets an
+ * {@code input-stopped} entry at the end of the last block the input
+ * delivered (the take's start frame if it delivered none, the punch-in frame
+ * when that end lies outside the punch region; inside the loop range in a
+ * loop take, where the resume frame may lie before the stop), and one
+ * warning. Clock events handed in through {@link #noteClockEvent} are
+ * written as {@code clock} entries on the next pass, or at the seal.</p>
+ *
  * <p><strong>Failure.</strong> An {@link UncheckedIOException} from a
  * session or any other {@link Throwable} while a block is applied or while
  * the cadence tick forces is logged SEVERE, reported through the warning
@@ -271,6 +291,7 @@ public final class CaptureFlushService {
     private static final long MANIFEST_RETRY_PAUSE_NANOS = MANIFEST_RETRY_PAUSE.toNanos();
     private static final long MANIFEST_RETRY_INTERVAL_NANOS = MANIFEST_RETRY_INTERVAL.toNanos();
     private static final long PEAK_PUBLISH_INTERVAL_NANOS = PEAK_PUBLISH_INTERVAL.toNanos();
+    private static final long NOTHING_DELIVERED = -1L;
 
     /**
      * The immutable per-take configuration the flush thread works from.
@@ -316,10 +337,19 @@ public final class CaptureFlushService {
     private boolean[] sourceTruncationEpisode;
     private java.util.concurrent.atomic.AtomicLongArray sourceOverflowNoted;
     private int[] openedInputWidths;
+    /** Per source, the end frame of the last block its input delivered, or {@link #NOTHING_DELIVERED}. */
+    private long[] sourceDeliveredEndFrame = {NOTHING_DELIVERED};
+    /** Per source, the run of input-starved blocks written since its last delivered block. */
+    private StarvedRuns starvedRuns = new StarvedRuns(1);
+    private FileLossCounts fileLosses = new FileLossCounts(1);
     void setOpenedInputWidths(int[] widths) { openedInputWidths = widths.clone(); }
     void setInputRings(CaptureRing[] rings) {
         if (started) throw new IllegalStateException("input rings already started");
         inputRings = rings.clone();
+        sourceDeliveredEndFrame = new long[rings.length];
+        Arrays.fill(sourceDeliveredEndFrame, NOTHING_DELIVERED);
+        starvedRuns = new StarvedRuns(rings.length);
+        fileLosses = new FileLossCounts(rings.length);
         sourcePreviousBeat = new double[rings.length];
         sourceWasInsidePunchRegion = new boolean[rings.length];
         Arrays.fill(sourcePreviousBeat, -1.0);
@@ -386,6 +416,14 @@ public final class CaptureFlushService {
     private volatile long discardedBlocks;
     /** Overflow count whose gap bookkeeping is done (the other half of the {@link #awaitFlushed} fence). */
     private volatile long overflowNoted;
+    /** Blocks and frames of the closed input-starved runs written to the manifest; flush thread writes. */
+    private volatile long starvedInputBlocks;
+    private volatile long starvedInputFrames;
+    /** Truncation episodes opened; flush thread writes. */
+    private volatile long truncationEpisodes;
+    /** Clock events handed in from any thread; the flush thread drains them into the manifest. */
+    private final java.util.concurrent.ConcurrentLinkedQueue<TakeManifest.ClockMark> clockNotes =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
     private volatile long manifestWrites;
     private volatile TakeManifest lastManifest;
     private volatile Throwable lastFailure;
@@ -445,6 +483,8 @@ public final class CaptureFlushService {
     private boolean finalSweepDone;
     /** {@link #noteBlocksLeftBehind()} has taken its one look at the ring. */
     private boolean leftBehindNoted;
+    /** The seal has written the trailing starved runs and the last clock events. */
+    private boolean sealMarksWritten;
     private boolean sealFailed;
     /** The lanes were sealed by {@link #sealEarly}, not by the seal a stop requested. */
     private boolean sealedEarly;
@@ -674,7 +714,7 @@ public final class CaptureFlushService {
             }
             if (openedInputWidths != null) for (TrackCapture capture : captures) {
                 if (!capture.isInstrument() && (long) capture.routing().firstChannel() + capture.routing().channelCount()
-                        > openedInputWidths[capture.inputSource()]) flagUnavailable(capture, openedInputWidths[capture.inputSource()]);
+                        > openedInputWidths[capture.inputSource()]) flagNarrowRoute(capture, openedInputWidths[capture.inputSource()]);
             }
             writeManifestOnce(manifest.build());
             if (!abortRequested) {
@@ -949,6 +989,10 @@ public final class CaptureFlushService {
      * end of the pass; returns whether any block was applied.
      */
     private boolean drainOnce() {
+        if (!sealed && !finalSweep) {
+            // The seal drains what the final sweep would have: it is the last look.
+            drainClockNotes();
+        }
         if (inputRings == null) return drainInputRing();
         boolean progressed = false;
         for (int i = 0; i < inputRings.length; i++) {
@@ -1146,6 +1190,13 @@ public final class CaptureFlushService {
             long blockStart = slot.startFrame();
             int numFrames = slot.numFrames();
             long blockEnd = blockStart + numFrames;
+            fileLosses.blockReceived(inputSource, blockStart,
+                    slot.punchEnabled() ? slot.punchStartFrames() : FrameSpans.UNBOUNDED_START,
+                    slot.punchEnabled() ? slot.punchEndFrames() : FrameSpans.UNBOUNDED_END,
+                    slot.loopStartFrame(), slot.loopEndFrame());
+            // Before the punch gate: where an input stopped is a fact of the
+            // stream, whether or not this block is recorded.
+            noteInputDelivery(slot, blockStart, blockEnd);
 
             if (slot.punchEnabled()) {
                 captureWithTransportPunch(slot, numFrames, blockStart, blockEnd,
@@ -1156,6 +1207,9 @@ public final class CaptureFlushService {
             } else {
                 recordToSessions(slot, 0, numFrames, false, 0, 0);
             }
+            // After the write: a block whose write failed never reached the
+            // file, so the tail the failure's seal writes stops before it.
+            noteStarvedBlockWritten(slot, blockStart, blockEnd);
             lastAppliedEndFrame = blockEnd;
             publishPeaksIfDue(now);
             noteTruncation(slot, blockEnd);
@@ -1183,10 +1237,13 @@ public final class CaptureFlushService {
         }
         truncatedFramesNoted += truncated;
         manifest.truncatedFrames(truncatedFramesNoted);
+        fileLosses.truncated(inputSource, !truncationEpisodeOpen, keptEndFrame, truncated,
+                regionStart(slot), regionEnd(slot), slot.loopStartFrame(), slot.loopEndFrame());
         if (truncationEpisodeOpen) {
             return;
         }
         truncationEpisodeOpen = true;
+        truncationEpisodes = truncationEpisodes + 1;
         long gapStart = Math.max(0L, keptEndFrame);
         addInputGaps(gapStart, 0);
         manifestDirty = true;
@@ -1263,7 +1320,7 @@ public final class CaptureFlushService {
             int firstCh = instrument ? 0 : routing.firstChannel();
             int chCount = instrument ? available : routing.channelCount();
             boolean unavailable = !instrument && (long) firstCh + chCount > available;
-            if (unavailable) flagUnavailable(capture, available);
+            if (unavailable) flagUnavailable(capture, available, slot);
             for (int ch = 0; ch < chCount && ch < routed.length; ch++) {
                 int srcCh = firstCh + ch;
                 if (!unavailable && srcCh < available) {
@@ -1296,6 +1353,10 @@ public final class CaptureFlushService {
                     // timeline, wherever punch gating let writing begin.
                     capture.noteWrittenSlice(slot.beatPosition(), offset);
                 }
+            }
+            if (!instrument && !unavailable && !slot.inputStarved()
+                    && session.getTotalSamplesRecorded() > framesBefore) {
+                capture.noteRoutedDeliveredBlock();
             }
         }
     }
@@ -1390,6 +1451,7 @@ public final class CaptureFlushService {
         long droppedAfter = ring.droppedAfterSequence();
         long gapStart = Math.max(0L, gapAnchorSequence == droppedAfter ? gapAnchorFrame : lastAppliedEndFrame);
         addInputGaps(gapStart, dropped);
+        fileLosses.gapNoticed(inputSource, gapStart, dropped, ring.slotFrames());
         manifest.overflowBlocks(totalOverflow());
         manifestDirty = true;
         warn("Capture ring overflow: " + dropped + " block(s) dropped at frame " + gapStart
@@ -1410,14 +1472,203 @@ public final class CaptureFlushService {
         else for (TrackCapture capture : captures) if (capture.inputSource() == inputSource)
             manifest.addGap(new GapEntry(capture.trackId(), start, dropped));
     }
-    private void flagUnavailable(TrackCapture capture, int available) {
-        if (!capture.flagRouting()) return;
+    /**
+     * A route the input is too narrow for: found at open time (any width, 0
+     * included), or a delivered block narrower than the route mid-take
+     * (story 338, ruling E54). Flags the track once and warns with the
+     * routing-mismatch sentence.
+     */
+    private void flagNarrowRoute(TrackCapture capture, int available) {
+        if (!flagRoute(capture, available)) return;
+        InputRouting routing = capture.routing();
+        warn("Track '" + capture.trackName() + "', device '" + capture.inputDeviceName() + "': "
+                + routing.displayName() + " exceeds " + available + " opened input channels; this track captures silence");
+    }
+
+    /**
+     * A block of the take that could not fill the track's route. A zero-width
+     * block mid-take means the input ended — its publisher closed, or the
+     * engine declared it stalled — so the track is flagged once, its stop is
+     * recorded as an {@code input-stopped} entry and warned in the words of
+     * story 338's ruling E14 — "the audio input" for an input with no name to
+     * show (ruling E127); a narrower block is a routing mismatch.
+     *
+     * <p>In a punch take the stop is a frame of the file: the input's
+     * delivered end when it lies inside the punch region, otherwise the
+     * punch-in frame, where the file's silence begins (rulings E77 and E88);
+     * the resume frame is never before it. "Delivered no audio" means no
+     * delivered block reached the track's file in any lap.</p>
+     */
+    private void flagUnavailable(TrackCapture capture, int available, CaptureRing.Slot slot) {
+        if (available > 0) {
+            flagNarrowRoute(capture, available);
+            return;
+        }
+        if (!flagRoute(capture, available)) return;
+        long delivered = sourceDeliveredEndFrame[capture.inputSource()];
+        long stopFrame = Math.max(0L, delivered == NOTHING_DELIVERED ? config.recordingStartFrame() : delivered);
+        if (slot.punchEnabled()) {
+            boolean deliveredInside = delivered > slot.punchStartFrames() && delivered < slot.punchEndFrames();
+            stopFrame = deliveredInside ? delivered : Math.max(0L, slot.punchStartFrames());
+        }
+        long outputClockFrame = slot.outputClockFrame();
+        long resumeFrame = outputClockFrame == CaptureRing.NO_OUTPUT_CLOCK_FRAME
+                ? stopFrame : Math.max(0L, outputClockFrame);
+        if (slot.punchEnabled()) {
+            resumeFrame = Math.max(resumeFrame, stopFrame);
+        }
+        manifest.addInputStopped(new TakeManifest.InputStopped(capture.trackId(), stopFrame, resumeFrame));
+        String lead = "Track '" + capture.trackName() + "': " + InputNames.shown(capture.inputDeviceName())
+                .map(name -> "input from '" + name + "' ").orElse("the audio input ");
+        warn(capture.hasRoutedDeliveredBlock()
+                ? lead + "stopped delivering audio at "
+                        + takePosition(capture.recordedAtLastDelivery(), config.format().sampleRate())
+                        + " into the take; the track records silence from there."
+                : lead + "delivered no audio; the track records silence.");
+    }
+
+    /** Flags the track's route once in the manifest; {@code false} when it already was. */
+    private boolean flagRoute(TrackCapture capture, int available) {
+        if (!capture.flagRouting()) return false;
         InputRouting routing = capture.routing();
         manifest.addRoutingFlag(new TakeManifest.RoutingFlag(capture.trackId(), capture.inputDeviceName(),
                 routing.firstChannel(), routing.channelCount(), available));
         manifestDirty = true;
-        warn("Track '" + capture.trackName() + "', device '" + capture.inputDeviceName() + "': "
-                + routing.displayName() + " exceeds " + available + " opened input channels; this track captures silence");
+        return true;
+    }
+
+    /**
+     * {@code m:ss.s} of {@code frames} at {@code sampleRate}: a track's
+     * position in its own file (story 338, ruling E51).
+     */
+    static String takePosition(long frames, double sampleRate) {
+        long tenths = Math.round(Math.max(0L, frames) * 10.0 / sampleRate);
+        long minutes = tenths / 600;
+        long seconds = tenths % 600 / 10;
+        return minutes + ":" + (seconds < 10 ? "0" : "") + seconds + "." + tenths % 10;
+    }
+
+    /**
+     * Per source, before the punch gate: a block the input delivered moves
+     * that source's delivered end (moved into the loop range when it ran past
+     * the loop end) and closes its run of input-starved blocks as
+     * {@code input-silence} entries, counted into the take's dropouts (story
+     * 338, rulings E34, E43 and E89). A run the input's end follows stays open
+     * to the seal, where the tracks that recorded the end are flagged and so
+     * get no entry: their stop covers it (ruling E49).
+     *
+     * <p>A zero-width block outside the punch region never reaches
+     * {@link #recordToSessions}, so the stop it carries is judged here: an
+     * input whose delivered end lies inside the region is flagged at once,
+     * one that delivered up to or past punch-out leaves a complete file and
+     * gets nothing, and one that ended at or before punch-in is flagged once
+     * the take has passed the region and the file holds its silence (rulings
+     * E77 and E88).</p>
+     */
+    private void noteInputDelivery(CaptureRing.Slot slot, long blockStart, long blockEnd) {
+        int source = inputSource;
+        if (slot.inputStarved()) {
+            return;
+        }
+        if (slot.sourceChannels(0) > 0) {
+            sourceDeliveredEndFrame[source] = FrameSpans.intoLoop(blockEnd, slot.loopStartFrame(),
+                    slot.loopEndFrame());
+            endStarvedRun(source, true);
+        } else if (slot.punchEnabled()
+                && !FrameSpans.overlaps(blockStart, blockEnd, slot.punchStartFrames(), slot.punchEndFrames())) {
+            flagStopOutsideThePunchRegion(slot, blockStart);
+        }
+    }
+
+    private void flagStopOutsideThePunchRegion(CaptureRing.Slot slot, long blockStart) {
+        long delivered = sourceDeliveredEndFrame[inputSource];
+        long punchIn = slot.punchStartFrames();
+        long punchOut = slot.punchEndFrames();
+        if (delivered >= punchOut) {
+            return;
+        }
+        boolean deliveredInside = delivered > punchIn;
+        boolean regionPassed = blockStart >= punchOut;
+        for (TrackCapture capture : captures) {
+            if (capture.inputSource() != inputSource || capture.isInstrument()) continue;
+            RecordingSession session = capture.session();
+            if (session == null) continue;
+            if (deliveredInside || regionPassed && session.getTotalSamplesRecorded() > 0) {
+                flagUnavailable(capture, 0, slot);
+            }
+        }
+    }
+
+    /**
+     * After the block was written: a starved block adds the frames of it the
+     * file received inside the punch region to its source's run (rulings E76
+     * and E87).
+     */
+    private void noteStarvedBlockWritten(CaptureRing.Slot slot, long blockStart, long blockEnd) {
+        if (!slot.inputStarved()) {
+            return;
+        }
+        long from = regionStart(slot);
+        long to = regionEnd(slot);
+        if (!FrameSpans.overlaps(blockStart, blockEnd, from, to)) {
+            return;
+        }
+        starvedRuns.addBlock(inputSource, FrameSpans.clipStart(blockStart, from), FrameSpans.clipEnd(blockEnd, to),
+                slot.loopStartFrame(), slot.loopEndFrame());
+    }
+
+    /** The first frame of the slot's region the file can receive; see {@link FrameSpans#UNBOUNDED_START}. */
+    private long regionStart(CaptureRing.Slot slot) {
+        if (slot.punchEnabled()) return slot.punchStartFrames();
+        return legacyRangeExcludes(slot) ? FrameSpans.UNBOUNDED_END : FrameSpans.UNBOUNDED_START;
+    }
+
+    /** The end of the slot's region; see {@link #regionStart}. */
+    private long regionEnd(CaptureRing.Slot slot) {
+        return slot.punchEnabled() ? slot.punchEndFrames() : FrameSpans.UNBOUNDED_END;
+    }
+
+    private boolean legacyRangeExcludes(CaptureRing.Slot slot) {
+        return config.legacyPunchRange() != null && !config.legacyPunchRange().contains(slot.beatPosition());
+    }
+
+    /**
+     * Writes {@code source}'s open run of input-starved blocks as
+     * {@code input-silence} entries per track that records the input, one
+     * per part of the run, cut at the loop end (ruling E75), and, when
+     * {@code counted}, adds it to the take's starved counts. Only the tail at
+     * a device-loss seal is uncounted: the loss reports those frames (rulings
+     * E48, E79 and E90). A flagged track gets no entry: its routing flag, and
+     * for an input that ended its {@code input-stopped} entry, already covers
+     * the run (ruling E49).
+     */
+    private void endStarvedRun(int source, boolean counted) {
+        if (!starvedRuns.isOpen(source)) return;
+        StarvedRuns.Run run = starvedRuns.end(source);
+        boolean written = false;
+        for (TrackCapture capture : captures) {
+            if (capture.inputSource() != source || capture.isInstrument() || capture.isRoutingFlagged()) continue;
+            for (StarvedRuns.Line line : run.lines()) {
+                manifest.addInputSilence(new TakeManifest.InputSilence(capture.trackId(),
+                        Math.max(0L, line.startFrame()), line.frames()));
+            }
+            written = true;
+        }
+        if (!written) return;
+        manifestDirty = true;
+        if (counted) {
+            starvedInputBlocks = starvedInputBlocks + run.blocks();
+            starvedInputFrames = starvedInputFrames + run.frames();
+        }
+    }
+
+    /** Moves the clock events handed in so far into the manifest. Flush thread. */
+    private void drainClockNotes() {
+        TakeManifest.ClockMark mark;
+        while ((mark = clockNotes.poll()) != null) {
+            manifest.addClockMark(mark);
+            manifestDirty = true;
+        }
     }
 
     private void failAndSeal(Throwable failure) {
@@ -1561,6 +1812,18 @@ public final class CaptureFlushService {
             }
         }
         if (!finalManifestWritten) {
+            if (!sealMarksWritten) {
+                sealMarksWritten = true;
+                // The trailing starved run the final sweep reached, up to the
+                // last block the file received. Only a device loss reports
+                // its frames itself (story 338, rulings E48, E79 and E90).
+                boolean tailCounted = sealReason != SealedBy.DEVICE_LOSS;
+                for (int source = 0; source < sourceDeliveredEndFrame.length; source++) {
+                    endStarvedRun(source, tailCounted);
+                }
+                fileLosses.takeSealed();
+                drainClockNotes();
+            }
             noteBlocksLeftBehind();
             SealedBy first = sealReason;
             SealedBy manifestReason;
@@ -1919,6 +2182,71 @@ public final class CaptureFlushService {
             stopping = true;
         }
         wakeOrRetire();
+    }
+
+    /**
+     * Hands a clock event of the take to the flush thread, which writes it
+     * into the manifest on its next pass, or at the seal (story 338, rulings
+     * E30, E40 and E62). Any thread; never blocks, no storage I/O. An event
+     * handed in once the take is sealed, or after its thread terminated, is
+     * ignored.
+     *
+     * @param event what the clock did
+     * @param frame the transport frame at the take's rate the event is dated
+     *              at; a negative frame is written as 0
+     */
+    public void noteClockEvent(TakeManifest.ClockEvent event, long frame) {
+        Objects.requireNonNull(event, "event must not be null");
+        if (sealed || terminated) {
+            return;
+        }
+        clockNotes.add(new TakeManifest.ClockMark(event, Math.max(0L, frame)));
+        if (started) {
+            LockSupport.unpark(thread);
+        }
+    }
+
+    /**
+     * Blocks of the take's input-starved runs written as {@code input-silence}
+     * entries: rendered with no captured input while the input was live, and
+     * with frames inside the punch region the file received (one block
+     * however many of its frames, whatever the lap). A run that ended in the
+     * input's stop is not in it, nor the tail of a device-loss seal; the tail
+     * of any other seal is, from the seal's manifest write on (story 338,
+     * rulings E48, E49, E76, E79, E87 and E90). Any thread.
+     */
+    public long starvedInputBlocks() {
+        return starvedInputBlocks;
+    }
+
+    /** The frames inside the punch region of the blocks {@link #starvedInputBlocks()} counts. Any thread. */
+    public long starvedInputFrames() {
+        return starvedInputFrames;
+    }
+
+    /** Truncation episodes the take opened: each a {@code gap=…|0} entry. Any thread. */
+    public long truncationEpisodes() {
+        return truncationEpisodes;
+    }
+
+    /**
+     * Ring-overflow blocks whose gap reaches into the punch region; every
+     * one with no punch region. The {@code gap=} lines and
+     * {@code overflow-blocks} record every drop (story 338, ruling E86).
+     * Any thread.
+     */
+    public long fileOverflowBlocks() {
+        return fileLosses.overflowBlocks();
+    }
+
+    /** Truncated frames that lie inside the punch region; all of them with no punch region. Any thread. */
+    public long fileTruncatedFrames() {
+        return fileLosses.truncatedFrames();
+    }
+
+    /** Truncation episodes with at least one frame inside the punch region. Any thread. */
+    public long fileTruncationEpisodes() {
+        return fileLosses.truncationEpisodes();
     }
 
     /**

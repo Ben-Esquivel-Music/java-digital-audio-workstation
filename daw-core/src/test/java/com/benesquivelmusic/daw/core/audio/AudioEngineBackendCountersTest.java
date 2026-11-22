@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.audio.health.AudioFailureCategory;
 import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
+import com.benesquivelmusic.daw.sdk.audio.BackendDropoutCounters;
 import com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.MockAudioBackend;
@@ -108,6 +109,37 @@ class AudioEngineBackendCountersTest {
         engine.startAudioOutput();
 
         assertThat(engine.audioHealth().total(AudioFailureCategory.CALLBACK)).isZero();
+    }
+
+    /**
+     * The engine reads the open stream's backend for its observed drops, and
+     * answers none while no stream is open or when the backend's report
+     * throws: a reader on any thread never sees the backend's failure.
+     */
+    @Test
+    void dropoutCountersAreTheOpenStreamsBackendsAndNoneWithoutAStream() {
+        AudioEngineOutputTest.SynchronousTestBackend backend =
+                new AudioEngineOutputTest.SynchronousTestBackend("Counting");
+        BackendDropoutCounters reported = new BackendDropoutCounters(5, 4, 3, 2, 1, true);
+        backend.dropoutReport = () -> reported;
+        engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        engine.setStreamingProvision(provision(backend));
+
+        assertThat(engine.dropoutCounters()).as("no stream is open yet").isEqualTo(BackendDropoutCounters.NONE);
+
+        engine.startAudioOutput();
+        assertThat(engine.dropoutCounters()).isEqualTo(reported);
+
+        backend.dropoutReport = () -> {
+            throw new IllegalStateException("the drop report broke");
+        };
+        assertThat(engine.dropoutCounters())
+                .as("a throwing report reads as none, never as a throw")
+                .isEqualTo(BackendDropoutCounters.NONE);
+
+        backend.dropoutReport = () -> reported;
+        assertThat(engine.stopAudioOutput()).isTrue();
+        assertThat(engine.dropoutCounters()).as("the stream closed").isEqualTo(BackendDropoutCounters.NONE);
     }
 
     // ── A backend whose own report cannot be read (story 337, ruling E78) ──

@@ -17,24 +17,27 @@ import static org.assertj.core.api.Assertions.assertThat;
  * for the Session Status Strip (Project Manager Design Book §5.5;
  * {@code javafx-application-design} §15 "a control is observable Properties, not
  * imperative setters"). The strip and its cells are <em>binding-only</em>: every
- * visible status the strip renders is one observable {@code Property} on
- * {@link com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress}, and the
+ * visible status the strip renders is one observable {@code Property} on its two
+ * models, {@link com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress} and
+ * {@link com.benesquivelmusic.daw.app.ui.status.EngineHealthStatus} (story 338), and the
  * cells drive their text exclusively via {@code textProperty().bind(...)} — never
  * by poking a {@link javafx.scene.control.Label}/{@link
  * javafx.scene.control.Labeled} with {@code setText(...)}.
  *
  * <p>This is the source-scan sibling of {@code RunLaterConsolidationTest}: a green
- * gate that scans the strip's four source files and prevents drift — a future edit
+ * gate that scans the strip's source files and prevents drift — a future edit
  * cannot reintroduce an imperative {@code Label.setText} that would let the strip's
  * displayed text diverge from the model it is meant to mirror.</p>
  *
  * <h3>Scope &amp; preprocessing</h3>
  *
- * <p>The scan covers exactly the four strip source files under {@code
+ * <p>The scan covers exactly the strip's source files under {@code
  * …app.ui.status}: {@code SessionStatusStrip.java}, {@code
  * SessionStatusStripSkin.java}, {@code StatusStripCell.java} and {@code
- * StatusStripCellSkin.java}. Each is asserted to exist and to be scanned (a guard
- * against a vacuously-empty scan from a broken path). To stay faithful to a
+ * StatusStripCellSkin.java}, and story 338's {@code EngineHealthStatus.java},
+ * {@code EngineHealthCells.java} and {@code EngineHealthText.java}. Each is
+ * asserted to exist and to be scanned (a guard against a vacuously-empty scan
+ * from a broken path). To stay faithful to a
  * SOURCE-level scan it strips {@code //} and {@code /* *\/} comments before
  * matching — via the shared {@link SourceScanSupport} harness — so a Javadoc
  * {@code {@code Label.setText}} mention does not false-match. It then looks for a
@@ -54,12 +57,15 @@ final class StatusStripNoLabelSetTextTest {
     private static final Pattern DOTTED_SET_TEXT =
             Pattern.compile("\\.\\s*setText\\s*\\(");
 
-    /** The four source files that make up the strip and its cell control. */
+    /** The source files that make up the strip, its cell control and its engine-health cells. */
     private static final List<String> STRIP_SOURCE_FILES = List.of(
             "SessionStatusStrip.java",
             "SessionStatusStripSkin.java",
             "StatusStripCell.java",
-            "StatusStripCellSkin.java");
+            "StatusStripCellSkin.java",
+            "EngineHealthStatus.java",
+            "EngineHealthCells.java",
+            "EngineHealthText.java");
 
     @Test
     void stripSourcesDriveTextOnlyViaBindingNeverLabelSetText() throws IOException {
@@ -95,14 +101,14 @@ final class StatusStripNoLabelSetTextTest {
         // Guard against a silently-empty scan — if the path resolved wrong and no
         // file were read, the offenders list would be vacuously empty.
         assertThat(scanned)
-                .as("all four strip source files must be scanned")
+                .as("every strip source file must be scanned")
                 .containsExactlyInAnyOrderElementsOf(STRIP_SOURCE_FILES);
 
         offenders.sort(String::compareTo);
         assertThat(offenders)
                 .as("Story 295 — the Session Status Strip is binding-only "
                         + "(javafx-application-design §15): its cells must bind "
-                        + "their text to ProjectOperationProgress properties and "
+                        + "their text to their models' properties and "
                         + "never call Label/Labeled.setText(...). Offending files:%n  %s",
                         String.join("\n  ", offenders))
                 .isEmpty();

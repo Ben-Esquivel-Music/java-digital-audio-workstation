@@ -6,6 +6,7 @@ import java.util.concurrent.Flow;
 import java.util.concurrent.SubmissionPublisher;
 import java.util.function.BiPredicate;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -46,6 +47,62 @@ class AudioBackendSupportTest {
             assertThatThrownBy(() -> support.publishDeviceEvent(EVENT))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessage("unexpected publisher failure");
+        }
+    }
+
+    /**
+     * A block that at least one subscriber dropped counts once, however many
+     * subscribers dropped it; a block every subscriber took counts nothing.
+     */
+    @Test
+    void inputBlocksDroppedCountsEachDroppedBlockOnce() {
+        ScriptedOfferPublisher<AudioBlock> inputPublisher = new ScriptedOfferPublisher<>(-2, 5, -1, 0);
+        try (AudioBackendSupport support = new AudioBackendSupport(
+                inputPublisher, new SubmissionPublisher<>())) {
+            support.markOpen(FORMAT, BLOCK.frames());
+
+            support.publishInput(BLOCK);
+            assertThat(support.inputBlocksDropped())
+                    .as("dropped by two subscribers, counted as one block")
+                    .isEqualTo(1L);
+            support.publishInput(BLOCK);
+            assertThat(support.inputBlocksDropped())
+                    .as("a block every subscriber took is no drop")
+                    .isEqualTo(1L);
+            support.publishInput(BLOCK);
+            support.publishInput(BLOCK);
+            assertThat(support.inputBlocksDropped()).isEqualTo(2L);
+        }
+    }
+
+    @Test
+    void aCloseRaceIsNotCountedAsADroppedBlock() {
+        CloseBeforeOfferPublisher<AudioBlock> inputPublisher = new CloseBeforeOfferPublisher<>();
+        try (AudioBackendSupport support = new AudioBackendSupport(
+                inputPublisher, new SubmissionPublisher<>())) {
+            support.markOpen(FORMAT, BLOCK.frames());
+
+            support.publishInput(BLOCK);
+
+            assertThat(support.inputBlocksDropped()).isZero();
+        }
+    }
+
+    /** Answers each {@code offer} with the next scripted value, delivering nothing. */
+    private static final class ScriptedOfferPublisher<T> extends SubmissionPublisher<T> {
+
+        private final int[] answers;
+        private int next;
+
+        ScriptedOfferPublisher(int... answers) {
+            this.answers = answers.clone();
+        }
+
+        @Override
+        public int offer(
+                T item,
+                BiPredicate<Flow.Subscriber<? super T>, ? super T> dropHandler) {
+            return answers[next++];
         }
     }
 

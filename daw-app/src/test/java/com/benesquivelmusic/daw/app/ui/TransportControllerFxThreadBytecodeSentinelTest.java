@@ -285,6 +285,23 @@ final class TransportControllerFxThreadBytecodeSentinelTest {
                         "com/benesquivelmusic/daw/app/ui/TransportController#finishPostRoll");
     }
 
+    /**
+     * Story 338: the engine-state turn the bridge runs on the FX thread for a
+     * device loss — the record coordinator's rescue, then the transport's stop
+     * in place (rulings E36 and E65) — touches no storage and never waits.
+     */
+    @Test
+    void theDeviceLossTurnTouchesNoStorageAndNeverWaits() throws IOException {
+        Walk walk = walk(parse(TransportController.class), List.of("onEngineState", "stopInPlaceAfterTheDeviceLoss"),
+                Set.of());
+        assertThat(walk.roots().get("onEngineState")).as("both overloads").isEqualTo(2);
+        assertThat(walk.roots().get("stopInPlaceAfterTheDeviceLoss")).isEqualTo(1);
+        assertThat(walk.findings()).as("reached: %s", walk.reached()).isEmpty();
+        assertThat(walk.calls()).as("the walk went on into the loss's rescue and the transport's stop")
+                .contains("com/benesquivelmusic/daw/app/ui/RecordCoordinator#onDeviceLost",
+                        "com/benesquivelmusic/daw/app/ui/TransportController#finishDeviceLossStop");
+    }
+
     @Test
     void theProductionStorageExecutorStartsEachTaskOnANewVirtualThread() throws IOException {
         ClassModel model = parse(RecordCoordinator.class);

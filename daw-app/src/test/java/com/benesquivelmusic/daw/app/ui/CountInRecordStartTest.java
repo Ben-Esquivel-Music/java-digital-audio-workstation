@@ -627,7 +627,7 @@ class CountInRecordStartTest {
             assertThat(audioRig.controller().isRecordingInFlight()).isFalse();
             assertThat(audioRig.guitar().getClips()).isEmpty();
             assertThat(audioRig.statusBar().getText())
-                    .startsWith("Recording aborted — no take was started: audio device")
+                    .startsWith("Recording aborted — no take was started: the audio device")
                     .contains("lost during the count-in");
         });
         assertThat(states).contains(RecordState.ABORTED).doesNotContain(RecordState.DEVICE_LOST, RecordState.RECORDING);

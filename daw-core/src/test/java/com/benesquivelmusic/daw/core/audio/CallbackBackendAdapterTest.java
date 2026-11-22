@@ -882,6 +882,143 @@ class CallbackBackendAdapterTest {
         adapter.close();
     }
 
+    // ── Observed drops: dropoutCounters() ────────────────────────────────
+
+    /**
+     * A device period that finds the output ring empty counts as starved
+     * only once the stream has played a rendered block: the empty periods of
+     * the start-up are not starvation.
+     */
+    @Test
+    void emptyPeriodsCountAsStarvedOnlyAfterTheFirstPlayedBlock() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+        float[][] in = new float[2][FRAMES];
+        float[][] out = new float[2][FRAMES];
+
+        fake.callback.process(in, out, FRAMES);
+        fake.callback.process(in, out, FRAMES);
+        assertThat(adapter.dropoutCounters().outputStarvedPeriods())
+                .as("empty periods before the first rendered block are the start-up")
+                .isZero();
+
+        adapter.sink(constantBlock(0.25f));
+        fake.callback.process(in, out, FRAMES);
+        assertThat(adapter.dropoutCounters().outputStarvedPeriods())
+                .as("a period that played a rendered block is not starved")
+                .isZero();
+        fake.callback.process(in, out, FRAMES);
+        fake.callback.process(in, out, FRAMES);
+
+        assertThat(adapter.dropoutCounters().outputStarvedPeriods()).isEqualTo(2);
+        assertThat(adapter.dropoutCounters().reportsOutputStarvation()).isTrue();
+        adapter.close();
+    }
+
+    /**
+     * Each open starts unprimed, and a callback that arrives with no output
+     * ring (after the close) counts nothing; the count survives the close.
+     */
+    @Test
+    void aReopenStartsUnprimedAndACallbackWithoutARingCountsNothing() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+        float[][] in = new float[2][FRAMES];
+        float[][] out = new float[2][FRAMES];
+        adapter.sink(constantBlock(0.25f));
+        fake.callback.process(in, out, FRAMES);
+        fake.callback.process(in, out, FRAMES);
+        assertThat(adapter.dropoutCounters().outputStarvedPeriods()).isEqualTo(1);
+        com.benesquivelmusic.daw.sdk.audio.AudioStreamCallback firstStreamCallback = fake.callback;
+
+        adapter.close();
+        firstStreamCallback.process(in, out, FRAMES);
+        assertThat(adapter.dropoutCounters().outputStarvedPeriods())
+                .as("a callback after the close finds no ring and counts nothing")
+                .isEqualTo(1);
+
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+        fake.callback.process(in, out, FRAMES);
+        fake.callback.process(in, out, FRAMES);
+        assertThat(adapter.dropoutCounters().outputStarvedPeriods())
+                .as("the reopened stream's start-up periods are not starvation")
+                .isEqualTo(1);
+        adapter.close();
+    }
+
+    /**
+     * Rendered blocks the full output ring refused are the discarded count,
+     * and captured blocks the full input ring lost join the dropped input
+     * blocks.
+     */
+    @Test
+    void ringOverflowsReachTheDiscardedAndDroppedInputCounts() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+        for (int i = 0; i < 10; i++) {
+            adapter.sink(constantBlock(0.1f));
+        }
+        float[][] in = new float[2][FRAMES];
+        float[][] out = new float[2][FRAMES];
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(GUARD_BUDGET_MILLIS);
+        while (adapter.droppedInputBlocks() == 0) {
+            if (System.nanoTime() > deadline) {
+                fail("Timed out after " + GUARD_BUDGET_MILLIS + " ms awaiting an input ring overflow");
+            }
+            for (int i = 0; i < 100; i++) {
+                fake.callback.process(in, out, FRAMES);
+            }
+        }
+
+        com.benesquivelmusic.daw.sdk.audio.BackendDropoutCounters counters = adapter.dropoutCounters();
+        assertThat(counters.outputDiscardedBlocks()).isEqualTo(adapter.droppedOutputBlocks()).isPositive();
+        assertThat(counters.inputBlocksDropped())
+                .as("no subscriber dropped anything, so the dropped input blocks are the ring's")
+                .isEqualTo(adapter.droppedInputBlocks());
+        assertThat(counters.driverOverloads()).isZero();
+        assertThat(counters.driverResyncs()).isZero();
+        adapter.close();
+    }
+
+    /**
+     * A captured block that a subscriber's full buffer dropped at publish
+     * joins the dropped input blocks, once per block, and is not also a lost
+     * block of {@code threadCounters()}.
+     */
+    @Test
+    void aBlockDroppedAtPublishJoinsTheDroppedInputBlocksOnce() throws Exception {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+        java.lang.reflect.Field publisherField =
+                CallbackBackendAdapter.class.getDeclaredField("inputPublisher");
+        publisherField.setAccessible(true);
+        publisherField.set(adapter, new java.util.concurrent.SubmissionPublisher<AudioBlock>() {
+            @Override
+            public int offer(AudioBlock item,
+                             java.util.function.BiPredicate<Flow.Subscriber<? super AudioBlock>,
+                                     ? super AudioBlock> onDrop) {
+                return -2; // two subscribers dropped this block
+            }
+        });
+        float[][] in = new float[2][FRAMES];
+        float[][] out = new float[2][FRAMES];
+
+        fake.callback.process(in, out, FRAMES);
+        fake.callback.process(in, out, FRAMES);
+        awaitCondition(() -> adapter.dropoutCounters().inputBlocksDropped() >= 2,
+                "the drain counts each block a subscriber dropped");
+
+        assertThat(adapter.dropoutCounters().inputBlocksDropped()).isEqualTo(2);
+        assertThat(adapter.threadCounters().inputBlocksLost())
+                .as("a dropped block is not also a block the drain failed to publish")
+                .isZero();
+        adapter.close();
+    }
+
     // ── Oversized driver blocks (story 316 review) ───────────────────────
 
     @Test

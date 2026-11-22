@@ -58,6 +58,23 @@ class PlayWhileTheDeviceIsLostIsRefusedNamingTheDeviceTest {
         assertPlayIsRefused(() -> fixture.controller().playWithPreRoll());
     }
 
+    /** Ruling E126: after a stall the refusal never says "disconnected"; it offers Reconnect. */
+    @Test
+    void aRefusalAfterAStallSaysTheDeviceStoppedRespondingAndHasNotBeenReopened() throws Exception {
+        fixture.recordUntilABlockIsOnDisk();
+        fixture.closeTheStreamAsTheLossDoes();
+        runOnFx(() -> fixture.coordinator().onDeviceLost(lost, EngineStateChange.LossCause.STALLED));
+        fixture.awaitPublished();
+        int before = fixture.shownCount();
+
+        runOnFx(() -> fixture.controller().start());
+        runOnFx(() -> { }); // whatever the refusal posted has run
+
+        assertThat(fixture.entriesSince(before)).extracting(NotificationEntry::message)
+                .containsExactly("Playback is unavailable — Yanked Interface stopped responding and has not been"
+                        + " reopened; choose Reconnect, press Stop, or choose another device in Audio Settings");
+    }
+
     private void assertPlayIsRefused(Runnable play) throws Exception {
         fixture.recordUntilABlockIsOnDisk();
         fixture.closeTheStreamAsTheLossDoes();
@@ -74,7 +91,8 @@ class PlayWhileTheDeviceIsLostIsRefusedNamingTheDeviceTest {
         NotificationEntry refusal = entries.getFirst();
         assertThat(refusal.level()).isEqualTo(NotificationLevel.WARNING);
         assertThat(refusal.message())
-                .isEqualTo(RecordCoordinator.unavailableWhileDeviceLostMessage("Playback", Optional.of(lost)))
+                .isEqualTo(RecordCoordinator.unavailableWhileDeviceLostMessage("Playback", Optional.of(lost),
+                        EngineStateChange.LossCause.REMOVED))
                 .contains(lost.name()).contains("disconnected").contains("reconnect").contains("Stop")
                 .contains("Audio Settings");
         assertThat(onFx(() -> fixture.statusBar().getText())).isEqualTo(refusal.message());

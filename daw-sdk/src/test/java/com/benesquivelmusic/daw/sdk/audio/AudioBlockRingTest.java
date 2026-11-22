@@ -139,6 +139,20 @@ class AudioBlockRingTest {
     }
 
     @Test
+    void theCountingDrainReportsEverySlotItConsumedAndPlaysTheNewest() {
+        AudioBlockRing ring = new AudioBlockRing(4, 1);
+        ring.write(new float[] {1f}, 1);
+        ring.write(new float[] {2f}, 1);
+        ring.write(new float[] {3f}, 1);
+        float[] destination = new float[1];
+
+        assertThat(ring.drainLatestCountingInto(destination)).isEqualTo(3);
+        assertThat(destination).containsExactly(3f);
+        assertThat(ring.drainLatestCountingInto(destination)).as("empty").isZero();
+        assertThat(ring.drainLatestCountingInto(null)).isZero();
+    }
+
+    @Test
     void shorterSourceIsZeroPaddedAndLongerSourceIsTruncated() {
         AudioBlockRing ring = new AudioBlockRing(2, 4);
 

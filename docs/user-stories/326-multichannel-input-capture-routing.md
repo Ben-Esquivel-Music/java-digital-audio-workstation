@@ -85,3 +85,10 @@ Native build is skipped for these deterministic injected-backend tests. Physical
 7. If the driver permits reducing enabled inputs, validate Input 7-8 while eight inputs are available, then reduce availability before Record. The entire affected stereo track must capture silence, one visible warning must name it, and `take.manifest` must contain `routing-unavailable`. An unavailable armed input must show amber on both arrangement and mixer indicators.
 8. Record several loop laps and audition all takes. Cancel a preparing start; Stop/playback must stay responsive and another take must start after cleanup.
 9. Restore the original driver/channel configuration. These hardware checks have not been run by the automated tests.
+
+## Note from Story 338
+
+- **The onset of an input's silence is now recorded.** An input that stops delivering during a take, or never delivers, gets an `input-stopped=<trackId>|<stopFrame>|<resumeFrame>` line in `take.manifest` beside its `routing-unavailable` flag. For an input opened beside the stream the stop frame is the take's start frame plus the frames that input delivered, and the resume frame the stream's frame at the hand-off, both transport frames at the take's rate (story 338, rulings E13, E50 and E55).
+- **The gap is deliberately not closed.** Nothing pads the file: the track's file is shorter by the frames from the stop frame to the resume frame, and every frame captured before the stop stays at its timeline position (ruling E55).
+- **Such an input is warned in its own words**, not with the routing-mismatch sentence: "Track 'T': input from 'D' stopped delivering audio at m:ss.s into the take; the track records silence from there." or "… delivered no audio; the track records silence." (rulings E14 and E127). The routing-mismatch sentence stays for a route found too narrow (ruling E54).
+- **Blocks already queued when the stream's own input ends are captured.** They are rendered into the take before the silence starts (ruling E47).

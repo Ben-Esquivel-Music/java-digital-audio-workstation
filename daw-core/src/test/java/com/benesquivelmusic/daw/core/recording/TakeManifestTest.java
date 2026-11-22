@@ -1,6 +1,10 @@
 package com.benesquivelmusic.daw.core.recording;
 
+import com.benesquivelmusic.daw.core.recording.TakeManifest.ClockEvent;
+import com.benesquivelmusic.daw.core.recording.TakeManifest.ClockMark;
 import com.benesquivelmusic.daw.core.recording.TakeManifest.GapEntry;
+import com.benesquivelmusic.daw.core.recording.TakeManifest.InputSilence;
+import com.benesquivelmusic.daw.core.recording.TakeManifest.InputStopped;
 import com.benesquivelmusic.daw.core.recording.TakeManifest.SealStatus;
 import com.benesquivelmusic.daw.core.recording.TakeManifest.SealedBy;
 import com.benesquivelmusic.daw.core.recording.TakeManifest.SegmentEntry;
@@ -683,5 +687,87 @@ class TakeManifestTest {
         assertThat(copy.sealedAt()).contains(sealedAt);
         assertThat(copy).isEqualTo(sealed);
         assertThat(copy.toString()).contains("ABORTED/CRASH_RECOVERY@" + sealedAt);
+    }
+
+    /** {@link #full()} with one entry of each key story 338 added. */
+    private static TakeManifest.Builder withInputAndClockMarks() {
+        return full()
+                .addInputStopped(new InputStopped("track-a", 450_000, 451_024))
+                .addInputSilence(new InputSilence("track-b", 400_000, 512))
+                .addInputSilence(new InputSilence("track-b", 420_000, 256))
+                .addClockMark(new ClockMark(ClockEvent.UNLOCKED, 410_000))
+                .addClockMark(new ClockMark(ClockEvent.RESYNC, 415_000))
+                .addClockMark(new ClockMark(ClockEvent.LOCKED, 430_000));
+    }
+
+    @Test
+    void theInputStoppedInputSilenceAndClockKeysRoundTrip() throws IOException {
+        TakeManifest original = withInputAndClockMarks().sealed(SealedBy.DEVICE_LOSS).build();
+        String text = original.toText();
+
+        assertThat(text).contains("input-stopped=track-a|450000|451024\n",
+                "input-silence=track-b|400000|512\n", "input-silence=track-b|420000|256\n",
+                "clock=unlocked|410000\n", "clock=resync|415000\n", "clock=locked|430000\n");
+        TakeManifest read = TakeManifest.parse(text, "marks");
+        assertThat(read).isEqualTo(original);
+        assertThat(read.hashCode()).isEqualTo(original.hashCode());
+        assertThat(read.inputStops()).containsExactly(new InputStopped("track-a", 450_000, 451_024));
+        assertThat(read.inputSilences()).containsExactly(
+                new InputSilence("track-b", 400_000, 512), new InputSilence("track-b", 420_000, 256));
+        assertThat(read.clockMarks()).extracting(ClockMark::event)
+                .containsExactly(ClockEvent.UNLOCKED, ClockEvent.RESYNC, ClockEvent.LOCKED);
+        assertThat(original.toBuilder().build()).isEqualTo(original);
+    }
+
+    @Test
+    void eachNewKeyIsPartOfTheManifestsIdentity() {
+        TakeManifest plain = full().build();
+        assertThat(full().addInputStopped(new InputStopped("track-a", 1, 1)).build()).isNotEqualTo(plain);
+        assertThat(full().addInputSilence(new InputSilence("track-a", 1, 1)).build()).isNotEqualTo(plain);
+        assertThat(full().addClockMark(new ClockMark(ClockEvent.LOCKED, 1)).build()).isNotEqualTo(plain);
+        assertThat(full().addInputStopped(new InputStopped("track-a", 7, 9))
+                .addInputStopped(new InputStopped("track-a", 8, 8)).build().inputStops())
+                .as("one stop per track: the first stands")
+                .containsExactly(new InputStopped("track-a", 7, 9));
+    }
+
+    @Test
+    void aManifestWithoutTheNewKeysReadsThemAsEmptyAndAsBefore() throws IOException {
+        TakeManifest older = TakeManifest.parse(full().build().toText(), "older");
+
+        assertThat(older.inputStops()).isEmpty();
+        assertThat(older.inputSilences()).isEmpty();
+        assertThat(older.clockMarks()).isEmpty();
+        assertThat(older).isEqualTo(full().build());
+    }
+
+    @Test
+    void theNewKeysLeaveTheGapsAndRoutingFlagsAnOlderReaderSees() throws IOException {
+        TakeManifest.RoutingFlag flag = new TakeManifest.RoutingFlag("track-a", "Interface A", 6, 2, 0);
+        TakeManifest without = full().addRoutingFlag(flag).build();
+        TakeManifest with = withInputAndClockMarks().addRoutingFlag(flag).build();
+
+        TakeManifest read = TakeManifest.parse(with.toText(), "with");
+
+        assertThat(read.gaps()).isEqualTo(without.gaps());
+        assertThat(read.routingFlags()).isEqualTo(without.routingFlags()).containsExactly(flag);
+        assertThat(with.toText().lines().filter(line -> line.startsWith("gap=") || line.startsWith("routing-unavailable=")))
+                .as("no field was added to an existing key")
+                .allSatisfy(line -> assertThat(line.split("\\|", -1))
+                        .hasSize(line.startsWith("gap=") ? 3 : 5));
+        assertThat(TakeManifest.parse(with.toText() + "x-future-key=1|2|3\n", "unknown"))
+                .as("an unknown key is still ignored").isEqualTo(with);
+    }
+
+    @Test
+    void aMalformedNewKeyFailsTheManifestNamingTheLine() {
+        String text = full().build().toText();
+        for (String malformed : List.of("input-stopped=track-a|1", "input-silence=track-a|1|0",
+                "input-silence=track-a|-1|5", "clock=drifted|10", "clock=locked|x")) {
+            assertThatThrownBy(() -> TakeManifest.parse(text + malformed + "\n", "broken.manifest"))
+                    .as(malformed)
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("broken.manifest:");
+        }
     }
 }

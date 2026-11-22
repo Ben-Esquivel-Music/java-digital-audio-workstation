@@ -58,6 +58,176 @@ class FailureSpineWiringSourceTest {
     private static final String GUARDED_DISPOSAL =
             "DeclaredSubject.pluginDisposal(slot.getName()).guard(slot::disposeAfterQuiescence)";
 
+    /**
+     * Story 338: the window starts the engine-health monitor
+     * once, right after the engine-state bridge subscribed, and stops it in
+     * its disposal, in a step of its own before the bridge is cancelled; the
+     * engine controller's notices with an action reach the notification bar
+     * with that action.
+     */
+    @Test
+    void theWindowStartsTheEngineHealthMonitorAfterTheBridgeAndStopsItBeforeTheBridgeIsCancelled()
+            throws IOException {
+        String main = flat(code(UI.resolve("MainController.java")));
+
+        assertThat(body(main, "private void initialize()"))
+                .contains("engineStateBridge.subscribeTo(audioEngineController);"
+                        + " audioEngineController.startEngineHealthMonitor();")
+                .contains("notificationBar.show(NotificationLevel.WARNING, message, actionLabel, action);");
+        assertThat(occurrences(main, "startEngineHealthMonitor()")).as("started once").isEqualTo(1);
+        assertThat(body(main, "java.util.concurrent.CompletionStage<Void> disposeWindowLifetime()"))
+                .containsSubsequence("}, () -> { if (audioEngineController != null) {"
+                                + " audioEngineController.stopEngineHealthMonitor(); } }, () -> {",
+                        "engineStateBridge.cancel();");
+        assertThat(occurrences(main, "stopEngineHealthMonitor()")).as("stopped once").isEqualTo(1);
+    }
+
+    /**
+     * Story 338 (rulings E64 and E68–E70, amendment A13): the window builds
+     * its device-loss reactions over the controller's lost-drive epoch, its
+     * health drain and its input-meter registry, installs their take-rescued
+     * answer as the Reconnect action's query, and hands them to the
+     * engine-state bridge as its first listener — all before the bridge
+     * subscribes.
+     */
+    @Test
+    void theWindowHandsTheBridgeItsDeviceLossReactionsAndTheReconnectQueryBeforeItSubscribes() throws IOException {
+        String main = flat(code(UI.resolve("MainController.java")));
+
+        assertThat(body(main, "private void initialize()"))
+                .contains("deviceLossReactions = new DeviceLossReactions(() -> transportController,"
+                        + " audioEngineController::lostDriveEpoch, this::audioHealthDrain,"
+                        + " inputLevelMonitorRegistry);"
+                        + " audioEngineController.setTakeRescuedQuery(deviceLossReactions::takeRescued);"
+                        + " engineStateBridge = new EngineStateBridge(deviceLossReactions.andThen("
+                        + "engineHealthStatus::onEngineStateChange), () -> transportController, dispatcher());"
+                        + " engineStateBridge.subscribeTo(audioEngineController);");
+        assertThat(occurrences(main, "new EngineStateBridge(")).as("one bridge").isEqualTo(1);
+        assertThat(occurrences(main, "setTakeRescuedQuery(")).as("one query").isEqualTo(1);
+    }
+
+    /**
+     * Story 338 (ruling E42, amendment A5): the window's
+     * engine-health model is a field initializer, fed after the device-loss
+     * reactions by the bridge (above), bound to the drain's engine fault right
+     * after the drain is built and let go next to the drain's removal; the
+     * strip is built over it, with the Engine cell's Reconnect and the Xruns
+     * cell's log; the feed is registered on the window's dispatcher and
+     * removed in a step of its own before every other window is hidden; the
+     * shed subscriber is replaced with the CPU budget enforcer's UI binding;
+     * the xrun log is built once. No test runs {@code initialize()}, so
+     * these call sites are pinned here; {@code EngineFaultReachesTheEngineCellTest},
+     * {@code EngineStateCellTest} and {@code XrunCountAndLogSurfacesTest} run
+     * what they call.
+     */
+    @Test
+    void theWindowWiresItsEngineHealthModelToTheBridgeTheDrainTheStripTheFeedAndTheShedLog() throws IOException {
+        String main = flat(code(UI.resolve("MainController.java")));
+
+        assertThat(main).contains("private final com.benesquivelmusic.daw.app.ui.status.EngineHealthStatus"
+                + " engineHealthStatus = new com.benesquivelmusic.daw.app.ui.status.EngineHealthStatus();");
+        assertThat(body(main, "private void attachAudioHealthDrain(FailureFunnel funnel)"))
+                .endsWith("})); engineHealthStatus.bindEngineFault(audioHealthDrain.engineFaultProperty());"
+                        + " audioHealthDrainRemoval = fxDispatcher.addPulseParticipant(audioHealthDrain::pulse); }");
+        String disposal = body(main, "java.util.concurrent.CompletionStage<Void> disposeWindowLifetime()");
+        assertThat(disposal).containsSubsequence(
+                "audioHealthDrain = null; engineHealthStatus.unbindEngineFault(); }, () -> {"
+                        + " if (engineHealthFeedRemoval != null) { engineHealthFeedRemoval.run();"
+                        + " engineHealthFeedRemoval = null; } }, () -> {",
+                "meterFeed.dispose();",
+                "this::hideEveryOtherWindow);");
+        assertThat(body(main, "private void createSessionStatusStrip()"))
+                .contains("sessionStatusStrip = new com.benesquivelmusic.daw.app.ui.status.SessionStatusStrip("
+                        + " projectOperationProgress, MotionManager.getDefault(), engineHealthStatus);")
+                .contains("if (audioEngineController != null && deviceLossReactions != null) {"
+                        + " sessionStatusStrip.setOnReconnectAction("
+                        + " reconnectTheLostDevice(deviceLossReactions::takeRescued, audioEngineController));"
+                        + " engineHealthFeed = EngineHealthFeed.forWindow(engineHealthStatus, audioEngineController,"
+                        + " () -> transportController, () -> transportVM, this::existingTrackName);"
+                        + " engineHealthFeedRemoval = dispatcher().addPulseParticipant(engineHealthFeed::pulse); }"
+                        + " sessionStatusStrip.setOnXrunLogAction(() -> xrunLogDialog().present());");
+        assertThat(body(main, "XrunLogDialog xrunLogDialog()"))
+                .isEqualTo("{ if (xrunLogDialog == null) { xrunLogDialog = new XrunLogDialog(mainWindow().orElse(null),"
+                        + " engineHealthStatus, () -> { if (engineHealthFeed != null) {"
+                        + " engineHealthFeed.clearXrunLog(); } }); } return xrunLogDialog; }");
+        assertThat(body(main, "private void installTrackCpuBudgetEnforcer()")).containsSubsequence(
+                "if (shedLogSubscriber != null) { shedLogSubscriber.cancel(); shedLogSubscriber = null; }",
+                "cpuBudgetEnforcer.close();",
+                "cpuBudgetEnforcer.performanceEvents().subscribe(trackBudgetUiBinding);"
+                        + " if (audioEngineController != null) {"
+                        + " shedLogSubscriber = new ShedLogSubscriber(audioEngineController.xrunJournal());"
+                        + " cpuBudgetEnforcer.performanceEvents().subscribe(shedLogSubscriber); }");
+        assertThat(occurrences(main, ".bindEngineFault(")).as("bound once").isEqualTo(1);
+        assertThat(occurrences(main, "unbindEngineFault()")).as("let go once").isEqualTo(1);
+        assertThat(occurrences(main, "EngineHealthFeed.forWindow(")).as("one feed").isEqualTo(1);
+        assertThat(occurrences(main, "addPulseParticipant(engineHealthFeed::pulse)")).as("registered once")
+                .isEqualTo(1);
+        assertThat(occurrences(main, "new ShedLogSubscriber(")).as("one shed subscriber at a time").isEqualTo(1);
+        assertThat(occurrences(main, "new XrunLogDialog(")).as("one log per window").isEqualTo(1);
+    }
+
+    /**
+     * Rulings E32, E81 to E85, E110 and E119: the window builds its clock
+     * badge once, over its engine and its current transport's take, wires it
+     * to the engine — a pulse participant on the window's dispatcher that
+     * derives the badge, the device loss included, from the engine's levels,
+     * the stream-opened callback and the clock-source-selected callback, and
+     * neither the model's engine state, which can report a loss after a
+     * Reconnect reopened the stream, nor the controller's clock-lock events —
+     * and mounts it beside the transport status, all before the
+     * default provision can open the first stream; every reconfigure
+     * refreshes its source; the window's disposal undoes the wiring, both
+     * callbacks included, in a step of its own before every other window is
+     * hidden; the window's engine sink shows an information notice at the
+     * bar's information level. {@code ClockBadgeDuringATakeTest} runs the
+     * wiring method and {@code UiScaleLayoutTest} the mount.
+     */
+    @Test
+    void theWindowBuildsWiresAndMountsItsClockBadgeOnceAndUndoesItInItsDisposal() throws IOException {
+        String main = flat(code(UI.resolve("MainController.java")));
+
+        assertThat(body(main, "private void initialize()")).containsSubsequence(
+                "audioEngineController.startEngineHealthMonitor();",
+                "clockStatusIndicator = new ClockStatusIndicator(engineNotifications,"
+                        + " ClockStatusIndicator.takeMarksOf(() -> transportController),"
+                        + " ClockStatusIndicator.engineClock(audioEngine, audioEngineController), dispatcher());"
+                        + " clockStatusIndicatorDisposal = installClockStatusIndicator(clockStatusIndicator,"
+                        + " audioEngineController, dispatcher());"
+                        + " mountClockStatusIndicator(transportBar, statusLabel, clockStatusIndicator);",
+                "audioEngineController.installDefaultProvision();")
+                .contains("engineBinder.refreshPerformanceMonitor(); if (clockStatusIndicator != null) {"
+                        + " clockStatusIndicator.refresh(); } }), engineNotifications);")
+                .as("the relock notice's level (ruling E110)")
+                .contains("@Override public void notifyInformation(String message) { postFx(() -> {"
+                        + " if (notificationBar != null) { notificationBar.show(NotificationLevel.INFO, message); }"
+                        + " }); } };");
+        assertThat(body(main, "static Runnable installClockStatusIndicator("))
+                .isEqualTo("{ Runnable pulseRemoval = dispatcher.addPulseParticipant(indicator::pulse);"
+                        + " controller.setStreamOpenedCallback(indicator::streamOpened);"
+                        + " controller.setClockSourceSelectedCallback(indicator::refresh);"
+                        + " return () -> { controller.setStreamOpenedCallback(null);"
+                        + " controller.setClockSourceSelectedCallback(null); pulseRemoval.run();"
+                        + " indicator.dispose(); }; }");
+        assertThat(main).as("the badge follows no clock-lock event: it reads the status on each pulse")
+                .doesNotContain("indicator.bind(").doesNotContain("clockLockEvents()")
+                .as("the badge reads the loss as a level, never the model's engine state")
+                .doesNotContain("followEngineState(");
+        assertThat(body(main, "java.util.concurrent.CompletionStage<Void> disposeWindowLifetime()"))
+                .containsSubsequence("engineHealthFeedRemoval = null; } }, () -> {"
+                                + " if (clockStatusIndicatorDisposal != null) { clockStatusIndicatorDisposal.run();"
+                                + " clockStatusIndicatorDisposal = null; } }, () -> {",
+                        "this::hideEveryOtherWindow);");
+        assertThat(occurrences(main, "new ClockStatusIndicator(")).as("one badge per window").isEqualTo(1);
+        assertThat(occurrences(main, "installClockStatusIndicator(")).as("declared and wired once").isEqualTo(2);
+        assertThat(occurrences(main, "mountClockStatusIndicator(")).as("declared and mounted once").isEqualTo(2);
+        assertThat(occurrences(main, "setStreamOpenedCallback(")).as("installed and removed by the wiring")
+                .isEqualTo(2);
+        assertThat(occurrences(main, "setClockSourceSelectedCallback(")).as("installed and removed by the wiring")
+                .isEqualTo(2);
+        assertThat(occurrences(main, "clockStatusIndicator.refresh()")).as("refreshed by every reconfigure")
+                .isEqualTo(1);
+    }
+
     @Test
     void theLauncherNamesTheLogManagerInstallsTheSinkAndTheDefaultHandlerBeforeTheToolkitStarts()
             throws IOException {

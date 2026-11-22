@@ -640,6 +640,10 @@ class CaptureRingTest {
         abandoned.setPunchStartFrames(10);
         abandoned.setPunchEndFrames(20);
         abandoned.setLoopEnabled(true);
+        abandoned.setLoopStartFrame(1000);
+        abandoned.setLoopEndFrame(1036);
+        abandoned.setInputStarved(true);
+        abandoned.setOutputClockFrame(512);
         abandoned.copySource(0, block, CHANNELS, SLOT_FRAMES);
         abandoned.copySource(1, block, CHANNELS, SLOT_FRAMES);
         long sequence = abandoned.sequence();
@@ -656,6 +660,10 @@ class CaptureRingTest {
         assertThat(again.punchStartFrames()).isZero();
         assertThat(again.punchEndFrames()).isZero();
         assertThat(again.loopEnabled()).isFalse();
+        assertThat(again.loopStartFrame()).isZero();
+        assertThat(again.loopEndFrame()).isZero();
+        assertThat(again.inputStarved()).isFalse();
+        assertThat(again.outputClockFrame()).isEqualTo(CaptureRing.NO_OUTPUT_CLOCK_FRAME);
         assertThat(again.sourceChannels(0)).as("no source is present until it is copied again").isZero();
         assertThat(again.sourceChannels(1)).isZero();
         assertThat(ring.publishedBlocks()).isZero();
@@ -674,7 +682,8 @@ class CaptureRingTest {
                 .as("the pin sees the callback's copy and stamp methods")
                 .contains("copySource", "clearSource", "setNumFrames", "setTruncatedFrames", "setStartFrame",
                         "setBeatPosition", "setPunchEnabled", "setPunchStartFrames", "setPunchEndFrames",
-                        "setLoopEnabled", "slotFrames");
+                        "setLoopEnabled", "setLoopStartFrame", "setLoopEndFrame", "setInputStarved",
+                        "setOutputClockFrame", "slotFrames");
         assertThat(realTimeSafetyViolations(surface)).isEmpty();
     }
 
@@ -708,7 +717,8 @@ class CaptureRingTest {
                 .as("the scan parsed CaptureRing$Slot and saw the callback's copy and stamp methods")
                 .contains("copySource", "clearSource", "setNumFrames", "setTruncatedFrames", "setStartFrame",
                         "setBeatPosition", "setPunchEnabled", "setPunchStartFrames", "setPunchEndFrames",
-                        "setLoopEnabled", "slotFrames");
+                        "setLoopEnabled", "setLoopStartFrame", "setLoopEndFrame", "setInputStarved",
+                        "setOutputClockFrame", "slotFrames");
         assertThat(scanned).hasSameSizeAs(publicMethodsOf(CaptureRing.Slot.class));
         assertThat(offenders).isEmpty();
     }

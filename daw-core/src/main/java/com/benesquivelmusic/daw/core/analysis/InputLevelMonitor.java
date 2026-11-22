@@ -328,6 +328,18 @@ public final class InputLevelMonitor {
                 -1L);
     }
 
+    /**
+     * Drops the level to the floor and keeps the clip latch: the input's
+     * device is gone, so the bar must not hold its last level (story 338,
+     * ruling E64). The render thread may still overwrite it once if a pump
+     * that has not exited renders one more block.
+     *
+     * <p>Safe to call from any thread.</p>
+     */
+    public void silence() {
+        latest = new InputLevelMeter(DB_FLOOR, DB_FLOOR, clippedSinceReset, lastClipFrameIndex);
+    }
+
     private static double linearToDb(double linear) {
         if (linear <= 0.0) {
             return DB_FLOOR;

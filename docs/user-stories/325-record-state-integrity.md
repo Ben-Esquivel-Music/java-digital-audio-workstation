@@ -111,3 +111,7 @@ run reported 12,576 tests, 18 skipped, zero failures and zero errors: SDK 1,330 
 acoustics 106, core 7,686 (13 skipped), FX 29 and app 3,425 (3 skipped). Native builds
 were disabled by `skipNativeBuild=true`; no additional opt-in profiles were enabled.
 The complete verification log is `target/story325-final-verify.log`.
+
+## Note from Story 338
+
+Story 338 built no status-strip cell that renders this story's record-state machine. The `EngineState` consumer it built is the session status strip's Engine cell, which follows the engine controller's state (RECONFIGURING, DEVICE_LOST) and the latched engine fault; the record state's "Device lost" stays on the transport status label (story 338, rulings E26 and E27). The watchdog this story's Non-Goals name as a DEVICE_LOST feed is built: a device that stops calling back is declared lost through the steps a removal takes, so the record state's DEVICE_LOST and its rescue follow as story 327 built them.

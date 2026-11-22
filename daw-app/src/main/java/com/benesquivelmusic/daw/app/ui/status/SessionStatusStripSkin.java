@@ -18,6 +18,8 @@ import javafx.scene.Scene;
 import javafx.scene.control.Button;
 import javafx.scene.control.SkinBase;
 import javafx.scene.control.Tooltip;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyEvent;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 import javafx.stage.Popup;
@@ -36,10 +38,11 @@ import java.util.Locale;
 
 /**
  * Skin for {@link SessionStatusStrip} (Project Manager Design Book §4.4, story
- * 295). Builds the eight cells, binds each to the single
- * {@link ProjectOperationProgress} model, and performs the §4.4 responsive
- * layout: two rows when wide, collapsing to a single row with a priority
- * overflow popover when narrow.
+ * 295). Builds the eight project cells and binds each to the single
+ * {@link ProjectOperationProgress} model, has {@link EngineHealthCells} build
+ * and bind the Engine and Xruns cells to the {@link EngineHealthStatus} model
+ * (story 338), and performs the §4.4 responsive layout: two rows when wide,
+ * collapsing to a single row with a priority overflow popover when narrow.
  *
  * <h2>Binding-only (§8)</h2>
  *
@@ -90,9 +93,18 @@ import java.util.Locale;
  *
  * <p>At {@value SessionStatusStrip#TWO_ROW_MIN_WIDTH}&nbsp;px and wider the
  * strip shows two full rows. Below that it collapses to a single row, hiding
- * collapsible cells in the fixed priority order Workspace → Schema → Lock →
- * Disk → Journal; the Session, Saved and Checkpoint cells never collapse. The
- * hidden cells move into the trailing {@code ⋯} overflow popover. (Stage 1
+ * collapsible cells in the fixed priority order Workspace → Xruns → Schema →
+ * Lock → Disk → Journal; the Session, Saved, Checkpoint and Engine cells never
+ * collapse (story 338, ruling E28: a device loss or an engine fault is never
+ * hidden behind the overflow; the Engine cell takes no space while it has
+ * nothing to say), nor does the Xruns cell while it carries the warning
+ * accent (ruling E103), and while it stays the cells after it go one step
+ * earlier. The hidden cells move into the trailing {@code ⋯} overflow
+ * popover, which the keyboard reaches: the button takes focus, Space or
+ * Enter opens the popover with its first actionable cell focused, Enter or
+ * Space fires that cell, and Escape closes it (ruling E23); however it
+ * closes, the focus is never left on a node that is not showing. The button
+ * says what it does in its tooltip and spoken text (ruling E132). (Stage 1
  * simplification: a collapsed cell is moved whole into the popover rather than
  * rendered icon-only inline as §4.4's mockup ultimately envisions.)</p>
  *
@@ -107,6 +119,7 @@ public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
     // ── Collapse thresholds (px), in priority order. A collapsible cell is
     //    hidden when the strip is narrower than its threshold. ───────────────
     private static final double T_WORKSPACE = SessionStatusStrip.TWO_ROW_MIN_WIDTH; // 1200
+    private static final double T_XRUN = 1170.0;
     private static final double T_SCHEMA = 1140.0;
     private static final double T_LOCK = 1080.0;
     private static final double T_DISK = 1020.0;
@@ -135,6 +148,8 @@ public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
     private final StatusStripCell lockCell = new StatusStripCell();
     private final StatusStripCell schemaCell = new StatusStripCell();
     private final StatusStripCell workspaceCell = new StatusStripCell();
+    /** The Engine and Xruns cells (story 338), bound to the strip's engine-health model. */
+    private final EngineHealthCells engineHealthCells;
 
     /** The Saved cell's tooltip: each standing failure's cause, the last save and the last good checkpoint. */
     private final Tooltip savedTooltip = new Tooltip();
@@ -166,6 +181,8 @@ public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
     private final Popup overflowPopup = new Popup();
 
     private final ChangeListener<Number> widthListener;
+    /** Re-runs the collapse when the Xruns cell's accent comes or goes (ruling E103). */
+    private final InvalidationListener xrunAccentListener = _ -> reconcile(getSkinnable().getWidth());
 
     /** The UI-scale factor the collapse thresholds are compared in (story 335, engineer S1). */
     private double uiScale;
@@ -181,18 +198,25 @@ public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
     public SessionStatusStripSkin(SessionStatusStrip strip) {
         super(strip);
         this.model = strip.progress();
+        this.engineHealthCells = new EngineHealthCells(strip, ZoneId.systemDefault());
 
         rowTop.getStyleClass().add("status-strip-row");
         rowBottom.getStyleClass().add("status-strip-row");
         rows.getStyleClass().add("status-strip-rows");
         overflowButton.getStyleClass().add("status-strip-overflow");
-        overflowButton.setFocusTraversable(false);
+        overflowButton.setFocusTraversable(true);
+        Tooltip overflowTooltip = new Tooltip(EngineHealthText.text("statusStrip.overflow.tooltip"));
+        overflowTooltip.setShowDelay(TOOLTIP_DELAY);
+        overflowButton.setTooltip(overflowTooltip);
+        overflowButton.setAccessibleText(EngineHealthText.text("statusStrip.overflow.spoken"));
+        overflowContent.addEventHandler(KeyEvent.KEY_PRESSED, this::closeOverflowOnEscape);
         overflowContent.getStyleClass().add("status-strip-overflow-popover");
         overflowPopup.getContent().add(overflowContent);
         overflowPopup.setAutoHide(true);
+        overflowPopup.setOnHidden(_ -> keepTheFocusOnAShowingNode());
         overflowButton.setOnAction(_ -> toggleOverflowPopup());
-        schemaCell.setFocusTraversable(true);
-        schemaCell.setOnMouseClicked(_ -> getSkinnable().getOnSchemaAction().run());
+        // The cell's action, not a mouse handler, so Enter and Space fire it as a click does.
+        schemaCell.setOnAction(_ -> getSkinnable().getOnSchemaAction().run());
 
         bindCells();
         installTooltips();
@@ -210,6 +234,7 @@ public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
                     reconcile(getSkinnable().getWidth());
                 });
 
+        engineHealthCells.xrunCell().severityProperty().addListener(xrunAccentListener);
         widthListener = (_, _, w) -> reconcile(w.doubleValue());
         strip.widthProperty().addListener(widthListener);
         reconcile(strip.getWidth());
@@ -506,34 +531,46 @@ public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
     private void reconcile(double scaledWidth) {
         double width = scaledWidth / uiScale;
         List<StatusStripCell> hidden = new ArrayList<>();
-        // Collapse order: Workspace first, Journal last (§4.4).
+        // Collapse order: Workspace first, Journal last (§4.4); the Engine cell never collapses (ruling E28).
+        StatusStripCell engineCell = engineHealthCells.engineCell();
+        StatusStripCell xrunCell = engineHealthCells.xrunCell();
         if (width < T_WORKSPACE) {
             hidden.add(workspaceCell);
         }
-        if (width < T_SCHEMA) {
+        // A warning-accented Xruns cell stays on the strip like the Engine cell, and the other cells go into
+        // the overflow first: each one step earlier, taking the place the Xruns cell would have left (ruling
+        // E103). Squeezed further, its text is ellipsized and its tooltip and spoken text stay whole.
+        boolean xrunKept = xrunCell.getSeverity() != Severity.NORMAL;
+        if (width < T_XRUN && !xrunKept) {
+            hidden.add(xrunCell);
+        }
+        if (width < (xrunKept ? T_XRUN : T_SCHEMA)) {
             hidden.add(schemaCell);
         }
-        if (width < T_LOCK) {
+        if (width < (xrunKept ? T_SCHEMA : T_LOCK)) {
             hidden.add(lockCell);
         }
-        if (width < T_DISK) {
+        if (width < (xrunKept ? T_LOCK : T_DISK)) {
             hidden.add(diskCell);
         }
-        if (width < T_JOURNAL) {
+        if (width < (xrunKept ? T_DISK : T_JOURNAL)) {
             hidden.add(journalCell);
         }
 
+        // Moving a cell out of the open popover can close it before the code below runs, so its focus is read first.
+        Node popoverFocus = overflowPopup.isShowing() ? overflowContent.getScene().getFocusOwner() : null;
         boolean twoRows = width >= SessionStatusStrip.TWO_ROW_MIN_WIDTH;
         if (twoRows) {
             // Wide: two full rows, every fact inline, no overflow.
-            rowTop.getChildren().setAll(sessionCell, savedCell, checkpointCountdown, journalCell);
-            rowBottom.getChildren().setAll(diskCell, lockCell, schemaCell, workspaceCell);
+            rowTop.getChildren().setAll(sessionCell, savedCell, checkpointCountdown, engineCell, journalCell);
+            rowBottom.getChildren().setAll(diskCell, lockCell, schemaCell, xrunCell, workspaceCell);
             setRowBottomShown(true);
             overflowContent.getChildren().clear();
             setOverflowButtonShown(false);
             if (overflowPopup.isShowing()) {
                 overflowPopup.hide();
             }
+            keepTheFocusOnAShowingNode();
             return;
         }
 
@@ -543,6 +580,7 @@ public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
         single.add(sessionCell);
         single.add(savedCell);
         single.add(checkpointCountdown);
+        single.add(engineCell);
         if (!hidden.contains(journalCell)) {
             single.add(journalCell);
         }
@@ -554,6 +592,9 @@ public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
         }
         if (!hidden.contains(schemaCell)) {
             single.add(schemaCell);
+        }
+        if (!hidden.contains(xrunCell)) {
+            single.add(xrunCell);
         }
         if (!hidden.contains(workspaceCell)) {
             single.add(workspaceCell);
@@ -567,8 +608,19 @@ public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
         overflowContent.getChildren().setAll(hidden);
         boolean any = !hidden.isEmpty();
         setOverflowButtonShown(any);
-        if (!any && overflowPopup.isShowing()) {
-            overflowPopup.hide();
+        boolean focusCameBack = popoverFocus != null && single.contains(popoverFocus);
+        if (overflowPopup.isShowing()) {
+            if (!any || focusCameBack) {
+                overflowPopup.hide();
+            } else {
+                placeOverflowPopup();
+            }
+        }
+        if (focusCameBack) {
+            // The focused cell came back onto the strip (its accent arrived): the focus follows it.
+            popoverFocus.requestFocus();
+        } else {
+            keepTheFocusOnAShowingNode();
         }
     }
 
@@ -590,7 +642,67 @@ public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
         Bounds b = overflowButton.localToScreen(overflowButton.getBoundsInLocal());
         if (b != null) {
             overflowPopup.show(overflowButton, b.getMinX(), b.getMinY() - overflowContent.prefHeight(-1));
+            // The popover's first cell with an action takes the focus, so Enter or Space fires it (ruling E23).
+            for (Node cell : overflowContent.getChildren()) {
+                if (cell.isFocusTraversable()) {
+                    cell.requestFocus();
+                    break;
+                }
+            }
         }
+    }
+
+    /** Keeps the open popover against the button when its content changes. */
+    private void placeOverflowPopup() {
+        Bounds b = overflowButton.localToScreen(overflowButton.getBoundsInLocal());
+        if (b != null) {
+            overflowPopup.setX(b.getMinX());
+            overflowPopup.setY(b.getMinY() - overflowContent.prefHeight(-1));
+        }
+    }
+
+    private void closeOverflowOnEscape(KeyEvent key) {
+        if (key.getCode() == KeyCode.ESCAPE && overflowPopup.isShowing()) {
+            overflowPopup.hide();
+            overflowButton.requestFocus();
+            key.consume();
+        }
+    }
+
+    /**
+     * However the popover closed — Escape, a click outside, the strip
+     * widening to two rows, its last cell leaving it — the focus the button
+     * held is never left on a node that is not showing: it stays on the
+     * button while the button shows, otherwise it goes to the strip's first
+     * focus-traversable cell that shows (ruling E23). A focus a click outside
+     * moved elsewhere is left there.
+     */
+    private void keepTheFocusOnAShowingNode() {
+        Scene scene = getSkinnable().getScene();
+        if (scene == null || scene.getFocusOwner() != overflowButton || showsOnTheStrip(overflowButton)) {
+            return;
+        }
+        List<Node> inOrder = new ArrayList<>(rowTop.getChildren());
+        inOrder.addAll(rowBottom.getChildren());
+        for (Node node : inOrder) {
+            if (node.isFocusTraversable() && !node.isDisabled() && showsOnTheStrip(node)) {
+                node.requestFocus();
+                return;
+            }
+        }
+    }
+
+    /** Whether {@code node} and every parent up to the strip are visible. */
+    private boolean showsOnTheStrip(Node node) {
+        for (Node shown = node; shown != null; shown = shown.getParent()) {
+            if (!shown.isVisible()) {
+                return false;
+            }
+            if (shown == getSkinnable()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ── Accessors for the control (delegated to from SessionStatusStrip) ─────
@@ -603,7 +715,10 @@ public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
     StatusStripCell lockCell() { return lockCell; }
     StatusStripCell schemaCell() { return schemaCell; }
     StatusStripCell workspaceCell() { return workspaceCell; }
+    StatusStripCell engineCell() { return engineHealthCells.engineCell(); }
+    StatusStripCell xrunCell() { return engineHealthCells.xrunCell(); }
     Button overflowButton() { return overflowButton; }
+    boolean isOverflowPopoverShowing() { return overflowPopup.isShowing(); }
 
     List<StatusStripCell> overflowCells() {
         List<StatusStripCell> cells = new ArrayList<>();
@@ -687,6 +802,7 @@ public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
     @Override
     public void dispose() {
         getSkinnable().widthProperty().removeListener(widthListener);
+        engineHealthCells.xrunCell().severityProperty().removeListener(xrunAccentListener);
         uiScaleSubscription.unsubscribe();
         checkpointCountdown.dispose();
         model.savesSucceededProperty().removeListener(savedFlashTrigger);
@@ -711,6 +827,7 @@ public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
         checkpointCountdown.nextCheckpointInstantProperty().unbind();
         checkpointCountdown.intervalProperty().unbind();
         checkpointCountdown.reduceMotionProperty().unbind();
+        engineHealthCells.dispose();
         super.dispose();
     }
 }

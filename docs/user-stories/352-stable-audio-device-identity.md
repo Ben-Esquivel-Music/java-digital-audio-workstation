@@ -40,3 +40,9 @@ Story 327 made the consequence visible. On a `DeviceArrived` that is `sameDevice
 - Keep the matcher pure and the key optional: `Optional` for an absent key, never a sentinel string; the persisted form is additive so `ProjectSerializer`/`ProjectDeserializer` round trips of story 326 need no migration.
 - The ambiguity remediation rides the controller's `NotificationManager` (the toast sink of story 327 until story 339's injection) and should offer the Audio Settings action once story 339's notification actions exist.
 - Cross-refs: existing 214 (the fallback this story closes), 218 (reopen ordering), 326 (the persisted identity), 327 (the chain that depends on the match), 338 (the hardware feeds), 339 (notification injection and actions), 092/215 (routing and naming surfaces). Book: Recording Reliability §5.2 "Device returned" (guard: same identity), §5.5 step 6.
+
+## Note from Story 338
+
+- **Story 338 produced no `DeviceRemoved` or `DeviceArrived`.** Its heartbeat watchdog declares a device that stops calling back lost through the controller's own steps, `declareDeviceLost`, with the loss cause `STALLED`; the OS device watcher this story's Non-Goals name is future story [461](future/461-an-audio-device-removed-or-added-is-noticed-stream-open-or-not.md).
+- **On hardware the lost device's return is the person's Reconnect**, which reopens the watched device and checks where the stream landed in `AudioEngine.reopenAndPark(DeviceId)`, by the same rule as `sameDevice`: the same id or the same name. A Reconnect that lands on another device closes it again and stays lost (story 338, ruling E57). So "the same device" has a second copy in daw-core that this story's one matcher must cover.
+- **On the automatic device every loss surface uses the unnamed form**, "The audio device" (story 338, ruling E131); naming the device the stream was actually opened on is future story [470](future/470-every-device-loss-surface-names-the-device-the-stream-opened.md).

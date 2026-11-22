@@ -87,6 +87,17 @@ public final class InputLevelMonitorRegistry {
         }
     }
 
+    /**
+     * Drops every registered monitor's level to the floor, keeping each clip
+     * latch ({@link InputLevelMonitor#silence()}): the audio device was lost
+     * (story 338, ruling E64).
+     */
+    public void silenceAll() {
+        for (InputLevelMonitor m : byTrackId.values()) {
+            m.silence();
+        }
+    }
+
     /** Removes every registered monitor. */
     public void clear() {
         byTrackId.clear();

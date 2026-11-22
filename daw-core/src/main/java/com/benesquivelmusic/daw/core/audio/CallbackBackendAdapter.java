@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.AudioBlock;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.AudioStreamConfig;
+import com.benesquivelmusic.daw.sdk.audio.BackendDropoutCounters;
 import com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters;
 import com.benesquivelmusic.daw.sdk.audio.BufferSize;
 import com.benesquivelmusic.daw.sdk.audio.CaptureRequirement;
@@ -258,6 +259,29 @@ public final class CallbackBackendAdapter implements AudioBackend {
     private volatile long droppedInputBlocks;
 
     /**
+     * Device periods that found the output ring empty after this open had
+     * played its first rendered block: the device played silence the render
+     * drive owed it. Same single-writer {@code volatile long ++} idiom as
+     * {@link #droppedInputBlocks}; the writer is
+     * {@link #deviceCallback(float[][], float[][], int)}.
+     */
+    private volatile long outputStarvedPeriods;
+
+    /**
+     * Whether the device callback has played a rendered block since the
+     * stream opened. Before that an empty ring is the start-up, not
+     * starvation. Written by {@link #open} before the ring is published
+     * (no callback runs then) and by the device callback afterwards.
+     */
+    private boolean outputPrimed;
+
+    /**
+     * Captured blocks the drain offered that a subscriber's full buffer
+     * dropped, counted once per block. Single writer: the drain thread.
+     */
+    private volatile long inputBlocksDroppedAtPublish;
+
+    /**
      * Creates an adapter over the given legacy backend that opens its input
      * side on the backend's default input device.
      *
@@ -480,6 +504,7 @@ public final class CallbackBackendAdapter implements AudioBackend {
         this.bufferFrames = bufferFrames;
         this.openedSampleRate = format.sampleRate();
         this.outScratch = new float[outChannels * bufferFrames];
+        this.outputPrimed = false;
         this.outputRing = new InterleavedBlockRing(OUTPUT_RING_SLOTS,
                 Math.max(1, outChannels * bufferFrames));
         // ORDERING CONSTRAINT (story 316 re-review) — do not move this below
@@ -731,6 +756,29 @@ public final class CallbackBackendAdapter implements AudioBackend {
         return delegate.threadCounters().plus(new BackendThreadCounters(
                 0L, inputBlocksLost, 0L, 0L, OptionalLong.empty(),
                 Optional.empty(), Optional.ofNullable(lastInputFault), Optional.empty()));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>This adapter's own counts, which live as long as the adapter:
+     * device periods that found the output ring empty once the stream had
+     * played (output starved), rendered blocks the full output ring refused
+     * (discarded), and captured blocks lost to the full input ring or dropped
+     * by a subscriber's full buffer at publish. Blocks the drain could not
+     * publish at all are {@link #threadCounters()}'s {@code inputBlocksLost}
+     * and are not counted here. The wrapped driver reports no overloads or
+     * resyncs.</p>
+     */
+    @Override
+    public BackendDropoutCounters dropoutCounters() {
+        return new BackendDropoutCounters(
+                outputStarvedPeriods,
+                droppedOutputBlocks.get(),
+                0L,
+                0L,
+                droppedInputBlocks + inputBlocksDroppedAtPublish,
+                true);
     }
 
     /**
@@ -1113,8 +1161,12 @@ public final class CallbackBackendAdapter implements AudioBackend {
         InterleavedBlockRing out = this.outputRing;
         float[] outBlock = this.outScratch;
         if (out != null && outBlock != null && out.readInto(outBlock)) {
+            outputPrimed = true;
             deinterleave(outBlock, outputBuffer, numFrames, outChannels);
         } else {
+            if (out != null && outBlock != null && outputPrimed) {
+                outputStarvedPeriods = outputStarvedPeriods + 1L;
+            }
             fillSilence(outputBuffer, numFrames);
         }
 
@@ -1278,7 +1330,9 @@ public final class CallbackBackendAdapter implements AudioBackend {
                     try {
                         AudioBlock block = new AudioBlock(
                                 openedSampleRate, inChannels, bufferFrames, scratch.clone());
-                        inputPublisher.offer(block, (subscriber, dropped) -> false);
+                        if (inputPublisher.offer(block, (subscriber, dropped) -> false) < 0) {
+                            inputBlocksDroppedAtPublish++; // single writer: this drain thread
+                        }
                     } catch (Throwable lostBlock) {
                         // The fault first, then its count: a reader that sees
                         // the count sees this fault or a newer one (story 337,

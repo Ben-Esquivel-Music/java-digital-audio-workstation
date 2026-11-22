@@ -3,6 +3,8 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioBlock;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
+import com.benesquivelmusic.daw.sdk.audio.BackendDropoutCounters;
+import com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 
 import java.util.ArrayList;
@@ -76,6 +78,36 @@ final class SpyStreamingBackend implements AudioBackend {
 
     /** Counts entries into the wedge so tests can await it, never sleep. */
     final AtomicInteger blockedAwaitEntries = new AtomicInteger();
+
+    /** What {@link #dropoutCounters()} reports; a test scripts the backend's observed drops (story 338). */
+    volatile BackendDropoutCounters dropouts = BackendDropoutCounters.NONE;
+
+    /** What {@link #newestDriverResyncNanos()} reports: when the newest scripted resync arrived. */
+    volatile java.util.OptionalLong resyncArrival = java.util.OptionalLong.empty();
+
+    @Override
+    public java.util.OptionalLong newestDriverResyncNanos() {
+        return resyncArrival;
+    }
+
+    /** What {@link #threadCounters()} reports; a test scripts callback faults and device periods. */
+    volatile BackendThreadCounters threadCounters = BackendThreadCounters.NONE;
+
+    /**
+     * Run on the reading thread by every {@link #threadCounters()} read while
+     * set: the engine folds the counters right after it marked the stream
+     * closed, so a test can look at the app in that moment of a close.
+     */
+    volatile Runnable threadCountersHook;
+
+    /** How many of the next sunk blocks {@link #sink(AudioBlock)} refuses by throwing. */
+    final AtomicInteger sinkRefusals = new AtomicInteger();
+
+    /**
+     * Sets {@link #blockAwait} inside each refusing {@link #sink(AudioBlock)}, so the render pump wedges right after
+     * the refused block, before it can sink another one: an interval with a refusal and no beat.
+     */
+    volatile boolean wedgeAfterRefusal;
 
     SpyStreamingBackend(String name) {
         this(name, Collections.synchronizedList(new ArrayList<>()));
@@ -183,10 +215,32 @@ final class SpyStreamingBackend implements AudioBackend {
         this.devices = List.copyOf(enumerated);
     }
 
+    /**
+     * While set, every {@link #open} counts itself in {@link #openEntries}
+     * and then waits, bounded, for this to reach zero: a test holds an open in
+     * flight, inside the engine's lifecycle lock.
+     */
+    volatile java.util.concurrent.CountDownLatch openGate;
+
+    /** Counts entries into {@link #open} while {@link #openGate} is set. */
+    final AtomicInteger openEntries = new AtomicInteger();
+
     @Override
     public void open(DeviceId device,
                      com.benesquivelmusic.daw.sdk.audio.AudioFormat format,
                      int bufferFrames) {
+        java.util.concurrent.CountDownLatch gate = openGate;
+        if (gate != null) {
+            openEntries.incrementAndGet();
+            try {
+                if (!gate.await(30, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("the test never released the held open");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("the held open was interrupted", interrupted);
+            }
+        }
         RuntimeException failure = this.openFailure;
         if (failure != null) {
             throw failure;
@@ -247,8 +301,35 @@ final class SpyStreamingBackend implements AudioBackend {
         });
     }
 
+    /** Run once, on the reading thread, by the next {@link #dropoutCounters()} read, then forgotten. */
+    final AtomicReference<Runnable> nextDropoutsHook = new AtomicReference<>();
+
+    @Override
+    public BackendDropoutCounters dropoutCounters() {
+        Runnable hook = nextDropoutsHook.getAndSet(null);
+        if (hook != null) {
+            hook.run();
+        }
+        return dropouts;
+    }
+
+    @Override
+    public BackendThreadCounters threadCounters() {
+        Runnable hook = threadCountersHook;
+        if (hook != null) {
+            hook.run();
+        }
+        return threadCounters;
+    }
+
     @Override
     public void sink(AudioBlock block) {
+        if (sinkRefusals.getAndUpdate(left -> Math.max(0, left - 1)) > 0) {
+            if (wedgeAfterRefusal) {
+                blockAwait = true;
+            }
+            throw new IllegalStateException("the output refused the block");
+        }
         if (open) {
             sunkBlocks.release();
         }

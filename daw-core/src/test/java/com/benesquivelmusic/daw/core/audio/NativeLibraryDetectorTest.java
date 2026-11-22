@@ -154,7 +154,8 @@ class NativeLibraryDetectorTest {
                     "asioshim_loadDriver",
                     "asioshim_getDriverName",
                     "asioshim_getDriverInfo",
-                    "asioshim_unloadDriver")) {
+                    "asioshim_unloadDriver",
+                    "asioshim_getSamplePosition")) {
                 assertThat(lookup.find(symbol)).as(symbol).isPresent();
             }
 

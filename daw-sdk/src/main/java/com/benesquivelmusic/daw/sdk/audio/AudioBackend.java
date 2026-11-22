@@ -671,19 +671,20 @@ public interface AudioBackend extends AutoCloseable {
      *
      * <p>Per-backend conventions:</p>
      * <ul>
-     *   <li>{@link AsioBackend} — translates {@code kAsioResetRequest},
-     *       {@code kAsioBufferSizeChange}, and
-     *       {@code kAsioResyncRequest} from the ASIO callback set
+     *   <li>{@link AsioBackend} — translates {@code kAsioResetRequest} and
+     *       {@code kAsioBufferSizeChange} from the ASIO callback set
      *       installed on driver open. {@code kAsioBufferSizeChange}
      *       maps to
      *       {@link AudioDeviceEvent.FormatChangeRequested} with
      *       {@link FormatChangeReason.BufferSizeChange};
      *       {@code kAsioResetRequest} after a sample-rate renegotiation
-     *       maps to {@link FormatChangeReason.SampleRateChange};
-     *       {@code kAsioResyncRequest} maps to
-     *       {@link FormatChangeReason.ClockSourceChange}; a generic
+     *       maps to {@link FormatChangeReason.SampleRateChange}; a generic
      *       {@code kAsioResetRequest} (USB streaming-mode change, USB
-     *       hub cycle) maps to {@link FormatChangeReason.DriverReset}.</li>
+     *       hub cycle) maps to {@link FormatChangeReason.DriverReset}.
+     *       {@code kAsioResyncRequest} publishes nothing here: the stream
+     *       keeps running, and the request is counted in
+     *       {@link #dropoutCounters()} and judged by the clock-lock poll
+     *       behind {@link #clockLockEvents()}.</li>
      *   <li>{@link WasapiBackend} — subscribes to
      *       {@code IMMNotificationClient::OnDeviceStateChanged} and
      *       {@code OnDefaultDeviceChanged} for arrival/removal, plus
@@ -895,18 +896,29 @@ public interface AudioBackend extends AutoCloseable {
 
     /**
      * Returns a {@link Flow.Publisher} that emits a
-     * {@link ClockLockEvent} every time the driver reports a change in
-     * external-clock lock state.
+     * {@link ClockLockEvent} every time the backend's view of the
+     * external-clock lock state changes, and once when the lock of a stream
+     * is first measured.
      *
-     * <p>ASIO drivers surface this through
-     * {@code ASIOFuture(kAsioGetExternalClockLocked)} (polled at 1 Hz
-     * from a non-audio thread) plus the asynchronous
-     * {@code kAsioResyncRequest} callback. CoreAudio surfaces it via
-     * {@code kAudioDevicePropertyClockSourceLocked}.</p>
+     * <p>{@link AsioBackend} derives it while a stream runs on an external
+     * source of a driver that reports more than one source: a non-audio
+     * thread polls {@code ASIOGetSamplePosition} once a second and counts the
+     * driver's {@code kAsioResyncRequest} messages. Every stream starts not
+     * yet measured, with nothing carried from the stream before it, and so
+     * does a change of the current source: the first good answer publishes
+     * {@code locked = true}, and two consecutive bad answers ("no clock",
+     * "not advancing", or an unchanged sample position while the device's
+     * callback periods advanced) publish an unlock, a resync counting as one
+     * bad answer. After an unlock, three consecutive good answers relock. A
+     * poll the driver did not answer is no answer and breaks both runs. On an
+     * internal source the clock reads locked, nothing is polled and nothing
+     * is published. The publisher belongs to the backend, not to one stream:
+     * it is never completed. The same state is published as a level by
+     * {@link #clockLockStatus()}, written before each event is offered.</p>
      *
-     * <p>The default implementation returns an empty publisher that
-     * never emits, which is correct for backends that do not expose
-     * clock-lock state (WASAPI / JACK / the JDK mixer).</p>
+     * <p>Only {@link AsioBackend} publishes clock-lock events. Every other
+     * backend keeps the default implementation, an empty publisher that
+     * never emits, and reports no {@link #clockLockStatus()}.</p>
      *
      * @return a publisher of clock-lock events; never {@code null}
      */
@@ -917,6 +929,23 @@ public interface AudioBackend extends AutoCloseable {
                 @Override public void cancel() { /* no-op */ }
             });
         };
+    }
+
+    /**
+     * The open stream's current external-clock lock state, the level behind
+     * {@link #clockLockEvents()}: what a surface shows is derived from it on
+     * every look, so a late look still sees a lock decided before it.
+     *
+     * <p>Contract: one volatile read, no lock, no driver call; safe on the
+     * JavaFX thread every frame.</p>
+     *
+     * <p>Only {@link AsioBackend} measures a lock; the default reports none.</p>
+     *
+     * @return the status while a stream runs that this backend measures;
+     *         empty when it measures no lock or no stream runs
+     */
+    default Optional<ClockLockStatus> clockLockStatus() {
+        return Optional.empty();
     }
 
     /**
@@ -1062,6 +1091,45 @@ public interface AudioBackend extends AutoCloseable {
      */
     default BackendThreadCounters threadCounters() {
         return BackendThreadCounters.NONE;
+    }
+
+    /**
+     * Returns the gaps this backend observed on its own side of the audio
+     * path: output periods starved of a rendered block, rendered blocks
+     * discarded, the driver's overload and resync messages, and captured input
+     * blocks dropped before they reached the engine.
+     *
+     * <p>The counts are monotonic for the life of this backend object: a
+     * backend that rebuilds a per-stream helper on every open folds the old
+     * helper's counts in when it is torn down.
+     * {@link BackendDropoutCounters#inputBlocksDropped()} counts only blocks
+     * NOT already reported through
+     * {@link BackendThreadCounters#inputBlocksLost()}.</p>
+     *
+     * <p>Callable from any non-real-time thread; it never blocks and never
+     * throws. Building the value allocates, so it is never called on a
+     * real-time thread.</p>
+     *
+     * @return the counts; never {@code null}. The default is
+     *         {@link BackendDropoutCounters#NONE}: nothing observed, and no
+     *         output-starvation signal
+     */
+    default BackendDropoutCounters dropoutCounters() {
+        return BackendDropoutCounters.NONE;
+    }
+
+    /**
+     * When the newest of the driver resync messages counted in
+     * {@link BackendDropoutCounters#driverResyncs()} arrived, as a
+     * {@link System#nanoTime()} reading, so a take is marked where the
+     * message arrived rather than where it was read. Same threading as
+     * {@link #dropoutCounters()}.
+     *
+     * @return the arrival time; empty before the first resync, and the
+     *         default for a backend that reports no resyncs
+     */
+    default java.util.OptionalLong newestDriverResyncNanos() {
+        return java.util.OptionalLong.empty();
     }
 
     /**

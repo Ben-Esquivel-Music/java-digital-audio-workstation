@@ -108,7 +108,8 @@ class DeviceLossRescuesTheTakeThroughTheEngineBridgeTest {
                 .as("the registered take lies under the project's audio/takes").isEqualTo(takesDirectory);
 
         String message = RecordCoordinator.rescuedTakeMessage(device, 1, 1);
-        assertThat(message).contains(device.name()).contains("saved");
+        assertThat(message).as("ruling E111").startsWith("The audio device was disconnected during recording")
+                .contains("saved");
         List<NotificationEntry> entries = fixture.entriesSince(before);
         assertThat(entries).as("one WARNING with the Review action, and nothing else")
                 .extracting(NotificationEntry::level, NotificationEntry::message, NotificationEntry::actionLabel)
@@ -195,7 +196,9 @@ class DeviceLossRescuesTheTakeThroughTheEngineBridgeTest {
         runOnFx(() -> { }); // whatever the arrivals posted has run
 
         assertThat(stillDisconnectedNotices()).as("once per arrival, naming both devices").hasSize(2)
-                .allSatisfy(notice -> assertThat(notice).contains(lost.name()).contains(other.name()));
+                .allSatisfy(notice -> assertThat(notice).as("ruling E111: the lost default device is unnamed")
+                        .startsWith("The audio device is still disconnected — ").doesNotContain(lost.name())
+                        .contains(other.name()));
         assertThat(fixture.engineController().orElseThrow().engineState()).isEqualTo(EngineState.DEVICE_LOST);
         assertThat(fixture.engine().isStreamOpen()).as("nothing was reopened").isFalse();
         assertThat(onFx(() -> fixture.coordinator().getState())).isEqualTo(RecordState.DEVICE_LOST);
@@ -235,7 +238,7 @@ class DeviceLossRescuesTheTakeThroughTheEngineBridgeTest {
         assertThat(fixture.entriesSince(before))
                 .extracting(NotificationEntry::level, NotificationEntry::message)
                 .containsExactly(tuple(NotificationLevel.INFO,
-                        device.name() + " reconnected. Tracks are still armed; press Record to continue."));
+                        "The audio device reconnected. Tracks are still armed; press Record to continue."));
 
         runOnFx(fixture.controller()::toggleRecord);
         awaitOnFx(() -> !fixture.controller().isPreparingTake(), "the new take's files were created");
@@ -352,7 +355,7 @@ class DeviceLossRescuesTheTakeThroughTheEngineBridgeTest {
                 .extracting(NotificationEntry::level, NotificationEntry::message)
                 .containsExactly(
                         tuple(NotificationLevel.INFO,
-                                device.name() + " reconnected. Tracks are still armed; press Record to continue."),
+                                "The audio device reconnected. Tracks are still armed; press Record to continue."),
                         tuple(NotificationLevel.WARNING, RecordCoordinator.rescuedTakeMessage(device, 1, 1)));
         assertThat(onFx(() -> fixture.project().getTransport().getPositionInBeats()))
                 .as("the return seeks to the rescued take's anchor").isCloseTo(anchor, within(1e-9));
@@ -462,7 +465,7 @@ class DeviceLossRescuesTheTakeThroughTheEngineBridgeTest {
         runOnFx(() -> fixture.coordinator().setStorageExecutorForTest(storage));
         int before = fixture.shownCount();
         int delivered = fixture.engineStateDeliveries();
-        String reconnected = device.name() + " reconnected. Tracks are still armed; press Record to continue.";
+        String reconnected = "The audio device reconnected. Tracks are still armed; press Record to continue.";
 
         fixture.unplug();
         awaitOnFx(() -> fixture.coordinator().getState() == RecordState.DEVICE_LOST, "the loss's turn ran");
@@ -601,7 +604,7 @@ class DeviceLossRescuesTheTakeThroughTheEngineBridgeTest {
         assertThat(fixture.entriesSince(before)).as("the next return is reported as a return")
                 .extracting(NotificationEntry::level, NotificationEntry::message)
                 .containsExactly(tuple(NotificationLevel.INFO,
-                        device.name() + " reconnected. Tracks are still armed; press Record to continue."));
+                        "The audio device reconnected. Tracks are still armed; press Record to continue."));
         assertThat(onFx(() -> fixture.coordinator().recordAvailableProperty().get())).isTrue();
     }
 

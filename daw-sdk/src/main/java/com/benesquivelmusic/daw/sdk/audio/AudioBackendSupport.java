@@ -5,6 +5,7 @@ import java.lang.foreign.SymbolLookup;
 import java.util.Objects;
 import java.util.concurrent.Flow;
 import java.util.concurrent.SubmissionPublisher;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiPredicate;
 
 /**
@@ -46,6 +47,16 @@ final class AudioBackendSupport implements AutoCloseable {
     private volatile boolean open;
     private volatile AudioFormat format;
     private volatile int bufferFrames;
+
+    /**
+     * Captured blocks {@link #publishInput(SubmissionPublisher, AudioBlock)}
+     * offered and at least one subscriber dropped because it could not keep
+     * up: one count per block, however many subscribers dropped it. The
+     * capture threads of successive streams may overlap on one support, so
+     * the count is an {@link AtomicLong}; none of them is a real-time thread.
+     * Never reset: it belongs to the backend, not to one stream.
+     */
+    private final AtomicLong inputBlocksDropped = new AtomicLong();
 
     AudioBackendSupport() {
         this(new SubmissionPublisher<>(), new SubmissionPublisher<>());
@@ -242,7 +253,20 @@ final class AudioBackendSupport implements AutoCloseable {
         if (!open || stream.isClosed()) {
             return;
         }
-        offerUnlessClosed(stream, block, DROP_INPUT_BLOCK);
+        if (offerUnlessClosed(stream, block, DROP_INPUT_BLOCK) < 0) {
+            inputBlocksDropped.incrementAndGet();
+        }
+    }
+
+    /**
+     * Captured blocks the input publisher dropped for a subscriber that could
+     * not keep up, counted once per block for the life of this support: the
+     * input-publisher loss site behind {@link AudioBackend#dropoutCounters()}.
+     *
+     * @return the monotonic count; {@code >= 0}
+     */
+    long inputBlocksDropped() {
+        return inputBlocksDropped.get();
     }
 
     /**
@@ -255,17 +279,22 @@ final class AudioBackendSupport implements AutoCloseable {
      * the close race is handled at the non-blocking operation itself. An
      * {@code IllegalStateException} from an open publisher is rethrown rather
      * than hidden.</p>
+     *
+     * @return what {@link SubmissionPublisher#offer} returned (negative when
+     *         at least one subscriber dropped the item), or {@code 0} when a
+     *         concurrent close won and nothing was offered
      */
-    private static <T> void offerUnlessClosed(
+    private static <T> int offerUnlessClosed(
             SubmissionPublisher<T> publisher,
             T item,
             BiPredicate<Flow.Subscriber<? super T>, T> dropHandler) {
         try {
-            publisher.offer(item, dropHandler);
+            return publisher.offer(item, dropHandler);
         } catch (IllegalStateException closedRace) {
             if (!publisher.isClosed()) {
                 throw closedRace;
             }
+            return 0;
         }
     }
 
