@@ -59,7 +59,10 @@ import java.util.logging.Logger;
  * <p>Story 338: the same subscription also hands each change, in the same FX
  * turn and before the transport controller, to a first listener —
  * {@code MainController}'s device-loss reactions followed by its
- * engine-health model, which the status strip's Engine cell shows.</p>
+ * engine-health model, which the status strip's Engine cell shows. A
+ * delivery only ever starts the input meters' device-loss mute; none ends
+ * it: the engine lifts it where it builds a newer render drive, because a
+ * stream can open with no state published (ruling E175).</p>
  */
 final class EngineStateBridge implements Flow.Subscriber<EngineStateChange> {
 

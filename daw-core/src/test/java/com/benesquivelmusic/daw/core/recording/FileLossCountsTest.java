@@ -55,6 +55,77 @@ class FileLossCountsTest {
     }
 
     @Test
+    void aGapALapLongOrLongerPassedEveryFrameOfTheLoopRange() {
+        FileLossCounts endsOnTheWrap = new FileLossCounts(1);
+        endsOnTheWrap.blockReceived(0, 1016, 1004, 1012, 1000, 1036);
+        endsOnTheWrap.gapNoticed(0, 1024, 6, BLOCK);
+        endsOnTheWrap.blockReceived(0, 1000, 1004, 1012, 1000, 1036);
+        assertThat(endsOnTheWrap.overflowBlocks()).as("[1024, 1036) then a whole lap (E180)").isEqualTo(6);
+
+        FileLossCounts nextBlockAfterItsStart = new FileLossCounts(1);
+        nextBlockAfterItsStart.blockReceived(0, 1004, 1004, 1012, 1000, 1036);
+        nextBlockAfterItsStart.gapNoticed(0, 1012, 5, BLOCK);
+        nextBlockAfterItsStart.blockReceived(0, 1016, 1004, 1012, 1000, 1036);
+        assertThat(nextBlockAfterItsStart.overflowBlocks()).as("[1012, 1036) then [1000, 1016) (E180)").isEqualTo(5);
+    }
+
+    @Test
+    void aGapALapLongOrLongerFromLapOnesPreRollIsJudgedOnItsFirstPartToo() {
+        FileLossCounts reachesTheRegion = new FileLossCounts(1);
+        reachesTheRegion.blockReceived(0, 964, 970, 978, 1000, 1036);
+        reachesTheRegion.gapNoticed(0, 972, 10, BLOCK);
+        reachesTheRegion.blockReceived(0, 1016, 970, 978, 1000, 1036);
+        assertThat(reachesTheRegion.overflowBlocks()).as("[972, 1036) reaches into [970, 978) (E180)").isEqualTo(10);
+
+        FileLossCounts afterTheRegion = new FileLossCounts(1);
+        afterTheRegion.blockReceived(0, 972, 970, 978, 1000, 1036);
+        afterTheRegion.gapNoticed(0, 980, 10, BLOCK);
+        afterTheRegion.blockReceived(0, 1024, 970, 978, 1000, 1036);
+        assertThat(afterTheRegion.overflowBlocks()).as("[980, 1036) and the loop range miss [970, 978)").isZero();
+    }
+
+    /** Loop [1000, 1036), take start 960: pre-roll frames make up no lap (ruling E182). */
+    @Test
+    void aGapALapLongFromLapOnesPreRollCountsOnlyTheFramesTheTransportPassed() {
+        FileLossCounts endsBeforeTheRegion = new FileLossCounts(1);
+        endsBeforeTheRegion.blockReceived(0, 964, 1020, 1030, 1000, 1036);
+        endsBeforeTheRegion.gapNoticed(0, 972, 5, BLOCK);
+        endsBeforeTheRegion.blockReceived(0, 1012, 1020, 1030, 1000, 1036);
+        assertThat(endsBeforeTheRegion.overflowBlocks())
+                .as("[972, 1012) never reaches [1020, 1030), though the region overlaps the loop range").isZero();
+
+        FileLossCounts reachesTheRegion = new FileLossCounts(1);
+        reachesTheRegion.blockReceived(0, 964, 1004, 1012, 1000, 1036);
+        reachesTheRegion.gapNoticed(0, 972, 5, BLOCK);
+        reachesTheRegion.blockReceived(0, 1012, 1004, 1012, 1000, 1036);
+        assertThat(reachesTheRegion.overflowBlocks()).as("[972, 1012) reaches into [1004, 1012)").isEqualTo(5);
+
+        FileLossCounts endsOnTheLoopEnd = new FileLossCounts(1);
+        endsOnTheLoopEnd.blockReceived(0, 964, 1020, 1030, 1000, 1036);
+        endsOnTheLoopEnd.gapNoticed(0, 972, 8, BLOCK);
+        endsOnTheLoopEnd.blockReceived(0, 1000, 1020, 1030, 1000, 1036);
+        assertThat(endsOnTheLoopEnd.overflowBlocks()).as("[972, 1036) reaches into [1020, 1030)").isEqualTo(8);
+    }
+
+    @Test
+    void aGapShorterThanALapIsStillJudgedToTheNextBlock() {
+        counts.blockReceived(0, 1012, 1004, 1012, 1000, 1036);
+        counts.gapNoticed(0, 1020, 1, BLOCK);
+        counts.blockReceived(0, 1028, 1004, 1012, 1000, 1036);
+
+        assertThat(counts.overflowBlocks()).as("[1020, 1028) misses [1004, 1012)").isZero();
+    }
+
+    @Test
+    void aGapFromTheEndOfABlockAcrossTheWrapIsJudgedFromWhereTheTransportContinued() {
+        counts.blockReceived(0, 1032, 1000, 1004, 1000, 1036);
+        counts.gapNoticed(0, 1040, 1, BLOCK);
+        counts.blockReceived(0, 1012, 1000, 1004, 1000, 1036);
+
+        assertThat(counts.overflowBlocks()).as("[1004, 1012), after the wrap, misses [1000, 1004)").isZero();
+    }
+
+    @Test
     void aGapNoBlockFollowsCountsWhenItsOwnExtentReachesIntoTheRegion() {
         punchBlock(992);
         counts.gapNoticed(0, 1000, 2, BLOCK);

@@ -229,15 +229,17 @@ final class RecordCoordinator {
 
     /**
      * Story 338 — the take's dropout figures start ({@link #takeDropouts()})
-     * and, for an audio take, its transport frames are sampled on each FX
-     * pulse until it stops recording, so a clock event is dated where its
-     * evidence was seen ({@link #noteClockEvent}). FX thread.
+     * and, for an audio take, its start-frame is kept and its transport
+     * frames are sampled on each FX pulse until it stops recording, so a
+     * clock event is dated where its evidence was seen, never before the
+     * take started ({@link #noteClockEvent}). FX thread.
      */
     private void takeStartedRecording() {
         RecordingPipeline pipeline = recordingPipeline;
         takeDropoutTally.takeStarted(pipeline == null ? null : TakeDropoutTally.TakeCounts.of(pipeline));
         stopSamplingTakeFrames();
         if (pipeline != null) {
+            takeFrames.takeStartsAt(pipeline.getRecordingStartFrame(), pipeline.isRecordingStartAPunchIn());
             sampleTakeFrame();
             if (fxDispatcher != null) {
                 takeFramePulseRemoval = fxDispatcher.addPulseParticipant(this::sampleTakeFrame);
@@ -286,13 +288,25 @@ final class RecordCoordinator {
     }
 
     /**
-     * Hands a clock event to the recording take (story 338, rulings E30, E40
-     * and E62): it is dated at the transport frame sampled newest at or
-     * before {@code evidenceNanos}, or at the transport's frame now when the
-     * evidence is unknown ({@code 0}) or older than the sampled history, and
-     * written into the take's manifest. A clock event never stops or changes
-     * the take. Does nothing unless an audio take is recording: after a
-     * device loss the take is DEVICE_LOST, and the loss's seal wins. FX
+     * Hands a clock event to the recording take (story 338, rulings E30, E40,
+     * E62, E177 and E183): it is dated at the take's start-frame when its
+     * evidence comes before the take's reach sample, or is unknown
+     * ({@code 0}) before that sample; otherwise at the transport frame
+     * sampled newest at or before {@code evidenceNanos}, any frame of a loop
+     * range included, or at the transport's frame now when the evidence is
+     * unknown or older than the sampled history; and written into the take's
+     * manifest. The reach sample of a take anchored at a punch-in is its
+     * first sample at or past the punch-in, so evidence from its pre-roll is
+     * dated at the punch-in; of any other take, its first sample, whatever
+     * frame it reads. Accepted limit (E183): when Record is pressed while the
+     * transport rolls, the take records from wherever the transport has
+     * rolled to when capture opens, while its start-frame is the position
+     * when Record was pressed; evidence from before the take's first sample
+     * is dated at that start-frame, up to the preparation time before the
+     * take's first recorded frame, and later in lap 1 than that frame when
+     * the loop wrapped during the preparation. A clock event never stops or
+     * changes the take. Does nothing unless an audio take is recording: after
+     * a device loss the take is DEVICE_LOST, and the loss's seal wins. FX
      * thread.
      *
      * @param event         what the clock did
@@ -307,6 +321,21 @@ final class RecordCoordinator {
         }
         long now = pipeline.transportFrameOf(project.getTransport().getPositionInBeats());
         pipeline.noteClockEvent(event, takeFrames.frameAt(evidenceNanos, now));
+    }
+
+    /**
+     * Marks the recording take unlocked at its start-frame: the clock badge
+     * already showed an unlock declared before the take started recording
+     * (story 338, ruling E173). Does nothing unless an audio take is
+     * recording, as {@link #noteClockEvent}. FX thread.
+     */
+    void noteTakeStartsUnlocked() {
+        requireFxThread();
+        RecordingPipeline pipeline = recordingPipeline;
+        if (retired || state.get() != RecordState.RECORDING || pipeline == null) {
+            return;
+        }
+        pipeline.noteClockEvent(TakeManifest.ClockEvent.UNLOCKED, pipeline.getRecordingStartFrame());
     }
 
     /**

@@ -2674,6 +2674,7 @@ class RealTimeSafeContractTest {
             CAPTURE_RING + "#enterProducer", CAPTURE_RING + "#producerOpen", CAPTURE_RING + "#exitProducer",
             CAPTURE_RING + "#claim", CAPTURE_RING + "#publish", CAPTURE_SLOT + "#copySource",
             CAPTURE_SLOT + "#setInputStarved", CAPTURE_SLOT + "#setOutputClockFrame",
+            CAPTURE_SLOT + "#setTransportLap",
             CAPTURE_SLOT + "#setLoopStartFrame", CAPTURE_SLOT + "#setLoopEndFrame",
             AUDIO_ENGINE + "#isCapturedInputStarved",
             CAPTURE_FLUSH + "#signal", AUDIO_ENGINE + "#graphInstrumentRecordingBuffer",

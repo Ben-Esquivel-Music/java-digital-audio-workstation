@@ -469,10 +469,15 @@ public final class TakeManifest {
      * loop start but not before the take's start frame, in lap 1's pre-roll,
      * which the file holds (ruling E115); a {@code resumeFrame} smaller than
      * {@code stopFrame} means the loop wrapped between them: valid, and never
-     * reordered (ruling E89). In a
-     * punch take the stop is the first frame of the file's silence, the
-     * punch-in frame when the input's last delivered frame lies outside the
-     * region (rulings E77 and E88).</p>
+     * reordered (ruling E89). A larger one does not rule out a wrap, in any
+     * take: an input beside the stream that the stream clocks later in the
+     * next lap than its stop resumes at a larger frame, and so does a stop in
+     * lap 1's pre-roll whose resume lies in a later lap (ruling E186). In a
+     * punch take the stop is the first frame of the file's silence; when the
+     * input's last delivered frame lies outside the region, the region's
+     * first frame in the lap of the input's own frames at the block that
+     * flagged it: the punch-in frame in lap 1, the later of the punch-in and
+     * the loop start in a later lap (rulings E77, E88, E179 and E186).</p>
      *
      * @param trackId     the affected track
      * @param stopFrame   the transport frame after the last block the input
@@ -481,11 +486,15 @@ public final class TakeManifest {
      * @param resumeFrame the transport frame from which the stream's clock
      *                    wrote the track's silence: {@code stopFrame} for the
      *                    stream's own input; for an input opened beside the
-     *                    stream, the stream's frame at the hand-off, so that
+     *                    stream, the frame of the render block that clocked
+     *                    it after the stop, and in a punch take never before
+     *                    the stop when the stop lies in the transport's lap at
+     *                    that block, otherwise never before that lap's first
+     *                    frame of the region (rulings E179 and E186); that
      *                    track's file is shorter than the window it missed by
      *                    the frames from {@code stopFrame} to
-     *                    {@code resumeFrame} (across the wrap, when it is the
-     *                    smaller); non-negative
+     *                    {@code resumeFrame}, across every wrap that lies
+     *                    between them; non-negative
      */
     public record InputStopped(String trackId, long stopFrame, long resumeFrame) {
         public InputStopped {

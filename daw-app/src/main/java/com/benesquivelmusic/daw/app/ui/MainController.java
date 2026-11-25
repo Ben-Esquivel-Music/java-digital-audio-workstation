@@ -272,12 +272,25 @@ public final class MainController {
     private ClockStatusIndicator clockStatusIndicator;
     /** Undoes {@link #installClockStatusIndicator}; run by the window's disposal. */
     private Runnable clockStatusIndicatorDisposal;
-    /** Story 338 — writes the CPU budget enforcer's sheds to the xrun log; replaced with the enforcer. */
-    private ShedLogSubscriber shedLogSubscriber;
     /** Per-track CPU budget enforcer wired into the engine (story 129 UI). */
     private com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer cpuBudgetEnforcer;
     /** UI binding that subscribes to enforcer events and surfaces badges/notifications. */
     private TrackBudgetUiBinding trackBudgetUiBinding;
+    /**
+     * Story 338, ruling E197 — {@link #cpuBudgetEnforcer}'s xrun log listener, which
+     * {@link #engineHealthFeed}'s read asks for a due count; handed to the
+     * {@link #cpuBudgetEnforcerRetirer} with its enforcer.
+     */
+    private ShedLogSubscriber cpuBudgetLogListener;
+    /**
+     * Story 338, ruling E203 — closes each replaced {@link #cpuBudgetEnforcer}
+     * once the render thread can no longer be using it. Built in
+     * {@link #initialize()} over the window's engine; its waiting enforcers are
+     * closed by the window's disposal.
+     */
+    private CpuBudgetEnforcerRetirer cpuBudgetEnforcerRetirer;
+    /** Removes {@link #cpuBudgetEnforcerRetirer}'s pulse participant; run by the window's disposal. */
+    private Runnable cpuBudgetEnforcerRetirerRemoval;
     /** Cached settings model for transport-controller access to latency compensation toggle. */
     private SettingsModel settingsModel;
     private NotificationBar notificationBar;
@@ -1402,7 +1415,8 @@ public final class MainController {
             sessionStatusStrip.setOnReconnectAction(
                     reconnectTheLostDevice(deviceLossReactions::takeRescued, audioEngineController));
             engineHealthFeed = EngineHealthFeed.forWindow(engineHealthStatus, audioEngineController,
-                    () -> transportController, () -> transportVM, this::existingTrackName);
+                    () -> transportController, () -> transportVM, this::existingTrackName,
+                    () -> cpuBudgetLogListener, cpuBudgetEnforcerRetirer::handOverAtTheRead);
             engineHealthFeedRemoval = dispatcher().addPulseParticipant(engineHealthFeed::pulse);
         }
         sessionStatusStrip.setOnXrunLogAction(() -> xrunLogDialog().present());
@@ -1596,6 +1610,11 @@ public final class MainController {
         FxDispatcher feedDispatcher = dispatcher();
         meterFeed = feedDispatcher == null ? null
                 : new MeterFeed(audioEngine.meteringTapBus(), feedDispatcher);
+        // Story 338 (ruling E203) — a pulse participant ahead of the
+        // engine-health feed, which reads the log after it.
+        cpuBudgetEnforcerRetirer = CpuBudgetEnforcerRetirer.forEngine(audioEngine, feedDispatcher != null);
+        cpuBudgetEnforcerRetirerRemoval = feedDispatcher == null ? null
+                : feedDispatcher.addPulseParticipant(cpuBudgetEnforcerRetirer::pulse);
         // Story 137: bind the input-level-monitor registry so the engine
         // taps the raw input signal per armed track before any processing.
         audioEngine.setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
@@ -1674,11 +1693,12 @@ public final class MainController {
         // whatever transport controller is current when it is delivered;
         // the subscriber never blocks (setEngineState offers with a drop
         // handler). Cancelled by the window's disposal (disposeWindowLifetime).
-        // Story 338 — the loss's FX reactions (input meters, the health
-        // drain's lost drive) run first in each delivery's FX turn, then the
-        // engine-health model, so the Engine cell never shows a fault the
-        // loss cleared; the Reconnect action reads from the reactions whether
-        // the loss rescued a take.
+        // Story 338 — the loss's FX reactions (the input meters, muted
+        // through the lost drive until the engine builds a newer one; the
+        // health drain's lost drive) run first in each delivery's FX turn,
+        // then the engine-health model, so the Engine cell never shows a
+        // fault the loss cleared; the Reconnect action reads from the
+        // reactions whether the loss rescued a take.
         deviceLossReactions = new DeviceLossReactions(() -> transportController,
                 audioEngineController::lostDriveEpoch, this::audioHealthDrain, inputLevelMonitorRegistry);
         audioEngineController.setTakeRescuedQuery(deviceLossReactions::takeRescued);
@@ -1692,7 +1712,7 @@ public final class MainController {
         // Story 338 — the clock badge, mounted and following the engine before
         // the default provision below can open the first stream.
         clockStatusIndicator = new ClockStatusIndicator(engineNotifications,
-                ClockStatusIndicator.takeMarksOf(() -> transportController),
+                TakeClockMarks.of(() -> transportController),
                 ClockStatusIndicator.engineClock(audioEngine, audioEngineController), dispatcher());
         clockStatusIndicatorDisposal = installClockStatusIndicator(clockStatusIndicator, audioEngineController,
                 dispatcher());
@@ -1918,9 +1938,9 @@ public final class MainController {
         viewNavigationController.getMixerView()
                 .setTrackFreezeController(trackFreezeController);
         // Story 129 (UI): construct the per-track CPU budget enforcer
-        // and wire it into the engine + the mixer view so the policy
-        // actually engages and the UI surfaces a "⚠" badge on degraded
-        // strips. Composed here (after the MixerView is alive but
+        // and wire it into the engine + the mixer view so a track it
+        // marks over budget gets a "⚠" badge on its strip; the engine
+        // applies no policy yet. Composed here (after the MixerView is alive but
         // before transport/menu wiring) so every later refresh sees
         // the binding.
         installTrackCpuBudgetEnforcer();
@@ -2164,6 +2184,16 @@ public final class MainController {
                 if (clockStatusIndicatorDisposal != null) {
                     clockStatusIndicatorDisposal.run();
                     clockStatusIndicatorDisposal = null;
+                }
+            }, () -> {
+                // Story 338 (ruling E203) — no pulse waits for a replaced
+                // CPU budget enforcer's block in flight after this.
+                if (cpuBudgetEnforcerRetirerRemoval != null) {
+                    cpuBudgetEnforcerRetirerRemoval.run();
+                    cpuBudgetEnforcerRetirerRemoval = null;
+                }
+                if (cpuBudgetEnforcerRetirer != null) {
+                    cpuBudgetEnforcerRetirer.closeAll();
                 }
             }, () -> {
                 // Story 318 — detach every meter consumer (and the
@@ -4304,8 +4334,11 @@ public final class MainController {
      * {@link TrackBudgetUiBinding} that surfaces toast notifications and
      * "⚠" badges, and installs the enforcer on the live audio engine.
      *
-     * <p>Re-entrant: when a project is reloaded, the previous binding
-     * and enforcer are closed before fresh ones are constructed.</p>
+     * <p>Re-entrant: when a project is reloaded or the engine reconfigured,
+     * the previous binding is closed and the previous enforcer, with its
+     * xrun log listener, is handed to the {@link #cpuBudgetEnforcerRetirer},
+     * which detaches it and closes it once the block in flight has ended
+     * (story 338, ruling E203), before fresh ones are constructed.</p>
      */
     private void installTrackCpuBudgetEnforcer() {
         try {
@@ -4315,20 +4348,20 @@ public final class MainController {
                 trackBudgetUiBinding.close();
                 trackBudgetUiBinding = null;
             }
-            if (shedLogSubscriber != null) {
-                shedLogSubscriber.cancel();
-                shedLogSubscriber = null;
-            }
             if (cpuBudgetEnforcer != null) {
-                if (audioEngine != null) {
-                    audioEngine.setCpuBudgetEnforcer(null);
-                }
-                cpuBudgetEnforcer.close();
+                // Story 338, ruling E203 — the xrun log's listener is not cancelled: it stays subscribed until
+                // the retirer's close, which delivers what it had queued, then its completion. The fields are
+                // cleared first, so a retirement that throws leaves neither naming the enforcer it closed.
+                com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer replaced =
+                        cpuBudgetEnforcer;
+                ShedLogSubscriber replacedListener = cpuBudgetLogListener;
                 cpuBudgetEnforcer = null;
+                cpuBudgetLogListener = null;
+                cpuBudgetEnforcerRetirer.retire(replaced, replacedListener);
             }
 
-            double sampleRate = audioEngine.getFormat().sampleRate();
-            int bufferSize = audioEngine.getFormat().bufferSize();
+            // Story 338, ruling E204 — one read, so the enforcer's block time is one format's.
+            AudioFormat format = audioEngine.getFormat();
             double masterFraction = settingsModel != null
                     ? settingsModel.getMasterCpuBudgetFraction()
                     : SettingsModel.DEFAULT_MASTER_CPU_BUDGET_FRACTION;
@@ -4338,7 +4371,7 @@ public final class MainController {
                 masterFraction = 1.0;
             }
             cpuBudgetEnforcer = new com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer(
-                    sampleRate, bufferSize, masterFraction, System::nanoTime);
+                    format.sampleRate(), format.bufferSize(), masterFraction, System::nanoTime);
 
             // Register every existing mixer channel with its persisted
             // budget. Channels created later (new tracks) get registered
@@ -4368,10 +4401,11 @@ public final class MainController {
                     this::postFx,
                     System::nanoTime);
             cpuBudgetEnforcer.performanceEvents().subscribe(trackBudgetUiBinding);
-            // Story 338 (ruling E42) — and each shed, as a Shed entry of the xrun log.
+            // Story 338 (rulings E181, E199 and E200) — and a track's markings, as one Budget entry per run in the xrun log.
             if (audioEngineController != null) {
-                shedLogSubscriber = new ShedLogSubscriber(audioEngineController.xrunJournal());
-                cpuBudgetEnforcer.performanceEvents().subscribe(shedLogSubscriber);
+                ShedLogSubscriber budgetLog = new ShedLogSubscriber(audioEngineController.xrunJournal());
+                cpuBudgetEnforcer.performanceEvents().subscribe(budgetLog);
+                cpuBudgetLogListener = budgetLog;
             }
 
             // Wire the predicate and the "CPU Budget…" menu handler

@@ -249,6 +249,26 @@ class AudioHealthDrainTest {
     }
 
     @Test
+    void aNegativeMonotonicClockEscalatesAtItsThirdConsecutiveSecond(@TempDir Path settings) throws Exception {
+        nanos.set(Duration.ofSeconds(-4).toNanos());
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+
+            sustainCallbackFaults(drain);
+
+            assertThat(entries(spine, "Audio engine fault")).as("buckets -4, -3 and -2 are consecutive")
+                    .singleElement().satisfies(entry -> {
+                        assertThat(entry.message()).startsWith("Audio engine fault — 3 callback errors since "
+                                + clock(noon) + ":");
+                        assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
+                    });
+            assertThat(onFx(drain::engineFault)).hasValueSatisfying(fact ->
+                    assertThat(fact.category()).isEqualTo(AudioFailureCategory.CALLBACK));
+            assertThat(spine.funnel().isEscalated(CALLBACK)).isTrue();
+        }
+    }
+
+    @Test
     void aSuccessfulRestartClearsTheFault(@TempDir Path settings) throws Exception {
         try (FailureSpineFixture spine = armed(settings)) {
             AudioHealthDrain drain = drain(spine);

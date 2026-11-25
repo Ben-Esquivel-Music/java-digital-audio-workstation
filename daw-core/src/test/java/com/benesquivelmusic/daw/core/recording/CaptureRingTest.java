@@ -644,6 +644,7 @@ class CaptureRingTest {
         abandoned.setLoopEndFrame(1036);
         abandoned.setInputStarved(true);
         abandoned.setOutputClockFrame(512);
+        abandoned.setTransportLap(3);
         abandoned.copySource(0, block, CHANNELS, SLOT_FRAMES);
         abandoned.copySource(1, block, CHANNELS, SLOT_FRAMES);
         long sequence = abandoned.sequence();
@@ -664,6 +665,8 @@ class CaptureRingTest {
         assertThat(again.loopEndFrame()).isZero();
         assertThat(again.inputStarved()).isFalse();
         assertThat(again.outputClockFrame()).isEqualTo(CaptureRing.NO_OUTPUT_CLOCK_FRAME);
+        assertThat(again.transportLap()).as("a recycled slot keeps no lap of an earlier block")
+                .isEqualTo(CaptureRing.NO_TRANSPORT_LAP);
         assertThat(again.sourceChannels(0)).as("no source is present until it is copied again").isZero();
         assertThat(again.sourceChannels(1)).isZero();
         assertThat(ring.publishedBlocks()).isZero();
@@ -683,7 +686,7 @@ class CaptureRingTest {
                 .contains("copySource", "clearSource", "setNumFrames", "setTruncatedFrames", "setStartFrame",
                         "setBeatPosition", "setPunchEnabled", "setPunchStartFrames", "setPunchEndFrames",
                         "setLoopEnabled", "setLoopStartFrame", "setLoopEndFrame", "setInputStarved",
-                        "setOutputClockFrame", "slotFrames");
+                        "setOutputClockFrame", "setTransportLap", "slotFrames");
         assertThat(realTimeSafetyViolations(surface)).isEmpty();
     }
 
@@ -718,7 +721,7 @@ class CaptureRingTest {
                 .contains("copySource", "clearSource", "setNumFrames", "setTruncatedFrames", "setStartFrame",
                         "setBeatPosition", "setPunchEnabled", "setPunchStartFrames", "setPunchEndFrames",
                         "setLoopEnabled", "setLoopStartFrame", "setLoopEndFrame", "setInputStarved",
-                        "setOutputClockFrame", "slotFrames");
+                        "setOutputClockFrame", "setTransportLap", "slotFrames");
         assertThat(scanned).hasSameSizeAs(publicMethodsOf(CaptureRing.Slot.class));
         assertThat(offenders).isEmpty();
     }

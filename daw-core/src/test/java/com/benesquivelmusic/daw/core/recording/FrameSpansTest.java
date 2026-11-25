@@ -28,6 +28,33 @@ class FrameSpansTest {
     }
 
     @Test
+    void aSpanThatEndsExactlyOnALaterLoopBoundaryEndsAtTheLoopEnd() {
+        assertThat(FrameSpans.intoLoop(1072, 1000, 1036)).as("one lap past the loop end: the end of that lap (E176)")
+                .isEqualTo(1036);
+        assertThat(FrameSpans.intoLoop(1108, 1000, 1036)).as("two laps past it").isEqualTo(1036);
+        assertThat(FrameSpans.intoLoop(2048, 0, 1024)).isEqualTo(1024);
+    }
+
+    @Test
+    void aPointPastALaterLoopBoundaryButNotOnOneContinuesFromTheLoopStart() {
+        assertThat(FrameSpans.intoLoop(1076, 1000, 1036)).isEqualTo(1004);
+        assertThat(FrameSpans.intoLoop(1080, 1000, 1036)).isEqualTo(1008);
+        assertThat(FrameSpans.intoLoop(1037, 1000, 1036)).isEqualTo(1001);
+    }
+
+    @Test
+    void anEndPastTheLoopEndLiesOneLapLaterForEachWrapItCrossedAndAnEndOnABoundaryStaysInTheLapItCompleted() {
+        assertThat(FrameSpans.wrapsBeforeTheEnd(1040, 1000, 1036)).isEqualTo(1);
+        assertThat(FrameSpans.wrapsBeforeTheEnd(1036, 1000, 1036)).as("on the loop end: the lap it completed (E176)")
+                .isZero();
+        assertThat(FrameSpans.wrapsBeforeTheEnd(1072, 1000, 1036)).as("on the next boundary: the end of lap 2 (E176)")
+                .isEqualTo(1);
+        assertThat(FrameSpans.wrapsBeforeTheEnd(1076, 1000, 1036)).isEqualTo(2);
+        assertThat(FrameSpans.wrapsBeforeTheEnd(1020, 1000, 1036)).as("before the loop end").isZero();
+        assertThat(FrameSpans.wrapsBeforeTheEnd(1040, 0, 0)).as("no loop: nothing wraps").isZero();
+    }
+
+    @Test
     void framesAcrossTheWrapAreCountedWhereTheyLieAfterTheCut() {
         assertThat(FrameSpans.framesInsideAcrossTheWrap(1032, 8, 1000, 1036, 1000, 1004))
                 .as("4 frames before the end, 4 from the loop start, all of those inside").isEqualTo(4);

@@ -781,7 +781,7 @@ blocks are logged and never counted; the count restarts when a reconfigure rebui
 detector (a Settings apply, Restart Audio Engine or a driver's reopen) and at the log's
 Clear, never at Play, Stop or Reconnect (rulings E22 and E71). Graph overload is not fed
 from the worker counters: the CPU budget enforcer's
-degradations are Shed entries that raise nothing (rulings E21 and E42). **The surfaces**
+degradations are Budget entries that raise nothing (rulings E21, E42 and E181). **The surfaces**
 are the session status strip's Xruns and Engine cells (`EngineHealthCells` over
 `EngineHealthStatus`) and `XrunLogDialog`. The Engine cell is hidden unless the engine is
 reconfiguring, the device is lost or a fault is latched, and never goes into the overflow;
@@ -813,6 +813,24 @@ query) and now do, pinned by `AsioFormatChangeShimTest.selectorConstantsMatchThe
 With an `asioshim.dll` built without the new export, every external source reads "Lock
 cannot be checked on this device" (ruling E100). `CallbackBackendAdapter` forwards no
 clock facts.*
+
+*As built in story 338, PR #994's review: the engine applies no CPU budget policy, so the
+xrun log's Budget entry (kind `SHED`, shown as "Budget") reads, for every policy, "Track
+'T': over the CPU budget (averaging NN % of the block time); its processing was not
+reduced" (ruling E181; future story 480). A track gets a Budget entry at its first
+marking, at its first marking after any 30-second stretch with no CPU budget event for it,
+and at its first marking after each Clear of the log; while its events keep coming less
+than 30 seconds apart, it gets no further entry (rulings E199 and E200). The enforcer tells
+the log's listener of each event its full buffer could not hold; the listener counts the
+markings among them, and the log writes one entry for them, "N CPU budget markings never
+reached the log: it fell behind" (rulings E174, E184, E197 and E199). At a replacement the
+old enforcer is detached from the engine and closed once the block in flight has ended, or
+at once when no stream is running, and its listener stays subscribed until that close
+(`CpuBudgetEnforcerRetirer`, ruling E203). A block uses the enforcer only when the
+enforcer's block time is that of the stream it renders: a render drive built for another
+block time detaches it before its first block, each block compares the two, and
+`AudioEngine.setFormat` refuses while a render pump whose exit a stop could not confirm is
+still alive (ruling E204).*
 
 ### 4.5 Production notification injection (story 339)
 
@@ -1012,7 +1030,8 @@ generation row has no producer yet: story 340 adds it as one more single‑write
 controller's health monitor, every 100 ms (§4.4's note). The engine state reaches the
 strip through `EngineStateBridge`'s one subscription: in the same FX turn each change goes
 first to `DeviceLossReactions` (at a DEVICE_LOST, the drain's `streamLost`, then the input
-meters falling to the floor with their clip latches kept, each reaction isolated), then to
+meters falling to the floor with their clip latches kept and held there through the lost
+render drive unless a newer drive was built first, each reaction isolated), then to
 `EngineHealthStatus`, then to the transport; RUNNING and STOPPED with no fault latched
 leave the Engine cell hidden, so the quiet state shows nothing (story 338, rulings E26,
 E35 and E64). The xrun row reaches the UI through no Flow publisher: the xrun feed writes
@@ -1024,6 +1043,20 @@ quiet treatment, never hidden (ruling E22). The clock lock is a level, not a pub
 `ClockLockStatus` that the badge reads on every pulse; its quiet state is the source's
 short label and rate in the normal treatment ("INT 48k"), and a device that reports no
 clock sources shows no badge (ruling E32).*
+
+*As built in story 338, PR #994's review: the input meters are muted through the lost render
+drive (`InputLevelMonitorRegistry.silenceAll(lostDrive)`), so a block that drive still
+renders shows no level while its clip still latches, and a stream a Reconnect opens on
+another device and closes at once mutes them again (rulings E175 and E185); a loss
+delivered after a newer drive was built changes nothing on them (ruling E202). Each render
+drive the engine builds gives every meter a new per-stream state at the floor, with a
+true-peak history of its own and the clip latch and the routing and physical-input flags
+the old state holds, and lifts the mute when it is newer (`liftAll`). A meter write of an
+input device beside the stream carries the render drive built for its stream and is
+refused once a newer drive was built (ruling E201). Closing those devices waits, 1 s in
+all, for the block each is delivering; when the wait passes with a block still being
+delivered and the close finds it left behind under the graph lock, the meters refuse those
+devices from then on and the log names each device left behind (ruling E205).*
 
 ### 5.4 Notification discipline
 
@@ -1394,7 +1427,7 @@ during a take,
 forced‑late blocks populate the log but never raise the counter, which counts observed
 gaps only (story 338, ruling E17;
 `XrunCountAndLogSurfacesTest.aLateBlockIsLoggedButNotCountedAGapIsBothAndClearEmptiesBoth`),
-and graph overloads are Shed entries, never counts (rulings E21 and E42); a clock unlock
+and graph overloads are Budget entries, never counts (rulings E21, E42 and E181); a clock unlock
 warns and marks the take and never pauses it (ruling E30;
 `ClockBadgeDuringATakeTest.anUnlockDuringATakeIsShownNotifiedAndMarkedTheTakeKeepsRecordingAndARelockClearsIt`);
 and the cell tracks RUNNING→RECONFIGURING→RUNNING through an apply

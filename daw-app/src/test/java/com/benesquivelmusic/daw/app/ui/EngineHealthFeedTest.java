@@ -2,10 +2,14 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.status.EngineHealthStatus;
+import com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.recording.TakeManifest;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy;
+import com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget;
+import com.benesquivelmusic.daw.sdk.audio.performance.TrackPerformanceEvent;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -17,9 +21,11 @@ import java.time.Instant;
 import java.time.InstantSource;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
+import java.util.ResourceBundle;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -50,6 +56,7 @@ class EngineHealthFeedTest {
     private final XrunJournal journal = new XrunJournal(InstantSource.fixed(ARRIVED), nanos::get);
     private final AtomicReference<OptionalDouble> rolling = new AtomicReference<>(OptionalDouble.empty());
     private final Map<String, String> tracks = Map.of("t-1", "Lead Vox");
+    private final AtomicReference<ShedLogSubscriber> cpuBudgetLog = new AtomicReference<>();
     private DeviceLossRecordingFixture fixture;
 
     @AfterEach
@@ -71,9 +78,11 @@ class EngineHealthFeedTest {
         journal.append(XrunJournal.Detail.DRIVER_OVERLOAD, List.of(), 1);
         journal.append(XrunJournal.Detail.DRIVER_RESYNC, List.of(), 1);
         journal.append(XrunJournal.Detail.LATE_BLOCK, List.of(7.44, 2.6666), 1);
-        journal.append(XrunJournal.Detail.EXPENSIVE_PROCESSING_BYPASSED, List.of("t-1", 87L), 1);
-        journal.append(XrunJournal.Detail.OVERSAMPLING_REDUCED, List.of("t-1", 2, 91L), 1);
-        journal.append(XrunJournal.Detail.SIMPLER_PROCESSING_SUBSTITUTED, List.of("t-gone", 104L), 1);
+        journal.append(XrunJournal.Detail.OVER_CPU_BUDGET, List.of("t-1", 87L), 1);
+        journal.append(XrunJournal.Detail.OVER_CPU_BUDGET, List.of("t-gone", 104L), 1);
+        journal.append(XrunJournal.Detail.CPU_BUDGET_ENTRIES_NOT_LOGGED, List.of(1L), 1);
+        journal.append(XrunJournal.Detail.CPU_BUDGET_ENTRIES_NOT_LOGGED, List.of(44L), 1);
+        journal.append(XrunJournal.Detail.CPU_BUDGET_ENTRIES_NOT_LOGGED, List.of(1_234L), 1);
         journal.append(XrunJournal.Detail.DEVICE_STOPPED_RESPONDING, List.of("Interface A"), 1);
         journal.append(XrunJournal.Detail.DEVICE_STOPPED_RESPONDING, List.of(""), 1);
 
@@ -92,14 +101,70 @@ class EngineHealthFeedTest {
                 at + "Overload  Audio driver reported an overload",
                 at + "Resync  Audio driver lost sync and resynchronized",
                 at + "Late  Block took 7.4 ms of a 2.7 ms period",
-                at + "Shed  Track 'Lead Vox': expensive processing bypassed to stay within the CPU budget"
-                        + " (averaging 87 % of the block time)",
-                at + "Shed  Track 'Lead Vox': oversampling reduced to 2× to stay within the CPU budget"
-                        + " (averaging 91 % of the block time)",
-                at + "Shed  Track (removed): simpler processing substituted to stay within the CPU budget"
-                        + " (averaging 104 % of the block time)",
+                at + "Budget  Track 'Lead Vox': over the CPU budget (averaging 87 % of the block time);"
+                        + " its processing was not reduced",
+                at + "Budget  Track (removed): over the CPU budget (averaging 104 % of the block time);"
+                        + " its processing was not reduced",
+                at + "Budget  1 CPU budget marking never reached the log: it fell behind",
+                at + "Budget  44 CPU budget markings never reached the log: it fell behind",
+                at + "Budget  1234 CPU budget markings never reached the log: it fell behind",
                 at + "Stall  Device stopped responding: Interface A",
                 at + "Stall  Device stopped responding");
+    }
+
+    /**
+     * Rulings E197 and E203: the feed's read asks the current CPU budget log
+     * listener, and the listener of each replaced enforcer that waits for its
+     * block in flight to end, to hand over a count that is due before it
+     * drains the journal, so the count is written in that same read's entry,
+     * the stream running or not. The listeners and the retirer are real, the
+     * engine's counts held at a block in flight; the window's wiring is pinned
+     * in {@code FailureSpineWiringSourceTest}.
+     */
+    @Test
+    void theReadHandsTheCurrentAndTheRetiringListenersDueCountsOverAndWritesThemInThatReadsEntry() throws Exception {
+        EngineHealthStatus model = onFx(EngineHealthStatus::new);
+        CpuBudgetEnforcerRetirer retirer = new CpuBudgetEnforcerRetirer(() -> { }, () -> 1L, () -> 0L, true);
+        EngineHealthFeed feed = feed(model, () -> null, retirer::handOverAtTheRead);
+        TrackCpuBudgetEnforcer replacedEnforcer = new TrackCpuBudgetEnforcer(48_000.0, 128);
+        ShedLogSubscriber replaced = new ShedLogSubscriber(journal);
+        cpuBudgetLog.set(replaced);
+        runOnFx(feed::pulse);
+        ShedLogSubscriber current = new ShedLogSubscriber(journal);
+        runOnFx(() -> retirer.retire(replacedEnforcer, replaced));
+        cpuBudgetLog.set(current);
+        replaced.eventDropped(marking("t-1"), 0L);
+
+        List<String> afterTheReplacement = onFx(() -> {
+            feed.pulse();
+            return List.copyOf(model.xrunLog());
+        });
+        current.eventDropped(marking("t-1"), 0L);
+        List<String> afterIt = onFx(() -> {
+            feed.pulse();
+            return List.copyOf(model.xrunLog());
+        });
+        runOnFx(retirer::closeAll);
+
+        assertThat(afterTheReplacement).as("the retiring listener's count, written by the read after it was due")
+                .containsExactly(
+                        "10:00:01.250  Budget  1 CPU budget marking never reached the log: it fell behind");
+        assertThat(afterIt).as("then the current listener's").containsExactly(
+                "10:00:01.250  Budget  1 CPU budget marking never reached the log: it fell behind",
+                "10:00:01.250  Budget  1 CPU budget marking never reached the log: it fell behind");
+    }
+
+    /** Ruling E181: no policy is applied yet, so no entry may claim one. */
+    @Test
+    void noXrunLogDetailClaimsAReductionTheEngineDoesNotMake() {
+        ResourceBundle messages = ResourceBundle.getBundle("com.benesquivelmusic.daw.app.i18n.Messages", Locale.ROOT);
+        List<String> details = messages.keySet().stream().filter(key -> key.startsWith("xrunLog.detail.")).toList();
+
+        assertThat(details).as("premise: the details are read").contains("xrunLog.detail.OVER_CPU_BUDGET");
+        assertThat(details).allSatisfy(key -> assertThat(messages.getString(key)).as(key)
+                .doesNotContainIgnoringCase("bypassed").doesNotContainIgnoringCase("reduced to")
+                .doesNotContainIgnoringCase("substituted"));
+        assertThat(messages.getString("xrunLog.kind.SHED")).isEqualTo("Budget");
     }
 
     @Test
@@ -314,8 +379,19 @@ class EngineHealthFeedTest {
         }
     }
 
+    private static TrackPerformanceEvent.TrackDegraded marking(String trackId) {
+        return new TrackPerformanceEvent.TrackDegraded(trackId, 0.9, TrackCpuBudget.UNLIMITED,
+                new DegradationPolicy.BypassExpensive());
+    }
+
     private EngineHealthFeed feed(EngineHealthStatus model, Supplier<TransportController> transport) {
+        return feed(model, transport, () -> { });
+    }
+
+    private EngineHealthFeed feed(EngineHealthStatus model, Supplier<TransportController> transport,
+                                  Runnable retiringCpuBudgetLogs) {
         return new EngineHealthFeed(model, journal, new EngineHealthFeed.Sources(transport, rolling::get,
-                id -> Optional.ofNullable(tracks.get(id))), nanos::get, ZoneOffset.UTC);
+                id -> Optional.ofNullable(tracks.get(id)), cpuBudgetLog::get, retiringCpuBudgetLogs), nanos::get,
+                ZoneOffset.UTC);
     }
 }

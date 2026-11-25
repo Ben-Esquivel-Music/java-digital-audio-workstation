@@ -6,9 +6,8 @@ import java.util.Objects;
  * Sealed interface describing notifications emitted by the per-track
  * CPU budget enforcer. UI layers subscribe to a
  * {@link java.util.concurrent.Flow.Publisher Flow.Publisher&lt;TrackPerformanceEvent&gt;}
- * so the mixer can dim a track's strip or show a "degraded" badge when
- * an insert has been auto-bypassed, and lift the badge when full
- * quality is restored.
+ * so the mixer can show a "degraded" badge on a track that went over its
+ * CPU budget, and lift the badge when the track is back within it.
  *
  * <p>Modelled as an algebraic data type (JEP 409 sealed classes +
  * JEP 395 records) so subscribers can dispatch with exhaustive
@@ -23,9 +22,11 @@ public sealed interface TrackPerformanceEvent
 
     /**
      * Emitted when a track's rolling CPU fraction has exceeded its
-     * budget for the required number of consecutive blocks and the
-     * engine has applied {@link TrackDegraded#appliedPolicy()} to keep
-     * the overall mix intact.
+     * budget for the required number of consecutive blocks, or the
+     * master budget's cascade marked the track.
+     * {@link TrackDegraded#appliedPolicy()} is the policy the track's
+     * budget names for that case; the engine does not apply it yet, and
+     * the track's processing runs unchanged.
      *
      * @param trackId        identifier of the degraded track; must not
      *                       be {@code null}
@@ -34,8 +35,9 @@ public sealed interface TrackPerformanceEvent
      *                         {@code >= 0}
      * @param budget         the track's configured budget at the time
      *                       of degradation; must not be {@code null}
-     * @param appliedPolicy  the policy the engine actually applied;
-     *                       must not be {@code null}
+     * @param appliedPolicy  the policy the track's budget names, which
+     *                       the engine does not apply yet; must not be
+     *                       {@code null}
      */
     record TrackDegraded(String trackId,
                          double measuredFraction,
@@ -54,7 +56,7 @@ public sealed interface TrackPerformanceEvent
 
     /**
      * Emitted when a previously-degraded track has stayed below its
-     * budget long enough for the engine to restore full quality.
+     * budget long enough to count as within it again.
      *
      * @param trackId        identifier of the restored track; must not
      *                       be {@code null}

@@ -27,10 +27,10 @@ import java.util.Objects;
  * transport's punch region, the loop flag, and for the stream's own input the
  * engine's input-starved flag (the render had no captured block for it), or
  * for a sibling input the output clock drives the transport frame of the
- * render block that clocked it — copies the device block and each
- * armed graph-instrument buffer (only valid inside this callback), publishes
- * if its final gate read observes open, wakes the flush thread, and leaves
- * the gate. No
+ * render block that clocked it, and on the render thread the transport's
+ * lap — copies the device block and each armed graph-instrument buffer (only
+ * valid inside this callback), publishes if its final gate read observes
+ * open, wakes the flush thread, and leaves the gate. No
  * allocation, no locks, no string, no clock, no collection iteration beyond
  * the preallocated instrument-track array. Routing, gating, wrap detection
  * and every file write happen on the flush thread from the header.</p>
@@ -48,6 +48,30 @@ import java.util.Objects;
  * hardware clock; unsynchronized devices are refused before the take, since
  * nothing here corrects drift between clock domains.
  * The primary input continues to follow the transport clock.</p>
+ *
+ * <p><strong>Transport lap.</strong> Only the render thread knows which lap
+ * of the loop the transport is in, so the blocks it runs — every block of
+ * the stream's own input, and a sibling input's zero-width block the output
+ * clock delivers — carry the take's count of the transport's wraps
+ * ({@link CaptureRing.Slot#transportLap()}): one take-wide counter, shared
+ * through the start gate and written only on that thread, which counts a lap
+ * each time the transport's beat goes back while the loop is enabled. While
+ * the start gate is still the take's origin, the count starts from the gate's
+ * beat, where the rings start, whichever callback runs the take's first such
+ * block, so a wrap between the gate's opening and that block — Record pressed
+ * while the transport rolls — is counted on it, as the flush thread counts
+ * it. It is counted before the
+ * ring is asked for a slot, so a wrap in a block the full ring drops is still
+ * counted. Of the callbacks one render period runs, the
+ * first counts the wrap and the others see the same beat. A block a sibling
+ * input delivers on its own publisher's thread leaves the counter alone and
+ * carries {@link CaptureRing#NO_TRANSPORT_LAP}. Known limit: a seek backwards
+ * while the loop is enabled counts as a wrap, as it does for the flush
+ * thread's lanes. Known limit: when a seek is accepted between two callbacks
+ * of the take's first render period, the later callback's ring starts at the
+ * seek's target while the count started from the start gate's beat, so a wrap
+ * between the gate's opening and that period is in every lap stamp of the
+ * take but not in that input's own laps (ruling E198).</p>
  *
  * <p><strong>Start frame.</strong> The header's start frame is the beat
  * position converted at the tempo the take was prepared at — the tempo its
@@ -108,6 +132,8 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
      * {@link #onCaptureHalted()}, never on the audio thread.
      */
     private final CountInSchedule countIn;
+    /** The take's transport laps: the start gate's, or this callback's own when it has no gate and so no sibling. */
+    private final TransportLaps transportLaps;
 
     /** Caller initializes the common origin before publishing the volatile activation. */
     static final class StartGate {
@@ -115,6 +141,19 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
         Transport.PositionSeek positionSeek;
         boolean seekPending;
         volatile boolean active;
+        /** Shared by the stream's callback and every sibling input's. */
+        final TransportLaps transportLaps = new TransportLaps();
+    }
+
+    /**
+     * The take's count of the transport's wraps and the transport beat it
+     * last saw. Read and written only on the render thread, so plain fields.
+     */
+    static final class TransportLaps {
+        /** Whether a block of the take was counted; until then {@link #lastBeat} holds nothing. */
+        boolean counting;
+        double lastBeat;
+        long count;
     }
 
     private boolean independentFrameCursor;
@@ -183,6 +222,7 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
         this.tempoBpm = tempoBpm;
         this.startGate = startGate;
         this.countIn = countIn;
+        this.transportLaps = startGate != null ? startGate.transportLaps : new TransportLaps();
     }
 
     /**
@@ -248,9 +288,10 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
         Transport.PositionSeek positionSeek = transport.getPositionSeek();
         boolean seekPending = independentFrameCursor && transport.hasPendingPositionSeek();
         boolean firstBlock = !frameCursorInitialized;
-        boolean useStartOrigin = firstBlock && startGate != null
+        boolean gateIsTheOrigin = startGate != null
                 && !startGate.seekPending
                 && startGate.positionSeek == positionSeek;
+        boolean useStartOrigin = firstBlock && gateIsTheOrigin;
         if (firstBlock) {
             nextInputFrame = startFrameOf(useStartOrigin ? startGate.beat : transport.getPositionInBeats());
             frameCursorInitialized = true;
@@ -262,18 +303,22 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
             nextInputFrame = startFrameOf(positionSeek.targetInBeats());
             observedPositionSeek = positionSeek;
         }
+        Transport.LoopWindow loop = transport.getLoopWindow();
+        boolean onRenderThread = !independentFrameCursor || inputBuffer.length == 0;
+        // The recording callback fires *before* advancePosition(), so
+        // getPositionInBeats() still reflects this block's start.
+        double transportBeat = onRenderThread ? transport.getPositionInBeats() : 0.0;
+        long transportLap = onRenderThread ? transportLapAt(transportBeat, loop.enabled(), gateIsTheOrigin)
+                : CaptureRing.NO_TRANSPORT_LAP;
         CaptureRing.Slot slot = ring.claim();
         if (slot == null) {
             if (independentFrameCursor) nextInputFrame += numFrames;
             return false;
         }
 
-        // The recording callback fires *before* advancePosition(), so
-        // getPositionInBeats() still reflects this block's start.
         double beat = independentFrameCursor ? nextInputFrame / sampleRate * tempoBpm / 60.0
-                : useStartOrigin ? startGate.beat : transport.getPositionInBeats();
+                : useStartOrigin ? startGate.beat : transportBeat;
         if (independentFrameCursor) nextInputFrame += numFrames;
-        Transport.LoopWindow loop = transport.getLoopWindow();
         if (independentFrameCursor && loop.enabled() && beat >= loop.endInBeats()) {
             double length = loop.endInBeats() - loop.startInBeats();
             beat = loop.startInBeats() + (beat - loop.startInBeats()) % length;
@@ -301,8 +346,9 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
         } else if (inputBuffer.length == 0) {
             // Only the output clock delivers a zero-width sibling block, on
             // the render thread, before the transport advances past it.
-            slot.setOutputClockFrame(startFrameOf(transport.getPositionInBeats()));
+            slot.setOutputClockFrame(startFrameOf(transportBeat));
         }
+        slot.setTransportLap(transportLap);
 
         slot.setNumFrames(numFrames);
         int excess = numFrames - slot.slotFrames();
@@ -339,6 +385,27 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
             flush.signal();
         }
         ring.exitProducer();
+    }
+
+    /**
+     * The transport's lap at a block the render thread runs: one lap more
+     * than at the take's previous such block when the transport's beat went
+     * back while the loop is enabled (see the class note). The take's first
+     * such block is compared with the start gate's beat while no seek has
+     * superseded that origin, whichever callback runs it. Render thread.
+     */
+    private long transportLapAt(double transportBeat, boolean loopEnabled, boolean fromTheStartOrigin) {
+        TransportLaps laps = transportLaps;
+        if (!laps.counting) {
+            // The rings start at the gate's beat, so the flush thread counts a wrap between it and this block.
+            laps.lastBeat = fromTheStartOrigin ? startGate.beat : transportBeat;
+            laps.counting = true;
+        }
+        if (loopEnabled && transportBeat < laps.lastBeat) {
+            laps.count = laps.count + 1;
+        }
+        laps.lastBeat = transportBeat;
+        return laps.count;
     }
 
     private long startFrameOf(double beat) {

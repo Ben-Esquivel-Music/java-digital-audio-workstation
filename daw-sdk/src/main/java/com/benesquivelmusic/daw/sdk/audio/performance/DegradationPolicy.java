@@ -9,10 +9,13 @@ import java.util.Objects;
  * <p>Models the "graceful degradation" strategies used by modern DAWs:
  * Studio One's <em>High Precision Monitoring</em>, Reaper's
  * <em>Anticipative FX</em> throttling, and Pro Tools' plugin
- * auto-bypass. Rather than glitching the whole output when a single
- * track goes over-budget, the engine selectively degrades that one
- * track so the overall mix stays intact at the cost of isolated
- * quality loss.</p>
+ * auto-bypass: rather than glitching the whole output when a single
+ * track goes over-budget, degrade that one track so the overall mix
+ * stays intact at the cost of isolated quality loss. The engine does
+ * not apply a policy yet: the CPU budget enforcer marks the track
+ * degraded under the policy its budget names and publishes that, except
+ * for {@link DoNothing}, under which it marks the track without
+ * publishing anything; the track's processing is not reduced.</p>
  *
  * <p>This is an algebraic data type (JEP 409 sealed classes + JEP 395
  * records) so consumers can dispatch with exhaustive pattern-matching

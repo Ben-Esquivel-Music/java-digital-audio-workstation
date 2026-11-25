@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.ResourceBundle;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -97,10 +98,12 @@ class SettingsTruthVerbatimTextsTest {
         expected.put("project.defaultTempo.description",
                 "Tempo of new projects, in BPM. Editing it also sets the open project's tempo, as one undoable"
                         + " step, unless that project has tempo changes.");
-        // R3 — the remaining CPU budget row.
+        // R3, reworded by story 338's ruling E193 — the remaining CPU budget row; read with getString.
         expected.put("audio.masterCpuBudgetFraction.description",
-                "Master CPU ceiling per audio block; when exceeded, the highest-CPU tracks are degraded by the"
-                        + " policy in each track's CPU Budget dialog. 1.0 disables the cap.");
+                "Master CPU budget per audio block; while the tracks together average more than this fraction of"
+                        + " the block time, tracks are marked over budget, highest CPU first, as each track's CPU"
+                        + " Budget dialog describes. At 1.0 they are marked only when together they average longer"
+                        + " than the block time.");
         // R5 — the three tempo rejections.
         expected.put("settings.reject.tempo.blank", "Enter a tempo from 20 to 999 BPM.");
         expected.put("settings.reject.tempo.unparseable",
@@ -111,6 +114,23 @@ class SettingsTruthVerbatimTextsTest {
                 "Size of text and controls, on top of your system's display scaling.");
 
         expected.forEach((key, text) -> assertThat(MESSAGES.getString(key)).as(key).isEqualTo(text));
+    }
+
+    /**
+     * Story 338, ruling E193: nothing caps the CPU and no track's processing
+     * is reduced, so no setting's description says "degraded", "ceiling" or
+     * "cap", read as whole words ("capture" is not "cap").
+     */
+    @Test
+    void noSettingDescriptionSaysDegradedCeilingOrCap() {
+        Pattern claim = Pattern.compile("(?i)\\b(degraded|ceiling|cap)\\b");
+        List<String> descriptions = MESSAGES.keySet().stream().filter(key -> key.endsWith(".description")).sorted()
+                .toList();
+
+        assertThat(descriptions).as("non-vacuity: the descriptions are read")
+                .contains("audio.masterCpuBudgetFraction.description");
+        assertThat(descriptions).allSatisfy(key -> assertThat(claim.matcher(MESSAGES.getString(key)).find())
+                .as("%s: %s", key, MESSAGES.getString(key)).isFalse());
     }
 
     /** A26 — the project hub's size line, which lives in code: the four parts in the amendment's order. */

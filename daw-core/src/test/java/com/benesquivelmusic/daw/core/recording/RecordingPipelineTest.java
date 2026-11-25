@@ -269,6 +269,7 @@ class RecordingPipelineTest {
         startRecording(pipeline);
 
         assertThat(pipeline.getRecordingStartBeat()).isEqualTo(8.0);
+        assertThat(pipeline.isRecordingStartAPunchIn()).as("the transport's position anchors the take").isFalse();
 
         // Simulate audio capture
         float[][] input = new float[2][512];
@@ -381,6 +382,7 @@ class RecordingPipelineTest {
         startRecording(pipeline);
 
         assertThat(pipeline.getRecordingStartBeat()).isEqualTo(4.0);
+        assertThat(pipeline.isRecordingStartAPunchIn()).as("the punch range's punch-in anchors the take").isTrue();
     }
 
     @Test
@@ -575,6 +577,7 @@ class RecordingPipelineTest {
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
         startRecording(pipeline);
+        assertThat(pipeline.isRecordingStartAPunchIn()).as("the punch region's start anchors the take").isTrue();
 
         float[][] input = new float[2][512];
         for (int ch = 0; ch < 2; ch++) {
@@ -605,6 +608,7 @@ class RecordingPipelineTest {
         RecordingPipeline pipeline = new RecordingPipeline(
                 audioEngine, transport, format, tempDir, List.of(track));
         startRecording(pipeline);
+        assertThat(pipeline.isRecordingStartAPunchIn()).as("a disabled punch region anchors nothing").isFalse();
 
         float[][] input = new float[2][512];
         float[][] output = new float[2][512];

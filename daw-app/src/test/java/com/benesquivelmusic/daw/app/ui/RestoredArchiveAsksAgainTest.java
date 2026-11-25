@@ -173,19 +173,27 @@ class RestoredArchiveAsksAgainTest {
     @Test
     void aDoorAskedWhileTheArchiveIsExtractedIsRefusedWithOneInfo() throws Exception {
         AtomicInteger doorsRun = new AtomicInteger();
+        // The extraction posts its outcome only after its rewrite of project.daw, held here until released.
+        SaveFlowFixture.Publishes.Hold extraction = fixture.publishes.holdNext(
+                target -> SaveFlowFixture.isHead(target) && target.startsWith(destination));
         runOnFx(() -> {
+            fixture.lifecycle().setFileWriter(fixture.writer);
             fixture.lifecycle().startArchiveRestore(archive, destination);
-            // In the extraction's FX step: its outcome cannot reach the FX thread before these clicks.
+        });
+        try {
+            extraction.awaitHeld();
             for (int click = 0; click < 3; click++) {
-                fixture.lifecycle().whenProjectMayClose(ProjectLifecycleController.OPEN_PROJECT_DOOR,
-                        doorsRun::incrementAndGet);
+                runOnFx(() -> fixture.lifecycle().whenProjectMayClose(ProjectLifecycleController.OPEN_PROJECT_DOOR,
+                        doorsRun::incrementAndGet));
             }
-        });
 
-        assertThat(fixture.notifications()).as("one INFO for three clicks").singleElement().satisfies(entry -> {
-            assertThat(entry.level()).isEqualTo(NotificationLevel.INFO);
-            assertThat(entry.message()).isEqualTo(ProjectLifecycleController.STILL_EXTRACTING_MESSAGE);
-        });
+            assertThat(fixture.notifications()).as("one INFO for three clicks").singleElement().satisfies(entry -> {
+                assertThat(entry.level()).isEqualTo(NotificationLevel.INFO);
+                assertThat(entry.message()).isEqualTo(ProjectLifecycleController.STILL_EXTRACTING_MESSAGE);
+            });
+        } finally {
+            extraction.release();
+        }
         awaitTheRestoreOpened();
         assertThat(doorsRun).as("no refused door ran").hasValue(0);
     }

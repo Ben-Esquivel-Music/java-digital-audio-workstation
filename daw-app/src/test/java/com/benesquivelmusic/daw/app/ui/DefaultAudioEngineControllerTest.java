@@ -3214,15 +3214,14 @@ class DefaultAudioEngineControllerTest {
     @Test
     void aReconfigureIsRefusedWholeWhileTheRenderPumpMayStillBeRendering(
             @TempDir Path projectRoot) throws Exception {
-        // Story 316 re-review: applyConfiguration DISCARDED stopAudioOutput()'s
-        // quiescence verdict and then mutated the engine FORMAT. A
-        // format-only change reaches neither engine-side guard —
-        // setStreamingProvision refuses a SWAP, requireQuiescedPump refuses a
-        // REOPEN — and setFormat itself refuses only while isRunning(), which
-        // the stop() just above it has already cleared. A pump whose bounded
-        // join timed out could therefore still be inside processBlock,
-        // rendering through the RenderPipeline shaped by the OLD format,
-        // while the new format was stored under it.
+        // Story 316 re-review: applyConfiguration keeps stopAudioOutput()'s
+        // quiescence verdict before it mutates the engine FORMAT. A
+        // format-only change reaches neither engine-side guard of a swap or
+        // an open — setStreamingProvision refuses a SWAP, requireQuiescedPump
+        // refuses a REOPEN — and setFormat, which refuses while a pump whose
+        // exit a stop could not confirm is still alive, guards the format
+        // alone, so the reconfigure is refused whole while a pump whose
+        // bounded join timed out may still be inside processBlock.
         //
         // This replaces the story-316 'refusedProvisionSwapClosesTheIncoming
         // BackendInstances' test, whose premise this fix preempts: the

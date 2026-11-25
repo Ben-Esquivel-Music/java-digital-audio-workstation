@@ -925,6 +925,51 @@ class AudioEngineOutputTest {
     }
 
     /**
+     * Story 338, ruling E204: no render thread is alive across a format
+     * change. A stop whose bounded join of the wedged pump timed out leaves
+     * the engine stopped with that pump kept, and a format change is refused
+     * until the pump exits: the format stays the same object. Once the wedge
+     * clears, the change goes through. The wedge holds the pump until the
+     * test clears it, so both joins time out whatever the machine's speed; the
+     * guard budget bounds only the test thread's wait for the retried change.
+     */
+    @Test
+    void aFormatChangeIsRefusedWhileAStopCouldNotConfirmThePumpExited() {
+        backend.blockAwait = true;
+        try {
+            engine.startAudioOutput();
+            awaitCondition(() -> backend.blockedAwaitEntries.get() >= 1,
+                    "the pump is wedged inside awaitSinkCapacity");
+            engine.stop(); // the quiesce's bounded join times out; the pump is KEPT
+            AudioFormat before = engine.getFormat();
+            AudioFormat larger = new AudioFormat(before.sampleRate(), before.channels(), before.bitDepth(),
+                    before.bufferSize() * 8);
+
+            assertThat(engine.isRunning()).as("premise: the stop cleared the running flag").isFalse();
+            assertThatThrownBy(() -> engine.setFormat(larger))
+                    .as("the format of a stream a live render thread may still be rendering stays")
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("render pump");
+            assertThat(engine.getFormat()).as("nothing was stored").isSameAs(before);
+
+            backend.blockAwait = false; // the wedge clears; the loop exits on its flag
+            awaitCondition(() -> formatChanged(engine, larger), "the change goes through once the pump has exited");
+            assertThat(engine.getFormat()).isSameAs(larger);
+        } finally {
+            backend.blockAwait = false;
+        }
+    }
+
+    private static boolean formatChanged(AudioEngine engine, AudioFormat format) {
+        try {
+            engine.setFormat(format);
+            return true;
+        } catch (IllegalStateException pumpNotYetExited) {
+            return false;
+        }
+    }
+
+    /**
      * Story 337, ruling E61: Play reaps a dead render drive through the
      * existing stop (ruling E10), and when that stop's bounded join times out
      * the stream is still open with the RT clock claimed — the start refuses

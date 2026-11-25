@@ -3,11 +3,9 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 import com.benesquivelmusic.daw.app.ui.status.EngineHealthText;
-import com.benesquivelmusic.daw.app.ui.recording.RecordState;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.OpenedStream;
 import com.benesquivelmusic.daw.core.audio.StreamingProvision;
-import com.benesquivelmusic.daw.core.recording.TakeManifest;
 import com.benesquivelmusic.daw.sdk.audio.ClockKind;
 import com.benesquivelmusic.daw.sdk.audio.ClockLockStatus;
 import com.benesquivelmusic.daw.sdk.audio.ClockSource;
@@ -34,7 +32,6 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
-import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -91,7 +88,9 @@ import java.util.logging.Logger;
  * of the same serial raises the relock notice, at the information level
  * (E110), and mark. A new serial is never a relock. A close on purpose or a
  * loss forgets the last applied status with no notice and no mark (E81, E84).
- * A clock event never stops a take (E30).</p>
+ * An audio take first seen recording while an unlock applied before it is
+ * still on show is marked at its start, once, with no notice (E173). A clock
+ * event never stops a take (E30).</p>
  */
 public final class ClockStatusIndicator extends Label {
 
@@ -210,31 +209,6 @@ public final class ClockStatusIndicator extends Label {
         }
     }
 
-    /** What records now, as the clock notices word it (ruling E108). */
-    enum TakeRecording {
-        /** No take records. */
-        NONE,
-        /** A take with an audio manifest records: a clock change is marked in it. */
-        AUDIO,
-        /** A take records with no audio manifest (MIDI only): nothing is marked. */
-        WITHOUT_AUDIO
-    }
-
-    /** The take the badge marks, as the record coordinator has it. FX thread. */
-    interface TakeClockMarks {
-
-        /** @return what records now */
-        TakeRecording takeRecording();
-
-        /**
-         * The clock was declared unlocked or locked again on the source on show.
-         *
-         * @param locked        {@code false} for an unlock, {@code true} for a relock
-         * @param evidenceNanos the {@link System#nanoTime()} of the evidence, or {@code 0} when unknown
-         */
-        void lockChanged(boolean locked, long evidenceNanos);
-    }
-
     /** Who asked for a read. */
     private enum Asker {
         /** The stream: at its open, or a look while it is open. */
@@ -271,6 +245,8 @@ public final class ClockStatusIndicator extends Label {
     private long retryAtNanos;
     /** The status the badge last applied; forgotten at a close or a loss; {@code null} when none. */
     private ClockLockStatus lastApplied;
+    /** Whether a measuring look saw the audio take recording now; falls at any look that sees none. */
+    private boolean audioTakeSeen;
     /** The lock status at the last look that found the stream open, its device not lost; {@code null} when none. */
     private ClockLockStatus openStatus;
     private boolean labelChanged;
@@ -391,36 +367,6 @@ public final class ClockStatusIndicator extends Label {
 
             private int sampleRate() {
                 return (int) Math.round(engine.getFormat().sampleRate());
-            }
-        };
-    }
-
-    /**
-     * The window's take marks: the current transport's record coordinator.
-     *
-     * @param transport the window's current transport controller, or a supplier of {@code null} while none
-     * @return the marks
-     */
-    static TakeClockMarks takeMarksOf(Supplier<TransportController> transport) {
-        Objects.requireNonNull(transport, "transport must not be null");
-        return new TakeClockMarks() {
-            @Override
-            public TakeRecording takeRecording() {
-                TransportController current = transport.get();
-                if (current == null || current.recordCoordinator().getState() != RecordState.RECORDING) {
-                    return TakeRecording.NONE;
-                }
-                return current.recordCoordinator().isAudioTakeRecording()
-                        ? TakeRecording.AUDIO : TakeRecording.WITHOUT_AUDIO;
-            }
-
-            @Override
-            public void lockChanged(boolean locked, long evidenceNanos) {
-                TransportController current = transport.get();
-                if (current != null) {
-                    current.recordCoordinator().noteClockEvent(
-                            locked ? TakeManifest.ClockEvent.LOCKED : TakeManifest.ClockEvent.UNLOCKED, evidenceNanos);
-                }
             }
         };
     }
@@ -636,11 +582,22 @@ public final class ClockStatusIndicator extends Label {
         State next = decide(facts);
         boolean measuring = !facts.lost() && facts.open() && facts.ownRead() == OwnRead.LABELLED
                 && facts.label() != null && !namesAnotherSource(facts.status(), facts.label().source());
+        boolean audioTake = takeMarks.takeRecording() == TakeClockMarks.TakeRecording.AUDIO;
         if (measuring) {
+            markATakeThatStartsUnlocked(facts.status(), facts.label().source(), audioTake);
             announce(facts.status(), facts.label().source());
             lastApplied = facts.status();
         }
+        audioTakeSeen = audioTake && (audioTakeSeen || measuring);
         show(next);
+    }
+
+    /** E173: the first measuring look at an audio take marks, at its start, an unlock already applied before. */
+    private void markATakeThatStartsUnlocked(ClockLockStatus current, ClockSource source, boolean audioTake) {
+        if (audioTake && !audioTakeSeen && current != null && !(source.kind() instanceof ClockKind.Internal)
+                && unlockedBefore(current)) {
+            takeMarks.takeStartsUnlocked();
+        }
     }
 
     /** Asks for the stream's label read when none is in flight, the retry wait is over, and a read can help. */
@@ -759,8 +716,7 @@ public final class ClockStatusIndicator extends Label {
         if (current == null || source.kind() instanceof ClockKind.Internal) {
             return;
         }
-        boolean wasUnlocked = lastApplied != null && lastApplied.serial() == current.serial()
-                && lastApplied.lock() == ClockLockStatus.Lock.UNLOCKED;
+        boolean wasUnlocked = unlockedBefore(current);
         String deviceName = deviceName(current.device());
         if (current.lock() == ClockLockStatus.Lock.UNLOCKED && !wasUnlocked) {
             String key = switch (takeMarks.takeRecording()) {
@@ -775,6 +731,12 @@ public final class ClockStatusIndicator extends Label {
                     EngineHealthText.text("clockBadge.notice.relocked", deviceName, source.name()));
             takeMarks.lockChanged(true, current.evidenceNanos());
         }
+    }
+
+    /** Whether the status applied last for {@code current}'s serial was unlocked. */
+    private boolean unlockedBefore(ClockLockStatus current) {
+        return lastApplied != null && lastApplied.serial() == current.serial()
+                && lastApplied.lock() == ClockLockStatus.Lock.UNLOCKED;
     }
 
     /** The device the driver side names (E111), never the default placeholder; a DeviceId name is never blank. */

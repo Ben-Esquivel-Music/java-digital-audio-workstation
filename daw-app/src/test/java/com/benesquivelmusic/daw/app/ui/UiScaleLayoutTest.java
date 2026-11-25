@@ -797,7 +797,7 @@ class UiScaleLayoutTest {
                 new com.benesquivelmusic.daw.sdk.audio.DeviceId("Mock", "Interface"),
                 List.of(new com.benesquivelmusic.daw.sdk.audio.ClockSource(0, "Internal", true,
                         new com.benesquivelmusic.daw.sdk.audio.ClockKind.Internal())), 48_000);
-        ClockStatusIndicator badge = new ClockStatusIndicator(_ -> { }, ClockStatusIndicator.takeMarksOf(() -> null),
+        ClockStatusIndicator badge = new ClockStatusIndicator(_ -> { }, TakeClockMarks.of(() -> null),
                 new ClockStatusIndicator.StreamClock() {
                     @Override
                     public boolean streamOpen() {

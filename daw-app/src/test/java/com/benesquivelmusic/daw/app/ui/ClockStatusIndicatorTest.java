@@ -5,7 +5,7 @@ import com.benesquivelmusic.daw.app.ui.ClockStatusIndicator.ClockReading;
 import com.benesquivelmusic.daw.app.ui.ClockStatusIndicator.Facts;
 import com.benesquivelmusic.daw.app.ui.ClockStatusIndicator.OwnRead;
 import com.benesquivelmusic.daw.app.ui.ClockStatusIndicator.State;
-import com.benesquivelmusic.daw.app.ui.ClockStatusIndicator.TakeRecording;
+import com.benesquivelmusic.daw.app.ui.TakeClockMarks.TakeRecording;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 import com.benesquivelmusic.daw.core.audio.OpenedStream;
 import com.benesquivelmusic.daw.sdk.audio.ClockKind;
@@ -86,6 +86,8 @@ class ClockStatusIndicatorTest {
     private static final String CLOSED_TOOLTIP =
             "Clock source when the audio stream last ran. Lock is not checked while the stream is closed.";
     private static final long SECOND = TimeUnit.SECONDS.toNanos(1);
+    /** What {@link RecordingMarks} records for a take that starts while an unlock is on show (ruling E173). */
+    private static final String UNLOCKED_AT_THE_START = "unlocked at the take's start";
 
     private final FakeClock clock = new FakeClock();
     private final ManualReads reads = new ManualReads();
@@ -288,6 +290,144 @@ class ClockStatusIndicatorTest {
         statusNow(badge, unlocked(1, 7L));
 
         assertThat(notices).containsExactly(UNLOCK_NOTICE + " Recording continues.");
+    }
+
+    /**
+     * Ruling E173: an unlock applied before the take was first seen, still
+     * on show when it is, is marked once at that take's start, with no
+     * notice; the next take is judged afresh.
+     */
+    @Test
+    void anUnlockOnShowWhenAnAudioTakeIsFirstSeenIsMarkedOnceAtEachTakesStart() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        statusNow(badge, unlocked(1, 7L));
+
+        marks.recording = TakeRecording.AUDIO;
+        look(badge);
+        look(badge);
+        List<String> marksOfTheFirstTake = List.copyOf(marks.marks);
+        marks.recording = TakeRecording.NONE;
+        look(badge);
+        marks.recording = TakeRecording.AUDIO;
+        look(badge);
+
+        assertThat(marksOfTheFirstTake).as("once for the take, however many looks see it")
+                .containsExactly("unlocked@7", UNLOCKED_AT_THE_START);
+        assertThat(marks.marks).as("the next take starts on the same unlock")
+                .containsExactly("unlocked@7", UNLOCKED_AT_THE_START, UNLOCKED_AT_THE_START);
+        assertThat(notices).as("no notice is added").containsExactly(UNLOCK_NOTICE);
+    }
+
+    @Test
+    void aRelockBeforeTheTakeOrATakeWithoutAudioMarksNothingAtTheTakesStart() throws Exception {
+        ClockStatusIndicator relocked = externalBadge();
+        statusNow(relocked, unlocked(1, 7L));
+        statusNow(relocked, locked(1, 9L));
+        marks.recording = TakeRecording.AUDIO;
+        look(relocked);
+        List<String> afterTheRelock = List.copyOf(marks.marks);
+
+        marks.marks.clear();
+        marks.recording = TakeRecording.NONE;
+        ClockStatusIndicator midiOnly = externalBadge();
+        statusNow(midiOnly, unlocked(1, 7L));
+        marks.recording = TakeRecording.WITHOUT_AUDIO;
+        look(midiOnly);
+
+        assertThat(afterTheRelock).as("a relock declared before the take writes nothing")
+                .containsExactly("unlocked@7", "locked@9");
+        assertThat(marks.marks).as("a take without audio is not marked").containsExactly("unlocked@7");
+    }
+
+    /**
+     * Ruling E173 marks a take at its start for the unlock applied on the
+     * stream it records on: an unlock applied on one serial marks nothing at
+     * the start of an audio take first seen on the next stream's serial,
+     * whose own unlock is announced and marked as any unlock is.
+     */
+    @Test
+    void anUnlockAppliedOnOneSerialMarksNothingAtTheStartOfATakeFirstSeenOnAnother() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        statusNow(badge, unlocked(1, 7L));
+
+        clock.closeStream();
+        clock.status = Optional.of(unlocked(2, 8L));
+        clock.openStream();
+        marks.recording = TakeRecording.AUDIO;
+        look(badge);
+        look(badge);
+
+        assertThat(view(badge).state()).as("premise: the next stream is measured unlocked").isEqualTo(State.UNLOCKED);
+        assertThat(marks.marks).as("no mark at the take's start; the next stream's own unlock")
+                .containsExactly("unlocked@7", "unlocked@8");
+    }
+
+    /**
+     * Ruling E173: the audio take the badge saw is remembered only while
+     * every look sees it. A look that sees no take while the stream is not
+     * measured, here while its status names another source, forgets it too,
+     * so the next take on the same unlock is marked at its start.
+     */
+    @Test
+    void aLookThatSeesNoTakeWhileTheStreamIsNotMeasuredForgetsTheTakeItSaw() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        statusNow(badge, unlocked(1, 7L));
+        marks.recording = TakeRecording.AUDIO;
+        look(badge);
+
+        marks.recording = TakeRecording.NONE;
+        statusNow(badge, status(SPDIF.id(), 1, ClockLockStatus.Lock.UNLOCKED, 7L));
+        State notMeasured = view(badge).state();
+        marks.recording = TakeRecording.AUDIO;
+        statusNow(badge, unlocked(1, 7L));
+
+        assertThat(notMeasured).as("premise: the status names another source").isEqualTo(State.CHECKING);
+        assertThat(marks.marks).as("each take marked at its start once")
+                .containsExactly("unlocked@7", UNLOCKED_AT_THE_START, UNLOCKED_AT_THE_START);
+    }
+
+    /**
+     * The same across a device loss, whose look sees no take: the loss also
+     * forgets the status applied, so the unlock the returned stream still
+     * measures is announced and marked again, and the take recorded after
+     * the return is marked at its start.
+     */
+    @Test
+    void aTakeRecordedAfterADeviceLossOnTheSameUnlockIsMarkedAtItsStart() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        statusNow(badge, unlocked(1, 7L));
+        marks.recording = TakeRecording.AUDIO;
+        look(badge);
+
+        marks.recording = TakeRecording.NONE;
+        clock.lost = true;
+        look(badge);
+        State duringTheLoss = view(badge).state();
+        clock.lost = false;
+        look(badge);
+        marks.recording = TakeRecording.AUDIO;
+        look(badge);
+
+        assertThat(duringTheLoss).as("premise: the loss hides the badge").isEqualTo(State.HIDDEN);
+        assertThat(notices).as("the unlock announced again after the loss, with no take")
+                .containsExactly(UNLOCK_NOTICE, UNLOCK_NOTICE);
+        assertThat(marks.marks).as("the take after the return marked at its start")
+                .containsExactly("unlocked@7", UNLOCKED_AT_THE_START, "unlocked@7", UNLOCKED_AT_THE_START);
+    }
+
+    @Test
+    void anInternalSourceMarksNothingAtTheTakesStart() throws Exception {
+        ClockStatusIndicator badge = badge();
+        clock.reading = Optional.of(new ClockReading(INTERFACE, List.of(INTERNAL, WORD_CLOCK_IDLE), 48_000));
+        clock.status = Optional.of(status(INTERNAL.id(), 1, ClockLockStatus.Lock.UNLOCKED, 7L));
+        opened(badge);
+        look(badge);
+
+        marks.recording = TakeRecording.AUDIO;
+        look(badge);
+
+        assertThat(view(badge).state()).as("premise: the internal source is measured").isEqualTo(State.QUIET);
+        assertThat(marks.marks).as("an internal clock has no lock to mark").isEmpty();
     }
 
     @Test
@@ -2329,7 +2469,7 @@ class ClockStatusIndicatorTest {
         }
     }
 
-    private static final class RecordingMarks implements ClockStatusIndicator.TakeClockMarks {
+    private static final class RecordingMarks implements TakeClockMarks {
         final List<String> marks = Collections.synchronizedList(new ArrayList<>());
         volatile TakeRecording recording = TakeRecording.NONE;
 
@@ -2341,6 +2481,11 @@ class ClockStatusIndicatorTest {
         @Override
         public void lockChanged(boolean locked, long evidenceNanos) {
             marks.add((locked ? "locked@" : "unlocked@") + evidenceNanos);
+        }
+
+        @Override
+        public void takeStartsUnlocked() {
+            marks.add(UNLOCKED_AT_THE_START);
         }
     }
 

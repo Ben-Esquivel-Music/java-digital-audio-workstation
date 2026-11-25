@@ -21,6 +21,8 @@ import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.*;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -94,6 +96,21 @@ public final class AudioEngine {
      * </p>
      */
     private volatile AudioFormat format;
+    /**
+     * Story 338, ruling E204 — {@link #format}'s block time by the CPU budget
+     * enforcer's formula
+     * ({@link TrackCpuBudgetEnforcer#blockBudgetNanos(double, int)}),
+     * stored with every write of the format and computed before
+     * {@link #lifecycleLock} is taken, so the drive build that compares it
+     * under the lock makes no call into the enforcer's class, which nothing
+     * under that lock may call. A block {@link #processBlock} renders
+     * compares the installed enforcer's block time with it. The format
+     * changes only while the engine is not running and keeps no render pump
+     * whose exit a stop could not confirm ({@link #setFormat(AudioFormat)}),
+     * so no render drive's thread is alive across a change and every block a
+     * render drive renders reads its own stream's block time here.
+     */
+    private volatile long formatBlockNanos;
     private final AtomicBoolean running = new AtomicBoolean(false);
     /** Terminal lifecycle state, guarded by lifecycleLock. */
     private boolean shutdown;
@@ -239,17 +256,26 @@ public final class AudioEngine {
     /**
      * Who delivers each sibling source's blocks, as ONE per-source word of one plan: the source's own
      * publisher ({@code SOURCE_LIVE}; {@code SOURCE_DELIVERING} while its {@code onNext} holds the claim;
-     * {@code SOURCE_HANDOFF_REQUESTED} once a terminal signal arrived during that claim) or the output
-     * callback, which delivers a zero-width block per period iff it reads {@code SOURCE_CLOCKED_SILENT}.
+     * {@code SOURCE_HANDOFF_REQUESTED} once a terminal signal arrived during that claim, or the close's
+     * bounded wait passed during it) or the output callback, which delivers a zero-width block per period
+     * iff it reads {@code SOURCE_CLOCKED_SILENT}.
      * Live-to-silent is a single CAS ({@code LIVE -> CLOCKED_SILENT}), or the claim's release completes it
      * ({@code HANDOFF_REQUESTED -> CLOCKED_SILENT}), so until the stream closes exactly one path owns the
      * source and the two never run its callback at once; owning is not supplying (a live publisher may
-     * deliver nothing, e.g. before its terminal signal arrives). {@code SOURCE_CLOSED} (set by
-     * {@code deactivate()}) is terminal and owned by neither. Index 0 (the primary) is unused.
+     * deliver nothing, e.g. before its terminal signal arrives). {@code SOURCE_CLOSED} is terminal and owned
+     * by neither: the close sets it once no claim is held ({@link #close}), or, when its bounded wait passed
+     * with a claim held, under {@link AudioEngine#graphLock}, in the one step that also tells whether that
+     * claim is still held ({@link #closeAfterTheWait}). Index 0 (the primary) is unused.
      * {@link #closeAdditionalInputs} and a later start publish a different record, so the output callback
-     * never reads a stale record again; a stale subscriber is refused by its closed word (set by {@code deactivate()}) and, once the plan is reset or replaced, by its plan guard too.
+     * never reads a stale record again; a stale subscriber is refused by its word once the close has closed
+     * it, or once the close's wait has passed with a claim held (the word then
+     * {@code SOURCE_HANDOFF_REQUESTED}); until then a block that arrives after a release can still claim,
+     * and the close waits for that claim too; once the plan is reset or replaced, its plan guard refuses it
+     * as well.
      */
     private record InputSourceModes(CaptureRoutingPlan plan, java.util.concurrent.atomic.AtomicIntegerArray states) {
+        private static final long CLOSE_SPIN_NANOS = 50_000L;
+        private static final long CLOSE_PARK_NANOS = 100_000L;
         InputSourceModes { Objects.requireNonNull(states, "states"); }
         /** Publisher thread: {@code LIVE -> DELIVERING}; false means the block is not this source's to deliver. */
         boolean claim(int source) { return states.compareAndSet(source, SOURCE_LIVE, SOURCE_DELIVERING); }
@@ -267,8 +293,48 @@ public final class AudioEngine {
                 if (state != SOURCE_LIVE && state != SOURCE_DELIVERING) return false;
             }
         }
-        /** Every other transition is a CAS from a non-closed state, so this plain write is never overwritten. */
-        void close(int source) { states.set(source, SOURCE_CLOSED); }
+        /**
+         * Lifecycle thread: waits until no claim is held (the word is neither {@code DELIVERING} nor
+         * {@code HANDOFF_REQUESTED}), so a block being delivered has left its tap and its callback, then
+         * closes the word by CAS, so no later claim succeeds, and returns true. Past {@code deadline}
+         * ({@link System#nanoTime()}) with a claim still held it closes nothing and returns false, the word
+         * then {@code HANDOFF_REQUESTED}: no later claim succeeds, the held claim's release turns it into
+         * {@code CLOCKED_SILENT}, and {@link #closeAfterTheWait} closes it. It spins for
+         * {@link #CLOSE_SPIN_NANOS}, then parks in steps of at most {@link #CLOSE_PARK_NANOS} until the
+         * deadline, so a hung delivery does not keep a core busy for the whole wait (a park returns at once
+         * on an interrupted thread, which therefore spins to the deadline).
+         */
+        boolean close(int source, long deadline) {
+            long spinUntil = System.nanoTime() + CLOSE_SPIN_NANOS;
+            for (;;) {
+                int state = states.get(source);
+                if (state == SOURCE_CLOSED) return true;
+                if (state != SOURCE_DELIVERING && state != SOURCE_HANDOFF_REQUESTED) {
+                    if (states.compareAndSet(source, state, SOURCE_CLOSED)) return true;
+                } else if (System.nanoTime() - deadline >= 0) {
+                    // A failed CAS means the claim's release or a terminal signal moved the word: read it again.
+                    if (state == SOURCE_HANDOFF_REQUESTED
+                            || states.compareAndSet(source, SOURCE_DELIVERING, SOURCE_HANDOFF_REQUESTED)) {
+                        return false;
+                    }
+                } else if (System.nanoTime() - spinUntil < 0) {
+                    Thread.onSpinWait();
+                } else {
+                    java.util.concurrent.locks.LockSupport.parkNanos(
+                            Math.min(CLOSE_PARK_NANOS, deadline - System.nanoTime()));
+                }
+            }
+        }
+        /**
+         * Lifecycle thread, under {@link AudioEngine#graphLock}, after {@link #close} returned false: closes
+         * the word and tells, in that one atomic step, whether the claim held when the wait passed is still
+         * held; once it has been released the word reads {@code CLOCKED_SILENT}, which no one else changes.
+         *
+         * @return whether the claim is still held
+         */
+        boolean closeAfterTheWait(int source) {
+            return states.getAndSet(source, SOURCE_CLOSED) == SOURCE_HANDOFF_REQUESTED;
+        }
     }
     private static final int SOURCE_LIVE = 0, SOURCE_DELIVERING = 1, SOURCE_HANDOFF_REQUESTED = 2,
             SOURCE_CLOCKED_SILENT = 3, SOURCE_CLOSED = 4;
@@ -418,12 +484,55 @@ public final class AudioEngine {
         }
     }
 
+    /**
+     * How long {@link #closeAdditionalInputs()} waits, in all, for the blocks the input devices beside
+     * the stream are delivering: one deadline for every device one call closes, of the order of the
+     * render pump's stop join. It is spent under {@link #lifecycleLock} because a delivery takes no
+     * engine lock (its {@code onNext} taps the meters and runs the capture callback, both lock-free), so
+     * it cannot be waiting for the closing thread; the bound covers a delivery thread that hangs. When it
+     * passes with a delivery still inside its claim, the close decides under {@link #graphLock} whether
+     * that delivery is left behind, and one that ends while the close waits for that lock counts as one
+     * that ended within the wait: it is not left behind and draws no warning, and it is measured as the
+     * closed stream's last block, except what it writes after the same close left an earlier device's
+     * delivery behind, from which the meters refuse every input device beside the stream.
+     */
+    static final long INPUT_DELIVERY_WAIT_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(1);
+    private volatile long inputDeliveryWaitNanos = INPUT_DELIVERY_WAIT_NANOS;
+
+    /** Package-private for testing: replaces {@link #INPUT_DELIVERY_WAIT_NANOS} for this engine. */
+    void setInputDeliveryWaitNanos(long nanos) {
+        if (nanos < 0) throw new IllegalArgumentException("nanos must not be negative: " + nanos);
+        inputDeliveryWaitNanos = nanos;
+    }
+
     private void closeAdditionalInputs() {
         inputSourceModes = NO_INPUT_SOURCE_MODES;
         additionalRecordingCallbacks = new RecordingCallback[0];
         liveInputSubscribers = new AdditionalInputSubscriber[0];
-        for (AdditionalInputSubscriber subscriber : additionalSubscribers) subscriber.deactivate();
-        additionalSubscribers.clear();
+        long deliveryDeadline = System.nanoTime() + inputDeliveryWaitNanos;
+        List<String> leftBehind = new ArrayList<>();
+        try {
+            for (AdditionalInputSubscriber subscriber : additionalSubscribers) {
+                if (subscriber.deactivate(deliveryDeadline)) {
+                    // Ruling E205: the give-up is the word's close in this hold of the graph lock, and the
+                    // meters refuse a delivery it leaves behind from that close, nothing called out between.
+                    synchronized (graphLock) {
+                        boolean deliveryLeftBehind = subscriber.closeTheWordAfterTheWait();
+                        if (deliveryLeftBehind) {
+                            if (leftBehind.isEmpty()) refuseTheDevicesBesideTheStreamOnTheInputMeters();
+                            leftBehind.add(subscriber.name);
+                        }
+                    }
+                }
+                subscriber.cancelSubscription();
+            }
+            additionalSubscribers.clear();
+        } finally {
+            for (String name : leftBehind) {
+                LOG.warning("Input device '" + name + "' was still delivering a block when its close stopped"
+                        + " waiting for it; the input meters show nothing more from it");
+            }
+        }
         RuntimeException failure = null;
         for (int i = additionalInputs.size() - 1; i >= 0; i--) {
             AudioBackend backend = additionalInputs.get(i);
@@ -455,6 +564,12 @@ public final class AudioEngine {
         private final String name;
         /** Blocks the device handed this subscriber, counted on arrival: the input's heartbeat (story 338). */
         private final AtomicLong deliveredBlocks = new AtomicLong();
+        /**
+         * The render drive built for this subscriber's stream, which the input meters compare with their
+         * state's (ruling E201). A subscriber is constructed in the lock section of a record start, right
+         * after that section's one drive build, so the epoch read here is that build's.
+         */
+        private final long drive;
         private volatile java.util.concurrent.Flow.Subscription subscription;
         AdditionalInputSubscriber(int source, int width, CaptureMeterSources meterSources, InputSourceModes modes,
                                   String name) {
@@ -463,12 +578,43 @@ public final class AudioEngine {
             this.generation = meterSources.plan();
             this.availability = meterSources.availability().get(source);
             this.modes = modes;
+            this.drive = audioHealth.renderDriveEpoch();
             planes = new float[width][format.bufferSize()];
             views = new float[width + 1][][];
             for (int i = 0; i <= width; i++) views[i] = java.util.Arrays.copyOf(planes, i);
         }
-        void deactivate() {
-            modes.close(source);
+        /**
+         * Closes this source's word once the block its device is delivering, if any, has left the tap and
+         * the callback ({@link InputSourceModes#close}), with no call to the backend or the log. When
+         * {@code deadline} passes with a delivery still inside its claim it closes nothing and returns true:
+         * no later claim of this source succeeds, and {@link #closeTheWordAfterTheWait()} decides, under
+         * the graph lock, whether that delivery is left behind.
+         *
+         * @return whether the wait passed with a claim held
+         */
+        boolean deactivate(long deadline) {
+            return !modes.close(source, deadline);
+        }
+        /**
+         * After a wait that passed with a claim held ({@link #deactivate(long)}), under the graph lock:
+         * closes this source's word and tells, in that one atomic step, whether the delivery is still inside
+         * its claim ({@link InputSourceModes#closeAfterTheWait}). If it is, it is left behind: the close
+         * makes the input meters refuse the input devices beside the stream in the same hold of the lock,
+         * before anything else, then cancels the subscription ({@link #cancelSubscription()}) and warns, so
+         * nothing more of that delivery shows on the stopped stream's meters or, through the clip latch and
+         * routing flag a newer build takes over, on a newer stream's (ruling E205). If it is not, the
+         * delivery ended while the close waited for the lock: it is not left behind and draws no warning,
+         * and it was measured as the closed stream's last block, except what it wrote after the same close
+         * left an earlier device's delivery behind, which the meters refused, as they refuse every input
+         * device beside the stream from then on.
+         *
+         * @return whether the delivery is left behind
+         */
+        boolean closeTheWordAfterTheWait() {
+            return modes.closeAfterTheWait(source);
+        }
+        /** Cancels the subscription, once this source's word is closed. */
+        void cancelSubscription() {
             java.util.concurrent.Flow.Subscription current = subscription;
             if (current != null) current.cancel();
         }
@@ -500,7 +646,7 @@ public final class AudioEngine {
                 }
                 float[][] delivered = views[Math.min(block.channels(), planes.length)];
                 if (captureRoutingPlan != generation) return;
-                tapInputSource(source, delivered, frames);
+                tapInputSource(source, drive, delivered, frames);
                 RecordingCallback[] callbacks = additionalRecordingCallbacks;
                 if (captureRoutingPlan == generation && source - 1 < callbacks.length)
                     callbacks[source - 1].onAudioCaptured(delivered, block.frames());
@@ -1221,6 +1367,11 @@ public final class AudioEngine {
      *             {@code stopPump()}. A transition can call it more than
      *             once (an open does: {@code requireQuiescedPump} and then
      *             {@code startLocked}).</li>
+     *         <li>{@link #closeAdditionalInputs()}'s wait for the blocks the
+     *             input devices beside the stream are delivering —
+     *             {@link #INPUT_DELIVERY_WAIT_NANOS}, 1 s, once per call however
+     *             many devices it closes, spent only while a delivery is inside
+     *             its claim (story 338, ruling E196).</li>
      *         <li>{@code AudioWorkerPool.close()} — its per-worker join is
      *             500 ms and the joins are SEQUENTIAL, so the bound is
      *             (pool size − 1) × 500 ms, not 500 ms. With the default
@@ -1303,11 +1454,29 @@ public final class AudioEngine {
      *       {@link #processBlock(float[][], float[][], int)} and
      *       {@link #isRunning()}, neither of which touches this lock — a pump
      *       thread can never be waiting on it while a lifecycle thread waits
-     *       on the pump.</li>
+     *       on the pump. Waiting for an input device's delivery is safe for the
+     *       same reason: that delivery takes no engine lock.</li>
      *   <li><strong>Graph lock order.</strong> Capture meter preparation,
-     *       successful capture-close cleanup and routing-description refresh take {@link #graphLock} after this
-     *       lock to bind source availability to the currently published
-     *       registry. The reverse order is forbidden. Other lifecycle paths
+     *       successful capture-close cleanup, routing-description refresh,
+     *       the input meters' lift at every drive build
+     *       ({@code liftInputMetersForTheNewDrive}) and their refusal of the
+     *       input devices beside a stream whose close stopped waiting for a
+     *       block ({@code refuseTheDevicesBesideTheStreamOnTheInputMeters})
+     *       take {@link #graphLock} after this lock, to bind source
+     *       availability and the meters' per-stream states to the currently
+     *       published registry. The reverse order is forbidden. The input
+     *       meters have two locks of their own, taken inside the graph lock
+     *       or with no engine lock held, and a monitor's lock also under this
+     *       lock alone, where a reconnect floors the meters of a stream it
+     *       closes at once ({@code muteInputMetersThrough}, through
+     *       {@link InputLevelMonitorRegistry#silenceAll(long)}): the order is
+     *       this lock, then {@link #graphLock}, then the
+     *       {@link InputLevelMonitorRegistry}'s lock (a monitor's creation, a
+     *       build's lift, a refusal), then an
+     *       {@link InputLevelMonitor}'s lock (an install, a clear of the clip
+     *       latch, a loss's floor), which takes no other, and no path takes
+     *       them in another order; the render pump and the input devices'
+     *       deliveries take neither. Other lifecycle paths
      *       read {@code graph} volatilely, and {@link #setGraph(Transport, Mixer,
      *       List)} calls no lifecycle method — it reads {@code streamState}
      *       INSIDE its own monitor, through {@link #callbackIsDriving()}, and
@@ -1354,8 +1523,26 @@ public final class AudioEngine {
      * </ol>
      * <p>Story 326 additionally calls immutable CaptureRoutingPlan/InputRouting values,
      * their backend-only control-thread resolver, and InputLevelMonitorRegistry/InputLevelMonitor/InputSourceAvailability
-     * to preallocate meter state and attach precomputed warning text. These collaborators
-     * invoke no application listeners or UI callbacks; all user warnings remain outside the lock.</p>
+     * to preallocate meter state and attach precomputed warning text. Story 338 (rulings E175,
+     * E185, E201 and E205) adds three calls on the registry: {@code liftAll}, at every render drive
+     * built, inside {@code synchronized (graphLock)} (this lock, then the graph lock, the order
+     * {@link #closeAdditionalInputs()} takes them in), which, under the registry's own lock,
+     * raises its newest built drive, iterates its map and gives each monitor whose state belongs
+     * to an older drive a new per-stream state under that monitor's lock, allocating for each
+     * the state, its true-peak detector and its floor record, and then raises one epoch of the
+     * monitors' shared mute by an atomic maximum; {@code refuseTheDevicesBesideTheStream}, inside
+     * {@code synchronized (graphLock)} too, in the same hold in which the close of the input
+     * devices beside the stream, its wait for a block one of them is delivering having passed,
+     * closes that device's word and finds the block still in delivery, directly after that close,
+     * which, under the registry's lock, raises its refused
+     * drive, iterates its map and gives each monitor a state of the same drive that refuses
+     * those devices' writes under that monitor's lock, allocating for each the state and its
+     * true-peak detector; and {@code silenceAll}, where a reconnect closes at once a stream it opened on
+     * another device, which raises the other epoch the same way and floors the level of each
+     * monitor whose state belongs to that drive or an older one under that monitor's lock. The record start also reads
+     * the render-drive epoch from the {@link AudioHealthRecord} for each input device's
+     * subscriber it constructs. These collaborators invoke no application listeners or UI
+     * callbacks; all user warnings remain outside the lock.</p>
      * <p>Story 328: {@code stopLocked} and {@code clearOpenStream} cancel a pending
      * {@link CountInSchedule} through {@code cancelPendingCountIn()}.
      * {@link CountInSchedule#cancel()} is one volatile store and one volatile load;
@@ -1393,6 +1580,39 @@ public final class AudioEngine {
 
     // Optional per-track CPU budget enforcer for graceful degradation
     private volatile TrackCpuBudgetEnforcer cpuBudgetEnforcer;
+
+    /**
+     * Story 338, ruling E204 — the block time of the enforcer last installed by
+     * {@link #setCpuBudgetEnforcer}, stored before {@link #cpuBudgetEnforcer}
+     * so the drive build, which may not call the enforcer under
+     * {@link #lifecycleLock}, compares it with {@link #formatBlockNanos}. Two
+     * installs racing each other can leave it holding the other install's
+     * block time; only the build's detach reads it, so the worst is an
+     * enforcer of the drive's block time detached or one of another kept,
+     * and each block's own check ({@link #processBlock}) measures no block
+     * with an enforcer of another block time either way.
+     */
+    private volatile long cpuBudgetBlockNanos;
+
+    /** Compare-and-set on {@link #cpuBudgetEnforcer}, so a drive build's detach never undoes a racing install. */
+    private static final VarHandle CPU_BUDGET_ENFORCER;
+
+    static {
+        try {
+            CPU_BUDGET_ENFORCER = MethodHandles.lookup().findVarHandle(AudioEngine.class, "cpuBudgetEnforcer",
+                    TrackCpuBudgetEnforcer.class);
+        } catch (ReflectiveOperationException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
+
+    /**
+     * Story 338, ruling E203 — the blocks the render thread has begun: its
+     * single writer stores it once per attempted render, after the running
+     * check and before the block reads {@link #cpuBudgetEnforcer}; see
+     * {@link #blocksBegun()}.
+     */
+    private volatile long blocksBegun;
 
     // Process-wide cache of sample-rate-converted clip buffers (story 126).
     // The render pipeline consults this cache before reading each clip's
@@ -1510,6 +1730,7 @@ public final class AudioEngine {
      */
     public AudioEngine(AudioFormat format) {
         this.format = Objects.requireNonNull(format, "format must not be null");
+        this.formatBlockNanos = TrackCpuBudgetEnforcer.blockBudgetNanos(format.sampleRate(), format.bufferSize());
         this.masteringChain = new MasteringChain();
         attachInputStallCounters();
     }
@@ -1527,6 +1748,7 @@ public final class AudioEngine {
      */
     public AudioEngine(AudioFormat format, AudioEngineSettings engineSettings) {
         this.format = Objects.requireNonNull(format, "format must not be null");
+        this.formatBlockNanos = TrackCpuBudgetEnforcer.blockBudgetNanos(format.sampleRate(), format.bufferSize());
         this.masteringChain = new MasteringChain();
         this.engineSettings = Objects.requireNonNull(
                 engineSettings, "engineSettings must not be null");
@@ -1877,6 +2099,12 @@ public final class AudioEngine {
      * but it is now CHECKED under the lock rather than racing the
      * {@link #start()} that would invalidate it.</p>
      *
+     * <p>It also refuses while the engine keeps a render pump whose exit a
+     * {@link #stop()} could not confirm: it retries that join
+     * ({@link #stopPump()}) and throws while the pump is still alive, before
+     * it stores or invalidates anything, so no render thread is alive across
+     * a format change (story 338, ruling E204).</p>
+     *
      * <p>Callers that already hold the lock: none today. The lock is
      * reentrant, so a future {@code …Locked} body may call this safely; a
      * PUBLIC caller must not, since re-entering a public wrapper would defer
@@ -1885,9 +2113,13 @@ public final class AudioEngine {
      * {@link Level#SEVERE}).</p>
      *
      * @param format the new audio format (must not be {@code null})
-     * @throws IllegalStateException if the engine is currently running
+     * @throws IllegalStateException if the engine is running, or a render
+     *         pump whose exit a stop could not confirm is still alive after
+     *         a retried join
      */
     public void setFormat(AudioFormat format) {
+        long blockNanos = format == null ? 0L
+                : TrackCpuBudgetEnforcer.blockBudgetNanos(format.sampleRate(), format.bufferSize());
         lifecycleLock.lock();
         try {
             if (running.get()) {
@@ -1895,6 +2127,10 @@ public final class AudioEngine {
                         "Cannot change format while engine is running");
             }
             Objects.requireNonNull(format, "format must not be null");
+            if (!stopPump()) {
+                throw new IllegalStateException("Cannot change format: a render pump whose exit the last stop"
+                        + " could not confirm may still be inside processBlock; retry once it exits");
+            }
             // Drop every cached SRC entry when the session sample rate
             // changes — otherwise stale conversions targeting the old rate
             // would be replayed at the new rate (story 126).
@@ -1902,6 +2138,7 @@ public final class AudioEngine {
                 srcCache.invalidateAll();
             }
             this.format = format;
+            this.formatBlockNanos = blockNanos;
         } finally {
             lifecycleLock.unlock();
         }
@@ -2688,7 +2925,9 @@ public final class AudioEngine {
         DeviceId opened = this.openDevice;
         if (wanted != null && (opened == null
                 || !(wanted.equals(opened) || wanted.name().equals(opened.name())))) {
+            long closedDrive = audioHealth.renderDriveEpoch();
             stopAudioOutputLocked(announcements);
+            muteInputMetersThrough(closedDrive);
             if (!isStreamOpen()) {
                 announcements.streamClosedAgain();
             }
@@ -4029,8 +4268,7 @@ public final class AudioEngine {
             // handle and fails the start like any other start failure.
             audioHealth.attachBackendCounters(backend::name, backend::threadCounters);
             capturedInputLoss.attach(backend);
-            EngineStreamPump newPump =
-                    new EngineStreamPump(backend, this, format, negotiatedFormat);
+            EngineStreamPump newPump = newRenderDrive(backend, negotiatedFormat);
             newPump.start();
             this.pump = newPump;
         } catch (RuntimeException | Error startFailure) {
@@ -4161,11 +4399,13 @@ public final class AudioEngine {
      *
      * <p>This is also where a {@link #stop()} deferred by an unconfirmed join
      * is DRAINED (story 316 review): every lifecycle path that can quiesce
-     * the pump — SEVEN call sites: {@link #stop()}, {@link #stopAudioOutput()},
+     * the pump — EIGHT call sites: {@link #stop()}, {@link #stopAudioOutput()},
      * {@link #pauseAudioOutput()}, {@link #requireQuiescedPump()},
      * {@link #abandonStreamOnOutgoingBackend(AudioBackend, PendingAnnouncements)},
      * {@link #start()} (whose {@code startLocked} retries the join to drain
-     * the deferred collaborator teardown)
+     * the deferred collaborator teardown),
+     * {@link #setFormat(AudioFormat)} (which refuses the change while the
+     * join stays unconfirmed)
      * and, since the control-panel guard gained its drain,
      * {@link #drainDeferredHandleRelease()}
      * — funnels through
@@ -4304,17 +4544,16 @@ public final class AudioEngine {
      *       unchanged, and nothing is reopened while output was not open —
      *       which also keeps the last two, both of which live on the open
      *       path, out of it.
-     *       That path's only gate is {@link #setFormat(AudioFormat)}, which
-     *       refuses solely while {@link #isRunning()} — and the reconfigure
-     *       has just cleared that flag via {@link #stop()}. A pump whose
-     *       bounded join timed out could therefore still be inside
-     *       {@link #processBlock(float[][], float[][], int)}, rendering
-     *       through a {@link RenderPipeline} shaped by the OLD format, while
-     *       the new format is stored under it. So
-     *       {@code DefaultAudioEngineController.applyConfiguration()} keeps
-     *       this verdict, gives {@link #stop()}'s own retry-join a chance,
-     *       re-checks once — and refuses the whole reconfigure rather than
-     *       mutate the format over a possibly live render. Its sibling, the
+     *       That path's only engine-side gate is
+     *       {@link #setFormat(AudioFormat)}, which refuses while
+     *       {@link #isRunning()} and, after retrying the join, while a pump
+     *       whose bounded join timed out is still alive, so the format is
+     *       never stored under a live render. It guards the format alone,
+     *       though. So {@code DefaultAudioEngineController.applyConfiguration()}
+     *       keeps this verdict, gives {@link #stop()}'s own retry-join a
+     *       chance, re-checks once — and refuses the WHOLE reconfigure (format,
+     *       worker pool, xrun detector, provision, restart) before it changes
+     *       any of them. Its sibling, the
      *       device-driven {@code performFormatChangeReopen}, BRANCHES on this
      *       verdict too, through the same shared predicate
      *       ({@code stopAndConfirmPumpQuiesced()}) and refusing through
@@ -5046,8 +5285,7 @@ public final class AudioEngine {
             streamState = StreamState.RUNNING;
             claimTransportClock();
             try {
-                EngineStreamPump newPump =
-                        new EngineStreamPump(backend, this, format, negotiated);
+                EngineStreamPump newPump = newRenderDrive(backend, negotiated);
                 newPump.start();
                 this.pump = newPump;
             } catch (RuntimeException | Error startFailure) {
@@ -5056,6 +5294,112 @@ public final class AudioEngine {
                 rollbackEngineStart(startedHere, announcements, startFailure);
                 throw startFailure;
             }
+        }
+    }
+
+    /**
+     * Builds the render drive both start paths start, with the input meters
+     * started for it ({@link #liftInputMetersForTheNewDrive()}) between its
+     * construction, which claims its lane, and its start. A throwable from
+     * the meters retires that lane — the pump never ran — and is rethrown
+     * into the caller's unwind, as a failed start's is.
+     *
+     * <p>First, story 338, ruling E204: an installed CPU budget enforcer whose
+     * block time is not this drive's format's is detached, by
+     * compare-and-set, so an install racing this build is kept; a restart at
+     * the same block time keeps it. One installed afterwards with another
+     * block time measures no block: each block compares it with
+     * {@link #formatBlockNanos}.</p>
+     */
+    private EngineStreamPump newRenderDrive(AudioBackend backend,
+                                            com.benesquivelmusic.daw.sdk.audio.AudioFormat negotiated) {
+        TrackCpuBudgetEnforcer installed = cpuBudgetEnforcer;
+        if (installed != null && cpuBudgetBlockNanos != formatBlockNanos) {
+            CPU_BUDGET_ENFORCER.compareAndSet(this, installed, (TrackCpuBudgetEnforcer) null);
+        }
+        EngineStreamPump newPump = new EngineStreamPump(backend, this, format, negotiated);
+        try {
+            liftInputMetersForTheNewDrive();
+        } catch (RuntimeException | Error liftFailure) {
+            newPump.stop();
+            throw liftFailure;
+        }
+        return newPump;
+    }
+
+    /**
+     * Story 338, rulings E175, E185 and E201: every render drive just built —
+     * the newest, its lane claimed in its constructor — gives each input
+     * meter a new per-stream state at the floor, with the clip latch and the
+     * routing and physical-input flags the old state holds and a true-peak
+     * detector of its own, before it starts, and the newest build also ends a
+     * device loss's input-meter mute. Both places that build a drive call
+     * this, after the previous drive has exited and the input devices beside
+     * it were closed.
+     * Of a block such a device was still delivering when its close stopped
+     * waiting, nothing it writes after that close shows: from the close the
+     * meters refused those devices
+     * ({@link #refuseTheDevicesBesideTheStreamOnTheInputMeters()}, ruling
+     * E205), so the old states this build copies hold none of it, and the
+     * new states refuse it as a block of an older drive. Under
+     * {@link #graphLock}, so the routing and physical-input flags a new state
+     * takes from the old one cannot overwrite a routing update
+     * ({@code updateInputMeterDescriptions}, under that lock) made while the
+     * state is copied. A monitor created on a thread that does not hold the
+     * graph lock, the FX thread's, is created before the lift's installs or
+     * after them, never between, because the registry's lock covers both
+     * ({@link InputLevelMonitorRegistry#getOrCreate(String)}). An
+     * engine-state delivery never lifts the mute: a stream opens without one
+     * after a failed Settings apply.
+     */
+    private void liftInputMetersForTheNewDrive() {
+        synchronized (graphLock) {
+            InputLevelMonitorRegistry meters = inputLevelMonitorRegistry;
+            if (meters != null) {
+                meters.liftAll(audioHealth.renderDriveEpoch());
+            }
+        }
+    }
+
+    /**
+     * Story 338, ruling E205: the close of the input devices beside the
+     * stream gave up on a block one of them is still delivering, so from now
+     * the input meters take nothing more from those devices, before any
+     * newer drive is built and after; what they show stays
+     * ({@link InputLevelMonitorRegistry#refuseTheDevicesBesideTheStream()}).
+     * The give-up is the close of that device's word, under
+     * {@link #graphLock}, which finds the delivery still inside its claim;
+     * {@link #closeAdditionalInputs()} calls this in that same hold of the
+     * lock, directly after that close, before it calls anything else, and
+     * each meter's refusing state is installed in that hold too. Between
+     * the close of the word and a meter's refusing install lie only the
+     * wait for the registry's lock, which another thread holds only to
+     * construct a monitor; the installs of the monitors iterated before
+     * that meter; and the wait for that meter's own lock, which another
+     * thread holds only for a clear of the clip latch or a loss's floor.
+     */
+    private void refuseTheDevicesBesideTheStreamOnTheInputMeters() {
+        synchronized (graphLock) {
+            InputLevelMonitorRegistry meters = inputLevelMonitorRegistry;
+            if (meters != null) {
+                meters.refuseTheDevicesBesideTheStream();
+            }
+        }
+    }
+
+    /**
+     * Story 338, ruling E185: a stream a reconnect opened on another device
+     * than the lost one, and closed again at once, does not end the loss for
+     * the input meters. From that close they read the floor, clip latch
+     * kept, until the next drive is built, through the same registry call
+     * the loss's FX delivery makes.
+     *
+     * @param closedDrive the render-drive epoch of the stream just closed
+     */
+    private void muteInputMetersThrough(long closedDrive) {
+        InputLevelMonitorRegistry meters = inputLevelMonitorRegistry;
+        if (meters != null) {
+            meters.silenceAll(closedDrive);
         }
     }
 
@@ -5851,9 +6195,25 @@ public final class AudioEngine {
      * {@link com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy}
      * and publishes events for the UI.</p>
      *
+     * <p>Each block reads the enforcer once, so the block in flight when this
+     * replaces or removes one may still use the previous enforcer (story 338,
+     * ruling E203). A caller tells that it has ended by reading
+     * {@link #blocksBegun()} and then the
+     * {@linkplain MeteringTapBus#blockIndex() metering block index} after this
+     * call: equal, no block can still be using the previous enforcer;
+     * otherwise the block in flight has ended once either has changed.</p>
+     *
+     * <p>A block uses the enforcer only when the enforcer's block time
+     * ({@link TrackCpuBudgetEnforcer#blockBudgetNanos(double, int)}) is that
+     * of the stream it renders (ruling E204): a render drive built for
+     * another block time detaches it before its first block, and one
+     * installed on a running stream of another block time measures no block;
+     * install one built for the stream's format.</p>
+     *
      * @param enforcer the CPU budget enforcer, or {@code null} to disable
      */
     public void setCpuBudgetEnforcer(TrackCpuBudgetEnforcer enforcer) {
+        this.cpuBudgetBlockNanos = enforcer == null ? 0L : enforcer.getBlockBudgetNanos();
         this.cpuBudgetEnforcer = enforcer;
     }
 
@@ -5985,6 +6345,24 @@ public final class AudioEngine {
      */
     public MeteringTapBus meteringTapBus() {
         return meteringTapBus;
+    }
+
+    /**
+     * Story 338, ruling E203 — how many blocks the render thread has begun:
+     * one per attempted render, counted after the running check and before
+     * the block reads its CPU budget enforcer, never on a stopped engine.
+     * The {@linkplain MeteringTapBus#blockIndex() metering block index}
+     * counts the same blocks as they end, after the block's last use of that
+     * enforcer, so while the two differ a block is in flight, or a block
+     * threw after its count and before the {@code try} whose {@code finally}
+     * counts it ended, so no end was counted for it, which left the two apart
+     * from then on; a reader that waits for either to change then waits for
+     * the next block. One volatile read; never reset.
+     *
+     * @return the blocks begun
+     */
+    public long blocksBegun() {
+        return blocksBegun;
     }
 
     /**
@@ -6198,8 +6576,9 @@ public final class AudioEngine {
      * {@link RenderPipeline} reads from one atomic volatile snapshot of
      * the immutable transport/mixer/tracks graph (published whole via
      * {@link #setGraph(Transport, Mixer, List)}) plus volatile snapshots
-     * of the MIDI renderer and other collaborators. When an enforcer
-     * is present, per-track CPU timing occurs and the enforcer acquires
+     * of the MIDI renderer and other collaborators. When an enforcer of
+     * the stream's block time is installed (see
+     * {@link #setCpuBudgetEnforcer}), per-track CPU timing occurs and the enforcer acquires
      * an internal lock for each measurement; the enforcer pre-allocates
      * its own buffers to minimize GC pressure on the audio thread.</p>
      *
@@ -6259,6 +6638,9 @@ public final class AudioEngine {
             renderStoppedSilence(outputBuffer, numFrames, interleavedOutput);
             return false;
         }
+        // Story 338, ruling E203: counted before the enforcer is read, so a
+        // replacement that detaches it after this store finds this block in flight.
+        blocksBegun = blocksBegun + 1L;
 
         // Snapshot volatile references once for this block so that the
         // UI thread cannot tear the configuration mid-render. The whole
@@ -6273,6 +6655,10 @@ public final class AudioEngine {
         RecordingCallback cb = this.recordingCallback;
         PerformanceMonitor monitor = this.performanceMonitor;
         TrackCpuBudgetEnforcer enforcer = this.cpuBudgetEnforcer;
+        if (enforcer != null && enforcer.getBlockBudgetNanos() != formatBlockNanos) {
+            // Ruling E204: an enforcer built for another block time measures no block of this stream.
+            enforcer = null;
+        }
         InputLevelMonitorRegistry inputRegistry = this.inputLevelMonitorRegistry;
         Metronome currentMetronome = this.metronome;
         MetronomeSideOutputRouter currentRouter = this.metronomeSideOutputRouter;
@@ -6373,10 +6759,19 @@ public final class AudioEngine {
                                             float[][] inputBuffer,
                                             int numFrames,
                                             List<Track> currentTracks) {
-        tapInputSource(0, inputBuffer, numFrames);
+        tapInputSource(0, Long.MAX_VALUE, inputBuffer, numFrames);
     }
 
-    private void tapInputSource(int source, float[][] inputBuffer, int numFrames) {
+    /**
+     * Taps {@code source}'s block into the meters of the armed tracks it
+     * feeds. {@code drive} is the render drive built for the block's stream,
+     * {@code Long.MAX_VALUE} for the stream's own input, which no meter
+     * refuses: every meter write goes through the monitor's overloads that
+     * take it, so a meter whose state belongs to a newer drive (ruling E201),
+     * or refuses the input devices beside its stream (ruling E205), refuses
+     * the block's level, clip, routing flag and physical-input flag.
+     */
+    private void tapInputSource(int source, long drive, float[][] inputBuffer, int numFrames) {
         InputLevelMonitorRegistry registry = inputLevelMonitorRegistry;
         List<Track> currentTracks = graph.tracks();
         if (registry == null || currentTracks == null) return;
@@ -6389,16 +6784,16 @@ public final class AudioEngine {
             InputLevelMonitor monitor = registry.get(track.getId());
             if (monitor == null) continue;
             InputRouting routing = track.getInputRouting();
-            monitor.setPhysicalInput(routing != null && !routing.isNone());
+            monitor.setPhysicalInput(routing != null && !routing.isNone(), drive);
             if (routing == null || routing.isNone()) {
-                monitor.setRoutingUnavailable(false);
+                monitor.setRoutingUnavailable(false, drive);
                 continue;
             }
             CaptureRoutingPlan plan = captureRoutingPlan;
             if (plan != null) {
                 Integer ordinal = plan.trackSources().get(track.getId());
                 if (ordinal == null) {
-                    if (source == 0) monitor.setRoutingUnavailable(true);
+                    if (source == 0) monitor.setRoutingUnavailable(true, drive);
                     continue;
                 }
                 if (ordinal.intValue() != source) continue;
@@ -6406,11 +6801,11 @@ public final class AudioEngine {
             int first = routing.firstChannel();
             int count = routing.channelCount();
             if (first < 0 || count <= 0 || (long) first + count > numInputChannels) {
-                monitor.setRoutingUnavailable(true);
+                monitor.setRoutingUnavailable(true, drive);
                 continue;
             }
-            monitor.setRoutingUnavailable(false);
-            monitor.processInputChannels(inputBuffer, first, count, numFrames);
+            monitor.setRoutingUnavailable(false, drive);
+            monitor.processInputChannels(inputBuffer, first, count, numFrames, drive);
         }
     }
 

@@ -16,20 +16,27 @@ import java.util.logging.Logger;
  * The window's FX reactions to a device loss (story 338), handed every
  * engine-state change by the {@link EngineStateBridge} before the transport
  * gets it. At a {@link EngineState#DEVICE_LOST} delivery, whatever the
- * loss's cause:
+ * loss's cause, the render-drive epoch the engine controller read as it
+ * declared the loss ({@link DefaultAudioEngineController#lostDriveEpoch()})
+ * is read once and handed to both reactions:
  * <ul>
- *   <li>the audio health drain is told the render-drive epoch the engine
- *       controller read as it declared the loss
- *       ({@link DefaultAudioEngineController#lostDriveEpoch()}), so that
- *       from this delivery on no device-side count it reads on that drive
- *       or an older one escalates or joins a sustained run, and a fault
- *       latched for such a drive is cleared when every category it latched
- *       is device-side (story 338, rulings E68 to E70 and E159);</li>
- *   <li>the input meters fall to the floor, each keeping its clip latch,
- *       instead of freezing at their last level (rulings E35 and E64); the
- *       output meters fall by themselves once no block arrives.</li>
+ *   <li>the audio health drain, so that from this delivery on no device-side
+ *       count it reads on that drive or an older one escalates or joins a
+ *       sustained run, and a fault latched for such a drive is cleared when
+ *       every category it latched is device-side (story 338, rulings E68 to
+ *       E70 and E159);</li>
+ *   <li>the input meters, which fall to the floor, each keeping its clip
+ *       latch, instead of freezing at their last level (rulings E35 and E64),
+ *       and are muted through that drive: a block the lost stream still
+ *       renders shows no level until the engine builds a newer drive, which
+ *       lifts the mute (ruling E175). A loss delivered after the engine built
+ *       a newer drive changes nothing on them (ruling E202). The output
+ *       meters fall by themselves once no block arrives.</li>
  * </ul>
- * A window without a drain or an input-meter registry skips that reaction.
+ * An epoch that cannot be read is logged, and both reactions run without
+ * one: the drain changes nothing and the meters fall to the floor once,
+ * muted through no drive. A window without a drain or an input-meter
+ * registry skips that reaction.
  * The bridge runs these before the window's engine-health model and the
  * transport's reaction, in the same FX turn. Each reaction is isolated: one
  * that throws is logged and the other still runs, and so does whatever the
@@ -71,18 +78,30 @@ final class DeviceLossReactions implements Consumer<EngineStateChange> {
         if (change.state() != EngineState.DEVICE_LOST) {
             return;
         }
+        long epoch = readLostDriveEpoch();
         try {
-            long epoch = lostDriveEpoch.getAsLong();
             healthDrain.get().ifPresent(drain -> drain.streamLost(epoch));
         } catch (RuntimeException e) {
             LOG.log(Level.WARNING, "The device-loss reaction of the audio health drain failed", e);
         }
         try {
             if (inputMeters != null) {
-                inputMeters.silenceAll();
+                inputMeters.silenceAll(epoch);
             }
         } catch (RuntimeException e) {
             LOG.log(Level.WARNING, "The device-loss reaction of the input meters failed", e);
+        }
+    }
+
+    /** The lost drive's epoch, or {@code -1}, which both reactions read as no drive, when it cannot be read. */
+    private long readLostDriveEpoch() {
+        try {
+            return lostDriveEpoch.getAsLong();
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "The lost render drive's epoch could not be read: the health drain is told"
+                    + " of a loss through no drive, which changes nothing it counts, and the input meters fall to"
+                    + " the floor without being held there", e);
+            return -1L;
         }
     }
 

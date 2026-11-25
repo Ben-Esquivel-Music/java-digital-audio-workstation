@@ -140,6 +140,9 @@ public final class CaptureRing {
     /** Value of {@link Slot#outputClockFrame()} for a block its input delivered itself. */
     public static final long NO_OUTPUT_CLOCK_FRAME = -1L;
 
+    /** Value of {@link Slot#transportLap()} for a block the render thread did not stamp. */
+    public static final long NO_TRANSPORT_LAP = -1L;
+
     /** Park step of {@link #awaitProducerQuiescent(long)} while a callback is inside the producer gate. */
     static final long QUIESCENCE_POLL_NANOS = 100_000L;
 
@@ -587,6 +590,7 @@ public final class CaptureRing {
         private long loopEndFrame;
         private boolean inputStarved;
         private long outputClockFrame = NO_OUTPUT_CLOCK_FRAME;
+        private long transportLap = NO_TRANSPORT_LAP;
 
         private Slot(int slotFrames, int channelsPerSource, int sourceCount) {
             this.slotFrames = slotFrames;
@@ -617,6 +621,7 @@ public final class CaptureRing {
             this.loopEndFrame = 0;
             this.inputStarved = false;
             this.outputClockFrame = NO_OUTPUT_CLOCK_FRAME;
+            this.transportLap = NO_TRANSPORT_LAP;
             Arrays.fill(sourceChannels, 0);
         }
 
@@ -766,6 +771,22 @@ public final class CaptureRing {
         /** Sets the transport frame of the render block that clocked this slot. */
         public void setOutputClockFrame(long outputClockFrame) {
             this.outputClockFrame = outputClockFrame;
+        }
+
+        /**
+         * Returns how many times the take's transport had wrapped round the
+         * loop when the render thread filled this slot (0 in lap 1), or
+         * {@link #NO_TRANSPORT_LAP} for a block an input opened beside the
+         * stream delivered on its own publisher's thread, which does not know
+         * the transport's lap.
+         */
+        public long transportLap() {
+            return transportLap;
+        }
+
+        /** Sets the transport's lap, counted on the render thread, at this block. */
+        public void setTransportLap(long transportLap) {
+            this.transportLap = transportLap;
         }
 
         /** Returns the number of sources this slot carries. */

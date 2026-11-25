@@ -6,7 +6,9 @@ import com.benesquivelmusic.daw.app.ui.recording.RecordState;
 import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
 import com.benesquivelmusic.daw.core.audio.OpenedStream;
 import com.benesquivelmusic.daw.core.audio.StreamingProvision;
+import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.TakeManifest;
+import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.ClockKind;
@@ -51,7 +53,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * take (rulings E30, E31, E74, E81 to E85, E107, E111, E119, E135, E143
  * and E146): built and wired by the window's own
  * {@code ClockStatusIndicator.engineClock},
- * {@code ClockStatusIndicator.takeMarksOf} and
+ * {@code TakeClockMarks.of} and
  * {@code MainController.installClockStatusIndicator}, its source read after
  * each real stream open and each clock-source selection, its lock derived on
  * each pulse from the mock driver's status through the engine and the
@@ -88,6 +90,14 @@ class ClockBadgeDuringATakeTest {
     private final List<String> notices = Collections.synchronizedList(new ArrayList<>());
     private final List<String> marks = Collections.synchronizedList(new ArrayList<>());
     private final FxDispatcher dispatcher = new FxDispatcher();
+    /**
+     * The transport controller's dispatcher in a test whose take counts in:
+     * the count-in's fire reaches the record coordinator only at its pulse,
+     * so the take stays in COUNT_IN until the test ends it, however long the
+     * test takes. Kept apart from {@link #dispatcher}, which the badge's
+     * waits pulse.
+     */
+    private final FxDispatcher transportDispatcher = new FxDispatcher();
     private DeviceLossRecordingFixture fixture;
     private ClockStatusIndicator badge;
     private Runnable undo;
@@ -128,6 +138,94 @@ class ClockBadgeDuringATakeTest {
                 "External clock locked again on Interface A (Word Clock).");
         assertThat(clockEvents(take)).as("the sealed manifest holds both marks")
                 .containsExactly(TakeManifest.ClockEvent.UNLOCKED, TakeManifest.ClockEvent.LOCKED);
+    }
+
+    /**
+     * Ruling E173: an unlock declared while the take counts in, still on
+     * show when the take starts recording, is marked once at the take's
+     * start-frame; its notice stays the plain one.
+     */
+    @Test
+    void anUnlockOnShowWhenTheTakeStartsRecordingIsMarkedOnceAtItsStartFrame() throws Exception {
+        Path take = countingInAtBeat(8.0);
+        long startFrame = fixture.pipeline().getRecordingStartFrame();
+        status(1, ClockLockStatus.Lock.UNLOCKED);
+        awaitState(State.UNLOCKED, "the unlock reached the badge");
+        RecordState whenUnlocked = onFx(() -> fixture.coordinator().getState());
+
+        recordOnPastTheStart();
+        runOnFx(fixture.controller()::stop);
+        fixture.awaitPublished();
+
+        assertThat(whenUnlocked).as("premise: the unlock was applied before the take recorded")
+                .isEqualTo(RecordState.COUNT_IN);
+        assertThat(startFrame).as("premise: the take starts past its first frame").isPositive();
+        assertThat(notices).as("the plain notice: no take recorded when the unlock was declared").containsExactly(
+                "External clock lost on Interface A (Word Clock). Check the clock cable and the clock master.");
+        assertThat(marks).containsExactly("unlocked", "unlocked at the take's start");
+        assertThat(clockMarks(take)).singleElement().satisfies(mark -> {
+            assertThat(mark.event()).isEqualTo(TakeManifest.ClockEvent.UNLOCKED);
+            assertThat(mark.frame()).as("at the take's start-frame").isEqualTo(startFrame);
+        });
+    }
+
+    @Test
+    void aRelockBeforeTheTakeStartsRecordingMarksNothing() throws Exception {
+        Path take = countingInAtBeat(8.0);
+        status(1, ClockLockStatus.Lock.UNLOCKED);
+        awaitState(State.UNLOCKED, "the unlock reached the badge");
+        status(1, ClockLockStatus.Lock.LOCKED);
+        awaitState(State.QUIET, "the relock reached the badge");
+        RecordState whenRelocked = onFx(() -> fixture.coordinator().getState());
+
+        recordOnPastTheStart();
+        runOnFx(fixture.controller()::stop);
+        fixture.awaitPublished();
+
+        assertThat(whenRelocked).as("premise: the relock was applied before the take recorded")
+                .isEqualTo(RecordState.COUNT_IN);
+        assertThat(notices).hasSize(2);
+        assertThat(marks).containsExactly("unlocked", "locked");
+        assertThat(clockMarks(take)).as("nothing declared before the take is the take's").isEmpty();
+    }
+
+    /**
+     * Ruling E187: an unlock applied before a take that counts in is marked
+     * once at the take's start-frame. A device loss rescues the take; when
+     * the device returns the badge reads its stream again and announces the
+     * unlock it still measures, with the no-take text, and nothing more is
+     * marked in the rescued take, which stopped recording at the loss.
+     */
+    @Test
+    void anUnlockAnnouncedAgainWhenTheLostDeviceReturnsAddsNothingToTheRescuedTake() throws Exception {
+        Path take = countingInAtBeat(8.0);
+        long startFrame = fixture.pipeline().getRecordingStartFrame();
+        status(1, ClockLockStatus.Lock.UNLOCKED);
+        awaitState(State.UNLOCKED, "the unlock reached the badge");
+        recordOnPastTheStart();
+        DeviceId device = fixture.activeDevice();
+
+        fixture.unplug();
+        fixture.awaitRescued();
+        awaitState(State.HIDDEN, "the loss hid the badge");
+        fixture.plugIn(device);
+        awaitOnFx(() -> {
+            transportDispatcher.pulse();
+            return fixture.coordinator().getState() == RecordState.IDLE;
+        }, "the coordinator settled to IDLE at the device's return");
+        awaitState(State.UNLOCKED, "the returned device's stream is read and still unlocked");
+
+        String noTakeText = "External clock lost on Interface A (Word Clock). Check the clock cable and the clock"
+                + " master.";
+        assertThat(notices).as("before the take, and again after the return: the no-take text")
+                .containsExactly(noTakeText, noTakeText);
+        assertThat(marks).as("the badge hands the second unlock on; nothing records to take it")
+                .containsExactly("unlocked", "unlocked at the take's start", "unlocked");
+        assertThat(clockMarks(take)).as("the rescued take: one unlock, at its start-frame").singleElement()
+                .satisfies(mark -> {
+                    assertThat(mark.event()).isEqualTo(TakeManifest.ClockEvent.UNLOCKED);
+                    assertThat(mark.frame()).isEqualTo(startFrame);
+                });
     }
 
     @Test
@@ -601,6 +699,44 @@ class ClockBadgeDuringATakeTest {
         }
     }
 
+    /**
+     * Wires the badge over a project whose Record counts in one bar at 60
+     * bpm from {@code beat}, its transport rolling with the render and its
+     * transport controller on {@link #transportDispatcher}, presses Record
+     * and waits until the take counts in; returns the take directory.
+     */
+    private Path countingInAtBeat(double beat) throws Exception {
+        wire(List.of(INTERNAL_IDLE, WORD_CLOCK), real -> real,
+                DeviceLossRecordingFixture.withEngineBridge(projectDirectory, CountInMode.ONE_BAR,
+                        transportDispatcher));
+        fixture.bindTheProjectToTheEngine();
+        Transport transport = fixture.project().getTransport();
+        runOnFx(() -> {
+            transport.setTempo(60);
+            transport.setPositionInBeats(beat);
+        });
+        status(1, ClockLockStatus.Lock.CHECKING);
+        runOnFx(fixture.controller()::toggleRecord);
+        awaitOnFx(() -> fixture.coordinator().getState() == RecordState.COUNT_IN, "the take counts in");
+        return fixture.pipeline().getTakeDirectory();
+    }
+
+    /**
+     * Pulses the transport's dispatcher until the count-in's fire has moved
+     * the take to RECORDING, waits for the transport to pass the take's
+     * start, then pulses the badge.
+     */
+    private void recordOnPastTheStart() throws Exception {
+        awaitOnFx(() -> {
+            transportDispatcher.pulse();
+            return fixture.coordinator().getState() == RecordState.RECORDING;
+        }, "the count-in fired");
+        double start = fixture.pipeline().getRecordingStartBeat();
+        Transport transport = fixture.project().getTransport();
+        await(() -> transport.getPositionInBeats() >= start + 0.5, "the take recorded on past its start");
+        pulses(3);
+    }
+
     private void pulses(int count) throws Exception {
         for (int pulse = 0; pulse < count; pulse++) {
             runOnFx(dispatcher::pulse);
@@ -765,15 +901,20 @@ class ClockBadgeDuringATakeTest {
 
     private void wire(List<ClockSource> sources,
                       UnaryOperator<ClockStatusIndicator.StreamClock> reads) throws Exception {
-        fixture = DeviceLossRecordingFixture.withEngineBridge(projectDirectory);
+        wire(sources, reads, DeviceLossRecordingFixture.withEngineBridge(projectDirectory));
+    }
+
+    private void wire(List<ClockSource> sources, UnaryOperator<ClockStatusIndicator.StreamClock> reads,
+                      DeviceLossRecordingFixture built) throws Exception {
+        fixture = built;
         fixture.backend().setClockSources(sources);
         DefaultAudioEngineController controller = fixture.engineController().orElseThrow();
         ClockStatusIndicator.StreamClock window = reads.apply(ClockStatusIndicator.engineClock(fixture.engine(),
                 controller));
-        ClockStatusIndicator.TakeClockMarks take = ClockStatusIndicator.takeMarksOf(fixture::controller);
-        ClockStatusIndicator.TakeClockMarks marked = new ClockStatusIndicator.TakeClockMarks() {
+        TakeClockMarks take = TakeClockMarks.of(fixture::controller);
+        TakeClockMarks marked = new TakeClockMarks() {
             @Override
-            public ClockStatusIndicator.TakeRecording takeRecording() {
+            public TakeClockMarks.TakeRecording takeRecording() {
                 return take.takeRecording();
             }
 
@@ -781,6 +922,12 @@ class ClockBadgeDuringATakeTest {
             public void lockChanged(boolean locked, long evidenceNanos) {
                 marks.add(locked ? "locked" : "unlocked");
                 take.lockChanged(locked, evidenceNanos);
+            }
+
+            @Override
+            public void takeStartsUnlocked() {
+                marks.add("unlocked at the take's start");
+                take.takeStartsUnlocked();
             }
         };
         badge = onFx(() -> new ClockStatusIndicator(notices::add, marked, window, dispatcher));
@@ -857,7 +1004,10 @@ class ClockBadgeDuringATakeTest {
     }
 
     private static List<TakeManifest.ClockEvent> clockEvents(Path take) throws Exception {
-        return TakeManifest.read(TakeManifest.manifestPath(take)).clockMarks().stream()
-                .map(TakeManifest.ClockMark::event).toList();
+        return clockMarks(take).stream().map(TakeManifest.ClockMark::event).toList();
+    }
+
+    private static List<TakeManifest.ClockMark> clockMarks(Path take) throws Exception {
+        return TakeManifest.read(TakeManifest.manifestPath(take)).clockMarks();
     }
 }

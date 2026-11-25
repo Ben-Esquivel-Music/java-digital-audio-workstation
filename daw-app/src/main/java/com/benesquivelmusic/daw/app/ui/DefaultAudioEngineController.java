@@ -2487,12 +2487,11 @@ final class DefaultAudioEngineController implements AudioEngineController {
         boolean wasPaused = audioEngine.isStreamPaused();
 
         // 1. Stop the transport AND confirm the render pump left
-        //    processBlock. Story 316 re-review: this path discarded that
-        //    verdict and then mutated the engine format at step 5, exactly
-        //    the hazard applyConfiguration was fixed for — same field, same
-        //    engine, same absent engine-side guard (setStreamingProvision
-        //    refuses a SWAP, requireQuiescedPump refuses a REOPEN, setFormat
-        //    refuses only while isRunning(), which the stop just cleared).
+        //    processBlock. Story 316 re-review: the format change at step 5
+        //    needs that verdict, as applyConfiguration's does. setFormat
+        //    refuses on its own while a pump whose exit a stop could not
+        //    confirm is alive, but it guards the format alone; the verdict
+        //    refuses the whole reopen before any step of it changes anything.
         //    The shared predicate is stopAndConfirmPumpQuiesced(); it also
         //    subsumes the fixed FORMAT_CHANGE_DRAIN_MILLIS sleep that used
         //    to stand in for a drain here (see PUMP_STILL_RENDERING).
@@ -2683,16 +2682,18 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * <p>{@code false} means a render pump may STILL be inside
      * {@link AudioEngine#processBlock}, rendering through the
      * {@code RenderPipeline} that a {@code setFormat} is about to
-     * invalidate. No engine-side guard covers a format-only reconfigure:
-     * {@code setStreamingProvision} refuses a SWAP (on an unconfirmed pump
-     * exit, on an open control panel on the outgoing backend, and on a failed
-     * close of the outgoing handle), {@code requireQuiescedPump} refuses a
-     * REOPEN, and {@code setFormat} itself refuses only while
-     * {@link AudioEngine#isRunning()} — which the {@code stop()} here has
-     * just cleared. A format-only change installs no provision and opens no
-     * stream, so it passes every one of those however wide those refusal sets
-     * grow: this predicate is still the only thing standing between it and a
-     * live pump.</p>
+     * invalidate. {@code setFormat} itself refuses while the engine is
+     * running and while a pump whose exit a stop could not confirm is still
+     * alive after its retried join, but it guards the format alone. Before a
+     * format-only reconfigure stores its format it installs no provision and
+     * opens no stream, so neither {@code setStreamingProvision}'s refusal of
+     * a SWAP nor {@code requireQuiescedPump}'s refusal of a REOPEN runs
+     * before its {@code setFormat}. After it come the worker-pool size (a
+     * Settings apply's), the xrun detector and, for a stream that was open,
+     * the restart, whose {@code startAudioOutput} reaches
+     * {@code requireQuiescedPump} only with the new format already stored;
+     * all of them presume a quiesced engine as well. This predicate refuses
+     * the whole reconfigure before it changes any of them.</p>
      *
      * <p>Bounded retry, then the verdict. The retry is nearly free and often
      * decisive: {@code stop()} re-joins a still-RUNNING stream's pump on its

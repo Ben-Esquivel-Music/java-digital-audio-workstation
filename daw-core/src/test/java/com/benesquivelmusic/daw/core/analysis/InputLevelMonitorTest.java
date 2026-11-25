@@ -3,6 +3,14 @@ package com.benesquivelmusic.daw.core.analysis;
 import com.benesquivelmusic.daw.sdk.analysis.InputLevelMeter;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.io.IOException;
+import java.time.Duration;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -29,6 +37,18 @@ class InputLevelMonitorTest {
 
     // +0.5 dBFS = 10^(+0.5/20) ≈ 1.05925
     private static final double PLUS_0_5_DBFS_LINEAR = Math.pow(10.0, 0.5 / 20.0);
+
+    private static final double MINUS_20_DBFS_LINEAR = Math.pow(10.0, -20.0 / 20.0);
+
+    /** The render drive a device loss lost, and the one the next stream's start builds. */
+    private static final long LOST_DRIVE = 3L;
+    private static final long NEW_DRIVE = 4L;
+
+    /**
+     * Bounds the test thread's own waits in a test with real threads, so a stall fails the test as a stall;
+     * it releases no thread.
+     */
+    private static final Duration GUARD = Duration.ofSeconds(10);
 
     @Test
     void shouldInitializeToSilence() {
@@ -258,6 +278,400 @@ class InputLevelMonitorTest {
     }
 
     @Test
+    void aBlockTheLostStreamRendersLateShowsNoLevelAndStillLatchesItsClip() {
+        InputLevelMonitorRegistry registry = new InputLevelMonitorRegistry();
+        InputLevelMonitor monitor = registry.getOrCreate("guitar");
+        monitor.process(constant(0.5f, 256));
+        assertThat(monitor.snapshot().peakDbfs()).as("premise: a loud level").isGreaterThan(-12.0);
+        assertThat(monitor.isClippedSinceReset()).as("premise: no clip yet").isFalse();
+
+        registry.silenceAll(LOST_DRIVE);
+        monitor.process(interSamplePeakAtPlusHalfDbTp());
+
+        InputLevelMeter late = monitor.snapshot();
+        assertThat(late.peakDbfs()).as("no block of the lost stream shows a level (E175)")
+                .isEqualTo(InputLevelMeter.DB_FLOOR);
+        assertThat(late.rmsDbfs()).isEqualTo(InputLevelMeter.DB_FLOOR);
+        assertThat(late.clippedSinceReset()).as("its inter-sample overshoot still lights the clip LED (E175)")
+                .isTrue();
+        assertThat(late.lastClipFrameIndex()).as("the clip is the late block's").isGreaterThanOrEqualTo(256L);
+    }
+
+    @Test
+    void theMeterStaysAtTheFloorUntilTheNewStreamDeliversItsFirstBlock() {
+        InputLevelMonitorRegistry registry = new InputLevelMonitorRegistry();
+        InputLevelMonitor monitor = registry.getOrCreate("guitar");
+        monitor.process(constant(0.5f, 256));
+        registry.silenceAll(LOST_DRIVE);
+        monitor.process(constant(0.7f, 256));
+
+        assertThat(monitor.snapshot().peakDbfs()).as("no block of a new stream yet")
+                .isEqualTo(InputLevelMeter.DB_FLOOR);
+
+        registry.liftAll(NEW_DRIVE);
+        assertThat(monitor.snapshot().peakDbfs()).as("a new stream's start alone shows no level (E175)")
+                .isEqualTo(InputLevelMeter.DB_FLOOR);
+
+        monitor.process(constant(0.5f, 256));
+        assertThat(monitor.snapshot().peakDbfs()).as("the new stream's first block shows its own level")
+                .isCloseTo(-6.02, org.assertj.core.data.Offset.offset(0.1));
+    }
+
+    /**
+     * A late block that ends near full scale leaves the true-peak detector's
+     * history near full scale; were it kept, the junction with a quiet first
+     * block of the new stream would interpolate an overshoot above 0 dBFS.
+     */
+    @Test
+    void theNewStreamsFirstBlockReadsItsOwnLevelWithNothingOfTheLostStreamInIt() {
+        InputLevelMonitorRegistry registry = new InputLevelMonitorRegistry();
+        InputLevelMonitor monitor = registry.getOrCreate("guitar");
+        registry.silenceAll(LOST_DRIVE);
+        monitor.process(riseToTheCrestOfASlowSine(0.99));
+        assertThat(monitor.isClippedSinceReset()).as("premise: the late block does not clip").isFalse();
+
+        registry.liftAll(NEW_DRIVE);
+        monitor.process(sineFromZero(Math.pow(10.0, -20.0 / 20.0), 480));
+
+        InputLevelMeter first = monitor.snapshot();
+        assertThat(first.peakDbfs()).as("the first block's own peak (E175)")
+                .isCloseTo(-20.0, org.assertj.core.data.Offset.offset(0.5));
+        assertThat(first.rmsDbfs()).as("the first block's own RMS")
+                .isCloseTo(-23.0, org.assertj.core.data.Offset.offset(0.5));
+        assertThat(first.clippedSinceReset()).as("no clip from the junction with the lost stream").isFalse();
+    }
+
+    /** The loss's FX delivery can come after a reconnect has already built the next drive (ruling E185). */
+    @Test
+    void aDriveBuiltBeforeTheLossIsDeliveredStartsWithNothingOfTheLostStream() {
+        InputLevelMonitorRegistry registry = new InputLevelMonitorRegistry();
+        InputLevelMonitor monitor = registry.getOrCreate("guitar");
+        registry.liftAll(LOST_DRIVE);
+        monitor.process(riseToTheCrestOfASlowSine(0.99));
+        assertThat(monitor.isClippedSinceReset()).as("premise: the lost drive's last block does not clip").isFalse();
+
+        registry.liftAll(NEW_DRIVE);
+        assertThat(monitor.snapshot().peakDbfs()).as("the new stream's start shows the floor (E185)")
+                .isEqualTo(InputLevelMeter.DB_FLOOR);
+        registry.silenceAll(LOST_DRIVE);
+        monitor.process(sineFromZero(Math.pow(10.0, -20.0 / 20.0), 480));
+
+        InputLevelMeter first = monitor.snapshot();
+        assertThat(first.peakDbfs()).as("the first block's own peak")
+                .isCloseTo(-20.0, org.assertj.core.data.Offset.offset(0.5));
+        assertThat(first.clippedSinceReset()).as("no clip from the junction with the lost stream").isFalse();
+    }
+
+    /**
+     * Every stream start is a break in the signal: until its first block the
+     * floor is all the meter has measured (ruling E185), with no loss at all.
+     */
+    @Test
+    void everyStreamStartShowsTheFloorKeepingTheLatchAndMeasuresItsFirstBlockOnItsOwn() {
+        InputLevelMonitorRegistry registry = new InputLevelMonitorRegistry();
+        InputLevelMonitor monitor = registry.getOrCreate("guitar");
+        registry.liftAll(LOST_DRIVE);
+        monitor.process(interSamplePeakAtPlusHalfDbTp());
+        monitor.process(riseToTheCrestOfASlowSine(0.99));
+        long clipFrame = monitor.snapshot().lastClipFrameIndex();
+        assertThat(clipFrame).as("premise: the previous stream latched a clip").isNotNegative();
+
+        registry.liftAll(NEW_DRIVE);
+        InputLevelMeter atTheStart = monitor.snapshot();
+        assertThat(atTheStart.peakDbfs()).as("the start shows the floor").isEqualTo(InputLevelMeter.DB_FLOOR);
+        assertThat(atTheStart.rmsDbfs()).isEqualTo(InputLevelMeter.DB_FLOOR);
+        assertThat(atTheStart.clippedSinceReset()).as("and keeps the clip latch").isTrue();
+        assertThat(atTheStart.lastClipFrameIndex()).isEqualTo(clipFrame);
+
+        monitor.process(sineFromZero(Math.pow(10.0, -20.0 / 20.0), 480));
+        InputLevelMeter first = monitor.snapshot();
+        assertThat(first.peakDbfs()).as("the first block's own peak")
+                .isCloseTo(-20.0, org.assertj.core.data.Offset.offset(0.5));
+        assertThat(first.lastClipFrameIndex()).as("no new clip from the junction with the previous stream")
+                .isEqualTo(clipFrame);
+    }
+
+    @Test
+    void aClipResetDuringTheLossKeepsTheFloor() {
+        InputLevelMonitorRegistry registry = new InputLevelMonitorRegistry();
+        InputLevelMonitor monitor = registry.getOrCreate("guitar");
+        registry.silenceAll(LOST_DRIVE);
+        monitor.process(interSamplePeakAtPlusHalfDbTp());
+        assertThat(monitor.isClippedSinceReset()).as("premise: the late block latched a clip").isTrue();
+
+        monitor.reset();
+
+        InputLevelMeter afterTheReset = monitor.snapshot();
+        assertThat(afterTheReset.peakDbfs()).as("the reset keeps the late block's level hidden")
+                .isEqualTo(InputLevelMeter.DB_FLOOR);
+        assertThat(afterTheReset.rmsDbfs()).isEqualTo(InputLevelMeter.DB_FLOOR);
+        assertThat(afterTheReset.clippedSinceReset()).as("and clears the latch").isFalse();
+    }
+
+    /**
+     * A block an input device beside a closed stream delivers after a newer
+     * render drive was built is refused whole (ruling E201): it shows no
+     * level, latches no clip, sets no routing flag and leaves nothing in the
+     * true-peak history, so the newer stream's first block, a −20 dBFS sine
+     * starting at 0, reads its own level after a refused block with a
+     * +0.5 dBTP inter-sample overshoot.
+     */
+    @Test
+    void aBlockOfAnOlderDriveThanTheMetersWritesNothing() {
+        InputLevelMonitorRegistry registry = new InputLevelMonitorRegistry();
+        InputLevelMonitor monitor = registry.getOrCreate("guitar");
+        registry.liftAll(NEW_DRIVE);
+        InputLevelMeter atTheStart = monitor.snapshot();
+
+        monitor.processInputChannels(new float[][]{interSamplePeakAtPlusHalfDbTp()}, 0, 1, 256, LOST_DRIVE);
+        monitor.setRoutingUnavailable(true, LOST_DRIVE);
+
+        assertThat(monitor.snapshot()).as("the closed stream's block shows no level (E201)").isSameAs(atTheStart);
+        assertThat(monitor.isClippedSinceReset()).as("and latches no clip").isFalse();
+        assertThat(monitor.isRoutingUnavailable()).as("and sets no routing flag").isFalse();
+
+        monitor.processInputChannels(new float[][]{sineFromZero(MINUS_20_DBFS_LINEAR, 480)}, 0, 1, 480, NEW_DRIVE);
+        InputLevelMeter first = monitor.snapshot();
+        assertThat(first.peakDbfs()).as("nothing of the refused block in the true-peak history")
+                .isCloseTo(-20.0, org.assertj.core.data.Offset.offset(0.5));
+        assertThat(first.clippedSinceReset()).as("no clip from a junction with it").isFalse();
+    }
+
+    /**
+     * A block already being measured when a newer render drive is built
+     * completes into the closed stream's state, which nothing shows (ruling
+     * E201).
+     */
+    @Test
+    void aBlockMeasuredAcrossTheBuildOfANewerDriveCompletesIntoTheClosedStream() {
+        InputLevelMonitorRegistry registry = new InputLevelMonitorRegistry();
+        InputLevelMonitor monitor = registry.getOrCreate("guitar");
+        registry.liftAll(LOST_DRIVE);
+
+        monitor.processInputChannels(new float[][]{interSamplePeakAtPlusHalfDbTp()}, 0, 1, 256, LOST_DRIVE,
+                () -> registry.liftAll(NEW_DRIVE));
+
+        InputLevelMeter atTheStart = monitor.snapshot();
+        assertThat(atTheStart.peakDbfs()).as("the newer stream's start shows the floor")
+                .isEqualTo(InputLevelMeter.DB_FLOOR);
+        assertThat(atTheStart.clippedSinceReset()).as("and no clip of the closed stream's block (E201)").isFalse();
+        assertThat(monitor.isClippedSinceReset()).as("the clip LED stays dark").isFalse();
+
+        monitor.processInputChannels(new float[][]{sineFromZero(MINUS_20_DBFS_LINEAR, 480)}, 0, 1, 480, NEW_DRIVE);
+        InputLevelMeter first = monitor.snapshot();
+        assertThat(first.peakDbfs()).as("nothing of that block in the newer stream's true-peak history")
+                .isCloseTo(-20.0, org.assertj.core.data.Offset.offset(0.5));
+        assertThat(first.clippedSinceReset()).as("and still no clip").isFalse();
+    }
+
+    /** The latch carried into a new stream is the one the meter held at that build (rulings E185, E201). */
+    @Test
+    void theLatchHeldAtABuildIsCarriedAndOneTheClosedStreamSetsAfterItIsNot() {
+        InputLevelMonitorRegistry registry = new InputLevelMonitorRegistry();
+        InputLevelMonitor monitor = registry.getOrCreate("guitar");
+        registry.liftAll(LOST_DRIVE);
+        monitor.processInputChannels(new float[][]{interSamplePeakAtPlusHalfDbTp()}, 0, 1, 256, LOST_DRIVE);
+        long heldAtTheBuild = monitor.snapshot().lastClipFrameIndex();
+        assertThat(heldAtTheBuild).as("premise: the stream latched a clip").isNotNegative();
+
+        monitor.processInputChannels(new float[][]{interSamplePeakAtPlusHalfDbTp()}, 0, 1, 256, LOST_DRIVE,
+                () -> registry.liftAll(NEW_DRIVE));
+
+        InputLevelMeter atTheStart = monitor.snapshot();
+        assertThat(atTheStart.peakDbfs()).as("the newer stream's start shows the floor")
+                .isEqualTo(InputLevelMeter.DB_FLOOR);
+        assertThat(atTheStart.clippedSinceReset()).as("with the latch held at the build").isTrue();
+        assertThat(atTheStart.lastClipFrameIndex()).as("not the one the closed stream set after it")
+                .isEqualTo(heldAtTheBuild);
+        assertThat(monitor.isClippedSinceReset()).isTrue();
+    }
+
+    /** A clip LED cleared before a newer drive is built stays cleared in the newer stream. */
+    @Test
+    void aClearBeforeABuildIsNotCarriedIntoTheNewerStream() {
+        InputLevelMonitorRegistry registry = new InputLevelMonitorRegistry();
+        InputLevelMonitor monitor = registry.getOrCreate("guitar");
+        registry.liftAll(LOST_DRIVE);
+        monitor.processInputChannels(new float[][]{interSamplePeakAtPlusHalfDbTp()}, 0, 1, 256, LOST_DRIVE);
+        assertThat(monitor.isClippedSinceReset()).as("premise: a clip is latched").isTrue();
+
+        monitor.reset();
+        registry.liftAll(NEW_DRIVE);
+
+        InputLevelMeter afterTheBuild = monitor.snapshot();
+        assertThat(afterTheBuild.peakDbfs()).as("premise: the newer stream started")
+                .isEqualTo(InputLevelMeter.DB_FLOOR);
+        assertThat(afterTheBuild.clippedSinceReset()).as("the cleared latch is not carried").isFalse();
+        assertThat(afterTheBuild.lastClipFrameIndex()).isEqualTo(-1L);
+        assertThat(monitor.isClippedSinceReset()).isFalse();
+    }
+
+    /** A clip LED cleared after a newer drive is built clears the latch that build carried. */
+    @Test
+    void aClearAfterABuildClearsTheLatchTheBuildCarried() {
+        InputLevelMonitorRegistry registry = new InputLevelMonitorRegistry();
+        InputLevelMonitor monitor = registry.getOrCreate("guitar");
+        registry.liftAll(LOST_DRIVE);
+        monitor.processInputChannels(new float[][]{interSamplePeakAtPlusHalfDbTp()}, 0, 1, 256, LOST_DRIVE);
+        registry.liftAll(NEW_DRIVE);
+        assertThat(monitor.isClippedSinceReset()).as("premise: the build carried the latch").isTrue();
+
+        monitor.reset();
+
+        InputLevelMeter afterTheClear = monitor.snapshot();
+        assertThat(afterTheClear.peakDbfs()).as("the newer stream's level stays").isEqualTo(InputLevelMeter.DB_FLOOR);
+        assertThat(afterTheClear.clippedSinceReset()).as("the clear reaches the newer stream").isFalse();
+        assertThat(afterTheClear.lastClipFrameIndex()).isEqualTo(-1L);
+        assertThat(monitor.isClippedSinceReset()).isFalse();
+    }
+
+    /**
+     * A clear of the latch and the install of a state exclude each other: a
+     * clear made while a build holds the latch it copied waits for the
+     * install and clears the installed state, so the person's clear is not
+     * lost to the build. The build is held between its copy and its install
+     * until the test releases it, in the {@code finally} at the latest; the
+     * clear runs on a second thread, whose state is read until it reaches
+     * {@code BLOCKED} or {@code TERMINATED}, whichever it reaches first.
+     * {@link #GUARD} bounds the test thread's waits, and {@code @Timeout} the
+     * whole test.
+     */
+    @Test
+    @Timeout(60)
+    void aClearMadeWhileABuildHoldsTheLatchItCopiedWaitsForTheInstallAndClearsTheInstalledState()
+            throws InterruptedException {
+        InputLevelMonitorRegistry registry = new InputLevelMonitorRegistry();
+        InputLevelMonitor monitor = registry.getOrCreate("guitar");
+        registry.liftAll(LOST_DRIVE);
+        monitor.processInputChannels(new float[][]{interSamplePeakAtPlusHalfDbTp()}, 0, 1, 256, LOST_DRIVE);
+        assertThat(monitor.isClippedSinceReset()).as("premise: a clip is latched").isTrue();
+        CountDownLatch copied = new CountDownLatch(1);
+        CountDownLatch installed = new CountDownLatch(1);
+        Thread build = Thread.ofPlatform().name("drive build").unstarted(
+                () -> monitor.startWithDrive(NEW_DRIVE, false, () -> {
+                    copied.countDown();
+                    awaitTheRelease(installed);
+                }));
+        Thread clear = Thread.ofPlatform().name("clip LED clear").unstarted(monitor::reset);
+        try {
+            build.start();
+            assertThat(copied.await(GUARD.toMillis(), TimeUnit.MILLISECONDS))
+                    .as("premise: the build copied the latch").isTrue();
+            clear.start();
+            Thread.State clearWhileTheBuildHoldsTheCopy = blockedOrTerminated(clear);
+            installed.countDown();
+            assertThat(build.join(GUARD)).as("the build finished").isTrue();
+            assertThat(clear.join(GUARD)).as("the clear finished").isTrue();
+
+            assertThat(monitor.isClippedSinceReset()).as("the clear reaches the installed state").isFalse();
+            InputLevelMeter afterBoth = monitor.snapshot();
+            assertThat(afterBoth.peakDbfs()).as("premise: the newer stream started")
+                    .isEqualTo(InputLevelMeter.DB_FLOOR);
+            assertThat(afterBoth.clippedSinceReset()).isFalse();
+            assertThat(afterBoth.lastClipFrameIndex()).isEqualTo(-1L);
+            assertThat(clearWhileTheBuildHoldsTheCopy).as("the clear waited for the install")
+                    .isEqualTo(Thread.State.BLOCKED);
+        } finally {
+            installed.countDown();
+            build.join(GUARD);
+            clear.join(GUARD);
+        }
+    }
+
+    /**
+     * A floor at a device loss and the install of a state exclude each other:
+     * a loss whose drive is unknown, made while a refusal of the input devices
+     * beside the stream holds the level it copied, waits for the install and
+     * floors the installed state, keeping its clip latch, so the bar does not
+     * keep its last level (ruling E64). The refusal is held between its copy
+     * and its install until the test releases it, in the {@code finally} at
+     * the latest; the loss runs on a second thread, whose state is read until
+     * it reaches {@code BLOCKED} or {@code TERMINATED}, whichever it reaches
+     * first. {@link #GUARD} bounds the test thread's waits, and
+     * {@code @Timeout} the whole test.
+     */
+    @Test
+    @Timeout(60)
+    void aFloorMadeWhileARefusalHoldsTheLevelItCopiedWaitsForTheInstallAndFloorsTheInstalledState()
+            throws InterruptedException {
+        InputLevelMonitorRegistry registry = new InputLevelMonitorRegistry();
+        InputLevelMonitor monitor = registry.getOrCreate("guitar");
+        registry.liftAll(LOST_DRIVE);
+        monitor.processInputChannels(new float[][]{interSamplePeakAtPlusHalfDbTp()}, 0, 1, 256, LOST_DRIVE);
+        // Two blocks, so the second reads its own level with no overshoot left in the true-peak history.
+        monitor.processInputChannels(new float[][]{sineFromZero(MINUS_20_DBFS_LINEAR, 480)}, 0, 1, 480, LOST_DRIVE);
+        monitor.processInputChannels(new float[][]{sineFromZero(MINUS_20_DBFS_LINEAR, 480)}, 0, 1, 480, LOST_DRIVE);
+        InputLevelMeter beforeTheLoss = monitor.snapshot();
+        CountDownLatch copied = new CountDownLatch(1);
+        CountDownLatch installed = new CountDownLatch(1);
+        Thread refusal = Thread.ofPlatform().name("refusal of the devices beside the stream").unstarted(
+                () -> monitor.startWithDrive(LOST_DRIVE, true, () -> {
+                    copied.countDown();
+                    awaitTheRelease(installed);
+                }));
+        Thread loss = Thread.ofPlatform().name("device loss").unstarted(() -> registry.silenceAll(-1L));
+        try {
+            refusal.start();
+            assertThat(copied.await(GUARD.toMillis(), TimeUnit.MILLISECONDS))
+                    .as("premise: the refusal copied the level").isTrue();
+            loss.start();
+            Thread.State lossWhileTheRefusalHoldsTheCopy = blockedOrTerminated(loss);
+            installed.countDown();
+            assertThat(refusal.join(GUARD)).as("the refusal finished").isTrue();
+            assertThat(loss.join(GUARD)).as("the loss finished").isTrue();
+
+            InputLevelMeter afterBoth = monitor.snapshot();
+            assertThat(beforeTheLoss.peakDbfs()).as("premise: the meter showed the stream's level")
+                    .isCloseTo(-20.0, org.assertj.core.data.Offset.offset(0.5));
+            assertThat(beforeTheLoss.clippedSinceReset()).as("premise: with a clip latched").isTrue();
+            assertThat(afterBoth.peakDbfs()).as("the loss floors the installed state")
+                    .isEqualTo(InputLevelMeter.DB_FLOOR);
+            assertThat(afterBoth.clippedSinceReset()).as("keeping its clip latch").isTrue();
+            assertThat(afterBoth.lastClipFrameIndex()).isEqualTo(beforeTheLoss.lastClipFrameIndex());
+            assertThat(lossWhileTheRefusalHoldsTheCopy).as("the floor waited for the install")
+                    .isEqualTo(Thread.State.BLOCKED);
+        } finally {
+            installed.countDown();
+            refusal.join(GUARD);
+            loss.join(GUARD);
+        }
+    }
+
+    /**
+     * A clear of the latch, a loss's floor and the install of a state take one
+     * lock, the monitor's own, and no other method takes a lock: the measuring
+     * methods, the routing flag's writes and the readers never wait on it.
+     */
+    @Test
+    void onlyAClearOfTheLatchALossFloorAndTheInstallOfAStateTakeALockAndAllTakeTheMonitorsOwn() throws IOException {
+        assertThat(MonitorEntries.lockedFieldsByMethod(InputLevelMonitor.class)).isEqualTo(Map.of(
+                "reset", Set.of("installLock"),
+                "silenceThrough", Set.of("installLock"),
+                "install", Set.of("installLock")));
+    }
+
+    private static Thread.State blockedOrTerminated(Thread thread) throws InterruptedException {
+        long deadline = System.nanoTime() + GUARD.toNanos();
+        for (Thread.State state = thread.getState(); ; state = thread.getState()) {
+            if (state == Thread.State.BLOCKED || state == Thread.State.TERMINATED) {
+                return state;
+            }
+            assertThat(System.nanoTime() - deadline).as("%s reached neither BLOCKED nor TERMINATED", thread)
+                    .isNegative();
+            Thread.sleep(1);
+        }
+    }
+
+    /** A held thread's wait: until the test counts {@code latch} down, with no timeout of its own. */
+    private static void awaitTheRelease(CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    @Test
     void resetPreservesCurrentPeakAndRmsValues() {
         InputLevelMonitor monitor = new InputLevelMonitor();
         float[] samples = new float[128];
@@ -430,5 +844,38 @@ class InputLevelMonitorTest {
         assertThat(monitor.snapshot().clippedSinceReset())
                 .as("ch0 is outside the selected range; clip flag must stay clear")
                 .isFalse();
+    }
+
+    private static float[] constant(float value, int length) {
+        float[] samples = new float[length];
+        java.util.Arrays.fill(samples, value);
+        return samples;
+    }
+
+    /** As {@link #shouldFlagInterSamplePeakAtPositiveHalfDbTp}: every sample under 0 dBFS, the true peak +0.5 dBTP. */
+    private static float[] interSamplePeakAtPlusHalfDbTp() {
+        float[] samples = new float[256];
+        for (int i = 0; i < samples.length; i++) {
+            samples[i] = (float) (PLUS_0_5_DBFS_LINEAR * Math.sin(i * (Math.PI / 2.0) + Math.PI / 4.0));
+        }
+        return samples;
+    }
+
+    /** A quarter period of a 100 Hz sine at 48 kHz, from 0 to its crest at {@code amplitude}. */
+    private static float[] riseToTheCrestOfASlowSine(double amplitude) {
+        float[] samples = new float[121];
+        for (int i = 0; i < samples.length; i++) {
+            samples[i] = (float) (amplitude * Math.sin(2.0 * Math.PI * 100.0 * i / 48_000.0));
+        }
+        return samples;
+    }
+
+    /** A 1 kHz sine at 48 kHz starting at 0. */
+    private static float[] sineFromZero(double amplitude, int length) {
+        float[] samples = new float[length];
+        for (int i = 0; i < length; i++) {
+            samples[i] = (float) (amplitude * Math.sin(2.0 * Math.PI * 1_000.0 * i / 48_000.0));
+        }
+        return samples;
     }
 }

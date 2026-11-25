@@ -49,6 +49,67 @@ class DeviceLossReactionsTest {
         assertThat(epochReads).as("the lost drive's epoch is read at each loss").hasValue(2);
     }
 
+    /**
+     * A block the lost stream renders after the delivery shows no level: the
+     * meters are muted through the lost drive's epoch until the engine starts
+     * a newer drive (ruling E175).
+     */
+    @Test
+    void aBlockRenderedAfterTheLossShowsNoLevelUntilTheEngineStartsANewerDrive() {
+        loud("a");
+
+        reactions.accept(new EngineStateChange(EngineState.DEVICE_LOST, DEVICE, EngineStateChange.LossCause.STALLED));
+        loud("a");
+        assertThat(meters.get("a").snapshot().peakDbfs()).as("the late block is not shown")
+                .isEqualTo(InputLevelMeter.DB_FLOOR);
+
+        meters.liftAll(7L);
+        loud("a");
+        assertThat(meters.get("a").snapshot().peakDbfs()).as("a start of the lost drive lifts nothing")
+                .isEqualTo(InputLevelMeter.DB_FLOOR);
+
+        meters.liftAll(8L);
+        loud("a");
+        assertThat(meters.get("a").snapshot().peakDbfs()).as("the newer drive's block is shown")
+                .isGreaterThan(-12.0);
+        assertThat(epochReads).as("the epoch is read once per loss").hasValue(1);
+    }
+
+    /**
+     * A loss whose delivery comes after the engine built a newer drive
+     * changes nothing on the meters: no floor, no dip and no mute (ruling
+     * E202).
+     */
+    @Test
+    void aLossDeliveredAfterANewerDriveWasBuiltKeepsTheLevel() {
+        meters.liftAll(8L);
+        loud("a");
+        InputLevelMeter level = meters.get("a").snapshot();
+
+        reactions.accept(new EngineStateChange(EngineState.DEVICE_LOST, DEVICE, EngineStateChange.LossCause.STALLED));
+
+        assertThat(meters.get("a").snapshot()).as("the newer stream's level stays").isSameAs(level);
+        loud("a");
+        assertThat(meters.get("a").snapshot().peakDbfs()).as("and is not muted").isGreaterThan(-12.0);
+        assertThat(epochReads).as("the lost drive's epoch was read").hasValue(1);
+    }
+
+    @Test
+    void aLossWhoseEpochCannotBeReadFloorsTheMetersWithoutHoldingThem() {
+        DeviceLossReactions unreadable = new DeviceLossReactions(() -> null,
+                () -> {
+                    throw new IllegalStateException("no epoch");
+                }, Optional::empty, meters);
+        loud("a");
+
+        unreadable.accept(new EngineStateChange(EngineState.DEVICE_LOST, DEVICE, EngineStateChange.LossCause.REMOVED));
+        assertThat(meters.get("a").snapshot().peakDbfs()).as("the meters fell").isEqualTo(InputLevelMeter.DB_FLOOR);
+        loud("a");
+
+        assertThat(meters.get("a").snapshot().peakDbfs()).as("no drive would lift a mute through an unknown one")
+                .isGreaterThan(-12.0);
+    }
+
     @Test
     void everyOtherStateLeavesTheMetersAndTheDrainAlone() {
         loud("a");

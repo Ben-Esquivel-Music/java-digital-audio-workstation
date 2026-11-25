@@ -138,14 +138,18 @@ class ClockBadgeWhileALossIsDeclaredTest {
         }
     }
 
-    private static final class NoTake implements ClockStatusIndicator.TakeClockMarks {
+    private static final class NoTake implements TakeClockMarks {
         @Override
-        public ClockStatusIndicator.TakeRecording takeRecording() {
-            return ClockStatusIndicator.TakeRecording.NONE;
+        public TakeClockMarks.TakeRecording takeRecording() {
+            return TakeClockMarks.TakeRecording.NONE;
         }
 
         @Override
         public void lockChanged(boolean locked, long evidenceNanos) {
+        }
+
+        @Override
+        public void takeStartsUnlocked() {
         }
     }
 }

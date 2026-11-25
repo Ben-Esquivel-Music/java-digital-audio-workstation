@@ -10,6 +10,7 @@ import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.Slider;
 import javafx.scene.layout.GridPane;
+import javafx.scene.layout.VBox;
 
 import java.util.Objects;
 import java.util.function.BooleanSupplier;
@@ -27,7 +28,9 @@ import java.util.function.BooleanSupplier;
  *       built-in policies ({@code DoNothing}, {@code BypassExpensive},
  *       {@code ReduceOversampling}, {@code SubstituteSimpleKernel}).
  *       The default is {@code DoNothing} so existing projects load
- *       with no behaviour change.</li>
+ *       with no behaviour change. A note under it says what going over
+ *       the budget does under the chosen policy: the engine applies none
+ *       yet (story 338, ruling E194).</li>
  * </ul>
  *
  * <p>On {@link ButtonType#APPLY}, the new {@link TrackCpuBudget} is
@@ -46,6 +49,15 @@ public final class ChannelCpuBudgetDialog extends DawgDialog<Void> {
 
     /** Default {@code maxFractionOfBlock} suggested by the issue. */
     public static final double DEFAULT_MAX_FRACTION = 0.5;
+
+    /** Story 338, ruling E194: the note under the policy for the three policies the engine does not apply yet. */
+    private static final String POLICY_NOT_APPLIED_NOTE = "This policy is not applied: when the track goes over"
+            + " this budget, or the master CPU budget in Audio Settings marks it, its processing is not reduced;"
+            + " it gets a ⚠ on its mixer strip, a notification and a Budget entry in the Xrun Log.";
+    /** Story 338, ruling E194: the note under the policy for {@code DoNothing}, for which nothing is published. */
+    private static final String DO_NOTHING_NOTE = "With DoNothing, going over budget changes and shows nothing:"
+            + " the track's processing is not reduced, and there is no ⚠ on its mixer strip, no notification and"
+            + " no Xrun Log entry.";
 
     private final MixerChannel channel;
     private final Runnable onApplied;
@@ -103,17 +115,24 @@ public final class ChannelCpuBudgetDialog extends DawgDialog<Void> {
                 "SubstituteSimpleKernel");
         policyCombo.setValue(SettingsModel.policyName(initialPolicy));
 
+        Label policyNote = new Label(noteFor(policyCombo.getValue()));
+        policyNote.getStyleClass().add("dialog-hint");
+        policyNote.setWrapText(true);
+        policyCombo.valueProperty().addListener((_, _, name) -> policyNote.setText(noteFor(name)));
+
         GridPane grid = new GridPane();
         grid.setHgap(10);
         grid.setVgap(8);
-        grid.setPadding(new Insets(12));
         grid.add(new Label("Max CPU fraction per block:"), 0, 0);
         grid.add(fractionSlider, 1, 0);
         grid.add(fractionValueLabel, 2, 0);
         grid.add(new Label("Degradation policy:"), 0, 1);
         grid.add(policyCombo, 1, 1, 2, 1);
 
-        getDialogPane().setContent(grid);
+        // In a VBox, which fills its width, the note wraps at the dialog's width.
+        VBox content = new VBox(8, grid, policyNote);
+        content.setPadding(new Insets(12));
+        getDialogPane().setContent(content);
         getDialogPane().getButtonTypes().setAll(ButtonType.APPLY, ButtonType.CANCEL);
         getDialogPane().setPrefWidth(460);
 
@@ -140,6 +159,11 @@ public final class ChannelCpuBudgetDialog extends DawgDialog<Void> {
         if (onApplied != null) {
             onApplied.run();
         }
+    }
+
+    /** What going over the budget does under the policy named {@code name}: the engine applies none yet. */
+    private static String noteFor(String name) {
+        return "DoNothing".equals(name) ? DO_NOTHING_NOTE : POLICY_NOT_APPLIED_NOTE;
     }
 
     private static String formatPercent(double fraction) {

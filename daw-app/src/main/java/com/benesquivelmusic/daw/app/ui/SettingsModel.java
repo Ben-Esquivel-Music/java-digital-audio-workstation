@@ -140,11 +140,14 @@ public final class SettingsModel {
             Math.max(1, Runtime.getRuntime().availableProcessors() - 2);
 
     /**
-     * Default master CPU budget fraction. {@code 1.0} = "no master
-     * cap" — preserves the engine's pre-story-129 behaviour. Users
-     * configure a tighter ceiling (e.g. 0.8) from the Audio Settings
-     * dialog to enable cascading shedding of the highest-CPU tracks
-     * when the cap is exceeded.
+     * Default master CPU budget fraction. While the sum of all per-track
+     * CPU fractions exceeds the master fraction, the engine's
+     * {@link com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer
+     * TrackCpuBudgetEnforcer} marks tracks over budget, highest CPU first;
+     * at {@code 1.0} it does so while the tracks together average longer
+     * than the block time. The engine does not reduce their processing yet
+     * (story 338, ruling E193). A smaller fraction (e.g. 0.8) is set in the
+     * Audio Settings dialog.
      */
     static final double DEFAULT_MASTER_CPU_BUDGET_FRACTION = 1.0;
 
@@ -240,7 +243,8 @@ public final class SettingsModel {
         masterCpuBudgetFraction = storedMasterFraction;
         // Story 335 (studio ruling R3) — story-129 preference, removed: a
         // persisted policy nothing reads (Persistence Integrity book §2.8).
-        // Each shed track keeps its own CPU Budget policy; the stale key goes.
+        // The only policies are the tracks' own, set in each track's CPU Budget
+        // dialog, and the engine applies none yet; the stale key goes.
         prefs.remove("audio.masterCpuBudgetPolicy");
         firstRunWizardCompleted = prefs.getBoolean(
                 KEY_FIRST_RUN_WIZARD, DEFAULT_FIRST_RUN_WIZARD_COMPLETED);
@@ -467,11 +471,12 @@ public final class SettingsModel {
 
     /**
      * Returns the master (global) CPU budget fraction in the open
-     * interval {@code (0, 1]} — story 129 UI. {@code 1.0} disables
-     * the master ceiling. When set below {@code 1.0}, the engine's
+     * interval {@code (0, 1]} — story 129 UI. While the sum of all
+     * per-track CPU fractions exceeds this value, the engine's
      * {@link com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer
-     * TrackCpuBudgetEnforcer} sheds the highest-CPU tracks first when
-     * the sum of all per-track CPU fractions exceeds this value.
+     * TrackCpuBudgetEnforcer} marks tracks over budget, highest CPU first,
+     * {@code 1.0} included; the engine does not reduce their processing
+     * yet (story 338, ruling E193).
      *
      * @return the master CPU budget fraction
      */

@@ -29,10 +29,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * What a take's {@code input-silence}, {@code input-stopped} and loss counts
  * say about its file when the take punches or loops (story 338, rulings
- * E75–E77, E79 and E86–E90). Driven through the flush service's rings with
- * blocks whose headers the test writes: where each block starts, whether the
- * input delivered it, rendered it starved, or ended, and the punch region and
- * loop window the callback stamped.
+ * E75–E77, E79, E86–E90, E172, E176, E179, E186, E188 and E191). Driven
+ * through the flush service's rings with blocks whose headers the test
+ * writes: where each block starts, whether the input delivered it, rendered
+ * it starved, or ended, the punch region and loop window the callback
+ * stamped, and the transport's lap the render thread stamped (see
+ * {@link #publish}).
  */
 class TakeMarksInPunchAndLoopTakesTest {
 
@@ -44,6 +46,8 @@ class TakeMarksInPunchAndLoopTakesTest {
     private static final long PUNCH_OUT = 2004;
     private static final long LOOP_START = 1000;
     private static final long LOOP_END = 1036;
+    /** Ring slots for a take fed long runs of blocks. */
+    private static final int RUN_SLOTS = 1024;
 
     private enum Kind { DELIVERED, STARVED, ENDED }
 
@@ -64,6 +68,10 @@ class TakeMarksInPunchAndLoopTakesTest {
     private long loopStart;
     private long loopEnd;
     private long outputClockFrame = CaptureRing.NO_OUTPUT_CLOCK_FRAME;
+    private String inputName = "Interface";
+    /** The render thread's lap count: the transport frame it last saw, and its steps back while looping. */
+    private long lastTransportFrame = -1;
+    private long transportLaps;
 
     @AfterEach
     void stopTheFlushThread() {
@@ -132,6 +140,29 @@ class TakeMarksInPunchAndLoopTakesTest {
         TakeManifest manifest = stopAndRead();
         assertThat(manifest.inputStops()).as("the stop moved past the wrap to loop start + overshoot (E89)")
                 .containsExactly(new InputStopped(capture.trackId(), 1004, 1004));
+    }
+
+    @Test
+    void aLastDeliveredBlockTwoLapsLongThatEndsOnTheWrapStopsTheInputAtTheLoopEnd() throws IOException {
+        loop(1000, 1004);
+        start(false, 16);
+        feed(1000, Kind.DELIVERED);
+        feed(1000, Kind.ENDED);
+
+        TakeManifest manifest = stopAndRead();
+        assertThat(manifest.inputStops()).as("the end of the last lap the block filled (E176)")
+                .containsExactly(new InputStopped(capture.trackId(), 1004, 1004));
+    }
+
+    @Test
+    void aLastDeliveredBlockThatEndsInsideALaterLapStopsTheInputWhereItEnds() throws IOException {
+        loop(1000, 1006);
+        start(false, 16);
+        feed(1000, Kind.DELIVERED);
+        feed(1002, Kind.ENDED);
+
+        TakeManifest manifest = stopAndRead();
+        assertThat(manifest.inputStops()).containsExactly(new InputStopped(capture.trackId(), 1002, 1002));
     }
 
     @Test
@@ -327,6 +358,362 @@ class TakeMarksInPunchAndLoopTakesTest {
     }
 
     @Test
+    void aReEntryAfterTheWrapIsFlaggedAtTheLoopStartWhenThePunchInLiesBeforeIt() throws IOException {
+        loopAndPunch(990, 1020);
+        start(false, 16);
+        feed(985, Kind.DELIVERED);
+        feed(993, Kind.DELIVERED);
+        feed(1001, Kind.DELIVERED);
+        feed(1009, Kind.DELIVERED);
+        feed(1017, Kind.DELIVERED);
+        feed(1025, Kind.ENDED);
+        feed(1033, Kind.ENDED);
+        assertThat(warnings).as("stopped after punch-out in lap 1: no flag yet").isEmpty();
+        feed(1005, Kind.ENDED);
+
+        TakeManifest manifest = stopAndRead();
+        assertThat(manifest.inputStops()).as("lap 2 never plays the punch-in frame; its silence starts at the loop"
+                + " start (E179)").containsExactly(new InputStopped(capture.trackId(), LOOP_START, LOOP_START));
+    }
+
+    @Test
+    void anInputBesideTheStreamThatStoppedInLapOneAndIsClockedInLapTwoResumesAtTheClockFrame() throws IOException {
+        siblingStopsInLapOneAndIsClockedInLapTwoAt(1008);
+
+        TakeManifest manifest = stopAndRead();
+        assertThat(manifest.inputStops()).as("resume < stop: the wrap lies between them (E179, E89)")
+                .containsExactly(new InputStopped(siblingCapture.trackId(), 1015, 1008));
+    }
+
+    @Test
+    void aLaterLapClockFrameBeforeThatLapsPunchRegionResumesAtTheRegionStart() throws IOException {
+        siblingStopsInLapOneAndIsClockedInLapTwoAt(1000);
+
+        TakeManifest manifest = stopAndRead();
+        assertThat(manifest.inputStops()).as("raised to lap 2's first frame of the region, not to the stop (E179)")
+                .containsExactly(new InputStopped(siblingCapture.trackId(), 1015, 1004));
+    }
+
+    @Test
+    void aLaterLapClockFrameLaterInTheLoopThanTheStopResumesAboveTheStopThoughTheLoopWrapped() throws IOException {
+        siblingStopsInLapOneAndIsClockedInLapTwoAt(1030);
+
+        TakeManifest manifest = stopAndRead();
+        assertThat(manifest.inputStops()).as("resume > stop although the wrap lies between them (E191)")
+                .containsExactly(new InputStopped(siblingCapture.trackId(), 1015, 1030));
+    }
+
+    @Test
+    void anInputBesideTheStreamClockedBeforePunchInInTheSameLapResumesAtPunchIn() throws IOException {
+        loopAndPunch(1004, 1020);
+        start(false, 16, true);
+        feed(984, Kind.DELIVERED);
+        feedSibling(984, Kind.DELIVERED);
+        feed(992, Kind.DELIVERED);
+        outputClockFrame = 992;
+        feedSibling(992, Kind.ENDED);
+        feed(1000, Kind.DELIVERED);
+        outputClockFrame = 1000;
+        feedSibling(1000, Kind.ENDED);
+
+        TakeManifest manifest = stopAndRead();
+        assertThat(manifest.inputStops()).as("the block across punch-in, in the stop's lap: raised to the stop (E179)")
+                .containsExactly(new InputStopped(siblingCapture.trackId(), 1004, 1004));
+    }
+
+    @Test
+    void anInputBesideTheStreamThatStopsAndIsClockedInTheSameLaterLapResumesAtItsStop() throws IOException {
+        loopAndPunch(1004, 1020);
+        start(false, 16, true, 1012);
+        for (long frame = 1012; frame <= 1028; frame += BLOCK) {
+            feed(frame, Kind.DELIVERED);
+            feedSibling(frame, Kind.DELIVERED);
+        }
+        feed(LOOP_START, Kind.DELIVERED);
+        feedSibling(LOOP_START, Kind.DELIVERED);
+        outputClockFrame = LOOP_START;
+        feedSibling(1008, Kind.ENDED);
+
+        TakeManifest manifest = stopAndRead();
+        assertThat(manifest.inputStops()).as("both in lap 2: no wrap between them (E179)")
+                .containsExactly(new InputStopped(siblingCapture.trackId(), 1008, 1008));
+    }
+
+    @Test
+    void anInputBesideTheStreamThatStopsAndIsClockedInTheSameLapAfterTwoWrapsResumesAtItsStop() throws IOException {
+        loopAndPunch(1004, 1020);
+        start(false, 16, true, 1012);
+        for (long frame : new long[] {1012, 1020, 1028, LOOP_START, 1008, 1016, 1024, 1032, 1004}) {
+            feed(frame, Kind.DELIVERED);
+            feedSibling(frame, Kind.DELIVERED);
+        }
+        outputClockFrame = 1004;
+        feedSibling(1012, Kind.ENDED);
+
+        TakeManifest manifest = stopAndRead();
+        assertThat(manifest.inputStops()).as("the stop and the clock frame both in lap 3: raised to the stop (E179,"
+                + " E186)").containsExactly(new InputStopped(siblingCapture.trackId(), 1012, 1012));
+    }
+
+    /**
+     * The last block the input beside the stream delivers runs from 1032 past
+     * the loop end, so its end, 1004, lies in lap 2; the stream wraps to the
+     * loop start and its clocked block lies in lap 2 too.
+     */
+    @Test
+    void aLastDeliveryBesideTheStreamThatRunsPastTheLoopEndStopsInTheLapItsEndLiesIn() throws IOException {
+        loopAndPunch(990, 1020);
+        start(false, 16, true, 1012);
+        feed(1012, Kind.DELIVERED);
+        feedSibling(1016, Kind.DELIVERED);
+        feed(1020, Kind.DELIVERED);
+        feedSibling(1024, Kind.DELIVERED);
+        feed(1028, Kind.DELIVERED);
+        feedSibling(1032, Kind.DELIVERED);
+        feed(LOOP_START, Kind.DELIVERED);
+        outputClockFrame = LOOP_START;
+        feedSibling(1004, Kind.ENDED);
+
+        TakeManifest manifest = stopAndRead();
+        assertThat(manifest.inputStops()).as("the stop and the clock frame both in lap 2: raised to the stop (E186,"
+                + " E179)").containsExactly(new InputStopped(siblingCapture.trackId(), 1004, 1004));
+    }
+
+    @Test
+    void aLastDeliveryBesideTheStreamThatEndsOnTheLoopEndStopsInTheLapItCompleted() throws IOException {
+        loopAndPunch(PUNCH_IN, PUNCH_OUT);
+        start(false, 16, true, 1012);
+        for (long frame = 1012; frame <= 1028; frame += BLOCK) {
+            feed(frame, Kind.DELIVERED);
+            feedSibling(frame, Kind.DELIVERED);
+        }
+        feed(LOOP_START, Kind.DELIVERED);
+        outputClockFrame = LOOP_START;
+        feedSibling(LOOP_START, Kind.ENDED);
+
+        TakeManifest manifest = stopAndRead();
+        assertThat(manifest.inputStops()).as("the end of lap 1, the resume at lap 2's region start (E176, E179)")
+                .containsExactly(new InputStopped(siblingCapture.trackId(), LOOP_END, 1004));
+    }
+
+    /**
+     * The render thread publishes the clocked block of an input beside the
+     * stream before the stream's own block of the same render period, so the
+     * flush thread can apply it first.
+     */
+    @Test
+    void aClockedBlockOfTheWrapPeriodAppliedBeforeTheStreamsOwnBlockReadsTheTransportsLap() throws IOException {
+        loopAndPunch(1004, 1020);
+        start(false, 16, true);
+        feed(996, Kind.DELIVERED);
+        feedSibling(999, Kind.DELIVERED);
+        feed(1004, Kind.DELIVERED);
+        feedSibling(1007, Kind.DELIVERED);
+        feed(1012, Kind.DELIVERED);
+        feed(1020, Kind.DELIVERED);
+        feed(1028, Kind.DELIVERED);
+        outputClockFrame = LOOP_START;
+        feedSibling(1015, Kind.ENDED);
+        feed(LOOP_START, Kind.DELIVERED);
+
+        TakeManifest manifest = stopAndRead();
+        assertThat(manifest.inputStops()).as("the stop in lap 1, the resume at lap 2's region start (E186, E179)")
+                .containsExactly(new InputStopped(siblingCapture.trackId(), 1015, 1004));
+    }
+
+    /** One drain pass applies the stream's blocks through the wrap before the lap-1 block beside it. */
+    @Test
+    void aLapOneDeliveryAppliedAfterTheStreamsWrapInTheSamePassKeepsItsOwnLap() throws IOException {
+        loopAndPunch(1004, 1020);
+        start(false, 16, true);
+        feed(996, Kind.DELIVERED);
+        feedSibling(999, Kind.DELIVERED);
+        feed(1004, Kind.DELIVERED);
+        service.setDrainPaused(true);
+        for (long frame : new long[] {1012, 1020, 1028, LOOP_START, 1008}) {
+            publish(ring, frame, Kind.DELIVERED, 0);
+        }
+        publish(siblingRing, 1007, Kind.DELIVERED, 0);
+        service.setDrainPaused(false);
+        service.awaitFlushed(GUARD);
+        outputClockFrame = 1008;
+        feedSibling(1015, Kind.ENDED);
+
+        TakeManifest manifest = stopAndRead();
+        assertThat(manifest.inputStops()).as("the delivered end is lap 1's, the clock frame lap 2's (E186, E179)")
+                .containsExactly(new InputStopped(siblingCapture.trackId(), 1015, 1008));
+    }
+
+    /** The same pass order, with the flag of a stop in lap 1's pre-roll applied after the stream's wrap. */
+    @Test
+    void aLapOneFlagAppliedAfterTheStreamsWrapInTheSamePassStopsAtThePunchIn() throws IOException {
+        loopAndPunch(990, 1020);
+        start(false, 16, true, 980);
+        feed(980, Kind.DELIVERED);
+        feedSibling(980, Kind.DELIVERED);
+        service.setDrainPaused(true);
+        for (long frame = 988; frame <= 1028; frame += BLOCK) {
+            publish(ring, frame, Kind.DELIVERED, 0);
+        }
+        outputClockFrame = 1028;
+        publish(siblingRing, 988, Kind.ENDED, 0);
+        publish(ring, LOOP_START, Kind.DELIVERED, 0);
+        service.setDrainPaused(false);
+        service.awaitFlushed(GUARD);
+
+        TakeManifest manifest = stopAndRead();
+        assertThat(manifest.inputStops()).as("flagged in lap 1: the punch-in, where the file's silence begins (E186)")
+                .containsExactly(new InputStopped(siblingCapture.trackId(), 990, 1028));
+    }
+
+    @Test
+    void anInputBesideTheStreamThatEndedInThePreRollIsStoppedAtThePunchInWhileItsOwnFramesAreInLapOne()
+            throws IOException {
+        loopAndPunch(990, 1020);
+        start(false, 16, true, 964);
+        feed(964, Kind.DELIVERED);
+        feedSibling(964, Kind.DELIVERED);
+        feed(972, Kind.DELIVERED);
+        feedSibling(972, Kind.DELIVERED);
+        for (long frame = 980; frame <= 1028; frame += BLOCK) {
+            feed(frame, Kind.DELIVERED);
+        }
+        feed(LOOP_START, Kind.DELIVERED);
+        feed(1008, Kind.DELIVERED);
+        outputClockFrame = 1008;
+        feedSibling(980, Kind.ENDED);
+        assertThat(warnings).as("its own frames have not reached the region: no flag yet").isEmpty();
+        feed(1016, Kind.DELIVERED);
+        outputClockFrame = 1016;
+        feedSibling(988, Kind.ENDED);
+
+        TakeManifest manifest = stopAndRead();
+        assertThat(manifest.inputStops()).as("the stop at lap 1's punch-in; the resume at the clock frame, the later"
+                + " of it and lap 2's region start (E186)")
+                .containsExactly(new InputStopped(siblingCapture.trackId(), 990, 1016));
+        assertThat(warnings).containsExactly(
+                "Track 'Beside': input from 'Other Interface' delivered no audio; the track records silence.");
+    }
+
+    @Test
+    void aStopInTheFirstLapOfALoopRecordTakeNamesLapOne() throws IOException {
+        loop();
+        start(true, 16);
+        feed(1000, Kind.DELIVERED);
+        feed(1008, Kind.DELIVERED);
+        feed(1016, Kind.ENDED);
+
+        stopAndRead();
+        assertThat(warnings).containsExactly("Track 'Take': input from 'Interface' stopped delivering audio at"
+                + " 0:00.0 into lap 1 of the take; the track records silence from there.");
+    }
+
+    @Test
+    void aStopInALoopRecordTakeOfAnInputWithNoNameToShowNamesTheLapToo() throws IOException {
+        inputName = " ";
+        loop();
+        start(true, 16);
+        feed(1000, Kind.DELIVERED);
+        feed(1008, Kind.ENDED);
+
+        stopAndRead();
+        assertThat(warnings).containsExactly("Track 'Take': the audio input stopped delivering audio at 0:00.0"
+                + " into lap 1 of the take; the track records silence from there.");
+    }
+
+    @Test
+    void anInputThatNeverDeliveredInALoopRecordTakeNamesNoLap() throws IOException {
+        loop();
+        start(true, 16);
+        feed(1000, Kind.ENDED);
+
+        stopAndRead();
+        assertThat(warnings).as("E88's sentence, with no lap (E172)").containsExactly(
+                "Track 'Take': input from 'Interface' delivered no audio; the track records silence.");
+    }
+
+    @Test
+    void aStopTwoSecondsIntoLapThreeIsWrittenAsThatLapsPosition() throws IOException {
+        long loopEnd = 96_000 + BLOCK;
+        loop(0, loopEnd);
+        start(true, RUN_SLOTS, false, loopEnd - 2 * BLOCK);
+        feedRun(loopEnd - 2 * BLOCK, 2, Kind.DELIVERED);
+        feedRun(0, (int) (loopEnd / BLOCK), Kind.DELIVERED);
+        feedRun(0, 96_000 / BLOCK, Kind.DELIVERED);
+        feed(96_000, Kind.ENDED);
+
+        stopAndRead();
+        assertThat(warnings).as("the frame's position in lap 3's own file (E172)").containsExactly(
+                "Track 'Take': input from 'Interface' stopped delivering audio at 0:02.0 into lap 3 of the take;"
+                        + " the track records silence from there.");
+    }
+
+    @Test
+    void aStopDeclaredAfterTheNextWrapNamesTheLapOfTheLastDeliveredBlock() throws IOException {
+        loop(0, 9_600);
+        start(true, RUN_SLOTS);
+        feedRun(0, 1_200, Kind.DELIVERED);
+        feedRun(0, 600, Kind.DELIVERED);
+        feedRun(4_800, 600, Kind.STARVED);
+        feedRun(0, 100, Kind.STARVED);
+        feed(800, Kind.ENDED);
+
+        stopAndRead();
+        assertThat(warnings).as("lap 2 and its position, not the lap the stop was declared in (E172)")
+                .containsExactly("Track 'Take': input from 'Interface' stopped delivering audio at 0:00.1 into lap 2"
+                        + " of the take; the track records silence from there.");
+    }
+
+    @Test
+    void aLastDeliveredBlockThatEndsAtTheLoopEndNamesTheLapItCompleted() throws IOException {
+        loop(0, 4_800);
+        start(true, RUN_SLOTS);
+        feedRun(0, 600, Kind.DELIVERED);
+        feedRun(0, 600, Kind.DELIVERED);
+        feed(0, Kind.ENDED);
+
+        TakeManifest manifest = stopAndRead();
+        assertThat(manifest.inputStops()).containsExactly(new InputStopped(capture.trackId(), 4_800, 4_800));
+        assertThat(warnings).as("lap 2's full length, into lap 2 (E172, E176)").containsExactly(
+                "Track 'Take': input from 'Interface' stopped delivering audio at 0:00.1 into lap 2 of the take;"
+                        + " the track records silence from there.");
+    }
+
+    @Test
+    void aLastDeliveredBlockAcrossTheLoopEndIsNamedInItsLapWhileTheStopLiesWhereTheNextLapBegins()
+            throws IOException {
+        loop(0, 4_804);
+        start(true, RUN_SLOTS);
+        feedRun(0, 601, Kind.DELIVERED);
+        feed(4, Kind.ENDED);
+
+        TakeManifest manifest = stopAndRead();
+        assertThat(manifest.inputStops()).as("the frame after the block, in lap 2 (E188)")
+                .containsExactly(new InputStopped(capture.trackId(), 4, 4));
+        assertThat(warnings).as("the lap whose file holds the block: the same instant (E188)").containsExactly(
+                "Track 'Take': input from 'Interface' stopped delivering audio at 0:00.1 into lap 1 of the take;"
+                        + " the track records silence from there.");
+    }
+
+    @Test
+    void aLoopPunchReEntryInALoopRecordTakeNamesTheLapTheInputLastDeliveredIn() throws IOException {
+        loopAndPunch(1004, 1020);
+        start(true, 16);
+        feed(1000, Kind.DELIVERED);
+        feed(1008, Kind.DELIVERED);
+        feed(1016, Kind.DELIVERED);
+        feed(1024, Kind.DELIVERED);
+        feed(1032, Kind.ENDED);
+        feed(1004, Kind.ENDED);
+
+        TakeManifest manifest = stopAndRead();
+        assertThat(manifest.inputStops()).containsExactly(new InputStopped(capture.trackId(), 1004, 1004));
+        assertThat(warnings).as("declared in lap 2; the last delivered frame is lap 1's (E172)").containsExactly(
+                "Track 'Take': input from 'Interface' stopped delivering audio at 0:00.0 into lap 1 of the take;"
+                        + " the track records silence from there.");
+    }
+
+    @Test
     void aStopAfterAStarvedRunCountsItsTail() throws IOException {
         start(false, 16);
         feed(0, Kind.DELIVERED);
@@ -425,8 +812,35 @@ class TakeMarksInPunchAndLoopTakesTest {
     }
 
     private void loop() {
-        loopStart = LOOP_START;
-        loopEnd = LOOP_END;
+        loop(LOOP_START, LOOP_END);
+    }
+
+    private void loop(long start, long end) {
+        loopStart = start;
+        loopEnd = end;
+    }
+
+    /**
+     * Punch [1004, 1020) in the loop [1000, 1036): the input beside the stream
+     * delivers up to 1015 in lap 1 and stalls while the stream plays on through
+     * the wrap. Its first output-clocked block is stamped from its own frame
+     * cursor, still at 1015, and clocked at {@code clockFrame} in lap 2.
+     */
+    private void siblingStopsInLapOneAndIsClockedInLapTwoAt(long clockFrame) {
+        loopAndPunch(1004, 1020);
+        start(false, 16, true);
+        feed(996, Kind.DELIVERED);
+        feedSibling(999, Kind.DELIVERED);
+        feed(1004, Kind.DELIVERED);
+        feedSibling(1007, Kind.DELIVERED);
+        feed(1012, Kind.DELIVERED);
+        feed(1020, Kind.DELIVERED);
+        feed(1028, Kind.DELIVERED);
+        for (long frame = LOOP_START; frame <= clockFrame; frame += BLOCK) {
+            feed(frame, Kind.DELIVERED);
+        }
+        outputClockFrame = clockFrame;
+        feedSibling(1015, Kind.ENDED);
     }
 
     private void loopAndPunch(long in, long out) {
@@ -450,7 +864,7 @@ class TakeMarksInPunchAndLoopTakesTest {
         DiskHeadroomWatch watch = new DiskHeadroomWatch(takeDir, freeBytes::get, GIB, 64L << 20,
                 Duration.ZERO, clock::get, warnings::add);
         ring = new CaptureRing(BLOCK, 1, 1, slots);
-        capture = capture(new Track("Take", TrackType.AUDIO), 0, "Interface");
+        capture = capture(new Track("Take", TrackType.AUDIO), 0, inputName);
         List<TrackCapture> captures = new ArrayList<>(List.of(capture));
         if (withSibling) {
             siblingRing = new CaptureRing(BLOCK, 1, 1, slots);
@@ -486,6 +900,17 @@ class TakeMarksInPunchAndLoopTakesTest {
         service.awaitFlushed(GUARD);
     }
 
+    /** {@code blocks} consecutive blocks of one kind from {@code start}, a ring's worth at a time. */
+    private void feedRun(long start, int blocks, Kind kind) {
+        int batch = ring.capacity();
+        for (int first = 0; first < blocks; first += batch) {
+            for (int block = first; block < Math.min(blocks, first + batch); block++) {
+                publish(ring, start + (long) block * BLOCK, kind, 0);
+            }
+            service.awaitFlushed(GUARD);
+        }
+    }
+
     private void feedTruncated(long start, int truncated) {
         publish(ring, start, Kind.DELIVERED, truncated);
         ring.noteTruncatedFrames(truncated);
@@ -512,7 +937,25 @@ class TakeMarksInPunchAndLoopTakesTest {
         }
     }
 
+    /**
+     * Writes one block's header and samples and publishes it. The stream's
+     * own blocks, and an output-clocked block of the input beside it, carry
+     * the transport's lap the way the render thread stamps it: counted once
+     * per step back of the transport's frame while the loop is on, in the
+     * order the blocks are published. The input's own delivered blocks carry
+     * none.
+     */
     private void publish(CaptureRing target, long start, Kind kind, int truncated) {
+        boolean clocked = target == siblingRing && kind == Kind.ENDED
+                && outputClockFrame != CaptureRing.NO_OUTPUT_CLOCK_FRAME;
+        boolean stamped = target == ring || clocked;
+        if (stamped) {
+            long transportFrame = clocked ? outputClockFrame : start;
+            if (loopEnd > loopStart && lastTransportFrame >= 0 && transportFrame < lastTransportFrame) {
+                transportLaps++;
+            }
+            lastTransportFrame = transportFrame;
+        }
         CaptureRing.Slot slot = target.claim();
         assertThat(slot).as("fixture: the ring has room").isNotNull();
         slot.setNumFrames(BLOCK);
@@ -539,6 +982,9 @@ class TakeMarksInPunchAndLoopTakesTest {
                 slot.copySource(0, new float[0][], 0, BLOCK);
                 slot.setOutputClockFrame(outputClockFrame);
             }
+        }
+        if (stamped) {
+            slot.setTransportLap(transportLaps);
         }
         target.publish();
         service.signal();

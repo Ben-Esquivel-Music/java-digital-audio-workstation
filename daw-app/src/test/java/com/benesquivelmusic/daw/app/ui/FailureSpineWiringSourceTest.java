@@ -107,18 +107,24 @@ class FailureSpineWiringSourceTest {
     }
 
     /**
-     * Story 338 (ruling E42, amendment A5): the window's
+     * Story 338 (rulings E42, E178 and E203, amendment A5): the window's
      * engine-health model is a field initializer, fed after the device-loss
      * reactions by the bridge (above), bound to the drain's engine fault right
      * after the drain is built and let go next to the drain's removal; the
      * strip is built over it, with the Engine cell's Reconnect and the Xruns
      * cell's log; the feed is registered on the window's dispatcher and
      * removed in a step of its own before every other window is hidden; the
-     * shed subscriber is replaced with the CPU budget enforcer's UI binding;
-     * the xrun log is built once. No test runs {@code initialize()}, so
+     * xrun log's CPU budget subscriber is subscribed beside the enforcer's UI
+     * binding and never cancelled; the window closes no enforcer itself: the
+     * replaced one goes, with its subscriber, to the window's retirer before
+     * anything that can throw, and the retirer detaches it and closes it once
+     * the block in flight has ended (ruling E203); the feed's read asks the
+     * current enforcer's subscriber, set with that enforcer and handed to the
+     * retirer with it, and the retiring ones' (ruling E197); the xrun log is
+     * built once. No test runs {@code initialize()}, so
      * these call sites are pinned here; {@code EngineFaultReachesTheEngineCellTest},
-     * {@code EngineStateCellTest} and {@code XrunCountAndLogSurfacesTest} run
-     * what they call.
+     * {@code EngineStateCellTest}, {@code XrunCountAndLogSurfacesTest} and
+     * {@code CpuBudgetEnforcerRetirerTest} run what they call.
      */
     @Test
     void theWindowWiresItsEngineHealthModelToTheBridgeTheDrainTheStripTheFeedAndTheShedLog() throws IOException {
@@ -143,26 +149,73 @@ class FailureSpineWiringSourceTest {
                         + " sessionStatusStrip.setOnReconnectAction("
                         + " reconnectTheLostDevice(deviceLossReactions::takeRescued, audioEngineController));"
                         + " engineHealthFeed = EngineHealthFeed.forWindow(engineHealthStatus, audioEngineController,"
-                        + " () -> transportController, () -> transportVM, this::existingTrackName);"
+                        + " () -> transportController, () -> transportVM, this::existingTrackName,"
+                        + " () -> cpuBudgetLogListener, cpuBudgetEnforcerRetirer::handOverAtTheRead);"
                         + " engineHealthFeedRemoval = dispatcher().addPulseParticipant(engineHealthFeed::pulse); }"
                         + " sessionStatusStrip.setOnXrunLogAction(() -> xrunLogDialog().present());");
         assertThat(body(main, "XrunLogDialog xrunLogDialog()"))
                 .isEqualTo("{ if (xrunLogDialog == null) { xrunLogDialog = new XrunLogDialog(mainWindow().orElse(null),"
                         + " engineHealthStatus, () -> { if (engineHealthFeed != null) {"
                         + " engineHealthFeed.clearXrunLog(); } }); } return xrunLogDialog; }");
-        assertThat(body(main, "private void installTrackCpuBudgetEnforcer()")).containsSubsequence(
-                "if (shedLogSubscriber != null) { shedLogSubscriber.cancel(); shedLogSubscriber = null; }",
-                "cpuBudgetEnforcer.close();",
+        String install = body(main, "private void installTrackCpuBudgetEnforcer()");
+        assertThat(install).as("nothing cancels the log's listener and discards its queue")
+                .doesNotContain("cancel(").doesNotContain("shedLogSubscriber");
+        assertThat(install).as("ruling E203: the window neither detaches nor closes an enforcer itself")
+                .doesNotContain("cpuBudgetEnforcer.close()").doesNotContain("setCpuBudgetEnforcer(null)");
+        assertThat(install).as("ruling E203: the replaced enforcer and its log listener go to the retirer right"
+                + " after the binding is closed, before anything that can throw, and the window's two fields are"
+                + " cleared first, so a retirement that throws leaves neither naming a closed enforcer; ruling"
+                + " E204: the new enforcer is built from one read of the engine's format; the new enforcer's log"
+                + " listener is subscribed before the enforcer is handed to the engine, so it is offered every event")
+                .containsSubsequence(
+                "{ try { if (trackBudgetUiBinding != null) { trackBudgetUiBinding.close();"
+                        + " trackBudgetUiBinding = null; } if (cpuBudgetEnforcer != null) {"
+                        + " com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer replaced ="
+                        + " cpuBudgetEnforcer; ShedLogSubscriber replacedListener = cpuBudgetLogListener;"
+                        + " cpuBudgetEnforcer = null; cpuBudgetLogListener = null;"
+                        + " cpuBudgetEnforcerRetirer.retire(replaced, replacedListener); }"
+                        + " AudioFormat format = audioEngine.getFormat();",
+                "cpuBudgetEnforcer = new com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer("
+                        + " format.sampleRate(), format.bufferSize(), masterFraction, System::nanoTime);",
                 "cpuBudgetEnforcer.performanceEvents().subscribe(trackBudgetUiBinding);"
                         + " if (audioEngineController != null) {"
-                        + " shedLogSubscriber = new ShedLogSubscriber(audioEngineController.xrunJournal());"
-                        + " cpuBudgetEnforcer.performanceEvents().subscribe(shedLogSubscriber); }");
+                        + " ShedLogSubscriber budgetLog = new ShedLogSubscriber(audioEngineController.xrunJournal());"
+                        + " cpuBudgetEnforcer.performanceEvents().subscribe(budgetLog);"
+                        + " cpuBudgetLogListener = budgetLog; }",
+                "audioEngine.setCpuBudgetEnforcer(cpuBudgetEnforcer);");
+        assertThat(occurrences(install, "getFormat()")).as("ruling E204: the engine's format is read once")
+                .isEqualTo(1);
+        assertThat(occurrences(main, "cpuBudgetLogListener = ")).as("ruling E197: the feed's read asks the current"
+                + " enforcer's log listener, set with that enforcer and handed to the retirer with it").isEqualTo(2);
+        assertThat(occurrences(main, "cpuBudgetLogListener"))
+                .as("declared, set twice, read by the feed and read for the retirer").isEqualTo(5);
+        assertThat(body(main, "private void initialize()")).as("the retirer is built over the window's engine and"
+                        + " registered on its dispatcher before the feed and before the first enforcer is installed")
+                .containsSubsequence("audioEngine = new AudioEngine(project.getFormat());",
+                        "cpuBudgetEnforcerRetirer = CpuBudgetEnforcerRetirer.forEngine(audioEngine,"
+                                + " feedDispatcher != null); cpuBudgetEnforcerRetirerRemoval = feedDispatcher == null"
+                                + " ? null : feedDispatcher.addPulseParticipant(cpuBudgetEnforcerRetirer::pulse);",
+                        "createSessionStatusStrip();", "installTrackCpuBudgetEnforcer();");
+        assertThat(disposal).as("ruling E203: the window's disposal removes the retirer's pulse participant, then"
+                        + " closes every enforcer still waiting, in a step of its own after the clock badge's")
+                .containsSubsequence("clockStatusIndicatorDisposal = null; } }, () -> {"
+                                + " if (cpuBudgetEnforcerRetirerRemoval != null) { cpuBudgetEnforcerRetirerRemoval.run();"
+                                + " cpuBudgetEnforcerRetirerRemoval = null; } if (cpuBudgetEnforcerRetirer != null) {"
+                                + " cpuBudgetEnforcerRetirer.closeAll(); } }, () -> {",
+                        "meterFeed.dispose();");
+        assertThat(occurrences(main, "CpuBudgetEnforcerRetirer.forEngine(")).as("one retirer per window")
+                .isEqualTo(1);
+        assertThat(occurrences(main, "addPulseParticipant(cpuBudgetEnforcerRetirer::pulse)")).as("registered once")
+                .isEqualTo(1);
+        assertThat(occurrences(main, "cpuBudgetEnforcerRetirer.retire(")).as("the one replacement").isEqualTo(1);
+        assertThat(occurrences(main, "cpuBudgetEnforcerRetirer.closeAll()")).as("closed once, by the disposal")
+                .isEqualTo(1);
         assertThat(occurrences(main, ".bindEngineFault(")).as("bound once").isEqualTo(1);
         assertThat(occurrences(main, "unbindEngineFault()")).as("let go once").isEqualTo(1);
         assertThat(occurrences(main, "EngineHealthFeed.forWindow(")).as("one feed").isEqualTo(1);
         assertThat(occurrences(main, "addPulseParticipant(engineHealthFeed::pulse)")).as("registered once")
                 .isEqualTo(1);
-        assertThat(occurrences(main, "new ShedLogSubscriber(")).as("one shed subscriber at a time").isEqualTo(1);
+        assertThat(occurrences(main, "new ShedLogSubscriber(")).as("one construction site of the log's CPU budget listener").isEqualTo(1);
         assertThat(occurrences(main, "new XrunLogDialog(")).as("one log per window").isEqualTo(1);
     }
 
@@ -189,7 +242,7 @@ class FailureSpineWiringSourceTest {
         assertThat(body(main, "private void initialize()")).containsSubsequence(
                 "audioEngineController.startEngineHealthMonitor();",
                 "clockStatusIndicator = new ClockStatusIndicator(engineNotifications,"
-                        + " ClockStatusIndicator.takeMarksOf(() -> transportController),"
+                        + " TakeClockMarks.of(() -> transportController),"
                         + " ClockStatusIndicator.engineClock(audioEngine, audioEngineController), dispatcher());"
                         + " clockStatusIndicatorDisposal = installClockStatusIndicator(clockStatusIndicator,"
                         + " audioEngineController, dispatcher());"

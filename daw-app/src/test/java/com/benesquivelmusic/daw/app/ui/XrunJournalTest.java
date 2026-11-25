@@ -10,11 +10,14 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 
 /**
  * The xrun log's store (story 338, rulings E17, E19, E20, E22,
- * E38, E42): which kinds raise the count, the count's restart and Clear, the
- * newest hundred entries, each drained once, and the recent gaps.
+ * E38, E42, E174, E199): which kinds raise the count, the count's restart
+ * and Clear, the newest hundred entries, each drained once, the one entry
+ * for the CPU budget markings that never reached the log, and the recent
+ * gaps.
  */
 class XrunJournalTest {
 
@@ -29,8 +32,12 @@ class XrunJournalTest {
         journal.append(XrunJournal.Detail.DRIVER_OVERLOAD, List.of(), 1);
         journal.append(XrunJournal.Detail.DRIVER_RESYNC, List.of(), 1);
         journal.append(XrunJournal.Detail.LATE_BLOCK, List.of(6.1, 2.7), 4);
-        journal.append(XrunJournal.Detail.EXPENSIVE_PROCESSING_BYPASSED, List.of("track-1", 93L), 1);
+        journal.append(XrunJournal.Detail.OVER_CPU_BUDGET, List.of("track-1", 93L), 1);
+        journal.noteCpuBudgetEntriesLost(2);
         journal.append(XrunJournal.Detail.DEVICE_STOPPED_RESPONDING, List.of("Interface A"), 1);
+        assertThat(journal.drain()).extracting(XrunJournal.Entry::detail)
+                .as("premise: the entry for the lost CPU budget markings is written at the read")
+                .contains(XrunJournal.Detail.CPU_BUDGET_ENTRIES_NOT_LOGGED);
 
         XrunJournal.Counts counts = journal.counts();
         assertThat(counts.gaps()).as("rulings E17 and E38").isEqualTo(7);
@@ -92,6 +99,48 @@ class XrunJournalTest {
         journal.append(XrunJournal.Detail.DRIVER_RESYNC, List.of(), 1);
         assertThat(journal.drain()).extracting(XrunJournal.Entry::detail)
                 .containsExactly(XrunJournal.Detail.DRIVER_RESYNC);
+    }
+
+    /**
+     * Rulings E174 and E199: CPU budget markings lost before they reached
+     * the journal's listener are one entry, written at the next drain as its
+     * newest, dated then.
+     */
+    @Test
+    void lostCpuBudgetEntriesAreOneEntryDrainedOnceAndLast() {
+        journal.append(XrunJournal.Detail.OUTPUT_STARVED, List.of(), 1);
+        journal.noteCpuBudgetEntriesLost(2);
+        journal.append(XrunJournal.Detail.OVER_CPU_BUDGET, List.of("track-1", 93L), 1);
+        journal.noteCpuBudgetEntriesLost(3);
+        wall.set(wall.get().plusSeconds(3));
+        nanos.addAndGet(7L);
+
+        List<XrunJournal.Entry> drained = journal.drain();
+
+        assertThat(drained).extracting(XrunJournal.Entry::detail).containsExactly(XrunJournal.Detail.OUTPUT_STARVED,
+                XrunJournal.Detail.OVER_CPU_BUDGET, XrunJournal.Detail.CPU_BUDGET_ENTRIES_NOT_LOGGED);
+        assertThat(drained.getLast().arguments()).as("one entry for every loss handed over since the last read")
+                .containsExactly(5L);
+        assertThat(drained.getLast().count()).isEqualTo(1L);
+        assertThat(drained.getLast().arrivedAt()).as("dated at the drain").isEqualTo(wall.get());
+        assertThat(drained.getLast().arrivedNanos()).isEqualTo(nanos.get());
+        assertThat(journal.drain()).as("drained once").isEmpty();
+        assertThat(journal.counts().gaps()).as("it raises nothing").isEqualTo(1L);
+    }
+
+    @Test
+    void theEntriesShowTheLostCountAndClearForgetsIt() {
+        journal.noteCpuBudgetEntriesLost(4);
+
+        assertThat(journal.entries()).extracting(XrunJournal.Entry::detail, XrunJournal.Entry::arguments)
+                .containsExactly(tuple(XrunJournal.Detail.CPU_BUDGET_ENTRIES_NOT_LOGGED, List.of(4L)));
+        assertThat(journal.drain()).as("written once, drained once").hasSize(1);
+
+        journal.noteCpuBudgetEntriesLost(6);
+        journal.clear();
+
+        assertThat(journal.entries()).as("Clear forgets a count not written yet").isEmpty();
+        assertThat(journal.drain()).isEmpty();
     }
 
     @Test

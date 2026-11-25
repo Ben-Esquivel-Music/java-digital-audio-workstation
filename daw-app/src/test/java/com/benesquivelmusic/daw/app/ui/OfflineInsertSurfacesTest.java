@@ -493,11 +493,12 @@ class OfflineInsertSurfacesTest {
                             .isInstanceOf(ToggleButton.class);
                     workingStops.getFirst().requestFocus();
                     ContextMenu working = keyboardContextMenu(scene);
-                    // InsertEffectRack.buildPopulatedSlot: new CheckMenuItem("Expensive (eligible for bypass)"),
-                    // a SeparatorMenuItem, new MenuItem("Remove").
+                    // InsertEffectRack.buildPopulatedSlot: the Expensive CheckMenuItem in story 338's ruling
+                    // E195's words, a SeparatorMenuItem, new MenuItem("Remove").
                     assertThat(working.getItems().stream().filter(item -> !(item instanceof SeparatorMenuItem)))
                             .as("non-vacuity: the keyboard's request on a working row's toggle opens its row's menu")
-                            .extracting(MenuItem::getText).containsExactly("Expensive (eligible for bypass)", "Remove");
+                            .extracting(MenuItem::getText)
+                            .containsExactly("Expensive (no CPU budget policy bypasses it)", "Remove");
                     working.hide();
 
                     Node mark = stopIn(shown.row(2), RACK_STOP);

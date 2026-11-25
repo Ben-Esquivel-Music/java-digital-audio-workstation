@@ -206,6 +206,7 @@ public final class RecordingPipeline {
     private boolean allInputsMuted;
     private double recordingStartBeat;
     private long recordingStartFrame;
+    private boolean recordingStartIsAPunchIn;
     /**
      * The transport's position when {@link #prepare(long)} read the anchor;
      * {@link #beginCapture()} puts the transport back there if it moved while
@@ -584,6 +585,7 @@ public final class RecordingPipeline {
         PunchRegion transportPunch = transport.isPunchEnabled()
                 ? transport.getPunchRegion()
                 : null;
+        recordingStartIsAPunchIn = transportPunch != null || punchRange != null;
         if (transportPunch != null) {
             double startSeconds = transportPunch.startFrames() / projectSampleRate;
             recordingStartBeat = startSeconds * (tempo / 60.0);
@@ -1935,6 +1937,21 @@ public final class RecordingPipeline {
      */
     public long getRecordingStartFrame() {
         return recordingStartFrame;
+    }
+
+    /**
+     * Whether {@link #getRecordingStartFrame()} is a punch-in: the start of
+     * the transport's enabled punch region, or of this pipeline's punch
+     * range, which {@link #prepare(long)} read as the take's anchor. Such a
+     * take is recording while the transport plays its pre-roll, the frames
+     * before the punch-in; any other take's start-frame is the transport's
+     * position when {@link #prepare(long)} ran. Like the start-frame, only
+     * the next {@link #prepare(long)} replaces it.
+     *
+     * @return whether the take's start-frame is a punch-in
+     */
+    public boolean isRecordingStartAPunchIn() {
+        return recordingStartIsAPunchIn;
     }
 
     /**

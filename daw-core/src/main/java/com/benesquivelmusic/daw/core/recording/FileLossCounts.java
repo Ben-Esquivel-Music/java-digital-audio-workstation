@@ -9,11 +9,19 @@ package com.benesquivelmusic.daw.core.recording;
  *
  * <p>A ring-overflow gap runs from its start frame to the start frame of the
  * next block the take received from that ring; across the loop wrap, to the
- * loop end and on from the loop start. All of its blocks count when that
- * extent overlaps the punch region, none otherwise. A gap no block follows
- * has the extent its {@code gap=} line gives: its start frame plus its blocks
- * times the take's block length, split at the loop wrap the same way; that the
- * take looped adds nothing (ruling E104). Truncated frames
+ * loop end and on from the loop start. A gap that starts past the loop end,
+ * at the end of a block across the wrap, starts where the transport
+ * continued after the wrap. All of its blocks count when that extent
+ * overlaps the punch region, none otherwise. A gap no block follows has the
+ * extent its {@code gap=} line gives: its start frame plus its blocks times
+ * the take's block length, split at the loop wrap the same way; that the take
+ * looped adds nothing (ruling E104). A gap a lap long or longer is judged by
+ * that extent too, whatever block follows it, since its end points cannot
+ * tell which frames it passed in between: the frames the transport passed
+ * from its start, followed across every wrap, and it counts when any of them
+ * lies in the region (rulings E180 and E182). It passed the whole loop range
+ * only when its frames from the loop start on number a lap or more; frames
+ * of lap 1's pre-roll count toward no lap. Truncated frames
  * lie after the kept frames of their block and count where they lie inside
  * the region; an episode counts once one of its frames does.</p>
  *
@@ -160,15 +168,22 @@ final class FileLossCounts {
     private boolean extentOverlapsTheRegion(int source, long start, long next) {
         long from = regionStart[source];
         long to = regionEnd[source];
-        if (next > start) {
-            return FrameSpans.overlaps(start, next, from, to);
-        }
-        if (next == start) {
-            return FrameSpans.overlaps(start, start + 1, from, to);
-        }
         boolean looped = FrameSpans.looped(loopStart[source], loopEnd[source]);
+        long frames = gapBlocks[source] * gapBlockFrames[source];
+        if (looped && frames >= loopEnd[source] - loopStart[source]) {
+            // A lap or more: its end points cannot tell which frames it passed in between.
+            return FrameSpans.framesInsideAcrossTheWrap(start, frames, loopStart[source], loopEnd[source],
+                    from, to) > 0L;
+        }
+        long first = FrameSpans.intoLoop(start, loopStart[source], loopEnd[source]);
+        if (next > first) {
+            return FrameSpans.overlaps(first, next, from, to);
+        }
+        if (next == first) {
+            return FrameSpans.overlaps(first, first + 1, from, to);
+        }
         long wrapEnd = looped ? loopEnd[source] : FrameSpans.UNBOUNDED_END;
         long wrapStart = looped ? loopStart[source] : FrameSpans.UNBOUNDED_START;
-        return FrameSpans.overlaps(start, wrapEnd, from, to) || FrameSpans.overlaps(wrapStart, next, from, to);
+        return FrameSpans.overlaps(first, wrapEnd, from, to) || FrameSpans.overlaps(wrapStart, next, from, to);
     }
 }

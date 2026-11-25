@@ -82,7 +82,8 @@ final class FailureTrack {
             consecutiveBuckets++;
         }
         bucketed = true;
-        lastBucket = Math.max(lastBucket, bucket);
+        // System.nanoTime may read negative: a run starts from its own bucket, never from the field's zero.
+        lastBucket = runBegan ? bucket : Math.max(lastBucket, bucket);
         return consecutiveBuckets >= AudioHealthDrain.SUSTAINED_BUCKETS;
     }
 

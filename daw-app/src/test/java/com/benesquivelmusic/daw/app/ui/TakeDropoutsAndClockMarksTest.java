@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.recording.TakeManifest;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -125,6 +126,181 @@ class TakeDropoutsAndClockMarksTest {
                 .isBetween(current[0], current[1]);
         assertThat(dispatcher.pulseParticipantCount()).as("no sampling once the take stopped")
                 .isEqualTo(participantsBefore);
+    }
+
+    /**
+     * Ruling E177: an unlock whose first bad answer came before the take's
+     * first sample, declared seconds into the take, is dated at the take's
+     * start-frame, the manifest's {@code start-frame}.
+     */
+    @Test
+    void anUnlockWhoseFirstBadAnswerPrecedesTheTakeIsMarkedAtTheTakesStartFrame() throws Exception {
+        fixture = DeviceLossRecordingFixture.withoutEngineBridge(projectDirectory, CountInMode.OFF, dispatcher);
+        fixture.bindTheProjectToTheEngine();
+        Transport transport = fixture.project().getTransport();
+        runOnFx(() -> {
+            transport.setPositionInBeats(4.0);
+            fixture.coordinator().setTakeFrameClockForTest(nanos::get);
+        });
+        long beforeTheTake = nanos.get();
+        nanos.addAndGet(500_000_000L);
+        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+        RecordingPipeline pipeline = fixture.pipeline();
+        long startFrame = pipeline.getRecordingStartFrame();
+        await(() -> transport.getPositionInBeats() >= pipeline.getRecordingStartBeat() + 1.0,
+                "the take recorded on past its start");
+        runOnFx(dispatcher::pulse);
+
+        long frameWhenDeclared = onFx(() -> {
+            long now = pipeline.transportFrameOf(transport.getPositionInBeats());
+            fixture.coordinator().noteClockEvent(TakeManifest.ClockEvent.UNLOCKED, beforeTheTake);
+            return now;
+        });
+        runOnFx(fixture.controller()::stop);
+        fixture.awaitPublished();
+
+        List<TakeManifest.ClockMark> marks = TakeManifest.read(TakeManifest.manifestPath(takeDirectory)).clockMarks();
+        assertThat(startFrame).as("premise: the take starts past its first frame").isPositive();
+        assertThat(frameWhenDeclared).as("premise: declared after the take recorded on").isGreaterThan(startFrame);
+        assertThat(marks).singleElement().satisfies(mark -> {
+            assertThat(mark.event()).isEqualTo(TakeManifest.ClockEvent.UNLOCKED);
+            assertThat(mark.frame()).as("suspect from the take's start-frame").isEqualTo(startFrame);
+        });
+    }
+
+    /**
+     * Rulings E173 and E177: a relock or a resync whose evidence came before
+     * the take's first sample is dated at the take's start-frame, as an
+     * unlock is.
+     */
+    @Test
+    void aRelockOrAResyncWhoseEvidencePrecedesTheTakeIsMarkedAtTheTakesStartFrame() throws Exception {
+        fixture = DeviceLossRecordingFixture.withoutEngineBridge(projectDirectory, CountInMode.OFF, dispatcher);
+        fixture.bindTheProjectToTheEngine();
+        Transport transport = fixture.project().getTransport();
+        runOnFx(() -> {
+            transport.setPositionInBeats(4.0);
+            fixture.coordinator().setTakeFrameClockForTest(nanos::get);
+        });
+        long beforeTheTake = nanos.get();
+        nanos.addAndGet(500_000_000L);
+        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+        RecordingPipeline pipeline = fixture.pipeline();
+        long startFrame = pipeline.getRecordingStartFrame();
+        await(() -> transport.getPositionInBeats() >= pipeline.getRecordingStartBeat() + 1.0,
+                "the take recorded on past its start");
+        runOnFx(dispatcher::pulse);
+
+        long frameWhenDeclared = onFx(() -> {
+            long now = pipeline.transportFrameOf(transport.getPositionInBeats());
+            fixture.coordinator().noteClockEvent(TakeManifest.ClockEvent.LOCKED, beforeTheTake);
+            fixture.coordinator().noteClockEvent(TakeManifest.ClockEvent.RESYNC, beforeTheTake);
+            return now;
+        });
+        runOnFx(fixture.controller()::stop);
+        fixture.awaitPublished();
+
+        List<TakeManifest.ClockMark> marks = TakeManifest.read(TakeManifest.manifestPath(takeDirectory)).clockMarks();
+        assertThat(frameWhenDeclared).as("premise: declared after the take recorded on").isGreaterThan(startFrame);
+        assertThat(marks).extracting(TakeManifest.ClockMark::event)
+                .containsExactly(TakeManifest.ClockEvent.LOCKED, TakeManifest.ClockEvent.RESYNC);
+        assertThat(marks).extracting(TakeManifest.ClockMark::frame).as("each at the take's start-frame")
+                .containsExactly(startFrame, startFrame);
+    }
+
+    /**
+     * Ruling E183: loop [32, 48) beats, the playhead parked at beat 80 and a
+     * one-bar count-in. The count-in fires at the start-frame and the
+     * transport wraps into the loop before the take's first sample, so no
+     * sample reads the start-frame again: the take is not anchored at a
+     * punch-in, its first sample is its reach, evidence seen while it
+     * records is dated at a frame of the loop range, and evidence from before
+     * the take at its start-frame.
+     */
+    @Test
+    void aTakeWhoseTransportWrapsIntoTheLoopBeforeItsFirstSampleIsMarkedInTheLoop() throws Exception {
+        fixture = DeviceLossRecordingFixture.withoutEngineBridge(projectDirectory, CountInMode.ONE_BAR, dispatcher);
+        fixture.bindTheProjectToTheEngine();
+        Transport transport = fixture.project().getTransport();
+        runOnFx(() -> {
+            transport.setLoopWindow(true, 32.0, 48.0);
+            transport.setPositionInBeats(80.0);
+            fixture.coordinator().setTakeFrameClockForTest(nanos::get);
+        });
+        long beforeTheTake = nanos.get();
+        nanos.addAndGet(500_000_000L);
+        runOnFx(fixture.controller()::toggleRecord);
+        awaitOnFx(() -> fixture.coordinator().getState() == RecordState.COUNT_IN, "the take counts in");
+        RecordingPipeline pipeline = fixture.pipeline();
+        Path takeDirectory = pipeline.getTakeDirectory();
+        awaitOnFx(() -> transport.getPositionInBeats() < 48.0, "the count-in fired and the transport wrapped");
+        awaitOnFx(() -> {
+            dispatcher.pulse();
+            return fixture.coordinator().getState() == RecordState.RECORDING;
+        }, "the count-in's fire, observed on the dispatcher's pulse");
+
+        long evidence = nanos.addAndGet(1_000_000_000L);
+        runOnFx(dispatcher::pulse);
+        nanos.addAndGet(1_000_000_000L);
+        runOnFx(() -> {
+            fixture.coordinator().noteClockEvent(TakeManifest.ClockEvent.UNLOCKED, evidence);
+            fixture.coordinator().noteClockEvent(TakeManifest.ClockEvent.LOCKED, beforeTheTake);
+        });
+        runOnFx(fixture.controller()::stop);
+        fixture.awaitPublished();
+
+        long loopStart = pipeline.transportFrameOf(32.0);
+        long loopEnd = pipeline.transportFrameOf(48.0);
+        long startFrame = pipeline.getRecordingStartFrame();
+        List<TakeManifest.ClockMark> marks = TakeManifest.read(TakeManifest.manifestPath(takeDirectory)).clockMarks();
+        assertThat(pipeline.isRecordingStartAPunchIn()).as("premise: no punch anchors the take").isFalse();
+        assertThat(startFrame).as("premise: the start-frame lies past the loop").isGreaterThan(loopEnd);
+        assertThat(marks).extracting(TakeManifest.ClockMark::event)
+                .containsExactly(TakeManifest.ClockEvent.UNLOCKED, TakeManifest.ClockEvent.LOCKED);
+        assertThat(marks.get(0).frame()).as("evidence while the take records: the frame sampled, in the loop range")
+                .isGreaterThanOrEqualTo(loopStart).isLessThan(loopEnd);
+        assertThat(marks.get(1).frame()).as("evidence from before the take: its start-frame").isEqualTo(startFrame);
+    }
+
+    /**
+     * Ruling E177 through the window's wiring: a punch take enters RECORDING
+     * at the start of its pre-roll, its start-frame is the punch-in, and
+     * evidence seen in the pre-roll is dated at the punch-in. The punch-in
+     * lies ten minutes on, so the whole test runs in the pre-roll.
+     */
+    @Test
+    void aPunchTakesPreRollEvidenceIsMarkedAtItsPunchIn() throws Exception {
+        fixture = DeviceLossRecordingFixture.withoutEngineBridge(projectDirectory, CountInMode.OFF, dispatcher);
+        fixture.bindTheProjectToTheEngine();
+        Transport transport = fixture.project().getTransport();
+        long punchIn = 44_100L * 600;
+        runOnFx(() -> {
+            transport.setPunchRegion(PunchRegion.enabled(punchIn, punchIn + 44_100L));
+            fixture.coordinator().setTakeFrameClockForTest(nanos::get);
+        });
+        runOnFx(fixture.controller()::toggleRecord);
+        awaitOnFx(() -> fixture.coordinator().getState() == RecordState.RECORDING, "the take records its pre-roll");
+        RecordingPipeline pipeline = fixture.pipeline();
+        Path takeDirectory = pipeline.getTakeDirectory();
+
+        long evidence = nanos.addAndGet(1_000_000_000L);
+        long sampled = onFx(() -> {
+            dispatcher.pulse();
+            return pipeline.transportFrameOf(transport.getPositionInBeats());
+        });
+        nanos.addAndGet(1_000_000_000L);
+        runOnFx(() -> fixture.coordinator().noteClockEvent(TakeManifest.ClockEvent.UNLOCKED, evidence));
+        runOnFx(fixture.controller()::stop);
+        fixture.awaitPublished();
+
+        List<TakeManifest.ClockMark> marks = TakeManifest.read(TakeManifest.manifestPath(takeDirectory)).clockMarks();
+        assertThat(pipeline.isRecordingStartAPunchIn()).as("premise: the punch-in anchors the take").isTrue();
+        assertThat(pipeline.getRecordingStartFrame()).as("premise: its start-frame").isEqualTo(punchIn);
+        assertThat(sampled).as("premise: the evidence was seen in the pre-roll").isLessThan(punchIn);
+        assertThat(marks).singleElement().satisfies(mark -> {
+            assertThat(mark.event()).isEqualTo(TakeManifest.ClockEvent.UNLOCKED);
+            assertThat(mark.frame()).as("at the punch-in, not at the pre-roll frame sampled").isEqualTo(punchIn);
+        });
     }
 
     @Test

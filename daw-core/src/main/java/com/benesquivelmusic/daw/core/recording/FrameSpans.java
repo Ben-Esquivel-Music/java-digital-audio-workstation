@@ -53,14 +53,33 @@ final class FrameSpans {
     }
 
     /**
-     * A point past the loop end moved to where the transport continued after
-     * the wrap. The loop end itself is a valid point and stays where it is.
+     * Where the end of a span lies once the span is wrapped at the loop end:
+     * a point past the loop end moves to where the transport continued after
+     * the wrap, into {@code (loopStart, loopEnd]}, so a point exactly on a
+     * loop boundary is the loop end however many laps it passed (ruling
+     * E176). A point at or before the loop end, and any point when the
+     * window does not loop, stays where it is.
      */
     static long intoLoop(long frame, long loopStart, long loopEnd) {
         if (!looped(loopStart, loopEnd) || frame <= loopEnd) {
             return frame;
         }
-        return loopStart + (frame - loopEnd) % (loopEnd - loopStart);
+        long overshoot = (frame - loopEnd) % (loopEnd - loopStart);
+        return overshoot == 0L ? loopEnd : loopStart + overshoot;
+    }
+
+    /**
+     * How many wraps a span crosses before its end once it is wrapped at the
+     * loop end: an end past the loop end lies that many laps after the lap the
+     * span started in, and an end exactly on a loop boundary stays in the lap
+     * it completed (ruling E176). None when the window does not loop.
+     */
+    static long wrapsBeforeTheEnd(long end, long loopStart, long loopEnd) {
+        if (!looped(loopStart, loopEnd) || end <= loopEnd) {
+            return 0L;
+        }
+        long length = loopEnd - loopStart;
+        return (end - loopEnd + length - 1) / length;
     }
 
     /**

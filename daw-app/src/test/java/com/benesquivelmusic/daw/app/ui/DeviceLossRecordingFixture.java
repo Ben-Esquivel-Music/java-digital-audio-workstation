@@ -214,6 +214,16 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
         return new DeviceLossRecordingFixture(projectDirectory, true, countIn);
     }
 
+    /**
+     * {@link #withEngineBridge(Path, CountInMode)} with the transport
+     * controller on {@code dispatcher}, whose pulse a test runs itself: a
+     * count-in that has fired holds the take in COUNT_IN until that pulse.
+     */
+    static DeviceLossRecordingFixture withEngineBridge(Path projectDirectory, CountInMode countIn,
+                                                       FxDispatcher dispatcher) throws Exception {
+        return new DeviceLossRecordingFixture(projectDirectory, true, countIn, Objects.requireNonNull(dispatcher));
+    }
+
     /** {@link #withoutEngineBridge(Path)} with Record counting in by {@code countIn} (story 328). */
     static DeviceLossRecordingFixture withoutEngineBridge(Path projectDirectory, CountInMode countIn) throws Exception {
         return new DeviceLossRecordingFixture(projectDirectory, false, countIn);

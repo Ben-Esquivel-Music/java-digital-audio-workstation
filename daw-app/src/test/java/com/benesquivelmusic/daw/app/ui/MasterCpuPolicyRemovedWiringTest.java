@@ -30,9 +30,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Story 335 — "CPU-policy truth test", under the removal decision (studio
  * ruling R3): the master CPU degradation policy row, setting and read path
  * are gone, the stale preference key is deleted on load, an old exported
- * profile reports the key as an unknown setting, and the master cascade sheds
- * each track with that track's own CPU Budget policy — the policy the project
- * file stores — so no write-only setting survives.
+ * profile reports the key as an unknown setting, and the master cascade marks
+ * each track over budget under that track's own CPU Budget policy — the
+ * policy the project file stores — so no write-only setting survives.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class MasterCpuPolicyRemovedWiringTest {
@@ -49,8 +49,11 @@ class MasterCpuPolicyRemovedWiringTest {
         assertThat(MESSAGES.containsKey(KEY + ".label")).isFalse();
         assertThat(MESSAGES.containsKey(KEY + ".description")).isFalse();
         assertThat(MESSAGES.getString("audio.masterCpuBudgetFraction.description"))
-                .isEqualTo("Master CPU ceiling per audio block; when exceeded, the highest-CPU tracks are degraded"
-                        + " by the policy in each track's CPU Budget dialog. 1.0 disables the cap.");
+                .as("story 338, ruling E193")
+                .isEqualTo("Master CPU budget per audio block; while the tracks together average more than this"
+                        + " fraction of the block time, tracks are marked over budget, highest CPU first, as each"
+                        + " track's CPU Budget dialog describes. At 1.0 they are marked only when together they"
+                        + " average longer than the block time.");
 
         Story307TestSupport.onFx(() -> {
             SettingsDialog dialog = new SettingsDialog(Story307TestSupport.model("masterCpuPolicyRemoved"));

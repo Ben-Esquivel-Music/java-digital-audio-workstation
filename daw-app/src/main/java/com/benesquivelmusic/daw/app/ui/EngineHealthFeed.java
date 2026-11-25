@@ -24,11 +24,15 @@ import java.util.function.Supplier;
  *
  * <p>Each pulse it
  * <ul>
+ *   <li>asks the log listener of each replaced CPU budget enforcer that is
+ *       not closed yet, and then the current enforcer's, to hand over a count
+ *       of lost markings that is due, so this read writes it (rulings E197
+ *       and E203);</li>
  *   <li>drains the journal's new entries and appends each as one line of the
- *       log, worded as rulings E20, E38, E42, E72 and E78 word it, stamped
- *       "near m:ss.s" with the transport's position read at the drain, only
- *       while the transport rolls; a shed entry names its track as the
- *       project has it now, or "Track (removed)";</li>
+ *       log, worded as rulings E20, E38, E42, E72, E78, E174, E181 and E199 word
+ *       it, stamped "near m:ss.s" with the transport's position read at the
+ *       drain, only while the transport rolls; a CPU budget entry names its
+ *       track as the project has it now, or "Track (removed)";</li>
  *   <li>hands each drained resync entry to the current take's clock marks
  *       (ruling E40: nothing is marked unless an audio take records);</li>
  *   <li>sets the xrun figures — the count, how many arrived in the last 30
@@ -52,14 +56,21 @@ final class EngineHealthFeed {
      * @param transport      the window's current transport controller, or a supplier of {@code null} while none
      * @param rollingSeconds the transport's position in seconds while it plays or records, empty otherwise
      * @param trackNames     a track's name by its id, empty when the project has no such track
+     * @param cpuBudgetLog   the current CPU budget enforcer's log listener, or a supplier of {@code null} while
+     *                       none; read at each pulse
+     * @param retiringCpuBudgetLogs hands over the due counts of the log listeners of the replaced enforcers
+     *                       that are not closed yet ({@link CpuBudgetEnforcerRetirer#handOverAtTheRead()})
      */
     record Sources(Supplier<TransportController> transport, Supplier<OptionalDouble> rollingSeconds,
-                   Function<String, Optional<String>> trackNames) {
+                   Function<String, Optional<String>> trackNames, Supplier<ShedLogSubscriber> cpuBudgetLog,
+                   Runnable retiringCpuBudgetLogs) {
 
         Sources {
             Objects.requireNonNull(transport, "transport must not be null");
             Objects.requireNonNull(rollingSeconds, "rollingSeconds must not be null");
             Objects.requireNonNull(trackNames, "trackNames must not be null");
+            Objects.requireNonNull(cpuBudgetLog, "cpuBudgetLog must not be null");
+            Objects.requireNonNull(retiringCpuBudgetLogs, "retiringCpuBudgetLogs must not be null");
         }
     }
 
@@ -100,21 +111,26 @@ final class EngineHealthFeed {
 
     /**
      * The window's feed: over {@code controller}'s journal, the window's
-     * current transport controller and view model, and its project's track
-     * names. FX thread.
+     * current transport controller and view model, its project's track
+     * names, its current CPU budget enforcer's log listener and its replaced
+     * enforcers' that are not closed yet. FX thread.
      *
      * @param status     the window's engine-health model
      * @param controller the window's engine controller
      * @param transport  the window's current transport controller
      * @param transportView the window's current transport view model
      * @param trackNames a track's name by its id
+     * @param cpuBudgetLog the current CPU budget enforcer's log listener, or {@code null} while none
+     * @param retiringCpuBudgetLogs hands over the due counts of the replaced enforcers' log listeners
      * @return the feed; its {@link #pulse()} is registered by the caller
      */
     static EngineHealthFeed forWindow(EngineHealthStatus status, DefaultAudioEngineController controller,
                                       Supplier<TransportController> transport, Supplier<TransportVM> transportView,
-                                      Function<String, Optional<String>> trackNames) {
+                                      Function<String, Optional<String>> trackNames,
+                                      Supplier<ShedLogSubscriber> cpuBudgetLog, Runnable retiringCpuBudgetLogs) {
         return new EngineHealthFeed(status, controller.xrunJournal(),
-                new Sources(transport, () -> rollingSeconds(transportView.get()), trackNames));
+                new Sources(transport, () -> rollingSeconds(transportView.get()), trackNames, cpuBudgetLog,
+                        retiringCpuBudgetLogs));
     }
 
     /**
@@ -138,6 +154,11 @@ final class EngineHealthFeed {
 
     /** One pulse: the new entries, the resync marks, the figures. FX thread. */
     void pulse() {
+        sources.retiringCpuBudgetLogs().run();
+        ShedLogSubscriber cpuBudgetLog = sources.cpuBudgetLog().get();
+        if (cpuBudgetLog != null) {
+            cpuBudgetLog.handOverAtTheRead();
+        }
         List<XrunJournal.Entry> fresh = journal.drain();
         if (!fresh.isEmpty()) {
             OptionalDouble position = sources.rollingSeconds().get();
@@ -209,10 +230,10 @@ final class EngineHealthFeed {
             case LATE_BLOCK -> EngineHealthText.text(key,
                     EngineHealthText.milliseconds((Double) arguments.get(0)),
                     EngineHealthText.milliseconds((Double) arguments.get(1)));
-            case EXPENSIVE_PROCESSING_BYPASSED, SIMPLER_PROCESSING_SUBSTITUTED -> EngineHealthText.text(key,
+            case OVER_CPU_BUDGET -> EngineHealthText.text(key,
                     track((String) arguments.get(0)), String.valueOf(arguments.get(1)));
-            case OVERSAMPLING_REDUCED -> EngineHealthText.text(key, track((String) arguments.get(0)),
-                    String.valueOf(arguments.get(1)), String.valueOf(arguments.get(2)));
+            case CPU_BUDGET_ENTRIES_NOT_LOGGED -> EngineHealthText.text(key,
+                    arguments.get(0), String.valueOf(arguments.get(0)));
             case DEVICE_STOPPED_RESPONDING -> {
                 String name = (String) arguments.get(0);
                 yield name.isBlank() ? EngineHealthText.text(key + ".unnamed") : EngineHealthText.text(key, name);

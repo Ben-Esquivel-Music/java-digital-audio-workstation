@@ -54,6 +54,7 @@ final class XrunJournal {
         OVERLOAD(true),
         RESYNC(true),
         LATE(false),
+        /** Shown as "Budget" (ruling E181): a track went over its CPU budget; nothing was shed. */
         SHED(false),
         STALL(false);
 
@@ -94,20 +95,17 @@ final class XrunJournal {
          */
         LATE_BLOCK(Kind.LATE, 2),
         /**
-         * Shed: a track's expensive processing was bypassed. Arguments: the track id ({@link String}) and the
-         * rolling average as a whole percent of the block time ({@link Long}).
+         * Budget: the CPU budget enforcer marked a track over its budget, whatever policy the budget names; its
+         * processing was not reduced (ruling E181). Arguments: the track id ({@link String}) and the rolling
+         * average as a whole percent of the block time ({@link Long}).
          */
-        EXPENSIVE_PROCESSING_BYPASSED(Kind.SHED, 2),
+        OVER_CPU_BUDGET(Kind.SHED, 2),
         /**
-         * Shed: a track's oversampling was reduced. Arguments: the track id ({@link String}), the new factor
-         * ({@link Integer}) and the rolling average as a whole percent of the block time ({@link Long}).
+         * Budget: markings over a CPU budget that never reached the journal's listener because it fell behind the
+         * enforcer (rulings E174 and E199): markings, not entries, since a dropped marking might not have started
+         * an entry. Argument: how many ({@link Long}); the entry's count stays 1.
          */
-        OVERSAMPLING_REDUCED(Kind.SHED, 3),
-        /**
-         * Shed: simpler processing was substituted on a track. Arguments: the track id ({@link String}) and the
-         * rolling average as a whole percent of the block time ({@link Long}).
-         */
-        SIMPLER_PROCESSING_SUBSTITUTED(Kind.SHED, 2),
+        CPU_BUDGET_ENTRIES_NOT_LOGGED(Kind.SHED, 1),
         /**
          * Stall: the device stopped responding and was declared lost. Argument: its name ({@link String}),
          * empty when no device was known.
@@ -199,6 +197,10 @@ final class XrunJournal {
     private EngineHealthStatus.UnderrunReporting underruns = EngineHealthStatus.UnderrunReporting.NOT_ASKED;
     /** Advanced by every {@link #forgetUnderrunReporting()}. */
     private long underrunAnswers;
+    /** Guarded by this: CPU budget markings lost before they reached the journal's listener, not written yet. */
+    private long cpuBudgetEntriesLost;
+    /** Guarded by this: how many times {@link #clear()} ran. */
+    private long clears;
 
     /** A journal on the system's wall clock and {@link System#nanoTime()}. */
     XrunJournal() {
@@ -277,11 +279,52 @@ final class XrunJournal {
         since = wallClock.instant();
     }
 
-    /** The log's Clear (ruling E22): restarts the count and forgets every entry, drained or not. */
+    /**
+     * Notes that {@code lost} CPU budget markings never reached the
+     * journal's listener (rulings E174, E184 and E199). Everything noted
+     * since the last {@link #drain()} or {@link #entries()} is written as one
+     * {@link Detail#CPU_BUDGET_ENTRIES_NOT_LOGGED} entry carrying the sum at
+     * the next of them, the window's next read of the log, and dated then.
+     * The journal only dates the entry; that the backlog of a loss is in the
+     * journal ahead of its count is the listener's doing, which notes the
+     * loss once it has delivered that backlog.
+     *
+     * @param lost how many; at least 1
+     */
+    synchronized void noteCpuBudgetEntriesLost(long lost) {
+        if (lost < 1L) {
+            throw new IllegalArgumentException("lost must be at least 1: " + lost);
+        }
+        cpuBudgetEntriesLost += lost;
+    }
+
+    /** The log's Clear (ruling E22): restarts the count and forgets every entry, drained or not, and every loss. */
     synchronized void clear() {
         restartCount();
         entries.clear();
         undrained.clear();
+        cpuBudgetEntriesLost = 0L;
+        clears++;
+    }
+
+    /**
+     * How many times the log was cleared: the CPU budget log's listener
+     * writes a track's entry again after a Clear (ruling E199).
+     *
+     * @return the Clears so far
+     */
+    synchronized long clears() {
+        return clears;
+    }
+
+    private void writeTheLostCpuBudgetEntries() {
+        if (cpuBudgetEntriesLost == 0L) {
+            return;
+        }
+        long nanos = nanoClock.getAsLong();
+        append(new Entry(Detail.CPU_BUDGET_ENTRIES_NOT_LOGGED, List.of(cpuBudgetEntriesLost), 1L,
+                wallClock.instant(), nanos), nanos);
+        cpuBudgetEntriesLost = 0L;
     }
 
     /**
@@ -328,22 +371,26 @@ final class XrunJournal {
 
     /**
      * The entries written since the previous call, oldest first — each entry
-     * once, at most the newest {@value #MAX_ENTRIES}.
+     * once, at most the newest {@value #MAX_ENTRIES}; the entry for CPU
+     * budget markings lost since then is written first, so it is the newest.
      *
      * @return the new entries
      */
     synchronized List<Entry> drain() {
+        writeTheLostCpuBudgetEntries();
         List<Entry> fresh = List.copyOf(undrained);
         undrained.clear();
         return fresh;
     }
 
     /**
-     * The newest entries, oldest first, at most {@value #MAX_ENTRIES}.
+     * The newest entries, oldest first, at most {@value #MAX_ENTRIES}; the
+     * entry for CPU budget markings lost so far is written first.
      *
      * @return the entries
      */
     synchronized List<Entry> entries() {
+        writeTheLostCpuBudgetEntries();
         return List.copyOf(entries);
     }
 

@@ -184,11 +184,13 @@ import java.util.logging.Logger;
  * because the stop covers it. When an input ends mid-take its tracks' next
  * block has zero width: each track is flagged once, gets an
  * {@code input-stopped} entry at the end of the last block the input
- * delivered (the take's start frame if it delivered none, the punch-in frame
- * when that end lies outside the punch region; inside the loop range in a
- * loop take, where the resume frame may lie before the stop), and one
- * warning. Clock events handed in through {@link #noteClockEvent} are
- * written as {@code clock} entries on the next pass, or at the seal.</p>
+ * delivered (the take's start frame if it delivered none, the punch region's
+ * first frame in the lap of the input's own frames at the flagging block
+ * when that end lies outside the region; inside the loop range in a loop
+ * take, where the resume frame may lie before the stop), and one warning,
+ * which names the lap in a loop-record take. Clock events handed in through
+ * {@link #noteClockEvent} are written as {@code clock} entries on the next
+ * pass, or at the seal.</p>
  *
  * <p><strong>Failure.</strong> An {@link UncheckedIOException} from a
  * session or any other {@link Throwable} while a block is applied or while
@@ -339,6 +341,27 @@ public final class CaptureFlushService {
     private int[] openedInputWidths;
     /** Per source, the end frame of the last block its input delivered, or {@link #NOTHING_DELIVERED}. */
     private long[] sourceDeliveredEndFrame = {NOTHING_DELIVERED};
+    /**
+     * Per source, how many times its ring's blocks stepped back in beats
+     * while the loop was enabled: the lap of that input's own frames, which
+     * for an input beside the stream a stall leaves behind the transport's
+     * (ruling E186). Each ring is applied in its own order, so the count
+     * does not depend on how the drain interleaves the rings. Known limit: a
+     * seek backwards while the loop is enabled counts as a wrap, as it does
+     * for the lanes. Known limit: an overflow of this ring a lap long or
+     * longer can hide a wrap from this count, as it does from the lanes, which
+     * then lag the transport by the laps it hid; the overflow's gap line, its
+     * warning and the take's dropout count report it, and a stop flagged after
+     * it takes its region start from the lap the lanes counted (ruling E190).
+     */
+    private long[] sourceWraps = {0L};
+    /**
+     * Per source, the lap its input's delivered end lies in: {@link #sourceWraps}
+     * at the last block it delivered, plus the wraps that block ran across
+     * before its end; an end on the loop end stays in the lap it completed
+     * (ruling E176).
+     */
+    private long[] sourceWrapsAtDelivery = {0L};
     /** Per source, the run of input-starved blocks written since its last delivered block. */
     private StarvedRuns starvedRuns = new StarvedRuns(1);
     private FileLossCounts fileLosses = new FileLossCounts(1);
@@ -348,6 +371,8 @@ public final class CaptureFlushService {
         inputRings = rings.clone();
         sourceDeliveredEndFrame = new long[rings.length];
         Arrays.fill(sourceDeliveredEndFrame, NOTHING_DELIVERED);
+        sourceWraps = new long[rings.length];
+        sourceWrapsAtDelivery = new long[rings.length];
         starvedRuns = new StarvedRuns(rings.length);
         fileLosses = new FileLossCounts(rings.length);
         sourcePreviousBeat = new double[rings.length];
@@ -1165,14 +1190,17 @@ public final class CaptureFlushService {
             // Detected before routing so the wrapped audio goes into the new
             // lane — sample-accurate loop boundaries.
             double currentBeatPosition = slot.beatPosition();
-            if (config.loopRecord()
-                    && previousBeat >= 0.0
+            boolean wrapped = previousBeat >= 0.0
                     && currentBeatPosition < previousBeat
-                    && slot.loopEnabled()) {
+                    && slot.loopEnabled();
+            if (config.loopRecord() && wrapped) {
                 // The lane opened at the wrap starts where its first frame is
                 // written — this block's, or a later one's under punch
                 // gating (TrackCapture.noteWrittenSlice; PR #984 review).
                 finalizeLoopLap();
+            }
+            if (wrapped) {
+                sourceWraps[inputSource] = sourceWraps[inputSource] + 1;
             }
             previousBeat = currentBeatPosition;
 
@@ -1491,13 +1519,29 @@ public final class CaptureFlushService {
      * engine declared it stalled — so the track is flagged once, its stop is
      * recorded as an {@code input-stopped} entry and warned in the words of
      * story 338's ruling E14 — "the audio input" for an input with no name to
-     * show (ruling E127); a narrower block is a routing mismatch.
+     * show (ruling E127); a narrower block is a routing mismatch. In a take
+     * recorded with loop recording the warning names the lap that holds the
+     * input's last delivered frame, with that frame's position in the lap's
+     * own file (ruling E172).
      *
      * <p>In a punch take the stop is a frame of the file: the input's
-     * delivered end when it lies inside the punch region, otherwise the
-     * punch-in frame, where the file's silence begins (rulings E77 and E88);
-     * the resume frame is never before it. "Delivered no audio" means no
-     * delivered block reached the track's file in any lap.</p>
+     * delivered end when it lies inside the punch region, otherwise the first
+     * frame of the region in the lap of the input's own frames at the block
+     * that flags it — the lane whose file the flag is written in — where the
+     * file's silence begins: the punch-in frame in lap 1, the later of the
+     * punch-in and the loop start in a later lap (rulings E77, E88, E179 and
+     * E186). The stop's lap is the lap its frame lies in: for a delivered
+     * end, the input's own lap at its last delivery, one more for each wrap
+     * that block ran across before its end; an end on the loop end stays in
+     * the lap it completed (ruling E176). The resume's lap is the transport's at the flagging block, which the render
+     * thread stamped on it ({@link CaptureRing.Slot#transportLap()}); a slot
+     * with no stamp is in the input's own lap. While the two laps are the
+     * same the resume frame is never before the stop; otherwise it is the
+     * output clock's frame, never before that lap's first frame of the region,
+     * so a resume before the stop says the wrap lies between them (rulings
+     * E89, E179 and E186). The stream's own input has no clock frame: its
+     * resume is its stop. "Delivered no audio" means no delivered block
+     * reached the track's file in any lap.</p>
      */
     private void flagUnavailable(TrackCapture capture, int available, CaptureRing.Slot slot) {
         if (available > 0) {
@@ -1505,26 +1549,51 @@ public final class CaptureFlushService {
             return;
         }
         if (!flagRoute(capture, available)) return;
-        long delivered = sourceDeliveredEndFrame[capture.inputSource()];
+        int source = capture.inputSource();
+        long delivered = sourceDeliveredEndFrame[source];
         long stopFrame = Math.max(0L, delivered == NOTHING_DELIVERED ? config.recordingStartFrame() : delivered);
+        long transportLap = slot.transportLap() != CaptureRing.NO_TRANSPORT_LAP
+                ? slot.transportLap() : sourceWraps[source];
+        boolean stopInTheTransportsLap = true;
         if (slot.punchEnabled()) {
             boolean deliveredInside = delivered > slot.punchStartFrames() && delivered < slot.punchEndFrames();
-            stopFrame = deliveredInside ? delivered : Math.max(0L, slot.punchStartFrames());
+            long stopLap = deliveredInside ? sourceWrapsAtDelivery[source] : sourceWraps[source];
+            stopFrame = deliveredInside ? delivered : regionStartInLap(slot, stopLap);
+            stopInTheTransportsLap = stopLap == transportLap;
         }
         long outputClockFrame = slot.outputClockFrame();
-        long resumeFrame = outputClockFrame == CaptureRing.NO_OUTPUT_CLOCK_FRAME
-                ? stopFrame : Math.max(0L, outputClockFrame);
-        if (slot.punchEnabled()) {
-            resumeFrame = Math.max(resumeFrame, stopFrame);
+        long resumeFrame = stopFrame;
+        if (outputClockFrame != CaptureRing.NO_OUTPUT_CLOCK_FRAME) {
+            resumeFrame = Math.max(0L, outputClockFrame);
+            if (slot.punchEnabled()) {
+                // In the stop's lap a clock frame before the stop is the block across the region's start.
+                resumeFrame = Math.max(resumeFrame,
+                        stopInTheTransportsLap ? stopFrame : regionStartInLap(slot, transportLap));
+            }
         }
         manifest.addInputStopped(new TakeManifest.InputStopped(capture.trackId(), stopFrame, resumeFrame));
         String lead = "Track '" + capture.trackName() + "': " + InputNames.shown(capture.inputDeviceName())
                 .map(name -> "input from '" + name + "' ").orElse("the audio input ");
+        String stoppedIn = config.loopRecord()
+                ? "lap " + (capture.laneAtLastDelivery() + 1) + " of the take" : "the take";
         warn(capture.hasRoutedDeliveredBlock()
                 ? lead + "stopped delivering audio at "
                         + takePosition(capture.recordedAtLastDelivery(), config.format().sampleRate())
-                        + " into the take; the track records silence from there."
+                        + " into " + stoppedIn + "; the track records silence from there."
                 : lead + "delivered no audio; the track records silence.");
+    }
+
+    /**
+     * The first frame of the slot's punch region played in the lap after
+     * {@code wraps} wraps: the punch-in frame in lap 1, the later of the
+     * punch-in and the loop start in a later lap (rulings E179 and E186).
+     */
+    private static long regionStartInLap(CaptureRing.Slot slot, long wraps) {
+        long punchIn = Math.max(0L, slot.punchStartFrames());
+        if (wraps == 0 || !FrameSpans.looped(slot.loopStartFrame(), slot.loopEndFrame())) {
+            return punchIn;
+        }
+        return Math.max(punchIn, slot.loopStartFrame());
     }
 
     /** Flags the track's route once in the manifest; {@code false} when it already was. */
@@ -1539,7 +1608,8 @@ public final class CaptureFlushService {
 
     /**
      * {@code m:ss.s} of {@code frames} at {@code sampleRate}: a track's
-     * position in its own file (story 338, ruling E51).
+     * position in the file of the lane it was recording — the take's file,
+     * or in a loop-record take one lap's (story 338, rulings E51 and E172).
      */
     static String takePosition(long frames, double sampleRate) {
         long tenths = Math.round(Math.max(0L, frames) * 10.0 / sampleRate);
@@ -1571,8 +1641,11 @@ public final class CaptureFlushService {
             return;
         }
         if (slot.sourceChannels(0) > 0) {
-            sourceDeliveredEndFrame[source] = FrameSpans.intoLoop(blockEnd, slot.loopStartFrame(),
-                    slot.loopEndFrame());
+            long loopStart = slot.loopStartFrame();
+            long loopEnd = slot.loopEndFrame();
+            sourceDeliveredEndFrame[source] = FrameSpans.intoLoop(blockEnd, loopStart, loopEnd);
+            sourceWrapsAtDelivery[source] = sourceWraps[source]
+                    + FrameSpans.wrapsBeforeTheEnd(blockEnd, loopStart, loopEnd);
             endStarvedRun(source, true);
         } else if (slot.punchEnabled()
                 && !FrameSpans.overlaps(blockStart, blockEnd, slot.punchStartFrames(), slot.punchEndFrames())) {

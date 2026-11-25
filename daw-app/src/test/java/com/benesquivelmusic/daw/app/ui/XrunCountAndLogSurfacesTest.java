@@ -74,7 +74,7 @@ class XrunCountAndLogSurfacesTest {
         });
         EngineHealthStatus model = onFx(EngineHealthStatus::new);
         EngineHealthFeed feed = EngineHealthFeed.forWindow(model, controller, () -> null, () -> null,
-                _ -> Optional.empty());
+                _ -> Optional.empty(), () -> null, () -> { });
         Runnable removal = dispatcher.addPulseParticipant(feed::pulse);
         SessionStatusStrip strip = onFx(() -> {
             SessionStatusStrip made = new SessionStatusStrip(new ProjectOperationProgress(new FxDispatcher()),
