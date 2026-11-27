@@ -7,6 +7,9 @@ import com.benesquivelmusic.daw.app.ui.ClockStatusIndicator.OwnRead;
 import com.benesquivelmusic.daw.app.ui.ClockStatusIndicator.State;
 import com.benesquivelmusic.daw.app.ui.TakeClockMarks.TakeRecording;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeContrastValidator;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import com.benesquivelmusic.daw.app.ui.theme.UiScale;
 import com.benesquivelmusic.daw.core.audio.OpenedStream;
 import com.benesquivelmusic.daw.sdk.audio.ClockKind;
 import com.benesquivelmusic.daw.sdk.audio.ClockLockStatus;
@@ -14,7 +17,28 @@ import com.benesquivelmusic.daw.sdk.audio.ClockSource;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.MockAudioBackend;
 
+import javafx.application.Platform;
+import javafx.collections.SetChangeListener;
 import javafx.css.PseudoClass;
+import javafx.css.TransitionEvent;
+import javafx.geometry.Bounds;
+import javafx.geometry.Insets;
+import javafx.scene.Node;
+import javafx.scene.Scene;
+import javafx.scene.effect.Effect;
+import javafx.scene.layout.Background;
+import javafx.scene.layout.BackgroundFill;
+import javafx.scene.layout.Border;
+import javafx.scene.layout.BorderStroke;
+import javafx.scene.layout.BorderWidths;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Region;
+import javafx.scene.layout.VBox;
+import javafx.scene.paint.Color;
+import javafx.scene.paint.LinearGradient;
+import javafx.scene.paint.Paint;
+import javafx.scene.paint.Stop;
+import javafx.stage.Stage;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -28,19 +52,26 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.prefs.AbstractPreferences;
 import java.util.regex.Pattern;
+import java.util.stream.LongStream;
 import java.util.stream.Stream;
 
 import static com.benesquivelmusic.daw.app.ui.DeviceLossRecordingFixture.onFx;
@@ -52,7 +83,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * E101, E108, E110, E111, E119, E135, E136 and E141 to E145): its one decision
  * table, its seven states, the copy of each, and how it derives them on
  * every pulse from the open
- * stream's clock-lock status — a level, never an event — over a fake engine
+ * stream's clock-lock status — a level that also carries its measurement's
+ * newest changes, never an event — over a fake engine
  * whose label reads the test runs itself and a fake nanosecond clock.
  * {@code ClockBadgeDuringATakeTest} runs the window's wiring over a real
  * engine and a real take.
@@ -81,6 +113,9 @@ class ClockStatusIndicatorTest {
     private static final String UNLOCK_NOTICE = "External clock lost on Interface A (Word Clock)."
             + " Check the clock cable and the clock master.";
     private static final String RELOCK_NOTICE = "External clock locked again on Interface A (Word Clock).";
+    /** An unlock and its relock that came and went between two looks, with no take (ruling E216). */
+    private static final String LOST_AND_RELOCKED_NOTICE = "External clock on Interface A (Word Clock) was lost"
+            + " and has locked again. Check the clock cable and the clock master.";
     private static final String STARTING_TOOLTIP =
             "Clock source when the audio stream last ran. Lock is not checked yet on this stream.";
     private static final String CLOSED_TOOLTIP =
@@ -88,6 +123,12 @@ class ClockStatusIndicatorTest {
     private static final long SECOND = TimeUnit.SECONDS.toNanos(1);
     /** What {@link RecordingMarks} records for a take that starts while an unlock is on show (ruling E173). */
     private static final String UNLOCKED_AT_THE_START = "unlocked at the take's start";
+    /** The states that show the label while the lock is not checked: the dim view (rulings E81, E100 and E119). */
+    private static final List<State> UNCHECKED =
+            List.of(State.CHECKING, State.NOT_MEASURABLE, State.CLOSED, State.STARTING);
+    /** The role tokens the look tests compare with, each read from a probe the window's theme styles. */
+    private static final List<String> PROBED_TOKENS =
+            List.of("-danger", "-text-hi", "-text-on-accent", "-text", "-text-mute", "-surface-3");
 
     private final FakeClock clock = new FakeClock();
     private final ManualReads reads = new ManualReads();
@@ -428,6 +469,380 @@ class ClockStatusIndicatorTest {
 
         assertThat(view(badge).state()).as("premise: the internal source is measured").isEqualTo(State.QUIET);
         assertThat(marks.marks).as("an internal clock has no lock to mark").isEmpty();
+    }
+
+    /** Ruling E216: what came and went between two looks is one warning and every mark, in order. */
+    @Test
+    void anUnlockAndItsRelockBetweenTwoLooksAreOneWarningAndTwoMarksInOrder() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        statusNow(badge, locked(1, 5L));
+
+        statusNow(badge, history(1, ClockLockStatus.Lock.LOCKED, change(1, 7L), change(2, 9L)));
+
+        assertThat(view(badge).state()).isEqualTo(State.QUIET);
+        assertThat(notices).containsExactly(LOST_AND_RELOCKED_NOTICE);
+        assertThat(informationNotices).as("a warning, not information").isEmpty();
+        assertThat(marks.marks).as("each at its own evidence, in order").containsExactly("unlocked@7", "locked@9");
+    }
+
+    @Test
+    void severalUnlocksBetweenTwoLooksSayHowMany() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        statusNow(badge, locked(1, 5L));
+
+        statusNow(badge, history(1, ClockLockStatus.Lock.LOCKED, change(1, 7L), change(2, 9L), change(3, 11L),
+                change(4, 13L)));
+
+        assertThat(notices).containsExactly("External clock on Interface A (Word Clock) was lost 2 times and has"
+                + " locked again. Check the clock cable and the clock master.");
+        assertThat(marks.marks).containsExactly("unlocked@7", "locked@9", "unlocked@11", "locked@13");
+    }
+
+    /** Ruling E223: the take sentence only when one of the look's unlocks left an audio take marked. */
+    @Test
+    void theCombinedNoticeEndsAsTheTakeAndItsMarksAllow() throws Exception {
+        String audio = lostAndRelockedWhile(TakeRecording.AUDIO, true);
+        String withoutAudio = lostAndRelockedWhile(TakeRecording.WITHOUT_AUDIO, true);
+        String audioNotMarked = lostAndRelockedWhile(TakeRecording.AUDIO, false);
+
+        assertThat(audio).isEqualTo(LOST_AND_RELOCKED_NOTICE
+                + " Recording continues; the take is marked where it was lost.");
+        assertThat(withoutAudio).as("ruling E108").isEqualTo(LOST_AND_RELOCKED_NOTICE + " Recording continues.");
+        assertThat(audioNotMarked).as("the audio take holds no unlock after the look")
+                .isEqualTo(LOST_AND_RELOCKED_NOTICE + " Recording continues.");
+    }
+
+    @Test
+    void aRelockAndAnUnlockWhileUnlockedIsShownAreMarkedWithNoNotice() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        statusNow(badge, history(1, ClockLockStatus.Lock.UNLOCKED, change(1, 7L)));
+
+        statusNow(badge, history(1, ClockLockStatus.Lock.UNLOCKED, change(1, 7L), change(2, 9L), change(3, 11L)));
+
+        assertThat(view(badge).state()).isEqualTo(State.UNLOCKED);
+        assertThat(notices).as("the unlock on show is not announced again").containsExactly(UNLOCK_NOTICE);
+        assertThat(marks.marks).containsExactly("unlocked@7", "locked@9", "unlocked@11");
+    }
+
+    @Test
+    void aTransitionAlreadyAppliedIsNeverReplayed() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        statusNow(badge, locked(1, 5L));
+        statusNow(badge, history(1, ClockLockStatus.Lock.LOCKED, change(1, 7L), change(2, 9L)));
+
+        look(badge);
+        look(badge);
+
+        assertThat(notices).containsExactly(LOST_AND_RELOCKED_NOTICE);
+        assertThat(marks.marks).containsExactly("unlocked@7", "locked@9");
+    }
+
+    /** Rulings E220 and E252: a loss consumes the serial in play; only a change after it is replayed. */
+    @Test
+    void aLossConsumesItsSerialsTransitions() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        statusNow(badge, locked(1, 5L));
+        clock.lost = true;
+        look(badge);
+
+        clock.lost = false;
+        statusNow(badge, history(1, ClockLockStatus.Lock.LOCKED, change(1, 7L), change(2, 9L)));
+        List<String> noticesAtTheReturn = List.copyOf(notices);
+        List<String> marksAtTheReturn = List.copyOf(marks.marks);
+        statusNow(badge, history(1, ClockLockStatus.Lock.UNLOCKED, change(1, 7L), change(2, 9L), change(3, 11L)));
+
+        assertThat(noticesAtTheReturn).as("nothing of the consumed serial is replayed").isEmpty();
+        assertThat(marksAtTheReturn).isEmpty();
+        assertThat(notices).as("a change after the return").containsExactly(UNLOCK_NOTICE);
+        assertThat(marks.marks).containsExactly("unlocked@11");
+    }
+
+    /** Rulings E220 and E259: a close consumes the serial last applied. */
+    @Test
+    void aCloseConsumesItsSerialsTransitions() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        statusNow(badge, locked(1, 5L));
+        clock.closeStream();
+        look(badge);
+
+        clock.status = Optional.of(history(1, ClockLockStatus.Lock.LOCKED, change(1, 7L), change(2, 9L)));
+        opened(badge);
+        List<String> noticesAtTheReopen = List.copyOf(notices);
+        List<String> marksAtTheReopen = List.copyOf(marks.marks);
+        statusNow(badge, history(1, ClockLockStatus.Lock.UNLOCKED, change(1, 7L), change(2, 9L), change(3, 11L)));
+
+        assertThat(view(badge).state()).as("premise: the reopened stream is measured").isEqualTo(State.UNLOCKED);
+        assertThat(noticesAtTheReopen).as("nothing of the consumed serial is replayed").isEmpty();
+        assertThat(marksAtTheReopen).isEmpty();
+        assertThat(notices).as("a change after the reopen").containsExactly(UNLOCK_NOTICE);
+        assertThat(marks.marks).containsExactly("unlocked@11");
+    }
+
+    /**
+     * Rulings E252 and E268: the first look of a loss consumes the serial last applied, never the one it read, so
+     * a serial first read at a loss has its own changes replayed at its first measuring look.
+     */
+    @Test
+    void aSerialFirstReadAtALossIsReplayedOnceTheBadgeMeasuresIt() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        statusNow(badge, locked(1, 5L));
+
+        clock.status = Optional.of(history(2, ClockLockStatus.Lock.UNLOCKED, change(1, 7L)));
+        clock.lost = true;
+        look(badge);
+        clock.lost = false;
+        clock.status = Optional.of(history(2, ClockLockStatus.Lock.LOCKED, change(1, 7L), change(2, 9L)));
+        look(badge);
+
+        assertThat(view(badge).state()).as("premise: measured after the loss").isEqualTo(State.QUIET);
+        assertThat(notices).containsExactly(LOST_AND_RELOCKED_NOTICE);
+        assertThat(marks.marks).containsExactly("unlocked@7", "locked@9");
+    }
+
+    /**
+     * Ruling E268: the first look of a loss consumes the serial last applied, never the one it read, which can be
+     * that of a stream opened after the loss began; that stream's changes are replayed at its first measuring look.
+     */
+    @Test
+    void aLossWhoseFirstLookReadsANewStreamConsumesOnlyTheSerialLastApplied() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        statusNow(badge, locked(1, 5L));
+
+        clock.lost = true;
+        clock.closeStream();
+        clock.status = Optional.of(checking(2));
+        clock.openStream();
+        look(badge);
+        clock.lost = false;
+        statusNow(badge, history(2, ClockLockStatus.Lock.LOCKED, change(1, 7L), change(2, 9L)));
+
+        assertThat(view(badge).state()).as("premise: measured after the loss").isEqualTo(State.QUIET);
+        assertThat(notices).containsExactly(LOST_AND_RELOCKED_NOTICE);
+        assertThat(marks.marks).containsExactly("unlocked@7", "locked@9");
+    }
+
+    /**
+     * Ruling E268: a look reads the lock status before the loss, so a stream opened as the loss begins, between
+     * that look's two reads, is never measured before the loss is seen and has its changes replayed once it ends.
+     */
+    @Test
+    void aStreamOpenedAsALossBeginsInsideALookHasItsChangesReplayedOnceTheLossEnds() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        statusNow(badge, locked(1, 5L));
+
+        clock.afterTheNextLossOrStatusRead = () -> {
+            clock.lost = true;
+            clock.closeStream();
+            clock.status = Optional.of(checking(2));
+            clock.openStream();
+        };
+        look(badge);
+        look(badge);
+        clock.lost = false;
+        statusNow(badge, history(2, ClockLockStatus.Lock.LOCKED, change(1, 7L), change(2, 9L)));
+
+        assertThat(clock.afterTheNextLossOrStatusRead).as("premise: the loss began inside the first look").isNull();
+        assertThat(notices).containsExactly(LOST_AND_RELOCKED_NOTICE);
+        assertThat(marks.marks).containsExactly("unlocked@7", "locked@9");
+    }
+
+    /** Ruling E252: later looks of a loss consume nothing, so a stream reopened during it is replayed. */
+    @Test
+    void aStreamReopenedDuringALossHasItsOwnChangesReplayedOnceTheLossEnds() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        statusNow(badge, locked(1, 5L));
+
+        clock.lost = true;
+        look(badge);
+        clock.status = Optional.of(checking(2));
+        look(badge);
+        clock.lost = false;
+        clock.status = Optional.of(history(2, ClockLockStatus.Lock.LOCKED, change(1, 7L), change(2, 9L)));
+        look(badge);
+
+        assertThat(notices).containsExactly(LOST_AND_RELOCKED_NOTICE);
+        assertThat(marks.marks).containsExactly("unlocked@7", "locked@9");
+    }
+
+    /**
+     * Rulings E252 and E259: a later look of a close that reads a stream
+     * opened after it consumes nothing; that stream's standing unlock is
+     * announced and marked.
+     */
+    @Test
+    void aLaterLookOfACloseThatReadsANewStreamForgetsNothing() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        statusNow(badge, locked(1, 5L));
+        clock.closeStream();
+        look(badge);
+
+        clock.status = Optional.of(history(2, ClockLockStatus.Lock.UNLOCKED, change(1, 7L)));
+        clock.afterTheNextEngineRead = clock::openStream;
+        look(badge);
+
+        assertThat(notices).containsExactly(UNLOCK_NOTICE);
+        assertThat(marks.marks).containsExactly("unlocked@7");
+    }
+
+    /** Rulings E216, E219 and E259: as above, with changes that only a replay marks. */
+    @Test
+    void aLaterLookOfACloseThatReadsANewStreamKeepsItsChangesForTheReplay() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        statusNow(badge, locked(1, 5L));
+        clock.closeStream();
+        look(badge);
+
+        clock.status = Optional.of(history(2, ClockLockStatus.Lock.UNLOCKED, change(1, 7L), change(2, 9L),
+                change(3, 11L)));
+        clock.afterTheNextEngineRead = clock::openStream;
+        look(badge);
+
+        assertThat(notices).containsExactly(UNLOCK_NOTICE);
+        assertThat(marks.marks).containsExactly("unlocked@7", "locked@9", "unlocked@11");
+    }
+
+    /**
+     * Ruling E259: the first look of a close can read a stream that opened
+     * during that look; the close consumes the serial last applied, never
+     * the one it read, whose changes are replayed.
+     */
+    @Test
+    void aCloseWhoseFirstLookReadsANewStreamConsumesOnlyTheSerialLastApplied() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        statusNow(badge, locked(1, 5L));
+        clock.closeStream();
+
+        clock.status = Optional.of(history(2, ClockLockStatus.Lock.LOCKED, change(1, 7L), change(2, 9L)));
+        clock.afterTheNextEngineRead = clock::openStream;
+        look(badge);
+
+        assertThat(notices).containsExactly(LOST_AND_RELOCKED_NOTICE);
+        assertThat(marks.marks).containsExactly("unlocked@7", "locked@9");
+    }
+
+    /** Ruling E219: the first measuring look of a serial replays it from its start. */
+    @Test
+    void aFirstMeasuringLookReplaysItsSerialFromItsStart() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+
+        statusNow(badge, history(2, ClockLockStatus.Lock.LOCKED, change(1, 7L), change(2, 9L)));
+
+        assertThat(notices).containsExactly(LOST_AND_RELOCKED_NOTICE);
+        assertThat(marks.marks).containsExactly("unlocked@7", "locked@9");
+    }
+
+    @Test
+    void aLookThatDoesNotMeasureAppliesNothing() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        statusNow(badge, historyOn(SPDIF.id(), 1, ClockLockStatus.Lock.LOCKED, change(1, 7L), change(2, 9L)));
+        State notMeasured = view(badge).state();
+        List<String> noticesNotMeasured = List.copyOf(notices);
+        List<String> marksNotMeasured = List.copyOf(marks.marks);
+
+        statusNow(badge, history(1, ClockLockStatus.Lock.LOCKED, change(1, 7L), change(2, 9L)));
+
+        assertThat(notMeasured).as("premise: the status names another source").isEqualTo(State.CHECKING);
+        assertThat(noticesNotMeasured).isEmpty();
+        assertThat(marksNotMeasured).isEmpty();
+        assertThat(notices).containsExactly(LOST_AND_RELOCKED_NOTICE);
+        assertThat(marks.marks).containsExactly("unlocked@7", "locked@9");
+    }
+
+    /**
+     * Ruling E218: more changes than the status keeps are a gap, marked
+     * unlocked from three seconds before the look that applied the serial
+     * last, and counted "or more" with one unlock for the gap.
+     */
+    @Test
+    void aGapIsMarkedFromThreeSecondsBeforeTheLastLookAndCountedAsOrMore() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        nanos.set(20 * SECOND);
+        statusNow(badge, locked(1, 5 * SECOND));
+
+        statusNow(badge, history(1, ClockLockStatus.Lock.LOCKED, changes(3, 34, 21 * SECOND)));
+
+        assertThat(marks.marks).hasSize(33)
+                .startsWith("unlocked@17000000000", "unlocked@21000000003", "locked@21000000004");
+        assertThat(notices).containsExactly("External clock on Interface A (Word Clock) was lost 17 or more times"
+                + " and has locked again. Check the clock cable and the clock master.");
+    }
+
+    /** Ruling E218: the gap's mark is never dated before the evidence of the status last applied. */
+    @Test
+    void aGapIsNeverMarkedBeforeTheEvidenceOfTheStatusLastApplied() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        nanos.set(20 * SECOND);
+        statusNow(badge, locked(1, 19 * SECOND));
+
+        statusNow(badge, history(1, ClockLockStatus.Lock.LOCKED, changes(3, 34, 21 * SECOND)));
+
+        assertThat(marks.marks).first().isEqualTo("unlocked@19000000000");
+    }
+
+    @Test
+    void aGapWhileUnlockedIsShownGivesNoNotice() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        nanos.set(20 * SECOND);
+        statusNow(badge, history(1, ClockLockStatus.Lock.UNLOCKED, change(1, 15 * SECOND)));
+
+        statusNow(badge, history(1, ClockLockStatus.Lock.UNLOCKED, changes(4, 35, 21 * SECOND)));
+
+        assertThat(notices).containsExactly(UNLOCK_NOTICE);
+        assertThat(marks.marks).startsWith("unlocked@15000000000", "unlocked@17000000000", "locked@21000000004",
+                "unlocked@21000000005");
+    }
+
+    /** Ruling E218: a gap at a serial's first measuring look is marked from the take's start. */
+    @Test
+    void aGapAtAFirstMeasuringLookIsMarkedFromTheTakesStart() throws Exception {
+        nanos.set(20 * SECOND);
+        ClockStatusIndicator badge = externalBadge();
+        marks.recording = TakeRecording.AUDIO;
+
+        statusNow(badge, history(2, ClockLockStatus.Lock.LOCKED, changes(3, 34, 21 * SECOND)));
+
+        assertThat(marks.marks).startsWith(UNLOCKED_AT_THE_START, "unlocked@21000000003");
+        assertThat(notices).containsExactly("External clock on Interface A (Word Clock) was lost 17 or more times"
+                + " and has locked again. Check the clock cable and the clock master. Recording continues; the take"
+                + " is marked where it was lost.");
+    }
+
+    @Test
+    void anInternalSourceReplaysNothing() throws Exception {
+        ClockStatusIndicator badge = badge();
+        clock.reading = Optional.of(new ClockReading(INTERFACE, List.of(INTERNAL, WORD_CLOCK_IDLE), 48_000));
+        clock.status = Optional.of(historyOn(INTERNAL.id(), 1, ClockLockStatus.Lock.LOCKED, change(1, 7L),
+                change(2, 9L)));
+        opened(badge);
+        look(badge);
+
+        assertThat(view(badge).state()).as("premise: the internal source is measured").isEqualTo(State.QUIET);
+        assertThat(notices).isEmpty();
+        assertThat(marks.marks).as("an internal clock has no lock to mark").isEmpty();
+    }
+
+    /** Rulings E173 and E216: the take's start mark comes before the changes the same look hands over. */
+    @Test
+    void theStartMarkComesBeforeTheTransitionsItMissed() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        statusNow(badge, history(1, ClockLockStatus.Lock.UNLOCKED, change(1, 7L)));
+        marks.recording = TakeRecording.AUDIO;
+
+        statusNow(badge, history(1, ClockLockStatus.Lock.LOCKED, change(1, 7L), change(2, 9L)));
+
+        assertThat(marks.marks).containsExactly("unlocked@7", UNLOCKED_AT_THE_START, "locked@9");
+        assertThat(notices).containsExactly(UNLOCK_NOTICE, RELOCK_NOTICE);
+    }
+
+    @Test
+    void oneLookGivesOneNotice() throws Exception {
+        ClockStatusIndicator badge = externalBadge();
+        statusNow(badge, locked(1, 5L));
+
+        statusNow(badge, history(1, ClockLockStatus.Lock.UNLOCKED, change(1, 7L), change(2, 9L), change(3, 11L)));
+
+        assertThat(notices).containsExactly(UNLOCK_NOTICE);
+        assertThat(marks.marks).containsExactly("unlocked@7", "locked@9", "unlocked@11");
     }
 
     @Test
@@ -986,7 +1401,7 @@ class ClockStatusIndicatorTest {
 
             runOnFx(() -> motion.setReduceMotion(true));
             boolean flashingUnderReduceMotion = onFx(badge::isFlashing);
-            boolean flashClass = onFx(() -> badge.getPseudoClassStates().contains(PseudoClass.getPseudoClass("flash")));
+            boolean flashClass = onFx(() -> badge.getPseudoClassStates().contains(ClockStatusIndicator.FLASH));
             runOnFx(badge::dispose);
 
             assertThat(flashingWithMotion).as("premise: the flash runs while motion is allowed").isTrue();
@@ -995,6 +1410,290 @@ class ClockStatusIndicatorTest {
             assertThat(view(badge).text()).as("the words carry the state").isEqualTo("⚠ W/C 48k UNLOCKED");
         } finally {
             MotionManager.setDefaultForTest(null);
+        }
+    }
+
+    /**
+     * Ruling E232: the unlocked flash is a two-tone ring stepped on over the
+     * badge's outer 2 px, so the words and the red under them are the same in
+     * both phases and keep their contrast in every theme. Opacity, an effect
+     * or a size change would dim or move the words exactly when they matter.
+     */
+    @Test
+    void theUnlockedTextAndItsFillStaySteadyWhileTheBadgeFlashesInEveryTheme() throws Exception {
+        List<Phases> themes = onAThemedBar((badge, themed) -> {
+            statusNow(badge, unlocked(1, 7L));
+            assertThat(view(badge).state()).as("premise: unlocked").isEqualTo(State.UNLOCKED);
+            assertThat(onFx(badge::isFlashing)).as("premise: no timeline steps the flash behind the test")
+                    .isFalse();
+            return onFx(() -> {
+                List<Phases> phases = new ArrayList<>();
+                for (ThemeManager.Theme theme : ThemeManager.Theme.values()) {
+                    themed.apply(theme, UiScale.P100);
+                    badge.pseudoClassStateChanged(ClockStatusIndicator.FLASH, false);
+                    Look rest = look(badge, themed, theme);
+                    badge.pseudoClassStateChanged(ClockStatusIndicator.FLASH, true);
+                    Look flash = look(badge, themed, theme);
+                    badge.pseudoClassStateChanged(ClockStatusIndicator.FLASH, false);
+                    phases.add(new Phases(themed.palette(), rest, flash));
+                }
+                return phases;
+            });
+        });
+
+        assertThat(themes.stream().map(phases -> phases.palette().token("-danger")).distinct())
+                .as("non-vacuity: each theme resolves its own -danger").hasSize(3);
+        for (Phases phases : themes) {
+            assertTheFlashKeepsTheWordsSteady(phases);
+        }
+    }
+
+    /**
+     * Rulings E233 and E234: in every theme the words of each other shown
+     * state read at 4.5:1 or more against what is under them, the fill or,
+     * where there is none, both stops of the transport bar's gradient.
+     */
+    @Test
+    void eachShownStatesTextIsReadableAgainstWhatIsUnderItInEveryTheme() throws Exception {
+        Shown shown = eachCheckedAndUncheckedStateInEveryTheme();
+
+        assertThat(shown.looks()).as("non-vacuity: five states in three themes").hasSize(15);
+        for (Look look : shown.looks()) {
+            Color words = colour(look.text());
+            Optional<Color> fill = opaqueLastFill(look);
+            List<Color> under = fill.isPresent() ? List.of(fill.get()) : shown.palettes().get(look.theme()).barStops();
+            for (Color surface : under) {
+                assertThat(contrast(words, surface))
+                        .as("%s in %s: the words against %s", look.state(), look.theme(),
+                                fill.isPresent() ? "the fill" : "the transport bar")
+                        .isGreaterThanOrEqualTo(ThemeContrastValidator.AA_NORMAL);
+            }
+        }
+    }
+
+    /**
+     * Ruling E234: while the lock is not checked the badge is an outlined chip
+     * with no fill, -text words in a -text-mute outline, so it never reads as
+     * the filled locked chip; and every state is the locked chip's size, so a
+     * change of state never moves the transport status beside it.
+     */
+    @Test
+    void theUncheckedStatesAreAnOutlinedChipTheSizeOfTheFilledLockedChip() throws Exception {
+        Shown shown = eachCheckedAndUncheckedStateInEveryTheme();
+
+        for (ThemeManager.Theme theme : ThemeManager.Theme.values()) {
+            Palette palette = shown.palettes().get(theme);
+            Look quiet = shown.in(State.QUIET, theme);
+            assertThat(opaqueLastFill(quiet)).as("%s: the locked chip is filled with -surface-3", theme)
+                    .contains(palette.token("-surface-3"));
+            assertThat(strokePaints(quiet.border())).as("%s: the locked chip shows no outline", theme)
+                    .allSatisfy(paint -> assertThat(colour(paint).getOpacity()).isZero());
+            assertThat(quiet.text()).as("%s: the locked chip's words are -text", theme)
+                    .isEqualTo(palette.token("-text"));
+            for (State state : UNCHECKED) {
+                assertAnOutlinedChipTheSizeOf(shown.in(state, theme), quiet, palette);
+            }
+        }
+    }
+
+    /**
+     * Ruling E233: at every UI scale the flash's ring, unscaled 2 px, lies
+     * inside the 1 px border plus the scaled padding, so it never reaches the
+     * words. The words' layout box is measured, not their glyphs' ink.
+     */
+    @Test
+    void theFlashRingStaysInsideTheBorderAndPaddingAtEveryUiScale() throws Exception {
+        List<Ring> rings = onAThemedBar((badge, themed) -> {
+            statusNow(badge, unlocked(1, 7L));
+            assertThat(view(badge).state()).as("premise: unlocked").isEqualTo(State.UNLOCKED);
+            List<Ring> measured = new ArrayList<>();
+            for (UiScale scale : UiScale.values()) {
+                measured.add(onFx(() -> {
+                    themed.apply(ThemeManager.Theme.ONYX_REFINED, scale);
+                    badge.pseudoClassStateChanged(ClockStatusIndicator.FLASH, true);
+                    themed.root().applyCss();
+                    themed.root().layout();
+                    List<BackgroundFill> fills = badge.getBackground().getFills();
+                    Node words = Objects.requireNonNull(badge.lookup(".text"), "the label's text node");
+                    return new Ring(scale, fills.size(), badge.getInsets(), fills.getLast().getInsets(),
+                            words.getBoundsInParent(), badge.getHeight());
+                }));
+            }
+            return measured;
+        });
+
+        assertThat(rings).as("non-vacuity: every UI scale").hasSize(UiScale.values().length);
+        for (Ring ring : rings) {
+            String step = ring.scale().label();
+            double padding = 2 * ring.scale().factor();
+            double sides = 8 * ring.scale().factor();
+            assertThat(ring.layers()).as("%s: premise: the ring is on", step).isEqualTo(3);
+            assertThat(List.of(ring.insets().getTop(), ring.insets().getRight(), ring.insets().getBottom(),
+                    ring.insets().getLeft()))
+                    .as("%s: the 1 px border plus the scaled padding", step)
+                    .usingElementComparator((a, b) -> Math.abs(a - b) <= 1e-6 ? 0 : Double.compare(a, b))
+                    .containsExactly(1 + padding, 1 + sides, 1 + padding, 1 + sides);
+            assertThat(ring.fill().getTop()).as("%s: the ring within the border and padding, top", step)
+                    .isLessThanOrEqualTo(ring.insets().getTop() + 1e-6);
+            assertThat(ring.fill().getRight()).as("%s: right", step)
+                    .isLessThanOrEqualTo(ring.insets().getRight() + 1e-6);
+            assertThat(ring.fill().getBottom()).as("%s: bottom", step)
+                    .isLessThanOrEqualTo(ring.insets().getBottom() + 1e-6);
+            assertThat(ring.fill().getLeft()).as("%s: left", step)
+                    .isLessThanOrEqualTo(ring.insets().getLeft() + 1e-6);
+            assertThat(ring.words().getMinY()).as("%s: the words start below the ring", step)
+                    .isGreaterThanOrEqualTo(ring.fill().getTop() - 1e-6);
+            assertThat(ring.words().getMaxY()).as("%s: and end above it", step)
+                    .isLessThanOrEqualTo(ring.height() - ring.fill().getBottom() + 1e-6);
+        }
+    }
+
+    /**
+     * Ruling E232: the flash is a step, not a pulse: each look is complete in
+     * the CSS pass that applies it, and no CSS transition runs on the badge.
+     * The badge is in a shown window, where a transition would run.
+     */
+    @Test
+    void theFlashStepsBetweenItsTwoLooksWithNoTransition() throws Exception {
+        List<TransitionEvent> transitions = new CopyOnWriteArrayList<>();
+        List<Paint> ring = new ArrayList<>();
+        List<Paint> rest = new ArrayList<>();
+        List<List<Paint>> steps = onAThemedBar((badge, themed) -> {
+            statusNow(badge, unlocked(1, 7L));
+            assertThat(view(badge).state()).as("premise: unlocked").isEqualTo(State.UNLOCKED);
+            return onFx(() -> {
+                assertThat(themed.stage().isShowing()).as("premise: the window is showing").isTrue();
+                Palette palette = themed.palette();
+                ring.addAll(List.of(palette.token("-text-hi"), palette.token("-text-on-accent"),
+                        palette.token("-danger")));
+                rest.add(palette.token("-danger"));
+                badge.addEventHandler(TransitionEvent.ANY, transitions::add);
+                List<List<Paint>> seen = new ArrayList<>();
+                for (boolean on : List.of(true, false, true, false)) {
+                    badge.pseudoClassStateChanged(ClockStatusIndicator.FLASH, on);
+                    themed.root().applyCss();
+                    seen.add(badge.getBackground().getFills().stream().map(BackgroundFill::getFill).toList());
+                }
+                return seen;
+            });
+        });
+
+        assertThat(transitions).as("no CSS transition on the badge").isEmpty();
+        assertThat(steps).as("each look complete in the pass that applies it: on, off, on, off")
+                .containsExactly(ring, rest, ring, rest);
+    }
+
+    /**
+     * Ruling E232: the flash's timeline steps a pseudo-class; it animates no
+     * property of the badge and dims nothing. Read with comments and string
+     * literals stripped.
+     */
+    @Test
+    void theFlashTimelineAnimatesNoPropertyOfTheBadge() throws Exception {
+        Path file = SourceScanSupport.locateDawAppModule()
+                .resolve("src/main/java/com/benesquivelmusic/daw/app/ui/ClockStatusIndicator.java");
+        String code = SourceScanSupport.stripStringLiterals(SourceScanSupport.stripComments(
+                Files.readString(file, StandardCharsets.UTF_8))).replaceAll("\\s+", " ");
+
+        assertThat(code.length()).as("non-vacuity: the badge was read").isGreaterThan(10_000);
+        assertThat(Stream.of("KeyValue", "Interpolator", "Transition", "setOpacity", "opacityProperty")
+                .filter(code::contains)).as("no interpolated value, no transition and no opacity").isEmpty();
+        assertThat(occurrences(code, "new KeyFrame(")).as("one key frame: the step").isEqualTo(1);
+    }
+
+    /**
+     * The real wiring behind the seam the look tests use: while motion is
+     * allowed, the unlocked badge's own timeline adds and then removes
+     * {@link ClockStatusIndicator#FLASH}, the pseudo-class the stylesheet's
+     * ring is keyed on. Each change is recorded on the FX thread as it happens.
+     */
+    @Test
+    void theRunningFlashTogglesThePseudoClassTheStylesheetKeysOn() throws Exception {
+        MotionManager motion = new MotionManager(new MemoryPreferences(), Optional::empty);
+        motion.setReduceMotion(false);
+        MotionManager.setDefaultForTest(motion);
+        List<Runnable> cleanUp = new ArrayList<>();
+        try {
+            ClockStatusIndicator badge = externalBadge();
+            cleanUp.add(badge::dispose);
+            List<Boolean> changes = new CopyOnWriteArrayList<>();
+            CountDownLatch twoChanges = new CountDownLatch(2);
+            runOnFx(() -> badge.getPseudoClassStates().addListener((SetChangeListener<PseudoClass>) change -> {
+                if (ClockStatusIndicator.FLASH.equals(change.getElementAdded())) {
+                    changes.add(true);
+                    twoChanges.countDown();
+                }
+                if (ClockStatusIndicator.FLASH.equals(change.getElementRemoved())) {
+                    changes.add(false);
+                    twoChanges.countDown();
+                }
+            }));
+
+            statusNow(badge, unlocked(1, 7L));
+            assertThat(view(badge).state()).as("premise: unlocked").isEqualTo(State.UNLOCKED);
+
+            assertThat(twoChanges.await(5, TimeUnit.SECONDS))
+                    .as("two steps of the flash within 5 s; seen (true when it came on): %s", changes).isTrue();
+            assertThat(changes).as("the timeline adds the flash, then removes it").startsWith(true, false);
+        } finally {
+            try {
+                runOnFx(() -> cleanUp.forEach(Runnable::run));
+            } finally {
+                MotionManager.setDefaultForTest(null);
+            }
+        }
+    }
+
+    /**
+     * Ruling E232 over the running timeline: each step it takes leaves the
+     * badge exactly as the look tests' toggle of {@link ClockStatusIndicator#FLASH}
+     * by hand leaves it in that phase, its padding and border included, so the
+     * timeline changes nothing else on the badge. Each step is read once the
+     * key frame's handler has returned.
+     */
+    @Test
+    void eachStepOfTheRunningFlashIsTheLookOfItsPhaseToggledByHand() throws Exception {
+        MotionManager motion = new MotionManager(new MemoryPreferences(), Optional::empty);
+        motion.setReduceMotion(true);
+        MotionManager.setDefaultForTest(motion);
+        List<Runnable> cleanUp = new ArrayList<>();
+        try {
+            ClockStatusIndicator badge = externalBadge();
+            cleanUp.add(badge::dispose);
+            ThemedBar themed = onFx(() -> themedBar(badge));
+            cleanUp.add(themed.stage()::hide);
+            statusNow(badge, unlocked(1, 7L));
+            assertThat(onFx(badge::isFlashing)).as("premise: no timeline while motion is reduced").isFalse();
+            Map<Boolean, FlashStep> byHand = onFx(() -> {
+                badge.pseudoClassStateChanged(ClockStatusIndicator.FLASH, false);
+                FlashStep rest = flashStep(badge, themed);
+                badge.pseudoClassStateChanged(ClockStatusIndicator.FLASH, true);
+                FlashStep flash = flashStep(badge, themed);
+                badge.pseudoClassStateChanged(ClockStatusIndicator.FLASH, false);
+                return Map.of(false, rest, true, flash);
+            });
+            List<FlashStep> steps = new CopyOnWriteArrayList<>();
+            runOnFx(() -> badge.getPseudoClassStates().addListener((SetChangeListener<PseudoClass>) change -> {
+                if (ClockStatusIndicator.FLASH.equals(change.getElementAdded())
+                        || ClockStatusIndicator.FLASH.equals(change.getElementRemoved())) {
+                    // Read once the key frame's handler has returned, so whatever else it set is seen too.
+                    Platform.runLater(() -> steps.add(flashStep(badge, themed)));
+                }
+            }));
+            runOnFx(() -> motion.setReduceMotion(false));
+            DeviceLossRecordingFixture.await(() -> steps.stream().anyMatch(FlashStep::flashing)
+                    && steps.stream().anyMatch(step -> !step.flashing()), "both phases of the running flash");
+
+            assertThat(byHand.get(true).fills()).as("non-vacuity: the two phases differ")
+                    .isNotEqualTo(byHand.get(false).fills());
+            assertThat(List.copyOf(steps)).as("each step of the running flash is its phase's look toggled by hand")
+                    .allSatisfy(step -> assertThat(step).isEqualTo(byHand.get(step.flashing())));
+        } finally {
+            try {
+                runOnFx(() -> cleanUp.forEach(Runnable::run));
+            } finally {
+                MotionManager.setDefaultForTest(null);
+            }
         }
     }
 
@@ -2332,6 +3031,44 @@ class ClockStatusIndicatorTest {
         return new ClockLockStatus(INTERFACE, sourceId, serial, lock, evidenceNanos);
     }
 
+    /** A status on Word Clock that carries {@code kept}, its evidence the newest's. */
+    private static ClockLockStatus history(long serial, ClockLockStatus.Lock lock, ClockLockStatus.Transition... kept) {
+        return historyOn(WORD_CLOCK.id(), serial, lock, kept);
+    }
+
+    private static ClockLockStatus historyOn(int sourceId, long serial, ClockLockStatus.Lock lock,
+                                             ClockLockStatus.Transition... kept) {
+        return new ClockLockStatus(INTERFACE, sourceId, serial, lock, kept[kept.length - 1].evidenceNanos(),
+                List.of(kept));
+    }
+
+    /** The change {@code sequence}: odd an unlock, even a relock. */
+    private static ClockLockStatus.Transition change(long sequence, long evidenceNanos) {
+        return new ClockLockStatus.Transition(sequence, sequence % 2 == 0, evidenceNanos);
+    }
+
+    /** Transitions first..last, each at base plus its sequence. */
+    private static ClockLockStatus.Transition[] changes(long first, long last, long base) {
+        return LongStream.rangeClosed(first, last).mapToObj(sequence -> change(sequence, base + sequence))
+                .toArray(ClockLockStatus.Transition[]::new);
+    }
+
+    /**
+     * The one notice of an unlock and its relock between two looks of a new badge, the second look made while
+     * {@code recording} records, with an audio take that holds the unlock after it or not.
+     */
+    private String lostAndRelockedWhile(TakeRecording recording, boolean takeHoldsTheUnlock) throws Exception {
+        marks.recording = TakeRecording.NONE;
+        marks.takeHoldsTheUnlock = takeHoldsTheUnlock;
+        ClockStatusIndicator badge = externalBadge();
+        statusNow(badge, locked(1, 5L));
+        notices.clear();
+        marks.recording = recording;
+        statusNow(badge, history(1, ClockLockStatus.Lock.LOCKED, change(1, 7L), change(2, 9L)));
+        assertThat(notices).as("premise: one notice").hasSize(1);
+        return notices.get(0);
+    }
+
     private static View view(ClockStatusIndicator badge) throws Exception {
         return onFx(() -> new View(badge.stateProperty().get(), badge.isVisible(), badge.isManaged(), badge.getText(),
                 List.copyOf(badge.getStyleClass()), badge.getAccessibleText(), badge.getTooltip().getText()));
@@ -2339,6 +3076,296 @@ class ClockStatusIndicatorTest {
 
     private record View(State state, boolean visible, boolean managed, String text, List<String> styleClasses,
                         String spoken, String tooltip) {
+    }
+
+    /** Ruling E232, per theme: rest and flash differ only in the ring, and the words keep their contrast. */
+    private static void assertTheFlashKeepsTheWordsSteady(Phases phases) {
+        Palette palette = phases.palette();
+        Look rest = phases.rest();
+        Look flash = phases.flash();
+        ThemeManager.Theme theme = rest.theme();
+        Color danger = palette.token("-danger");
+        assertThat(rest.fills()).extracting(BackgroundFill::getFill).as("%s at rest: one fill, -danger", theme)
+                .containsExactly(danger);
+        assertThat(rest.text()).as("%s: the words are -text-on-accent", theme)
+                .isEqualTo(palette.token("-text-on-accent"));
+        assertThat(strokePaints(rest.border())).as("%s at rest: no visible outline", theme)
+                .allSatisfy(paint -> assertThat(colour(paint).getOpacity()).isZero());
+        assertThat(List.of(rest.opacity(), flash.opacity())).as("%s: nothing dims the badge", theme)
+                .containsOnly(1.0);
+        assertThat(rest.effect()).as("%s at rest: no effect", theme).isNull();
+        assertThat(flash.effect()).as("%s flashing: no effect", theme).isNull();
+        assertThat(flash.text()).as("%s: the words' colour in both phases", theme).isEqualTo(rest.text());
+        assertThat(flash.words()).as("%s: the words in both phases", theme).isEqualTo(rest.words());
+
+        assertThat(flash.fills()).as("%s flashing: the two ring layers over the fill", theme).hasSize(3);
+        Color outer = colour(flash.fills().get(0).getFill());
+        Color inner = colour(flash.fills().get(1).getFill());
+        Color under = colour(flash.fills().get(2).getFill());
+        for (Color stop : palette.barStops()) {
+            assertThat(contrast(outer, stop)).as("%s: the ring's outer layer against the transport bar", theme)
+                    .isGreaterThanOrEqualTo(3.0);
+        }
+        assertThat(contrast(inner, danger)).as("%s: the ring's inner layer against -danger", theme)
+                .isGreaterThanOrEqualTo(3.0);
+        assertThat(List.of(outer, inner)).as("%s: the ring is -text-hi outside, -text-on-accent inside", theme)
+                .containsExactly(palette.token("-text-hi"), palette.token("-text-on-accent"));
+        assertThat(flash.fills()).extracting(BackgroundFill::getInsets)
+                .as("%s: the ring's layers each 1 px wide, on every side", theme)
+                .containsExactly(new Insets(0), new Insets(1), new Insets(2));
+        assertThat(under).as("%s flashing: the words stay on -danger", theme).isEqualTo(danger);
+        Insets fill = flash.fills().getLast().getInsets();
+        assertThat(List.of(fill.getTop(), fill.getRight(), fill.getBottom(), fill.getLeft()))
+                .as("%s: the fill under the words inside the border and padding", theme)
+                .zipSatisfy(List.of(flash.insets().getTop(), flash.insets().getRight(), flash.insets().getBottom(),
+                        flash.insets().getLeft()), (side, content) -> assertThat(side).isLessThanOrEqualTo(content));
+        assertThat(contrast(colour(flash.text()), under)).as("%s flashing: the words against -danger", theme)
+                .isGreaterThanOrEqualTo(ThemeContrastValidator.AA_NORMAL);
+
+        assertThat(flash.insets()).as("%s: nothing moves: the insets", theme).isEqualTo(rest.insets());
+        assertThat(List.of(flash.width(), flash.height())).as("%s: nor the size", theme)
+                .isEqualTo(List.of(rest.width(), rest.height()));
+        assertThat(flash.border()).as("%s: nor the border", theme).isEqualTo(rest.border());
+        assertThat(List.of(rest.outsets(), flash.outsets())).as("%s: nothing paints outside the badge", theme)
+                .containsOnly(Insets.EMPTY);
+    }
+
+    /** Ruling E234: {@code dim} is an outlined chip with no fill, the size of the filled {@code quiet}. */
+    private static void assertAnOutlinedChipTheSizeOf(Look dim, Look quiet, Palette palette) {
+        String state = dim.state() + " in " + dim.theme();
+        assertThat(dim.fills()).as("%s: no fill, unlike the locked chip", state)
+                .allSatisfy(fill -> assertThat(colour(fill.getFill()).getOpacity()).isZero());
+        assertThat(dim.border()).as("%s: an outline", state).isNotNull();
+        assertThat(dim.border().getStrokes()).as("%s: one stroke", state).hasSize(1);
+        BorderStroke stroke = dim.border().getStrokes().getFirst();
+        assertThat(strokePaints(dim.border())).as("%s: -text-mute on every side", state)
+                .containsOnly(palette.token("-text-mute"));
+        BorderWidths widths = stroke.getWidths();
+        assertThat(List.of(widths.getTop(), widths.getRight(), widths.getBottom(), widths.getLeft()))
+                .as("%s: 1 px on every side", state).containsOnly(1.0);
+        for (Color stop : palette.barStops()) {
+            assertThat(contrast(colour(stroke.getTopStroke()), stop))
+                    .as("%s: the outline against the transport bar", state).isGreaterThanOrEqualTo(3.0);
+        }
+        assertThat(dim.text()).as("%s: the words are -text", state).isEqualTo(palette.token("-text"));
+        assertThat(List.of(dim.width(), dim.height())).as("%s: the locked chip's size", state)
+                .isEqualTo(List.of(quiet.width(), quiet.height()));
+        assertThat(dim.insets()).as("%s: and its insets", state).isEqualTo(quiet.insets());
+    }
+
+    /**
+     * One badge, on a themed bar, driven CHECKING, NOT_MEASURABLE, QUIET,
+     * CLOSED and STARTING; in each, its look in every theme.
+     */
+    private Shown eachCheckedAndUncheckedStateInEveryTheme() throws Exception {
+        return onAThemedBar((badge, themed) -> {
+            Map<ThemeManager.Theme, Palette> palettes = new EnumMap<>(ThemeManager.Theme.class);
+            List<Look> looks = new ArrayList<>(inEveryTheme(badge, themed, State.CHECKING, palettes));
+            statusNow(badge, status(WORD_CLOCK.id(), 1, ClockLockStatus.Lock.NOT_MEASURABLE, 0L));
+            looks.addAll(inEveryTheme(badge, themed, State.NOT_MEASURABLE, palettes));
+            statusNow(badge, locked(1, 5L));
+            looks.addAll(inEveryTheme(badge, themed, State.QUIET, palettes));
+            clock.closeStream();
+            look(badge);
+            looks.addAll(inEveryTheme(badge, themed, State.CLOSED, palettes));
+            clock.openStream();
+            // The new stream's read is left unrun: the label is carried, not checked yet.
+            runOnFx(badge::pulse);
+            looks.addAll(inEveryTheme(badge, themed, State.STARTING, palettes));
+            return new Shown(Map.copyOf(palettes), List.copyOf(looks));
+        });
+    }
+
+    /** After asserting the badge shows {@code expected}: its look in each theme, in one FX turn. */
+    private static List<Look> inEveryTheme(ClockStatusIndicator badge, ThemedBar themed, State expected,
+                                          Map<ThemeManager.Theme, Palette> palettes) throws Exception {
+        assertThat(view(badge).state()).as("premise: %s", expected).isEqualTo(expected);
+        return onFx(() -> {
+            List<Look> looks = new ArrayList<>();
+            for (ThemeManager.Theme theme : ThemeManager.Theme.values()) {
+                themed.apply(theme, UiScale.P100);
+                palettes.put(theme, themed.palette());
+                looks.add(look(badge, themed, theme));
+            }
+            return looks;
+        });
+    }
+
+    /**
+     * Runs {@code test} on {@link #externalBadge()} built under Reduce Motion,
+     * so its own timeline never steps the flash behind the test, on a
+     * transport bar in a shown window; then disposes the badge and hides the
+     * window.
+     */
+    private <T> T onAThemedBar(OnABar<T> test) throws Exception {
+        MotionManager motion = new MotionManager(new MemoryPreferences(), Optional::empty);
+        motion.setReduceMotion(true);
+        MotionManager.setDefaultForTest(motion);
+        List<Runnable> cleanUp = new ArrayList<>();
+        try {
+            ClockStatusIndicator badge = externalBadge();
+            cleanUp.add(badge::dispose);
+            ThemedBar themed = onFx(() -> themedBar(badge));
+            cleanUp.add(themed.stage()::hide);
+            return test.run(badge, themed);
+        } finally {
+            try {
+                runOnFx(() -> cleanUp.forEach(Runnable::run));
+            } finally {
+                MotionManager.setDefaultForTest(null);
+            }
+        }
+    }
+
+    /**
+     * {@code badge} on a transport bar in a shown window styled by a theme
+     * manager of its own, with a probe off the bar for each of
+     * {@link #PROBED_TOKENS}. FX thread.
+     */
+    private static ThemedBar themedBar(ClockStatusIndicator badge) {
+        HBox bar = new HBox(badge);
+        bar.getStyleClass().add("transport-bar");
+        VBox root = new VBox(bar);
+        root.getStyleClass().add("root-pane");
+        Map<String, Region> probes = new LinkedHashMap<>();
+        for (String token : PROBED_TOKENS) {
+            Region probe = new Region();
+            probe.setStyle("-fx-background-color: " + token + ";");
+            root.getChildren().add(probe);
+            probes.put(token, probe);
+        }
+        ThemeManager appearance = new ThemeManager(new MemoryPreferences());
+        Scene scene = new Scene(root, 640, 80);
+        appearance.applyTo(scene);
+        Stage stage = new Stage();
+        stage.setScene(scene);
+        stage.show();
+        root.applyCss();
+        root.layout();
+        return new ThemedBar(stage, root, bar, appearance, Map.copyOf(probes));
+    }
+
+    /** The badge's look as the window lays it out now. FX thread. */
+    private static Look look(ClockStatusIndicator badge, ThemedBar themed, ThemeManager.Theme theme) {
+        themed.root().applyCss();
+        themed.root().layout();
+        Background background = badge.getBackground();
+        return new Look(badge.stateProperty().get(), theme, badge.getWidth(), badge.getHeight(), badge.getInsets(),
+                badge.getTextFill(), background == null ? List.of() : List.copyOf(background.getFills()),
+                badge.getBorder(), background == null ? Insets.EMPTY : background.getOutsets(),
+                badge.getOpacity(), badge.getEffect(), badge.getText());
+    }
+
+    /** The badge's {@link FlashStep} as the window lays it out now. FX thread. */
+    private static FlashStep flashStep(ClockStatusIndicator badge, ThemedBar themed) {
+        themed.root().applyCss();
+        themed.root().layout();
+        Background background = badge.getBackground();
+        return new FlashStep(badge.getPseudoClassStates().contains(ClockStatusIndicator.FLASH), badge.getOpacity(),
+                badge.getEffect(), badge.getStyle(), badge.getTextFill(),
+                background == null ? List.of() : List.copyOf(background.getFills()), badge.getPadding(),
+                badge.getBorder());
+    }
+
+    /** @return the badge's last fill when it is opaque: the surface its words are drawn on */
+    private static Optional<Color> opaqueLastFill(Look look) {
+        if (look.fills().isEmpty()) {
+            return Optional.empty();
+        }
+        Color last = colour(look.fills().getLast().getFill());
+        return last.getOpacity() == 1.0 ? Optional.of(last) : Optional.empty();
+    }
+
+    /** @return each side's paint of each stroke of {@code border}; none when there is no border */
+    private static List<Paint> strokePaints(Border border) {
+        if (border == null) {
+            return List.of();
+        }
+        return border.getStrokes().stream().flatMap(stroke -> Stream.of(stroke.getTopStroke(),
+                stroke.getRightStroke(), stroke.getBottomStroke(), stroke.getLeftStroke())).toList();
+    }
+
+    private static Color colour(Paint paint) {
+        assertThat(paint).as("a solid colour").isInstanceOf(Color.class);
+        return (Color) paint;
+    }
+
+    private static double contrast(Color first, Color second) {
+        return ThemeContrastValidator.contrastRatio(hex(first), hex(second));
+    }
+
+    private static String hex(Color colour) {
+        assertThat(colour.getOpacity()).as("an opaque colour: %s", colour).isEqualTo(1.0);
+        return String.format(Locale.ROOT, "#%02X%02X%02X", Math.round(colour.getRed() * 255),
+                Math.round(colour.getGreen() * 255), Math.round(colour.getBlue() * 255));
+    }
+
+    @FunctionalInterface
+    private interface OnABar<T> {
+        T run(ClockStatusIndicator badge, ThemedBar themed) throws Exception;
+    }
+
+    private record ThemedBar(Stage stage, VBox root, HBox bar, ThemeManager appearance, Map<String, Region> probes) {
+
+        /** Applies {@code theme} at {@code scale} and lays the window out. FX thread. */
+        void apply(ThemeManager.Theme theme, UiScale scale) {
+            appearance.setActiveTheme(theme);
+            appearance.setUiScale(scale);
+            root.applyCss();
+            root.layout();
+        }
+
+        /** @return what each probed token and the transport bar resolve to in the window's theme now; FX thread */
+        Palette palette() {
+            Map<String, Color> tokens = new HashMap<>();
+            probes.forEach((token, probe) -> tokens.put(token,
+                    colour(probe.getBackground().getFills().getFirst().getFill())));
+            Paint gradient = bar.getBackground().getFills().getFirst().getFill();
+            assertThat(gradient).as("the transport bar paints a gradient").isInstanceOf(LinearGradient.class);
+            List<Stop> stops = ((LinearGradient) gradient).getStops();
+            assertThat(stops).as("the transport bar's gradient, -surface-1 to -surface-bg").hasSize(2);
+            return new Palette(Map.copyOf(tokens), stops.stream().map(Stop::getColor).toList());
+        }
+    }
+
+    /** What the role tokens and the transport bar's two gradient stops resolve to in one theme. */
+    private record Palette(Map<String, Color> tokens, List<Color> barStops) {
+
+        Color token(String token) {
+            return Objects.requireNonNull(tokens.get(token), token);
+        }
+    }
+
+    /**
+     * The badge's look: its state, the theme, its size and insets, its text
+     * colour, fills, border and background outsets, its opacity, its effect
+     * and its words.
+     */
+    private record Look(State state, ThemeManager.Theme theme, double width, double height, Insets insets,
+                        Paint text, List<BackgroundFill> fills, Border border, Insets outsets, double opacity,
+                        Effect effect, String words) {
+    }
+
+    /** The unlocked badge in one theme, at rest and flashing. */
+    private record Phases(Palette palette, Look rest, Look flash) {
+    }
+
+    /** What the running flash may touch on the badge, and whether the flash pseudo-class is on. */
+    private record FlashStep(boolean flashing, double opacity, Effect effect, String style, Paint text,
+                             List<BackgroundFill> fills, Insets padding, Border border) {
+    }
+
+    /** Each look, and each theme's palette. */
+    private record Shown(Map<ThemeManager.Theme, Palette> palettes, List<Look> looks) {
+
+        Look in(State state, ThemeManager.Theme theme) {
+            return looks.stream().filter(look -> look.state() == state && look.theme() == theme).findFirst()
+                    .orElseThrow(() -> new AssertionError("no look of " + state + " in " + theme));
+        }
+    }
+
+    /** The flashing badge at one UI scale: its layers, insets, its last fill's insets, its words and height. */
+    private record Ring(UiScale scale, int layers, Insets insets, Insets fill, Bounds words, double height) {
     }
 
     /**
@@ -2361,6 +3388,8 @@ class ClockStatusIndicatorTest {
         final Map<DeviceId, ClockReading> byDevice = new ConcurrentHashMap<>();
         /** Runs once, right after the badge's next read of the engine's open level or last opened stream. */
         volatile Runnable afterTheNextEngineRead;
+        /** Runs once, right after the badge's next read of the loss or of the lock status, whichever comes first. */
+        volatile Runnable afterTheNextLossOrStatusRead;
         final List<String> askedAbout = Collections.synchronizedList(new ArrayList<>());
         final List<DeviceId> devicesAsked = Collections.synchronizedList(new ArrayList<>());
         private volatile boolean open;
@@ -2406,12 +3435,24 @@ class ClockStatusIndicatorTest {
 
         @Override
         public boolean deviceLost() {
-            return lost;
+            boolean now = lost;
+            afterALossOrStatusRead();
+            return now;
         }
 
         @Override
         public Optional<ClockLockStatus> lockStatus() {
-            return open ? status : Optional.empty();
+            Optional<ClockLockStatus> now = open ? status : Optional.empty();
+            afterALossOrStatusRead();
+            return now;
+        }
+
+        private void afterALossOrStatusRead() {
+            Runnable once = afterTheNextLossOrStatusRead;
+            if (once != null) {
+                afterTheNextLossOrStatusRead = null;
+                once.run();
+            }
         }
 
         @Override
@@ -2472,6 +3513,8 @@ class ClockStatusIndicatorTest {
     private static final class RecordingMarks implements TakeClockMarks {
         final List<String> marks = Collections.synchronizedList(new ArrayList<>());
         volatile TakeRecording recording = TakeRecording.NONE;
+        /** Whether an audio take, when one records, holds an unlock mark after an unlock is handed to it. */
+        volatile boolean takeHoldsTheUnlock = true;
 
         @Override
         public TakeRecording takeRecording() {
@@ -2479,13 +3522,15 @@ class ClockStatusIndicatorTest {
         }
 
         @Override
-        public void lockChanged(boolean locked, long evidenceNanos) {
+        public boolean lockChanged(boolean locked, long evidenceNanos) {
             marks.add((locked ? "locked@" : "unlocked@") + evidenceNanos);
+            return !locked && recording == TakeRecording.AUDIO && takeHoldsTheUnlock;
         }
 
         @Override
-        public void takeStartsUnlocked() {
+        public boolean takeStartsUnlocked() {
             marks.add(UNLOCKED_AT_THE_START);
+            return recording == TakeRecording.AUDIO && takeHoldsTheUnlock;
         }
     }
 

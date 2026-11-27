@@ -427,8 +427,9 @@ public final class TakeManifest {
      *
      * <p>With {@code droppedBlocks > 0} the entry records a ring overflow:
      * that many whole blocks were dropped, and {@code startFrame} is the
-     * transport frame at the end of the last block accepted before the drop
-     * ({@code CaptureFlushService}'s class note names the fallback). With
+     * transport frame at the end of the last block the ring delivered before
+     * them, or, for drops no kept block follows, where
+     * {@code CaptureFlushService}'s class note says the seal lines them. With
      * {@code droppedBlocks == 0} it marks the start of a truncation episode:
      * the block whose kept frames end at {@code startFrame}, and every
      * consecutive block after it until one fits again, was longer than a
@@ -532,7 +533,10 @@ public final class TakeManifest {
 
     /** What the interface's clock did (story 338, rulings E30, E40 and E62). */
     public enum ClockEvent {
-        /** The external clock was declared lost, dated by the first bad answer of its run. */
+        /**
+         * The external clock was declared lost, dated by the first bad answer of its run, or no later than the start
+         * of its measurement when no good answer of that measurement came before it (ruling E269).
+         */
         UNLOCKED("unlocked"),
         /** The external clock was declared locked again. */
         LOCKED("locked"),
@@ -791,7 +795,16 @@ public final class TakeManifest {
         return gaps;
     }
 
-    /** Returns the total number of blocks dropped by ring overflow. */
+    /**
+     * Returns the blocks dropped by ring overflow that have a {@code gap=}
+     * line: of a run a block the capture thread kept follows, its blocks that
+     * carried audio a track records and its input-starved blocks where they
+     * count, once that run is lined, and, at the seal, those no kept block
+     * follows, at the person's Stop and at a device loss not sealed early in
+     * its final sweep, whatever {@link #sealedBy()} this manifest then
+     * carries: a lane whose seal fails makes it {@link SealedBy#WRITE_FAILURE}
+     * (story 338, rulings E273 to E281 and E286).
+     */
     public long overflowBlocks() {
         return overflowBlocks;
     }

@@ -2611,6 +2611,9 @@ public final class MainController {
      * the engine, and reopens only a stream that was open. When it succeeded —
      * it returned normally and, if a stream was open when it began, one is
      * open again (story 337, ruling E62) — the window's engine fault clears.
+     * A stream a driver's reset stopped counts as open while its reopen
+     * waits for a driver's control panel (ruling E288): the restart ends
+     * that wait, and while the panel refuses its open it has not succeeded.
      * FX thread; the restart itself runs on its own virtual thread.
      *
      * @return the restart's thread, already started
@@ -2622,7 +2625,7 @@ public final class MainController {
         }
         return restartAudioEngine(settingsModel, audioEngineController, () -> {
             AudioEngine engine = audioEngine;
-            return engine != null && engine.isStreamOpen();
+            return (engine != null && engine.isStreamOpen()) || audioEngineController.isAStreamAwaitingItsReopen();
         }, () -> FxDispatcher.runOnFx(fxDispatcher,
                 () -> audioHealthDrain().ifPresent(AudioHealthDrain::clearEngineFault)));
     }
@@ -2811,6 +2814,7 @@ public final class MainController {
         transportController.setProjectActionsAllowed(this::projectActionsAllowed);
         if (audioEngineController instanceof DefaultAudioEngineController controller) {
             transportController.recordCoordinator().setLatencyCalibrationSupplier(controller::recordingLatencyCalibration);
+            transportController.recordCoordinator().setResyncDatesOwed(controller.xrunJournal()::resyncDatesOwed);
             controller.setRecordConfigurationGuard(() -> transportController.recordCoordinator().requestConfigurationChange());
             controller.setConfigurationActivityCallback(() -> {
                 if (transportController != null) transportController.recordCoordinator().refreshRecordAvailability();

@@ -6,7 +6,7 @@ import static com.benesquivelmusic.daw.core.recording.FrameSpans.UNBOUNDED_END;
 import static com.benesquivelmusic.daw.core.recording.FrameSpans.UNBOUNDED_START;
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Ring-overflow and truncation losses counted as the take's files see them (story 338, ruling E86). */
+/** Runs of dropped blocks and truncation judged as the take's files see them (story 338, rulings E86 and E273). */
 class FileLossCountsTest {
 
     private static final long PUNCH_IN = 1004;
@@ -16,160 +16,165 @@ class FileLossCountsTest {
     private final FileLossCounts counts = new FileLossCounts(1);
 
     @Test
-    void withNoPunchRegionEveryGapCountsAtOnce() {
-        counts.blockReceived(0, 0, UNBOUNDED_START, UNBOUNDED_END, 0, 0);
-        counts.gapNoticed(0, 8, 3, BLOCK);
+    void withNoPunchRegionEveryRunReachesTheRegion() {
+        counts.blockReceived(0, UNBOUNDED_START, UNBOUNDED_END, 0, 0);
 
-        assertThat(counts.overflowBlocks()).isEqualTo(3);
+        assertThat(counts.runReachesTheRegion(0, 8, 3 * BLOCK, 32, false)).isTrue();
+        assertThat(counts.runReachesTheRegion(0, 72, 2 * BLOCK, 72, false)).as("a still transport too").isTrue();
+        assertThat(counts.reachesTheRegionByItsOwnExtent(0, 8, 3 * BLOCK)).isTrue();
     }
 
     @Test
-    void aGapCountsWholeWhenItsExtentToTheNextBlockReachesIntoTheRegion() {
-        punchBlock(976);
-        counts.gapNoticed(0, 992, 3, BLOCK);
-        assertThat(counts.overflowBlocks()).as("judged when the next block closes it").isZero();
-        punchBlock(1016);
-
-        assertThat(counts.overflowBlocks()).isEqualTo(3);
+    void aRunReachesTheRegionWhenItsFramesToTheNextBlockDo() {
+        punchBlock();
+        assertThat(counts.runReachesTheRegion(0, 992, 3 * BLOCK, 1016, false)).isTrue();
     }
 
     @Test
-    void aGapWhollyBeforeOrAfterTheRegionCountsNothing() {
-        punchBlock(0);
-        counts.gapNoticed(0, 16, 3, BLOCK);
-        punchBlock(40);
-        punchBlock(2008);
-        counts.gapNoticed(0, 2016, 2, BLOCK);
-        punchBlock(2040);
-
-        assertThat(counts.overflowBlocks()).isZero();
+    void aRunWhollyBeforeOrAfterTheRegionDoesNot() {
+        punchBlock();
+        assertThat(counts.runReachesTheRegion(0, 16, 3 * BLOCK, 40, false)).isFalse();
+        assertThat(counts.runReachesTheRegion(0, 2016, 2 * BLOCK, 2040, false)).isFalse();
     }
 
     @Test
-    void aGapAcrossTheLoopWrapIsJudgedOnBothSidesOfIt() {
-        counts.blockReceived(0, 1024, 1004, 1012, 1000, 1036);
-        counts.gapNoticed(0, 1032, 2, BLOCK);
-        counts.blockReceived(0, 1010, 1004, 1012, 1000, 1036);
-
-        assertThat(counts.overflowBlocks()).as("[1000, 1010) reaches into [1004, 1012)").isEqualTo(2);
+    void aRunAcrossTheLoopWrapIsJudgedOnBothSidesOfIt() {
+        counts.blockReceived(0, 1004, 1012, 1000, 1036);
+        assertThat(counts.runReachesTheRegion(0, 1032, 2 * BLOCK, 1010, true))
+                .as("[1000, 1010) reaches into [1004, 1012)").isTrue();
     }
 
     @Test
-    void aGapALapLongOrLongerPassedEveryFrameOfTheLoopRange() {
-        FileLossCounts endsOnTheWrap = new FileLossCounts(1);
-        endsOnTheWrap.blockReceived(0, 1016, 1004, 1012, 1000, 1036);
-        endsOnTheWrap.gapNoticed(0, 1024, 6, BLOCK);
-        endsOnTheWrap.blockReceived(0, 1000, 1004, 1012, 1000, 1036);
-        assertThat(endsOnTheWrap.overflowBlocks()).as("[1024, 1036) then a whole lap (E180)").isEqualTo(6);
-
-        FileLossCounts nextBlockAfterItsStart = new FileLossCounts(1);
-        nextBlockAfterItsStart.blockReceived(0, 1004, 1004, 1012, 1000, 1036);
-        nextBlockAfterItsStart.gapNoticed(0, 1012, 5, BLOCK);
-        nextBlockAfterItsStart.blockReceived(0, 1016, 1004, 1012, 1000, 1036);
-        assertThat(nextBlockAfterItsStart.overflowBlocks()).as("[1012, 1036) then [1000, 1016) (E180)").isEqualTo(5);
+    void aRunALapLongOrLongerPassedEveryFrameOfTheLoopRange() {
+        counts.blockReceived(0, 1004, 1012, 1000, 1036);
+        assertThat(counts.runReachesTheRegion(0, 1024, 6 * BLOCK, 1000, true))
+                .as("[1024, 1036) then a whole lap (E180)").isTrue();
+        assertThat(counts.runReachesTheRegion(0, 1012, 5 * BLOCK, 1016, true))
+                .as("[1012, 1036) then [1000, 1016) (E180)").isTrue();
     }
 
     @Test
-    void aGapALapLongOrLongerFromLapOnesPreRollIsJudgedOnItsFirstPartToo() {
-        FileLossCounts reachesTheRegion = new FileLossCounts(1);
-        reachesTheRegion.blockReceived(0, 964, 970, 978, 1000, 1036);
-        reachesTheRegion.gapNoticed(0, 972, 10, BLOCK);
-        reachesTheRegion.blockReceived(0, 1016, 970, 978, 1000, 1036);
-        assertThat(reachesTheRegion.overflowBlocks()).as("[972, 1036) reaches into [970, 978) (E180)").isEqualTo(10);
-
-        FileLossCounts afterTheRegion = new FileLossCounts(1);
-        afterTheRegion.blockReceived(0, 972, 970, 978, 1000, 1036);
-        afterTheRegion.gapNoticed(0, 980, 10, BLOCK);
-        afterTheRegion.blockReceived(0, 1024, 970, 978, 1000, 1036);
-        assertThat(afterTheRegion.overflowBlocks()).as("[980, 1036) and the loop range miss [970, 978)").isZero();
+    void aRunALapLongOrLongerFromLapOnesPreRollIsJudgedOnItsFirstPartToo() {
+        counts.blockReceived(0, 970, 978, 1000, 1036);
+        assertThat(counts.runReachesTheRegion(0, 972, 10 * BLOCK, 1016, true))
+                .as("[972, 1036) reaches into [970, 978) (E180)").isTrue();
+        assertThat(counts.runReachesTheRegion(0, 980, 10 * BLOCK, 1024, true))
+                .as("[980, 1036) and the loop range miss [970, 978)").isFalse();
     }
 
     /** Loop [1000, 1036), take start 960: pre-roll frames make up no lap (ruling E182). */
     @Test
-    void aGapALapLongFromLapOnesPreRollCountsOnlyTheFramesTheTransportPassed() {
-        FileLossCounts endsBeforeTheRegion = new FileLossCounts(1);
-        endsBeforeTheRegion.blockReceived(0, 964, 1020, 1030, 1000, 1036);
-        endsBeforeTheRegion.gapNoticed(0, 972, 5, BLOCK);
-        endsBeforeTheRegion.blockReceived(0, 1012, 1020, 1030, 1000, 1036);
-        assertThat(endsBeforeTheRegion.overflowBlocks())
-                .as("[972, 1012) never reaches [1020, 1030), though the region overlaps the loop range").isZero();
-
-        FileLossCounts reachesTheRegion = new FileLossCounts(1);
-        reachesTheRegion.blockReceived(0, 964, 1004, 1012, 1000, 1036);
-        reachesTheRegion.gapNoticed(0, 972, 5, BLOCK);
-        reachesTheRegion.blockReceived(0, 1012, 1004, 1012, 1000, 1036);
-        assertThat(reachesTheRegion.overflowBlocks()).as("[972, 1012) reaches into [1004, 1012)").isEqualTo(5);
-
-        FileLossCounts endsOnTheLoopEnd = new FileLossCounts(1);
-        endsOnTheLoopEnd.blockReceived(0, 964, 1020, 1030, 1000, 1036);
-        endsOnTheLoopEnd.gapNoticed(0, 972, 8, BLOCK);
-        endsOnTheLoopEnd.blockReceived(0, 1000, 1020, 1030, 1000, 1036);
-        assertThat(endsOnTheLoopEnd.overflowBlocks()).as("[972, 1036) reaches into [1020, 1030)").isEqualTo(8);
+    void aRunALapLongFromLapOnesPreRollReachesOnlyByTheFramesTheTransportPassed() {
+        counts.blockReceived(0, 1020, 1030, 1000, 1036);
+        assertThat(counts.runReachesTheRegion(0, 972, 5 * BLOCK, 1012, false))
+                .as("[972, 1012) never reaches [1020, 1030), though the region overlaps the loop range").isFalse();
+        assertThat(counts.runReachesTheRegion(0, 972, 8 * BLOCK, 1000, true))
+                .as("[972, 1036) reaches into [1020, 1030)").isTrue();
+        counts.blockReceived(0, 1004, 1012, 1000, 1036);
+        assertThat(counts.runReachesTheRegion(0, 972, 5 * BLOCK, 1012, false))
+                .as("[972, 1012) reaches into [1004, 1012)").isTrue();
     }
 
     @Test
-    void aGapShorterThanALapIsStillJudgedToTheNextBlock() {
-        counts.blockReceived(0, 1012, 1004, 1012, 1000, 1036);
-        counts.gapNoticed(0, 1020, 1, BLOCK);
-        counts.blockReceived(0, 1028, 1004, 1012, 1000, 1036);
-
-        assertThat(counts.overflowBlocks()).as("[1020, 1028) misses [1004, 1012)").isZero();
+    void aRunShorterThanALapIsStillJudgedToTheNextBlock() {
+        counts.blockReceived(0, 1004, 1012, 1000, 1036);
+        assertThat(counts.runReachesTheRegion(0, 1020, BLOCK, 1028, false)).as("[1020, 1028) misses [1004, 1012)")
+                .isFalse();
     }
 
     @Test
-    void aGapFromTheEndOfABlockAcrossTheWrapIsJudgedFromWhereTheTransportContinued() {
-        counts.blockReceived(0, 1032, 1000, 1004, 1000, 1036);
-        counts.gapNoticed(0, 1040, 1, BLOCK);
-        counts.blockReceived(0, 1012, 1000, 1004, 1000, 1036);
-
-        assertThat(counts.overflowBlocks()).as("[1004, 1012), after the wrap, misses [1000, 1004)").isZero();
+    void aRunFromTheEndOfABlockAcrossTheWrapIsJudgedFromWhereTheTransportContinued() {
+        counts.blockReceived(0, 1000, 1004, 1000, 1036);
+        assertThat(counts.runReachesTheRegion(0, 1040, BLOCK, 1012, true))
+                .as("[1004, 1012), after the wrap, misses [1000, 1004)").isFalse();
     }
 
     @Test
-    void aGapNoBlockFollowsCountsWhenItsOwnExtentReachesIntoTheRegion() {
-        punchBlock(992);
-        counts.gapNoticed(0, 1000, 2, BLOCK);
-        counts.takeSealed();
-        assertThat(counts.overflowBlocks()).as("[1000, 1016) reaches into the region").isEqualTo(2);
-
-        FileLossCounts afterPunchOut = new FileLossCounts(1);
-        afterPunchOut.blockReceived(0, 2008, PUNCH_IN, PUNCH_OUT, 0, 0);
-        afterPunchOut.gapNoticed(0, 2016, 2, BLOCK);
-        afterPunchOut.takeSealed();
-        assertThat(afterPunchOut.overflowBlocks()).isZero();
+    void aRunNoBlockFollowsReachesTheRegionByItsOwnExtent() {
+        punchBlock();
+        assertThat(counts.reachesTheRegionByItsOwnExtent(0, 1000, 2 * BLOCK)).as("[1000, 1016)").isTrue();
+        assertThat(counts.reachesTheRegionByItsOwnExtent(0, 2016, 2 * BLOCK)).as("after punch-out").isFalse();
     }
 
     @Test
-    void aPreRollGapNoBlockFollowsCountsNothingAndOneReachingPunchInCountsWhole() {
-        FileLossCounts preRoll = new FileLossCounts(1);
-        preRoll.blockReceived(0, 0, 2000, 3000, 0, 0);
-        preRoll.gapNoticed(0, 72, 3, 256);
-        preRoll.takeSealed();
-        assertThat(preRoll.overflowBlocks()).as("ruling E104: [72, 840) lies before punch-in [2000, 3000)")
-                .isZero();
-
-        FileLossCounts intoTheRegion = new FileLossCounts(1);
-        intoTheRegion.blockReceived(0, 1644, 2000, 3000, 0, 0);
-        intoTheRegion.gapNoticed(0, 1900, 1, 256);
-        intoTheRegion.takeSealed();
-        assertThat(intoTheRegion.overflowBlocks()).as("ruling E104: [1900, 2156) reaches into [2000, 3000)")
-                .isEqualTo(1);
+    void aPreRollRunNoBlockFollowsReachesNothingAndOneReachingPunchInReachesIt() {
+        counts.blockReceived(0, 2000, 3000, 0, 0);
+        assertThat(counts.reachesTheRegionByItsOwnExtent(0, 72, 3 * 256)).as("ruling E104: [72, 840)").isFalse();
+        assertThat(counts.reachesTheRegionByItsOwnExtent(0, 1900, 256)).as("ruling E104: [1900, 2156)").isTrue();
     }
 
     @Test
-    void aLoopTakeAddsNothingByItselfAndAnExtentAcrossTheWrapCountsOnTheFarSide() {
-        FileLossCounts looped = new FileLossCounts(1);
-        looped.blockReceived(0, 2008, PUNCH_IN, PUNCH_OUT, 0, 4000);
-        looped.gapNoticed(0, 2016, 2, BLOCK);
-        looped.takeSealed();
-        assertThat(looped.overflowBlocks()).as("ruling E104: that the take looped adds nothing").isZero();
+    void aLoopTakeAddsNothingByItselfAndAnExtentAcrossTheWrapReachesOnTheFarSide() {
+        counts.blockReceived(0, PUNCH_IN, PUNCH_OUT, 0, 4000);
+        assertThat(counts.reachesTheRegionByItsOwnExtent(0, 2016, 2 * BLOCK)).as("ruling E104").isFalse();
+        counts.blockReceived(0, 1004, 1012, 1000, 3016);
+        assertThat(counts.reachesTheRegionByItsOwnExtent(0, 3008, 2 * BLOCK))
+                .as("[3008, 3016) then [1000, 1008) reaches into [1004, 1012)").isTrue();
+    }
 
-        FileLossCounts acrossTheWrap = new FileLossCounts(1);
-        acrossTheWrap.blockReceived(0, 3000, 1004, 1012, 1000, 3016);
-        acrossTheWrap.gapNoticed(0, 3008, 2, BLOCK);
-        acrossTheWrap.takeSealed();
-        assertThat(acrossTheWrap.overflowBlocks()).as("[3008, 3016) then [1000, 1008) reaches into [1004, 1012)")
-                .isEqualTo(2);
+    /** Rulings E104, E213 and E256: blocks behind the final sweep, a run no block follows. */
+    @Test
+    void blocksBehindTheFinalSweepAreJudgedByTheirOwnExtent() {
+        FileLossCounts nothingReceived = new FileLossCounts(1);
+        assertThat(nothingReceived.reachesTheRegionByItsOwnExtent(0, 4000, 2 * BLOCK))
+                .as("a take that received no block knows no region").isTrue();
+        counts.blockReceived(0, UNBOUNDED_START, UNBOUNDED_END, 0, 0);
+        assertThat(counts.reachesTheRegionByItsOwnExtent(0, 8, 3 * BLOCK)).isTrue();
+        punchBlock();
+        assertThat(counts.reachesTheRegionByItsOwnExtent(0, 2016, 2 * BLOCK)).isFalse();
+        assertThat(counts.reachesTheRegionByItsOwnExtent(0, 988, 2 * BLOCK)).as("ends at punch-in").isFalse();
+        assertThat(counts.reachesTheRegionByItsOwnExtent(0, 1000, 2 * BLOCK)).isTrue();
+        counts.blockReceived(0, 100, 170, 0, 0);
+        assertThat(counts.reachesTheRegionByItsOwnExtent(0, 112, 8 * BLOCK)).as("[112, 176)").isTrue();
+        assertThat(counts.reachesTheRegionByItsOwnExtent(0, 176, 2 * BLOCK)).as("[176, 192)").isFalse();
+    }
+
+    /** Ruling E285: the next block at the line: either own extent may hold the run. */
+    @Test
+    void aRunWhoseNextBlockStartsAtItsLineReachesTheRegionByEitherOwnExtent() {
+        counts.blockReceived(0, 56, 64, 0, 0);
+        assertThat(counts.runReachesTheRegion(0, 72, 2 * BLOCK, 72, false)).as("back from 72: [56, 72)").isTrue();
+    }
+
+    /** Ruling E285: the next block at the line, and the region only in the run's frames forward from its line. */
+    @Test
+    void aRunWhoseNextBlockStartsAtItsLineReachesTheRegionByItsExtentForwardFromTheLine() {
+        counts.blockReceived(0, 72, 80, 0, 0);
+        assertThat(counts.runReachesTheRegion(0, 72, 2 * BLOCK, 72, false))
+                .as("forward from 72: [72, 88); back from 72, [56, 72), misses [72, 80)").isTrue();
+    }
+
+    /** Ruling E285: a step back with no loop is bounded by the run's two own extents, not by nothing. */
+    @Test
+    void aBackwardStepWithNoLoopIsJudgedByTheRunsOwnExtentsOnly() {
+        counts.blockReceived(0, 300, 400, 0, 0);
+        assertThat(counts.runReachesTheRegion(0, 200, 2 * BLOCK, 64, false)).isFalse();
+        counts.blockReceived(0, 50, 60, 0, 0);
+        assertThat(counts.runReachesTheRegion(0, 200, 2 * BLOCK, 64, false)).as("back from 64: [48, 64)").isTrue();
+    }
+
+    /**
+     * Ruling E285: in a loop take, a step back the take counted no wrap for is judged by the run's two own extents,
+     * not across a wrap from its line to the loop end.
+     */
+    @Test
+    void aBackwardStepWithNoWrapInALoopTakeIsJudgedByTheRunsOwnExtentsOnly() {
+        counts.blockReceived(0, 300, 320, 0, 400);
+        assertThat(counts.runReachesTheRegion(0, 200, 2 * BLOCK, 64, false))
+                .as("[200, 216) and [48, 64) miss [300, 320); [200, 400) would not").isFalse();
+        counts.blockReceived(0, 50, 60, 0, 400);
+        assertThat(counts.runReachesTheRegion(0, 200, 2 * BLOCK, 64, false)).as("back from 64: [48, 64)").isTrue();
+    }
+
+    @Test
+    void countedRunsAddUpAndTheWindowIsTheLastBlocks() {
+        assertThat(counts.windowOf(0)).as("no block received").isNull();
+        counts.blockReceived(0, PUNCH_IN, PUNCH_OUT, 0, 4000);
+        assertThat(counts.windowOf(0)).isEqualTo(new FileLossCounts.Window(PUNCH_IN, PUNCH_OUT, 0, 4000));
+        assertThat(counts.windowOf(0).hasPunchRegion()).isTrue();
+        counts.countOverflowBlocks(2);
+        counts.countOverflowBlocks(3);
+        assertThat(counts.overflowBlocks()).isEqualTo(5);
     }
 
     @Test
@@ -184,7 +189,7 @@ class FileLossCountsTest {
         assertThat(counts.truncationEpisodes()).isEqualTo(1);
     }
 
-    private void punchBlock(long start) {
-        counts.blockReceived(0, start, PUNCH_IN, PUNCH_OUT, 0, 0);
+    private void punchBlock() {
+        counts.blockReceived(0, PUNCH_IN, PUNCH_OUT, 0, 0);
     }
 }

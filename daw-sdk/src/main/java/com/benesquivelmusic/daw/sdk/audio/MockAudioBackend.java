@@ -559,7 +559,8 @@ public final class MockAudioBackend implements AudioBackend {
 
     /**
      * Sets what {@link #clockLockStatus()} reports, as a measuring driver
-     * side would publish it, so tests can drive the transport-bar indicator
+     * side would publish it, transitions included as {@link AsioBackend}'s
+     * statuses carry them, so tests can drive the transport-bar indicator
      * and the clock marks of a take without real hardware. Any thread.
      *
      * @param status the status, or {@code null} for none
@@ -571,17 +572,6 @@ public final class MockAudioBackend implements AudioBackend {
     @Override
     public void close() {
         support.close();
-    }
-
-    /**
-     * {@inheritDoc}
-     *
-     * <p>The mock reports the captured blocks its input publisher dropped for
-     * a subscriber that could not keep up; it observes nothing else.</p>
-     */
-    @Override
-    public BackendDropoutCounters dropoutCounters() {
-        return new BackendDropoutCounters(0L, 0L, 0L, 0L, support.inputBlocksDropped(), false);
     }
 
     /**

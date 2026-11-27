@@ -15,7 +15,9 @@ import java.util.Objects;
  *
  * <p>{@code inputBlocksDropped} counts only the losses NOT already reported
  * through {@link BackendThreadCounters#inputBlocksLost()}: a reader that adds
- * the two counts each loss once.</p>
+ * the two counts each loss once. It is never a block a publisher dropped for
+ * one subscriber (story 338, ruling E208), nor a block
+ * {@link AudioBackend#failedCallbackInputBlocks()} counts.</p>
  *
  * <p>This is a value: building one allocates, so a backend builds it on the
  * caller's thread, never on a real-time thread.</p>
@@ -33,10 +35,11 @@ import java.util.Objects;
  *                                 {@code kAsioOverload}); {@code >= 0}
  * @param driverResyncs            resync requests the driver sent (ASIO's
  *                                 {@code kAsioResyncRequest}); {@code >= 0}
- * @param inputBlocksDropped       captured input blocks dropped before they
- *                                 reached the engine (an input ring that
- *                                 overflowed, an input publisher that dropped
- *                                 for a subscriber that could not keep up);
+ * @param inputBlocksDropped       captured input blocks the backend lost
+ *                                 before it could publish them, so that no
+ *                                 subscriber received them (an input ring
+ *                                 that overflowed); never a block its
+ *                                 publisher dropped for one subscriber;
  *                                 {@code >= 0}
  * @param reportsOutputStarvation  whether this backend can observe output
  *                                 starvation at all; {@code false} means

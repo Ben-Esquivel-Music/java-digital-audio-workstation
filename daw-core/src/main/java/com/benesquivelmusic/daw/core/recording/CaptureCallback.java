@@ -22,7 +22,11 @@ import java.util.Objects;
  * and a callback left over from an earlier take can only ever reach that
  * take's ring. Per block it enters the ring's producer gate, claims a slot (a
  * {@code null} claim is a counted overflow and an immediate return — the
- * callback never blocks), stamps the header — the transport's beat position,
+ * callback never blocks; the claim says what the block carries, delivered
+ * input, input-starved silence or no input, with or without a recorded
+ * instrument's audio, so a block the full ring drops is counted by kind:
+ * story 338, rulings E273, E277, E281 and E287), stamps
+ * the header — the transport's beat position,
  * the start frame derived from it, the punch snapshot from one load of the
  * transport's punch region, the loop flag, and for the stream's own input the
  * engine's input-starved flag (the render had no captured block for it), or
@@ -134,6 +138,8 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
     private final CountInSchedule countIn;
     /** The take's transport laps: the start gate's, or this callback's own when it has no gate and so no sibling. */
     private final TransportLaps transportLaps;
+    /** Ring sources {@code 1..instrumentSources} the callback fills: never one the ring's slots do not have. */
+    private final int instrumentSources;
 
     /** Caller initializes the common origin before publishing the volatile activation. */
     static final class StartGate {
@@ -223,6 +229,7 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
         this.startGate = startGate;
         this.countIn = countIn;
         this.transportLaps = startGate != null ? startGate.transportLaps : new TransportLaps();
+        this.instrumentSources = Math.min(this.instrumentTracks.length, ring.sourceCount() - 1);
     }
 
     /**
@@ -310,7 +317,12 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
         double transportBeat = onRenderThread ? transport.getPositionInBeats() : 0.0;
         long transportLap = onRenderThread ? transportLapAt(transportBeat, loop.enabled(), gateIsTheOrigin)
                 : CaptureRing.NO_TRANSPORT_LAP;
-        CaptureRing.Slot slot = ring.claim();
+        // The engine sets the flag around the block this callback runs inside, on the render thread; an input
+        // beside the stream delivers on its own publisher's thread, which never reads it.
+        boolean starved = !independentFrameCursor && audioEngine.isCapturedInputStarved();
+        int carried = (inputBuffer.length == 0 ? 0 : starved ? CaptureRing.STARVED : CaptureRing.DELIVERED)
+                | (instrumentAudioPresent() ? CaptureRing.INSTRUMENT : 0);
+        CaptureRing.Slot slot = ring.claim(carried);
         if (slot == null) {
             if (independentFrameCursor) nextInputFrame += numFrames;
             return false;
@@ -340,9 +352,7 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
             slot.setLoopEndFrame(startFrameOf(loop.endInBeats()));
         }
         if (!independentFrameCursor) {
-            // Set and read on the render thread that runs this callback; a
-            // sibling's own publisher thread never reads it.
-            slot.setInputStarved(audioEngine.isCapturedInputStarved());
+            slot.setInputStarved(starved);
         } else if (inputBuffer.length == 0) {
             // Only the output clock delivers a zero-width sibling block, on
             // the render thread, before the transport advances past it.
@@ -357,8 +367,6 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
             ring.noteTruncatedFrames(excess);
         }
         slot.copySource(0, inputBuffer, inputBuffer.length, numFrames);
-        // Never address a ring source the slot does not have.
-        int instrumentSources = Math.min(instrumentTracks.length, slot.sourceCount() - 1);
         for (int i = 0; i < instrumentSources; i++) {
             float[][] instrument = audioEngine.graphInstrumentRecordingBuffer(instrumentTracks[i]);
             if (instrument == null) {
@@ -385,6 +393,21 @@ final class CaptureCallback implements AudioEngine.RecordingCallback {
             flush.signal();
         }
         ring.exitProducer();
+    }
+
+    /**
+     * Whether a recorded instrument of this ring renders audio in the block the render thread runs now: what
+     * makes a block with no channel of input more than the silence after its input's declared stop (ruling E277).
+     */
+    @RealTimeSafe
+    private boolean instrumentAudioPresent() {
+        for (int i = 0; i < instrumentSources; i++) {
+            float[][] instrument = audioEngine.graphInstrumentRecordingBuffer(instrumentTracks[i]);
+            if (instrument != null && instrument.length > 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

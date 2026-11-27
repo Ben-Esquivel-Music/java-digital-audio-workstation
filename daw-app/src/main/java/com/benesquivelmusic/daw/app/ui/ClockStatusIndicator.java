@@ -81,15 +81,16 @@ import java.util.logging.Logger;
  * A landing first looks as a pulse does, so whether a pulse ran before it
  * never changes what it decides.</p>
  *
- * <p><strong>Notices.</strong> They come from the difference between two
- * applied statuses of one measurement: an {@code UNLOCKED} status raises E31's
- * unlock notice and mark unless the last status applied for the same serial
- * was already unlocked; a {@code LOCKED} status after an {@code UNLOCKED} one
- * of the same serial raises the relock notice, at the information level
- * (E110), and mark. A new serial is never a relock. A close on purpose or a
- * loss forgets the last applied status with no notice and no mark (E81, E84).
- * An audio take first seen recording while an unlock applied before it is
- * still on show is marked at its start, once, with no notice (E173). A clock
+ * <p><strong>Notices.</strong> Notices and take marks are
+ * {@link ClockLockAnnouncer}'s, at each measuring look: the take's clock
+ * marks for every change the status carries that the badge has not applied
+ * for its serial, in order, and at most one notice (rulings E216 to E223).
+ * Each loss and each close consumes, at its first look, the serial the badge
+ * last applied, whatever status that look read, with no notice and no mark;
+ * a look reads the stream's lock status before the loss, so that serial is
+ * always one opened before the loss began (E81, E84, E220, E252, E259,
+ * E268). An audio take first seen recording while an unlock applied before
+ * it is still on show is marked at its start, once (E173, E222). A clock
  * event never stops a take (E30).</p>
  */
 public final class ClockStatusIndicator extends Label {
@@ -116,7 +117,7 @@ public final class ClockStatusIndicator extends Label {
     static final String DIM_CLASS = "clock-dim";
     static final String LOCKED_CLASS = "clock-locked";
     static final String UNLOCKED_CLASS = "clock-unlocked";
-    private static final PseudoClass FLASH = PseudoClass.getPseudoClass("flash");
+    static final PseudoClass FLASH = PseudoClass.getPseudoClass("flash");
 
     /** What the badge reads from the engine. */
     interface StreamClock {
@@ -217,12 +218,13 @@ public final class ClockStatusIndicator extends Label {
         SETTINGS
     }
 
-    private final NotificationManager notifications;
     private final TakeClockMarks takeMarks;
     private final StreamClock streamClock;
     private final FxDispatcher dispatcher;
     private final Executor reads;
     private final LongSupplier nanos;
+    /** The notices and take marks of what the badge measures. */
+    private final ClockLockAnnouncer announcer;
     private final MotionManager motionManager = MotionManager.getDefault();
     private final Timeline flashTimeline;
     private final ReadOnlyObjectWrapper<State> state = new ReadOnlyObjectWrapper<>(this, "state", State.HIDDEN);
@@ -243,8 +245,6 @@ public final class ClockStatusIndicator extends Label {
     private int streamRate;
     private boolean retryArmed;
     private long retryAtNanos;
-    /** The status the badge last applied; forgotten at a close or a loss; {@code null} when none. */
-    private ClockLockStatus lastApplied;
     /** Whether a measuring look saw the audio take recording now; falls at any look that sees none. */
     private boolean audioTakeSeen;
     /** The lock status at the last look that found the stream open, its device not lost; {@code null} when none. */
@@ -254,7 +254,7 @@ public final class ClockStatusIndicator extends Label {
     /**
      * A badge that reads the clock on a virtual thread per read.
      *
-     * @param notifications where the unlock and relock notices go
+     * @param notifications where the clock-lock notices go
      * @param takeMarks     the take the badge marks
      * @param streamClock   what the badge reads from the engine
      * @param dispatcher    the window's dispatcher, or {@code null} for the default
@@ -268,7 +268,7 @@ public final class ClockStatusIndicator extends Label {
     /**
      * A badge whose reads run on {@code reads}.
      *
-     * @param notifications where the unlock and relock notices go
+     * @param notifications where the clock-lock notices go
      * @param takeMarks     the take the badge marks
      * @param streamClock   what the badge reads from the engine
      * @param dispatcher    the window's dispatcher, or {@code null} for the default
@@ -283,7 +283,7 @@ public final class ClockStatusIndicator extends Label {
      * A badge whose reads run on {@code reads} and whose read retries are
      * timed by {@code nanos}. FX thread.
      *
-     * @param notifications where the unlock and relock notices go
+     * @param notifications where the clock-lock notices go
      * @param takeMarks     the take the badge marks
      * @param streamClock   what the badge reads from the engine
      * @param dispatcher    the window's dispatcher, or {@code null} for the default
@@ -292,15 +292,15 @@ public final class ClockStatusIndicator extends Label {
      */
     ClockStatusIndicator(NotificationManager notifications, TakeClockMarks takeMarks, StreamClock streamClock,
                          FxDispatcher dispatcher, Executor reads, LongSupplier nanos) {
-        this.notifications = Objects.requireNonNull(notifications, "notifications must not be null");
         this.takeMarks = Objects.requireNonNull(takeMarks, "takeMarks must not be null");
         this.streamClock = Objects.requireNonNull(streamClock, "streamClock must not be null");
         this.dispatcher = dispatcher;
         this.reads = Objects.requireNonNull(reads, "reads must not be null");
         this.nanos = Objects.requireNonNull(nanos, "nanos must not be null");
+        this.announcer = new ClockLockAnnouncer(notifications, takeMarks, this.nanos);
         getStyleClass().addAll(STYLE_CLASS, "numeric-mono");
         setTooltip(new Tooltip());
-        // The 0.5 s cadence of an interface's own clock-lock LED.
+        // House cadence: a hard step each 0.5 s, one cycle a second, far below WCAG 2.3.1's three flashes a second.
         flashTimeline = new Timeline(new KeyFrame(Duration.seconds(0.5),
                 _ -> pseudoClassStateChanged(FLASH, !getPseudoClassStates().contains(FLASH))));
         flashTimeline.setCycleCount(Animation.INDEFINITE);
@@ -540,17 +540,21 @@ public final class ClockStatusIndicator extends Label {
         read(Asker.STREAM, streamDevice);
     }
 
-    /** A look at a lost device, a closed stream or the open stream's status changes the model; levels read once. */
+    /**
+     * A look at a lost device, a closed stream or the open stream's status changes the model; levels read once.
+     * The lock status is read before the loss, so a status a look applies was read before any loss a later look
+     * sees began, and a loss never consumes the serial of a stream opened during it (ruling E268).
+     */
     private Facts observe(boolean open) {
-        boolean lost = streamClock.deviceLost();
         ClockLockStatus status = streamClock.lockStatus().orElse(null);
+        boolean lost = streamClock.deviceLost();
         if (lost) {
             if (!hiddenForTheLoss) {
                 hiddenForTheLoss = true;
                 settle();
+                announcer.consumeAtALoss();
             }
             forgetLabel();
-            lastApplied = null;
             // A declaration that ends with this stream still open has it read again rather than stay hidden.
             ownRead = OwnRead.UNANSWERED;
         } else {
@@ -559,7 +563,7 @@ public final class ClockStatusIndicator extends Label {
                 openStatus = status;
             } else {
                 forgetALabelTheStatusReplaced();
-                lastApplied = null;
+                announcer.consumeAtAClose();
                 if (ownRead == OwnRead.LABELLED) {
                     settle();
                     ownRead = OwnRead.UNANSWERED;
@@ -584,20 +588,10 @@ public final class ClockStatusIndicator extends Label {
                 && facts.label() != null && !namesAnotherSource(facts.status(), facts.label().source());
         boolean audioTake = takeMarks.takeRecording() == TakeClockMarks.TakeRecording.AUDIO;
         if (measuring) {
-            markATakeThatStartsUnlocked(facts.status(), facts.label().source(), audioTake);
-            announce(facts.status(), facts.label().source());
-            lastApplied = facts.status();
+            announcer.measured(facts.status(), facts.label().source(), audioTake && !audioTakeSeen);
         }
         audioTakeSeen = audioTake && (audioTakeSeen || measuring);
         show(next);
-    }
-
-    /** E173: the first measuring look at an audio take marks, at its start, an unlock already applied before. */
-    private void markATakeThatStartsUnlocked(ClockLockStatus current, ClockSource source, boolean audioTake) {
-        if (audioTake && !audioTakeSeen && current != null && !(source.kind() instanceof ClockKind.Internal)
-                && unlockedBefore(current)) {
-            takeMarks.takeStartsUnlocked();
-        }
     }
 
     /** Asks for the stream's label read when none is in flight, the retry wait is over, and a read can help. */
@@ -675,7 +669,6 @@ public final class ClockStatusIndicator extends Label {
      * label only when it provably names the clock on show (E81).
      */
     private void answeredOnAClosedStream(Asker asker, Optional<ClockReading> reading, boolean failed) {
-        lastApplied = null;
         Optional<ClockSource> current = reading.flatMap(ClockReading::current);
         if (asker == Asker.STREAM) {
             ownRead = OwnRead.UNANSWERED;
@@ -709,39 +702,6 @@ public final class ClockStatusIndicator extends Label {
     private void armRetry() {
         retryArmed = true;
         retryAtNanos = nanos.getAsLong() + READ_RETRY_NANOS;
-    }
-
-    /** E31, E108, E110 and E111: notices and marks from the difference of two applied statuses. */
-    private void announce(ClockLockStatus current, ClockSource source) {
-        if (current == null || source.kind() instanceof ClockKind.Internal) {
-            return;
-        }
-        boolean wasUnlocked = unlockedBefore(current);
-        String deviceName = deviceName(current.device());
-        if (current.lock() == ClockLockStatus.Lock.UNLOCKED && !wasUnlocked) {
-            String key = switch (takeMarks.takeRecording()) {
-                case AUDIO -> "clockBadge.notice.unlocked.take";
-                case WITHOUT_AUDIO -> "clockBadge.notice.unlocked.takeWithoutAudio";
-                case NONE -> "clockBadge.notice.unlocked";
-            };
-            notifications.notify(EngineHealthText.text(key, deviceName, source.name()));
-            takeMarks.lockChanged(false, current.evidenceNanos());
-        } else if (current.lock() == ClockLockStatus.Lock.LOCKED && wasUnlocked) {
-            notifications.notifyInformation(
-                    EngineHealthText.text("clockBadge.notice.relocked", deviceName, source.name()));
-            takeMarks.lockChanged(true, current.evidenceNanos());
-        }
-    }
-
-    /** Whether the status applied last for {@code current}'s serial was unlocked. */
-    private boolean unlockedBefore(ClockLockStatus current) {
-        return lastApplied != null && lastApplied.serial() == current.serial()
-                && lastApplied.lock() == ClockLockStatus.Lock.UNLOCKED;
-    }
-
-    /** The device the driver side names (E111), never the default placeholder; a DeviceId name is never blank. */
-    private static String deviceName(DeviceId measured) {
-        return measured.isDefault() ? EngineHealthText.text("clockBadge.notice.unnamedDevice") : measured.name();
     }
 
     /** A close of a measured stream or a loss: whatever a read in flight answers is void. */

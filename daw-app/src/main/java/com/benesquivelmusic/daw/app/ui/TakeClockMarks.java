@@ -11,7 +11,10 @@ interface TakeClockMarks {
 
     /** What records now, as the clock notices word it (ruling E108). */
     enum TakeRecording {
-        /** No take records. */
+        /**
+         * No take records, or the audio take recording has had its capture sealed early and is about to be stopped
+         * for it (ruling E280): nothing is marked, and no notice says that recording continues.
+         */
         NONE,
         /** A take with an audio manifest records: a clock change is marked in it. */
         AUDIO,
@@ -23,15 +26,25 @@ interface TakeClockMarks {
     TakeRecording takeRecording();
 
     /**
-     * The clock was declared unlocked or locked again on the source on show.
+     * A change of the clock lock on the source on show that the badge measured, replayed from what its status
+     * carries, or inferred for a gap in it.
      *
      * @param locked        {@code false} for an unlock, {@code true} for a relock
      * @param evidenceNanos the {@link System#nanoTime()} of the evidence, or {@code 0} when unknown
+     * @return for an unlock, whether an audio take records, its capture not sealed early, and is marked unlocked
+     *         after the call, whether or not this call wrote the mark (rulings E223 and E280); {@code false} for a
+     *         relock
      */
-    void lockChanged(boolean locked, long evidenceNanos);
+    boolean lockChanged(boolean locked, long evidenceNanos);
 
-    /** The audio take first seen recording started while an unlock applied before it was on show (E173). */
-    void takeStartsUnlocked();
+    /**
+     * The audio take is marked unlocked from its start: an unlock applied before it was first seen is still on show
+     * (E173), or a serial first measured during it has more changes than its status keeps (E218).
+     *
+     * @return whether an audio take records, its capture not sealed early, and is marked unlocked after the call,
+     *         whether or not this call wrote the mark (rulings E223 and E280)
+     */
+    boolean takeStartsUnlocked();
 
     /**
      * The window's take marks: the current transport's record coordinator.
@@ -45,7 +58,8 @@ interface TakeClockMarks {
             @Override
             public TakeRecording takeRecording() {
                 TransportController current = transport.get();
-                if (current == null || current.recordCoordinator().getState() != RecordState.RECORDING) {
+                if (current == null || current.recordCoordinator().getState() != RecordState.RECORDING
+                        || current.recordCoordinator().isTakeCaptureSealed()) {
                     return TakeRecording.NONE;
                 }
                 return current.recordCoordinator().isAudioTakeRecording()
@@ -53,20 +67,16 @@ interface TakeClockMarks {
             }
 
             @Override
-            public void lockChanged(boolean locked, long evidenceNanos) {
+            public boolean lockChanged(boolean locked, long evidenceNanos) {
                 TransportController current = transport.get();
-                if (current != null) {
-                    current.recordCoordinator().noteClockEvent(
-                            locked ? TakeManifest.ClockEvent.LOCKED : TakeManifest.ClockEvent.UNLOCKED, evidenceNanos);
-                }
+                return current != null && current.recordCoordinator().noteClockEvent(
+                        locked ? TakeManifest.ClockEvent.LOCKED : TakeManifest.ClockEvent.UNLOCKED, evidenceNanos);
             }
 
             @Override
-            public void takeStartsUnlocked() {
+            public boolean takeStartsUnlocked() {
                 TransportController current = transport.get();
-                if (current != null) {
-                    current.recordCoordinator().noteTakeStartsUnlocked();
-                }
+                return current != null && current.recordCoordinator().noteTakeStartsUnlocked();
             }
         };
     }

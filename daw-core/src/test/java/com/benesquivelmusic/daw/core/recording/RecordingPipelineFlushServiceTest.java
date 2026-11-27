@@ -213,7 +213,8 @@ class RecordingPipelineFlushServiceTest {
         // The interleaving a busy take produces: the ring fills (blocks 0..7),
         // five blocks are dropped (8..12), the flush thread frees ONE slot, the
         // callback publishes block 13 into it in the middle of the pass that
-        // applies 0..7 and then notes the overflow; the next pass applies 13. The
+        // applies 0..7, and its look notes the overflow; the next pass applies
+        // 13, whose stamp carries the five drops, and lines them. The
         // observer runs before each block's slot is released, so it holds the
         // flush thread in block 1, after block 0's slot was released, until
         // the producer has published that block. There is one producer at a
@@ -247,7 +248,6 @@ class RecordingPipelineFlushServiceTest {
         assertThat(fedIntoTheFullRing).as("the callback returned from every block, full ring or not").isNull();
         assertThat(pipeline.getOverflowCount()).as("13 offered into 8 slots").isEqualTo(5);
         assertThat(ring.publishedBlocks()).isEqualTo(8);
-        assertThat(ring.droppedAfterSequence()).isEqualTo(7);
 
         service.setDrainPaused(false);
         assertThat(firstSlotFreed.await(10, TimeUnit.SECONDS)).as("the flush thread released block 0").isTrue();
@@ -259,9 +259,8 @@ class RecordingPipelineFlushServiceTest {
 
         // In-order drain, and the stream is contiguous except at the one hole.
         assertThat(applied).extracting(Applied::sequence).containsExactly(0L, 1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L);
-        Applied lastBeforeTheDrop = applied.stream()
-                .filter(a -> a.sequence() == ring.droppedAfterSequence())
-                .findFirst().orElseThrow();
+        Applied lastBeforeTheDrop = applied.get(7);
+        assertThat(lastBeforeTheDrop.sequence()).as("the block the ring delivered before the run").isEqualTo(7L);
         assertThat(lastBeforeTheDrop.endFrame()).isEqualTo(8L * BLOCK_FRAMES);
         TakeManifest manifest = TakeManifest.read(pipeline.getTakeManifestPath());
         assertThat(manifest.overflowBlocks()).isEqualTo(5);
@@ -289,7 +288,7 @@ class RecordingPipelineFlushServiceTest {
         }
         assertThat(holes).as("exactly one discontinuity in the applied stream").isEqualTo(1);
         assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).isEqualTo(9L * BLOCK_FRAMES);
-        assertThat(warnings).as("one warning for the one noticed episode").singleElement()
+        assertThat(warnings).as("one warning for the one run").singleElement()
                 .satisfies(w -> assertThat(w).contains("overflow").contains("5 block(s)"));
 
         service.setBlockObserver(null);

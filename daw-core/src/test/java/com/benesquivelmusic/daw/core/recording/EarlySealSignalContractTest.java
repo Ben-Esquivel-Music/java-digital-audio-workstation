@@ -314,7 +314,7 @@ class EarlySealSignalContractTest {
         IllegalStateException fault = new IllegalStateException("prepared drain-loop failure");
         service.setDrainPaused(true);
         service.setBlockObserver((sequence, startFrame, frames) -> { throw fault; });
-        CaptureRing.Slot slot = pipeline.getCaptureRing().claim();
+        CaptureRing.Slot slot = pipeline.getCaptureRing().claim(CaptureRing.DELIVERED);
         slot.setNumFrames(BLOCK_FRAMES);
         slot.copySource(0, rampBlock(0), 1, BLOCK_FRAMES);
         pipeline.getCaptureRing().publish();

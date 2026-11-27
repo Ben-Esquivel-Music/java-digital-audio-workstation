@@ -32,9 +32,9 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.OptionalLong;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -436,7 +436,7 @@ public final class AudioEngine {
                         // Story 337, ruling E86: the device's own-thread failures count as input
                         // failures until it closes; closeAdditionalInputs folds them.
                         audioHealth.attachInputCounters(sibling, source.device()::name, sibling::threadCounters);
-                        capturedInputLoss.attach(sibling);
+                        capturedInputLoss.attachInput(sibling);
                     }
                     if (sibling.openedInputChannels() == 0) {
                         if (!proven) throw new AudioBackendException("No capture from '" + source.device().name() + "'");
@@ -552,7 +552,9 @@ public final class AudioEngine {
         }
     }
 
-    private final class AdditionalInputSubscriber implements java.util.concurrent.Flow.Subscriber<com.benesquivelmusic.daw.sdk.audio.AudioBlock> {
+    private final class AdditionalInputSubscriber
+            implements java.util.concurrent.Flow.Subscriber<com.benesquivelmusic.daw.sdk.audio.AudioBlock>,
+            InputBlockLossListener {
         private final int source;
         private final float[][] planes;
         private final float[][][] views;
@@ -670,6 +672,10 @@ public final class AudioEngine {
             if (terminateInputSource()) LOG.log(Level.WARNING, "Input stream failed", error);
         }
         @Override public void onComplete() { terminateInputSource(); }
+        /** A block the publisher dropped for this subscriber, counted while it is live (story 338, ruling E208). */
+        @Override public void inputBlockDropped(com.benesquivelmusic.daw.sdk.audio.AudioBlock block) {
+            if (isLive()) noteCapturedInputBlockLost();
+        }
     }
 
     /** Device identity of the tracked stream (the winning rung's device). */
@@ -1240,7 +1246,11 @@ public final class AudioEngine {
      *             defends against. Only the {@code Executor.execute} handoff
      *             happens inline, with both locks held. No inversion exists
      *             today — nothing that holds a publisher's lock ever waits
-     *             for this one — but {@link AudioBackend#inputBlocks()} is a
+     *             for this one; a publisher's drop handler runs engine code
+     *             under its lock, the two capture subscribers'
+     *             {@code inputBlockDropped}, and that code takes no lock (a
+     *             volatile read and an {@code AtomicLong} increment, story
+     *             338, ruling E208) — but {@link AudioBackend#inputBlocks()} is a
      *             third-party-implementable seam, so a custom
      *             {@link java.util.concurrent.Flow.Publisher} could block, or
      *             take further locks, right here. INWARD BY CONVENTION rather
@@ -1295,8 +1305,10 @@ public final class AudioEngine {
      *             which reads that backend's own volatiles and never takes an
      *             engine lock — and, on that source's first failure, reads the
      *             backend's name and writes one WARNING; its readers — the
-     *             application's drain — read volatile snapshots and never take
-     *             it), so no inversion
+     *             application's drain and xrun feed, and
+     *             {@link #capturedInputBlocksLost()} and
+     *             {@link #capturedInputBlocksLostAsATakeStarts()} — read
+     *             volatile snapshots and never take it), so no inversion
      *             exists. Each attach reads the source's
      *             {@link AudioBackend#threadCounters()} once, to baseline the
      *             new counts: an SDK call like any other in seam (2)
@@ -1324,11 +1336,22 @@ public final class AudioEngine {
      *             {@link #clearOpenStream()}, each input device's in the
      *             record start and {@link #closeAdditionalInputs()}) it reads
      *             that backend's {@link AudioBackend#dropoutCounters()} once
-     *             — an SDK call priced with seam (2), which by contract never
-     *             blocks or throws, and a throw counts nothing — under a
-     *             private monitor of the nested {@code CapturedInputLoss}
-     *             that only these writers take; its reader takes no lock.
-     *             ALLOWED as a nested class.</li>
+     *             and, for the stream's own backend, its
+     *             {@link AudioBackend#failedCallbackInputBlocks()} — SDK calls
+     *             priced with seam (2); a report that throws anything but a
+     *             {@link VirtualMachineError}, or is {@code null} or negative,
+     *             changes nothing, and the next good read counts every block
+     *             lost since the last good one, except after a failure at the
+     *             read made as a take starts recording, whose next good read
+     *             counts nothing for its gap (rulings E261 and E262); a
+     *             {@link VirtualMachineError} freezes that backend's source at
+     *             that count and propagates; a backend attached again while
+     *             still attached is folded first and counted from the new
+     *             open (story 338, ruling E214) — under a private monitor of
+     *             the nested {@code CapturedInputLoss} that only these writers
+     *             take, which reads no backend, allocates nothing and calls
+     *             nothing that can throw inside its fold window; its reader
+     *             takes no lock. ALLOWED as a nested class.</li>
      *       </ol></li>
      *   <li><strong>How long it can block — the honest budget.</strong> Not
      *       "no unbounded wait". The general truth first, because it is the
@@ -4267,7 +4290,7 @@ public final class AudioEngine {
             // VirtualMachineError from the backend's report closes the opened
             // handle and fails the start like any other start failure.
             audioHealth.attachBackendCounters(backend::name, backend::threadCounters);
-            capturedInputLoss.attach(backend);
+            capturedInputLoss.attachStream(backend);
             EngineStreamPump newPump = newRenderDrive(backend, negotiatedFormat);
             newPump.start();
             this.pump = newPump;
@@ -5963,26 +5986,29 @@ public final class AudioEngine {
     }
 
     /**
-     * When the open stream's backend received its newest driver resync
-     * message ({@link AudioBackend#newestDriverResyncNanos()}), as a
-     * {@link System#nanoTime()} reading; empty while no stream is open or
-     * when the backend does not know. Lock-free; any non-real-time thread;
-     * never throws.
+     * Takes up the arrivals of the open stream's backend's driver resync
+     * requests that no earlier call took up
+     * ({@link AudioBackend#takeDriverResyncArrivals()}), so the xrun feed can
+     * date each request at its own arrival (story 338, rulings E270 and E279);
+     * {@link DriverResyncArrivals#NONE} while no stream is open, or when the
+     * backend's answer is {@code null} or throws. A take frees the backend's
+     * store for the requests after it, so only the xrun feed calls this.
+     * Takes no engine lock; any non-real-time thread; never throws.
      *
-     * @return the arrival time, if known
+     * @return the arrivals taken up; never {@code null}
      */
-    public OptionalLong newestDriverResyncNanos() {
+    public DriverResyncArrivals takeDriverResyncArrivals() {
         AudioBackend backend = this.openBackend;
         if (backend == null || !isStreamOpen()) {
-            return OptionalLong.empty();
+            return DriverResyncArrivals.NONE;
         }
         try {
-            OptionalLong arrived = backend.newestDriverResyncNanos();
-            return arrived != null ? arrived : OptionalLong.empty();
+            DriverResyncArrivals taken = backend.takeDriverResyncArrivals();
+            return taken != null ? taken : DriverResyncArrivals.NONE;
         } catch (RuntimeException brokenContract) {
-            LOG.log(Level.FINE, "newestDriverResyncNanos() of " + backend.getClass().getName() + " threw",
+            LOG.log(Level.FINE, "takeDriverResyncArrivals() of " + backend.getClass().getName() + " threw",
                     brokenContract);
-            return OptionalLong.empty();
+            return DriverResyncArrivals.NONE;
         }
     }
 
@@ -6074,20 +6100,60 @@ public final class AudioEngine {
 
     /**
      * Captured input blocks lost before they reached a capture ring, for the
-     * life of this engine (story 338, rulings E25 and E45): blocks the
-     * render pump's input queue refused, and the
-     * {@link BackendDropoutCounters#inputBlocksDropped()} of the stream's
-     * backend and of every input opened beside it, each counted from the
-     * open of its stream and kept when the stream closes. Monotonic: a reader
-     * baselines it when a take starts. Lock-free; any non-real-time thread.
+     * life of this engine (story 338, rulings E25, E45, E206, E208, E211,
+     * E214, E261 and E262). The sources:
+     * <ul>
+     *   <li>the blocks the engine's two capture subscribers lost: the render
+     *       pump's full input queue, and a block a publisher dropped for
+     *       either subscriber;</li>
+     *   <li>each backend's {@link BackendDropoutCounters#inputBlocksDropped()},
+     *       for the stream's own backend with the captured blocks its device
+     *       lost in a failed device callback
+     *       ({@link AudioBackend#failedCallbackInputBlocks()}, ruling E211),
+     *       from its first good read since the open that attached it, kept
+     *       when its stream closes. A report that fails, or is {@code null}
+     *       or negative, changes nothing, and the next good read counts every
+     *       block lost since the last good one; after a failure at the read
+     *       made as a take starts ({@link #capturedInputBlocksLostAsATakeStarts()})
+     *       that next good read counts nothing for its gap;</li>
+     *   <li>the input blocks the backends' own threads lost as the health
+     *       record counts them ({@link AudioHealthRecord#backendCounters()}),
+     *       for an input beside the stream its failed device callbacks too
+     *       (story 337, ruling E86); never an input halt (ruling E207).</li>
+     * </ul>
+     *
+     * <p>Monotonic: a take baselines it with
+     * {@link #capturedInputBlocksLostAsATakeStarts()}. It takes no engine
+     * lock; any non-real-time thread. A report read through the record's
+     * guard may log one WARNING per failing source on the calling thread, and
+     * a {@link VirtualMachineError} from a report propagates to the one call
+     * that meets it (story 337, rulings E78 and E95).</p>
      */
     public long capturedInputBlocksLost() {
-        return capturedInputLoss.total();
+        return capturedInputLoss.total(false) + audioHealth.backendCounters().inputBlocksLost();
     }
 
-    /** Called by the render pump's input subscriber when its queue refused a block. */
+    /**
+     * {@link #capturedInputBlocksLost()} as read when a take starts recording
+     * (story 338, rulings E261 and E262): the same total, except that a
+     * backend whose dropout report fails at this read counts nothing, at its
+     * next good read, for the blocks it lost since its last good one, so a
+     * take baselined on this read never counts a block lost before it. Same
+     * threads, locks and failures as {@link #capturedInputBlocksLost()}.
+     *
+     * @return the total, never decreasing
+     */
+    public long capturedInputBlocksLostAsATakeStarts() {
+        return capturedInputLoss.total(true) + audioHealth.backendCounters().inputBlocksLost();
+    }
+
+    /**
+     * Called by the render pump's input subscriber when its queue refused a
+     * block or its publisher dropped one for it, and by an input subscriber
+     * beside the stream for a publisher's drop.
+     */
     void noteCapturedInputBlockLost() {
-        capturedInputLoss.noteQueueDrop();
+        capturedInputLoss.noteSubscriberLoss();
     }
 
     /** Pump thread only, on the render drive around {@link #processBlock}: see {@link #capturedInputStarved}. */
@@ -6109,78 +6175,241 @@ public final class AudioEngine {
     }
 
     /**
-     * Captured blocks lost before the capture ring: the pump's queue drops,
-     * counted where they happen, and each attached backend's own count from
-     * the open that attached it. A backend's count moves into the folded
-     * total when its stream closes. Writers are the lifecycle paths under the
-     * engine's lifecycle lock; the reader takes no lock and retries while a
-     * fold is half done, so the total never counts a fold twice or loses it.
+     * Captured blocks lost before the capture ring: the blocks the engine's
+     * capture subscribers lost, counted where they happen, and each attached
+     * backend's dropout count — for the stream's own backend with the blocks
+     * its failed device callbacks lost (ruling E211) — from its first good
+     * read since its attach. A failed or {@code null} report changes nothing,
+     * and the next good read counts every block lost since the last good one,
+     * except after a failure at a read made as a take starts recording
+     * ({@link #total(boolean)}): that next good read counts nothing for its
+     * gap, so no block lost before the take joins it (rulings E214, E261 and
+     * E262). A {@link VirtualMachineError} freezes the source, which is never
+     * read again while attached, and propagates. A backend's count is folded
+     * into the total at its close, or when the same backend is attached again
+     * while still attached. Never decreases.
+     *
+     * <p>Each source's counts are one immutable value replaced by a
+     * compare-and-set, so a reader and a lifecycle thread never interleave
+     * half an update. Writers are the lifecycle paths under the engine's
+     * lifecycle lock. A fold first seals the source's counts, so no read moves
+     * them again, and reads, computes and allocates everything before its odd
+     * version window; inside it, it only publishes the new total and sources,
+     * so nothing there can throw and leave the version odd. The reader takes
+     * no lock and retries while a fold is half done, so the total never counts
+     * a fold twice or loses it. Package-private, with {@link Counts} and
+     * {@link #UNREAD}, for its unit test.</p>
      */
-    private static final class CapturedInputLoss {
+    static final class CapturedInputLoss {
 
-        private record Source(AudioBackend backend, long baseline) { }
+        /** A count no good read gives: every count read here is never negative. */
+        static final long UNREAD = -1L;
 
-        private final AtomicLong queueDrops = new AtomicLong();
-        /** Odd while a writer moves a backend's count into {@link #folded}. */
+        /**
+         * One source's counts, replaced whole.
+         *
+         * @param baseline    the count its growth is measured from; UNREAD until a good read lands
+         * @param highest     the highest count a good read gave; UNREAD until one
+         * @param skipNextGap a read made as a take started recording failed: the next good read counts nothing for
+         *                    the blocks lost since the last good one
+         * @param sealed      a fold took these counts: no read moves them again
+         */
+        record Counts(long baseline, long highest, boolean skipNextGap, boolean sealed) {
+
+            static Counts from(long first) {
+                return new Counts(first, first, false, false);
+            }
+
+            long grownSoFar() {
+                return baseline == UNREAD ? 0L : Math.max(0L, highest - baseline);
+            }
+
+            /** These counts after a read that gave {@code now}; {@code this} when the read changes nothing. */
+            Counts after(long now, boolean asATakeStarts) {
+                if (sealed) {
+                    return this;
+                }
+                if (now == UNREAD) {
+                    return asATakeStarts && !skipNextGap ? new Counts(baseline, highest, true, false) : this;
+                }
+                if (baseline == UNREAD) {
+                    // A later-landing lower read would add losses from before a figure already handed out.
+                    return from(now);
+                }
+                if (skipNextGap) {
+                    return new Counts(baseline + Math.max(0L, now - highest), Math.max(highest, now), false, false);
+                }
+                return now > highest ? new Counts(baseline, now, false, false) : this;
+            }
+        }
+
+        /** One attached backend. Fields only: every read of its backend is {@link CapturedInputLoss}'s own. */
+        private static final class Source {
+            final AudioBackend backend;
+            /** The stream's own backend, whose failed device callbacks count here (ruling E211). */
+            final boolean stream;
+            final AtomicReference<Counts> counts;
+            /** Set when a read met a VirtualMachineError: never read again while attached. */
+            volatile boolean frozen;
+
+            Source(AudioBackend backend, boolean stream, long first) {
+                this.backend = backend;
+                this.stream = stream;
+                this.counts = new AtomicReference<>(Counts.from(first));
+            }
+        }
+
+        private final AtomicLong subscriberLosses = new AtomicLong();
+        /** Odd while a writer publishes a fold. */
         private final AtomicLong version = new AtomicLong();
         private volatile long folded;
         private volatile Source[] sources = new Source[0];
 
-        void noteQueueDrop() {
-            queueDrops.incrementAndGet();
+        void noteSubscriberLoss() {
+            subscriberLosses.incrementAndGet();
         }
 
-        synchronized void attach(AudioBackend backend) {
-            for (Source source : sources) {
-                if (source.backend() == backend) {
-                    return;
+        void attachStream(AudioBackend backend) {
+            attach(backend, true);
+        }
+
+        void attachInput(AudioBackend backend) {
+            attach(backend, false);
+        }
+
+        private synchronized void attach(AudioBackend backend, boolean stream) {
+            int slot = indexOf(backend);
+            boolean role = slot < 0 ? stream : sources[slot].stream;
+            long now;
+            try {
+                now = read(backend, role);
+            } catch (VirtualMachineError fatal) {
+                if (slot >= 0) {
+                    sources[slot].frozen = true;
                 }
+                throw fatal;
             }
-            Source[] grown = java.util.Arrays.copyOf(sources, sources.length + 1);
-            grown[sources.length] = new Source(backend, inputBlocksDropped(backend));
-            sources = grown;
+            if (slot < 0) {
+                Source[] grown = java.util.Arrays.copyOf(sources, sources.length + 1);
+                grown[sources.length] = new Source(backend, role, now);
+                sources = grown;
+                return;
+            }
+            Source old = sources[slot];
+            if (!old.frozen) {
+                note(old, now, false);
+            }
+            Counts last = seal(old);
+            long foldedAfter = folded + last.grownSoFar();
+            Source[] replaced = java.util.Arrays.copyOf(sources, sources.length);
+            replaced[slot] = new Source(backend, role, now == UNREAD ? UNREAD : Math.max(now, last.highest()));
+            version.incrementAndGet();
+            folded = foldedAfter;
+            sources = replaced;
+            version.incrementAndGet();
         }
 
         synchronized void detach(AudioBackend backend) {
-            for (int i = 0; i < sources.length; i++) {
-                Source source = sources[i];
-                if (source.backend() != backend) {
-                    continue;
-                }
-                long lost = Math.max(0L, inputBlocksDropped(backend) - source.baseline());
-                Source[] shrunk = new Source[sources.length - 1];
-                System.arraycopy(sources, 0, shrunk, 0, i);
-                System.arraycopy(sources, i + 1, shrunk, i, sources.length - i - 1);
-                version.incrementAndGet();
-                folded = folded + lost;
-                sources = shrunk;
-                version.incrementAndGet();
+            int slot = indexOf(backend);
+            if (slot < 0) {
                 return;
             }
+            Source source = sources[slot];
+            refresh(source, false);
+            Counts last = seal(source);
+            long foldedAfter = folded + last.grownSoFar();
+            Source[] shrunk = new Source[sources.length - 1];
+            System.arraycopy(sources, 0, shrunk, 0, slot);
+            System.arraycopy(sources, slot + 1, shrunk, slot, sources.length - slot - 1);
+            version.incrementAndGet();
+            folded = foldedAfter;
+            sources = shrunk;
+            version.incrementAndGet();
         }
 
-        long total() {
+        /**
+         * The total, reading every attached backend once more.
+         *
+         * @param asATakeStarts whether this is the read made as a take starts recording, at which a failed report
+         *                      makes that backend's next good read count nothing for its gap (ruling E261)
+         */
+        long total(boolean asATakeStarts) {
             while (true) {
                 long before = version.get();
                 if ((before & 1L) == 0L) {
                     long sum = folded;
                     for (Source source : sources) {
-                        sum += Math.max(0L, inputBlocksDropped(source.backend()) - source.baseline());
+                        refresh(source, asATakeStarts);
+                        sum += source.counts.get().grownSoFar();
                     }
                     if (version.get() == before) {
-                        return sum + queueDrops.get();
+                        return sum + subscriberLosses.get();
                     }
                 }
                 Thread.onSpinWait();
             }
         }
 
-        private static long inputBlocksDropped(AudioBackend backend) {
+        private int indexOf(AudioBackend backend) {
+            Source[] current = sources;
+            for (int i = 0; i < current.length; i++) {
+                if (current[i].backend == backend) {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        private static void refresh(Source source, boolean asATakeStarts) {
+            if (source.frozen || source.counts.get().sealed()) {
+                return;
+            }
+            long now;
+            try {
+                now = read(source.backend, source.stream);
+            } catch (VirtualMachineError fatal) {
+                source.frozen = true;
+                throw fatal;
+            }
+            note(source, now, asATakeStarts);
+        }
+
+        private static void note(Source source, long now, boolean asATakeStarts) {
+            while (true) {
+                Counts current = source.counts.get();
+                Counts next = current.after(now, asATakeStarts);
+                if (next == current || source.counts.compareAndSet(current, next)) {
+                    return;
+                }
+            }
+        }
+
+        /** Seals {@code source}'s counts for a fold and returns them: no read moves them again. */
+        private static Counts seal(Source source) {
+            while (true) {
+                Counts current = source.counts.get();
+                if (current.sealed()) {
+                    return current;
+                }
+                Counts sealed = new Counts(current.baseline(), current.highest(), current.skipNextGap(), true);
+                if (source.counts.compareAndSet(current, sealed)) {
+                    return sealed;
+                }
+            }
+        }
+
+        private static long read(AudioBackend backend, boolean stream) {
             try {
                 BackendDropoutCounters counters = backend.dropoutCounters();
-                return counters == null ? 0L : counters.inputBlocksDropped();
-            } catch (RuntimeException brokenContract) {
-                return 0L;
+                if (counters == null) {
+                    return UNREAD;
+                }
+                long failedCallbacks = stream ? backend.failedCallbackInputBlocks() : 0L;
+                return failedCallbacks < 0L ? UNREAD : counters.inputBlocksDropped() + failedCallbacks;
+            } catch (VirtualMachineError fatal) {
+                throw fatal;
+            } catch (Throwable broken) {
+                return UNREAD;
             }
         }
     }

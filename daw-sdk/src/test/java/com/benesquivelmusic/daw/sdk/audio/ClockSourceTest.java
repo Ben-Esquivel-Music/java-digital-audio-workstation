@@ -11,6 +11,7 @@ import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -170,31 +171,57 @@ class ClockSourceTest {
     }
 
     /**
-     * The mock reports what its input publisher dropped for a subscriber that
-     * never requests, and claims no output-starvation signal.
+     * A block the mock's input publisher dropped for a subscriber that never
+     * requests is told to that subscriber and never counted in the mock's
+     * dropout counters, which report nothing and claim no output-starvation
+     * signal (story 338, ruling E208).
      */
     @Test
-    void mockDropoutCountersReportTheInputPublishersDrops() {
+    void aBlockTheMockDropsIsToldToTheSubscriberThatDroppedItAndNotCounted() {
         try (MockAudioBackend backend = new MockAudioBackend()) {
             backend.open(new DeviceId(MockAudioBackend.NAME, "Mock Device"),
                     new AudioFormat(48_000.0, 2, 16), 64);
-            backend.inputBlocks().subscribe(new Flow.Subscriber<>() {
-                @Override public void onSubscribe(Flow.Subscription s) { /* never requests */ }
-                @Override public void onNext(AudioBlock block) { /* unused */ }
-                @Override public void onError(Throwable t) { /* unused */ }
-                @Override public void onComplete() { /* unused */ }
-            });
-            assertEquals(0L, backend.dropoutCounters().inputBlocksDropped());
+            AtomicLong told = new AtomicLong();
+            backend.inputBlocks().subscribe(new NonRequestingListener(told));
 
             for (int i = 0; i < Flow.defaultBufferSize() * 2; i++) {
                 backend.pumpInput(64);
             }
 
-            BackendDropoutCounters counters = backend.dropoutCounters();
-            assertTrue(counters.inputBlocksDropped() > 0,
-                    "blocks past the subscriber's buffer were dropped and counted");
-            assertFalse(counters.reportsOutputStarvation());
-            assertEquals(0L, counters.outputStarvedPeriods());
+            assertTrue(told.get() > 0, "blocks past the subscriber's buffer were told to it");
+            assertEquals(BackendDropoutCounters.NONE, backend.dropoutCounters());
+        }
+    }
+
+    /** A listener that requests nothing and counts the blocks dropped for it. */
+    private static final class NonRequestingListener
+            implements Flow.Subscriber<AudioBlock>, InputBlockLossListener {
+
+        private final AtomicLong told;
+
+        NonRequestingListener(AtomicLong told) {
+            this.told = told;
+        }
+
+        @Override
+        public void inputBlockDropped(AudioBlock block) {
+            told.incrementAndGet();
+        }
+
+        @Override
+        public void onSubscribe(Flow.Subscription subscription) {
+        }
+
+        @Override
+        public void onNext(AudioBlock block) {
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+        }
+
+        @Override
+        public void onComplete() {
         }
     }
 

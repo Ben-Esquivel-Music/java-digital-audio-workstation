@@ -1,9 +1,12 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.recording.RecordState;
+import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
+import com.benesquivelmusic.daw.core.audio.StreamingProvision;
 import com.benesquivelmusic.daw.core.recording.TakeManifest;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
+import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters;
 import com.benesquivelmusic.daw.sdk.audio.FormatChangeReason;
@@ -14,14 +17,20 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static com.benesquivelmusic.daw.app.ui.DeviceLossRecordingFixture.await;
+import static com.benesquivelmusic.daw.app.ui.DeviceLossRecordingFixture.awaitOnFx;
 import static com.benesquivelmusic.daw.app.ui.DeviceLossRecordingFixture.onFx;
 import static com.benesquivelmusic.daw.app.ui.DeviceLossRecordingFixture.runOnFx;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -32,7 +41,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * detection wiring on the default provision, whose device has no name to
  * show: a stall during a take whose MIDI stop fails leads with the stall, and
  * a driver reset whose reopen fails seals the take as a device loss and leads
- * with the reset.
+ * with the reset; a reset whose reopen finds the driver's control panel open
+ * is no loss: the take goes on across the wait (ruling E278).
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class DeviceLossLeadsDuringATakeTest {
@@ -134,6 +144,97 @@ class DeviceLossLeadsDuringATakeTest {
         assertThat(onFx(() -> fixture.coordinator().getState())).as("never a take in record state over a closed"
                 + " stream").isEqualTo(RecordState.DEVICE_LOST);
         fixture.backend().failOpensWith(null);
+    }
+
+    @Test
+    void aTakeRecordingAtTheRequestGoesOnAcrossTheWait() throws Exception {
+        CountDownLatch shown = new CountDownLatch(1);
+        CountDownLatch close = new CountDownLatch(1);
+        AudioBackend heldPanel = withAControlPanelThatStaysOpen(fixture.backend(), shown, close);
+        runOnFx(() -> fixture.engine().setStreamingProvision(new StreamingProvision(fixture.backend().name(),
+                List.of(new BackendStreamRung(heldPanel, fixture.activeDevice())))));
+        DefaultAudioEngineController controller = fixture.engineController().orElseThrow();
+        List<EngineStateChange> published = EngineHealthMonitorTest.subscribe(controller);
+        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+        int before = fixture.shownCount();
+        long halts = fixture.engine().getCaptureHaltGeneration();
+        FutureTask<Void> panel = new FutureTask<>(controller.openControlPanel().orElseThrow(), null);
+        Thread.ofPlatform().name("test-driver-control-panel").start(panel);
+        try {
+            await(() -> shown.getCount() == 0, "the driver's control panel is open");
+            fixture.backend().simulateFormatChangeRequested(fixture.activeDevice(), Optional.empty(),
+                    new FormatChangeReason.DriverReset());
+            await(() -> controller.formatChangeAwaitingTheControlPanel().isPresent(),
+                    "the reopen waits for the panel");
+            awaitOnFx(() -> fixture.engineHealth().engineStateProperty().get().state() == EngineState.RECONFIGURING,
+                    "the Engine cell's model reads reconfiguring");
+            assertThat(onFx(() -> fixture.coordinator().getState())).isEqualTo(RecordState.RECORDING);
+            assertThat(fixture.engine().getCaptureHaltGeneration()).as("no capture halt").isEqualTo(halts);
+            assertThat(fixture.engineNotices()).endsWith("Reconfiguring audio engine…")
+                    .noneMatch(message -> message.contains("could not be reopened"));
+        } finally {
+            close.countDown();
+        }
+        panel.get(10, TimeUnit.SECONDS);
+        await(() -> controller.engineState() == EngineState.RUNNING, "the reopen after the panel's close");
+        assertThat(fixture.engineNotices()).endsWith("Reconfiguring audio engine…", "Audio engine reconfigured");
+        assertThat(onFx(() -> fixture.coordinator().getState())).isEqualTo(RecordState.RECORDING);
+
+        runOnFx(fixture.controller()::toggleRecord);
+        fixture.awaitPublished();
+
+        assertThat(TakeManifest.read(TakeManifest.manifestPath(takeDirectory)).sealedBy())
+                .contains(TakeManifest.SealedBy.STOP);
+        synchronized (published) {
+            assertThat(published).extracting(EngineStateChange::state).doesNotContain(EngineState.DEVICE_LOST);
+        }
+        assertThat(fixture.entriesSince(before)).extracting(NotificationEntry::message)
+                .noneMatch(message -> message.contains("could not be reopened")
+                        || message.contains("saved up to the dropout"));
+    }
+
+    /**
+     * {@code device}, whose control panel, once shown, stays open until
+     * {@code close} is counted down: a {@link Proxy}, as
+     * {@link CaptureBlockBudget} makes one, that forwards every other call.
+     */
+    private static AudioBackend withAControlPanelThatStaysOpen(AudioBackend device, CountDownLatch shown,
+                                                               CountDownLatch close) {
+        Runnable panel = () -> {
+            shown.countDown();
+            boolean interrupted = false;
+            boolean closed = false;
+            while (!closed) {
+                try {
+                    close.await();
+                    closed = true;
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        };
+        InvocationHandler calls = (proxy, method, args) -> {
+            if (method.getDeclaringClass() == Object.class) {
+                return switch (method.getName()) {
+                    case "equals" -> proxy == args[0];
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    default -> "ControlPanelThatStaysOpen[" + device.name() + "]";
+                };
+            }
+            if (method.getName().equals("openControlPanel")) {
+                return Optional.of(panel);
+            }
+            try {
+                return method.invoke(device, args);
+            } catch (InvocationTargetException failure) {
+                throw failure.getCause();
+            }
+        };
+        return (AudioBackend) Proxy.newProxyInstance(AudioBackend.class.getClassLoader(),
+                new Class<?>[] {AudioBackend.class}, calls);
     }
 
     private static BackendThreadCounters devicePeriods(long periods) {

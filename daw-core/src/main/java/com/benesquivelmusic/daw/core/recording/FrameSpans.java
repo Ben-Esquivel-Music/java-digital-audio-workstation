@@ -104,4 +104,27 @@ final class FrameSpans {
         }
         return inside + framesInside(from, to, regionStart, regionEnd);
     }
+
+    /**
+     * How many wraps {@code [start, start + frames)}, split at the loop end and continued from the loop start,
+     * crosses before its first frame inside the region; {@code -1} when none of its frames is (ruling E282).
+     */
+    static long wrapsBeforeTheRegion(long start, long frames, long loopStart, long loopEnd,
+                                     long regionStart, long regionEnd) {
+        long from = start;
+        long to = start + frames;
+        long wraps = 0L;
+        if (looped(loopStart, loopEnd)) {
+            long length = loopEnd - loopStart;
+            while (to > loopEnd) {
+                if (from < loopEnd && overlaps(from, loopEnd, regionStart, regionEnd)) {
+                    return wraps;
+                }
+                from = Math.max(from, loopEnd) - length;
+                to -= length;
+                wraps++;
+            }
+        }
+        return overlaps(from, to, regionStart, regionEnd) ? wraps : -1L;
+    }
 }

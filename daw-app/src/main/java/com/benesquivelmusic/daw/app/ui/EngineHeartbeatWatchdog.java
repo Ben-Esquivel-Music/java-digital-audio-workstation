@@ -39,7 +39,8 @@ import java.util.function.LongSupplier;
  * locks to an external clock can take seconds to deliver its first period.
  * A deliberate clock-source switch on the open stream's device gets the same
  * allowance again, counted from the switch, until the heartbeat's first
- * advance after it ({@link #allowForAClockSourceSwitch()}, ruling E107).
+ * advance after it ({@link #allowForAClockSourceSwitch()}, ruling E107), and
+ * so does the end of a driver control-panel session (ruling E228).
  * One verdict per epoch: the epoch is latched only when the verdict is
  * accepted.</p>
  *
@@ -178,15 +179,27 @@ final class EngineHeartbeatWatchdog {
 
     /**
      * A deliberate clock-source switch on the open stream's device is being
-     * sent to the driver (ruling E107): from now, the stall verdict waits for
-     * the start-up allowance, {@code max(5 s, window)}, with no advance, and
-     * the normal window applies again at the heartbeat's first advance after
-     * this call. Any thread; the caller serializes its calls. Never re-arms
-     * anything but the stall verdict.
+     * sent to the driver (ruling E107), or a session of the driver's control
+     * panel has just ended, a switch the person may have made there (ruling
+     * E228): from now, the stall verdict waits for the start-up allowance,
+     * {@code max(5 s, window)}, with no advance, and the normal window
+     * applies again at the heartbeat's first advance after this call. Any
+     * thread; the caller serializes its calls. Never re-arms anything but the
+     * stall verdict.
      */
     void allowForAClockSourceSwitch() {
         switchRequestedNanos = clock.getAsLong();
         switchRequests = switchRequests + 1;
+    }
+
+    /**
+     * Whether an allowance was asked for that no tick has taken up yet: a verdict decided in a tick that read the
+     * requests before that ask is not to be acted on (ruling E228). Ticking thread only.
+     *
+     * @return whether an allowance request is pending
+     */
+    boolean isAllowanceRequestPending() {
+        return switchRequests != switchRequestsSeen;
     }
 
     /** One look at the engine; decides at most one stream verdict and declares stalled inputs. */

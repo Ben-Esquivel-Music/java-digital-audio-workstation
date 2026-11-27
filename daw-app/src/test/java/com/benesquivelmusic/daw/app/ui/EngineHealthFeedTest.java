@@ -40,7 +40,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * each journal entry becomes one log line worded as rulings E20, E38, E42,
  * E72 and E78 word it, stamped with the transport's position only while it
  * rolls; the log keeps the newest 100 lines; the figures follow the journal
- * and the take; a resync is marked in the take (ruling E40); Clear empties
+ * and the take; a resync is marked in the take (ruling E40), whatever the
+ * log's limit or its Clear dropped (rulings E225 and E226), but not once the
+ * take's capture thread has sealed it early (ruling E280); Clear empties
  * the log and the count, and forgets only a finished take's figures (ruling
  * E24). The feed runs on the FX thread; the tests assert off it.
  */
@@ -301,7 +303,7 @@ class EngineHealthFeedTest {
         EngineHealthFeed feed = feed(model, fixture::controller);
         Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
 
-        journal.append(XrunJournal.Detail.DRIVER_RESYNC, List.of(), 2, nanos.get() - 80_000_000L);
+        journal.appendResyncs(List.of(new XrunJournal.ResyncMark(nanos.get() - 80_000_000L, 2L)));
         runOnFx(feed::pulse);
         runOnFx(fixture.controller()::stop);
         fixture.awaitPublished();
@@ -310,6 +312,84 @@ class EngineHealthFeedTest {
                 .extracting(TakeManifest.ClockMark::event)
                 .as("ruling E106: each resync gets its own mark")
                 .containsExactly(TakeManifest.ClockEvent.RESYNC, TakeManifest.ClockEvent.RESYNC);
+    }
+
+    /** Ruling E225: a resync is marked in the take once, though more entries than the log holds came after it. */
+    @Test
+    void aResyncFollowedByMoreThanTheLogHoldsIsStillMarkedOnce() throws Exception {
+        FxDispatcher dispatcher = new FxDispatcher();
+        fixture = DeviceLossRecordingFixture.withoutEngineBridge(projectDirectory, CountInMode.OFF, dispatcher);
+        EngineHealthStatus model = onFx(EngineHealthStatus::new);
+        EngineHealthFeed feed = feed(model, fixture::controller);
+        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+
+        journal.append(XrunJournal.Detail.DRIVER_RESYNC, List.of(), 1);
+        for (int i = 0; i < 150; i++) {
+            journal.append(XrunJournal.Detail.OUTPUT_STARVED, List.of(), 1);
+        }
+        List<String> lines = onFx(() -> {
+            feed.pulse();
+            return List.copyOf(model.xrunLog());
+        });
+        runOnFx(feed::pulse);
+        runOnFx(fixture.controller()::stop);
+        fixture.awaitPublished();
+
+        assertThat(lines).as("premise: the log holds the newest 100, not the resync")
+                .hasSize(EngineHealthStatus.MAX_LOG_LINES).noneMatch(line -> line.contains("Resync"));
+        assertThat(TakeManifest.read(TakeManifest.manifestPath(takeDirectory)).clockMarks())
+                .extracting(TakeManifest.ClockMark::event).containsExactly(TakeManifest.ClockEvent.RESYNC);
+    }
+
+    /** Ruling E226: the log's Clear takes no resync from the take. */
+    @Test
+    void aResyncLoggedBeforeAClearIsStillMarked() throws Exception {
+        FxDispatcher dispatcher = new FxDispatcher();
+        fixture = DeviceLossRecordingFixture.withoutEngineBridge(projectDirectory, CountInMode.OFF, dispatcher);
+        EngineHealthStatus model = onFx(EngineHealthStatus::new);
+        EngineHealthFeed feed = feed(model, fixture::controller);
+        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+
+        journal.append(XrunJournal.Detail.DRIVER_RESYNC, List.of(), 1);
+        runOnFx(feed::clearXrunLog);
+        List<String> lines = onFx(() -> {
+            feed.pulse();
+            return List.copyOf(model.xrunLog());
+        });
+        runOnFx(fixture.controller()::stop);
+        fixture.awaitPublished();
+
+        assertThat(lines).as("premise: the Clear emptied the log").isEmpty();
+        assertThat(TakeManifest.read(TakeManifest.manifestPath(takeDirectory)).clockMarks())
+                .extracting(TakeManifest.ClockMark::event).containsExactly(TakeManifest.ClockEvent.RESYNC);
+    }
+
+    /**
+     * Ruling E280: a resync after the capture thread sealed the take early, before the take is stopped for it, is
+     * logged and counted in the Xruns number but not marked in the take.
+     */
+    @Test
+    void aResyncAfterTheEarlySealIsLoggedAndCountedButNotMarked() throws Exception {
+        FxDispatcher dispatcher = new FxDispatcher();
+        fixture = DeviceLossRecordingFixture.withoutEngineBridge(projectDirectory, CountInMode.OFF, dispatcher);
+        EngineHealthStatus model = onFx(EngineHealthStatus::new);
+        EngineHealthFeed feed = feed(model, fixture::controller);
+        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+        runOnFx(fixture.coordinator()::readTheCaptureAsSealedForTest);
+        journal.append(XrunJournal.Detail.DRIVER_RESYNC, List.of(), 1);
+        List<String> lines = onFx(() -> {
+            feed.pulse();
+            return List.copyOf(model.xrunLog());
+        });
+        long counted = onFx(() -> model.xrunFiguresProperty().get().count());
+        runOnFx(fixture.controller()::stop);
+        fixture.awaitPublished();
+
+        assertThat(lines).as("logged").hasSize(1)
+                .allMatch(line -> line.endsWith("Resync  Audio driver lost sync and resynchronized"));
+        assertThat(counted).as("counted in the Xruns number").isEqualTo(1L);
+        assertThat(TakeManifest.read(TakeManifest.manifestPath(takeDirectory)).clockMarks())
+                .as("not marked in the take (ruling E280)").isEmpty();
     }
 
     /**
@@ -340,7 +420,7 @@ class EngineHealthFeedTest {
         DeviceLossRecordingFixture.await(() -> transport.getPositionInBeats() >= atArrival[1] * beatsPerFrame + 1.0,
                 "the take recorded on past the arrival");
         runOnFx(dispatcher::pulse);
-        journal.append(XrunJournal.Detail.DRIVER_RESYNC, List.of(), 1, arrival);
+        journal.appendResyncs(List.of(new XrunJournal.ResyncMark(arrival, 1L)));
         long pulsedAt = onFx(() -> {
             feed.pulse();
             return pipeline.transportFrameOf(transport.getPositionInBeats());
@@ -353,6 +433,117 @@ class EngineHealthFeedTest {
         assertThat(pulsedAt).as("premise: the pulse came well after the arrival").isGreaterThan(atArrival[1]);
         assertThat(marks.getFirst().frame()).as("the frame when the driver's message arrived")
                 .isBetween(atArrival[0], atArrival[1]);
+    }
+
+    /**
+     * Rulings E270 and E279: an entry of two resyncs 90 ms apart is marked twice in the take, each at the frame
+     * sampled at or before its own request's arrival.
+     */
+    @Test
+    void eachResyncOfAnEntryIsMarkedAtTheFrameSampledAtOrBeforeItsOwnArrival() throws Exception {
+        FxDispatcher dispatcher = new FxDispatcher();
+        fixture = DeviceLossRecordingFixture.withoutEngineBridge(projectDirectory, CountInMode.OFF, dispatcher);
+        fixture.bindTheProjectToTheEngine();
+        runOnFx(() -> fixture.coordinator().setTakeFrameClockForTest(nanos::get));
+        EngineHealthStatus model = onFx(EngineHealthStatus::new);
+        EngineHealthFeed feed = feed(model, fixture::controller);
+        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+        RecordingPipeline pipeline = fixture.pipeline();
+        Transport transport = fixture.project().getTransport();
+        double beatsPerFrame = 1_000.0 / pipeline.transportFrameOf(1_000.0);
+
+        long first = nanos.addAndGet(1_000_000_000L);
+        long[] atFirst = framesAroundAPulse(dispatcher, pipeline, transport);
+        DeviceLossRecordingFixture.await(() -> transport.getPositionInBeats() >= atFirst[1] * beatsPerFrame + 1.0,
+                "the take recorded on past the first arrival");
+        long second = nanos.addAndGet(90_000_000L);
+        long[] atSecond = framesAroundAPulse(dispatcher, pipeline, transport);
+        DeviceLossRecordingFixture.await(() -> transport.getPositionInBeats() >= atSecond[1] * beatsPerFrame + 1.0,
+                "the take recorded on past the second arrival");
+        nanos.addAndGet(10_000_000L);
+        runOnFx(dispatcher::pulse);
+        journal.appendResyncs(List.of(new XrunJournal.ResyncMark(first, 1L), new XrunJournal.ResyncMark(second, 1L)));
+        runOnFx(feed::pulse);
+        runOnFx(fixture.controller()::stop);
+        fixture.awaitPublished();
+
+        List<TakeManifest.ClockMark> marks = TakeManifest.read(TakeManifest.manifestPath(takeDirectory)).clockMarks();
+        assertThat(atSecond[0]).as("premise: the two arrivals' frames are apart").isGreaterThan(atFirst[1]);
+        assertThat(marks).extracting(TakeManifest.ClockMark::event)
+                .containsExactly(TakeManifest.ClockEvent.RESYNC, TakeManifest.ClockEvent.RESYNC);
+        assertThat(marks.get(0).frame()).as("the frame when the first request arrived")
+                .isBetween(atFirst[0], atFirst[1]);
+        assertThat(marks.get(1).frame()).as("the frame when the second arrived")
+                .isBetween(atSecond[0], atSecond[1]);
+    }
+
+    /** Ruling E291: carried 4.6 s past the first arrival, each resync at the frame sampled at or before its own. */
+    @Test
+    void resyncsCarriedThroughAStandstillOfFourPointSixSecondsAreEachMarkedAtTheirOwnFrame() throws Exception {
+        assertEachResyncCarriedThroughAStandstillIsMarkedAtItsOwnFrame(4_600_000_000L);
+    }
+
+    /** Ruling E291: as above, carried 20 s at 60 frame samples a second. */
+    @Test
+    void resyncsCarriedThroughAStandstillOfTwentySecondsAreEachMarkedAtTheirOwnFrame() throws Exception {
+        assertEachResyncCarriedThroughAStandstillIsMarkedAtItsOwnFrame(20_000_000_000L);
+    }
+
+    private void assertEachResyncCarriedThroughAStandstillIsMarkedAtItsOwnFrame(long carriedNanos) throws Exception {
+        FxDispatcher dispatcher = new FxDispatcher();
+        fixture = DeviceLossRecordingFixture.withoutEngineBridge(projectDirectory, CountInMode.OFF, dispatcher);
+        fixture.bindTheProjectToTheEngine();
+        runOnFx(() -> {
+            fixture.coordinator().setTakeFrameClockForTest(nanos::get);
+            fixture.coordinator().setResyncDatesOwed(journal::resyncDatesOwed);
+        });
+        EngineHealthStatus model = onFx(EngineHealthStatus::new);
+        EngineHealthFeed feed = feed(model, fixture::controller);
+        Path takeDirectory = fixture.recordUntilABlockIsOnDisk();
+        RecordingPipeline pipeline = fixture.pipeline();
+        Transport transport = fixture.project().getTransport();
+        double beatsPerFrame = 1_000.0 / pipeline.transportFrameOf(1_000.0);
+
+        long first = nanos.addAndGet(1_000_000_000L);
+        long second = first + 400_000_000L;
+        journal.noteResyncDatesHeld(new long[] {first, second});
+        long[] atFirst = framesAroundAPulse(dispatcher, pipeline, transport);
+        nanos.set(second);
+        DeviceLossRecordingFixture.await(() -> transport.getPositionInBeats() >= atFirst[1] * beatsPerFrame + 1.0,
+                "the take recorded on past the first arrival");
+        long[] atSecond = framesAroundAPulse(dispatcher, pipeline, transport);
+        runOnFx(() -> {
+            while (nanos.get() - first < carriedNanos) {
+                nanos.addAndGet(16_666_667L);
+                dispatcher.pulse();
+            }
+        });
+        journal.appendResyncs(List.of(new XrunJournal.ResyncMark(first, 1L),
+                new XrunJournal.ResyncMark(second, 1L)));
+        journal.noteResyncDatesHeld(XrunJournal.NO_DATES);
+        runOnFx(feed::pulse);
+        runOnFx(fixture.controller()::stop);
+        fixture.awaitPublished();
+
+        List<TakeManifest.ClockMark> marks = TakeManifest.read(TakeManifest.manifestPath(takeDirectory)).clockMarks();
+        assertThat(atFirst[0]).as("premise: past the take's start-frame")
+                .isGreaterThan(pipeline.getRecordingStartFrame());
+        assertThat(atSecond[0]).as("premise: the two arrivals' frames are apart").isGreaterThan(atFirst[1]);
+        assertThat(marks).extracting(TakeManifest.ClockMark::event)
+                .containsExactly(TakeManifest.ClockEvent.RESYNC, TakeManifest.ClockEvent.RESYNC);
+        assertThat(marks.get(0).frame()).as("the frame when the first request arrived")
+                .isBetween(atFirst[0], atFirst[1]);
+        assertThat(marks.get(1).frame()).as("the frame when the second arrived")
+                .isBetween(atSecond[0], atSecond[1]);
+    }
+
+    private static long[] framesAroundAPulse(FxDispatcher dispatcher, RecordingPipeline pipeline,
+                                             Transport transport) throws Exception {
+        return onFx(() -> {
+            long before = pipeline.transportFrameOf(transport.getPositionInBeats());
+            dispatcher.pulse();
+            return new long[] {before, pipeline.transportFrameOf(transport.getPositionInBeats())};
+        });
     }
 
     @Test

@@ -2,21 +2,27 @@ package com.benesquivelmusic.daw.app.ui;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.OptionalLong;
+import java.util.concurrent.atomic.AtomicReference;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The sampled transport frames a clock mark is dated from (story 338,
- * amendment A11, rulings E62, E177 and E183): the newest sample at or before
- * the evidence; the take's start-frame for evidence from before the take's
- * reach sample, and for unknown evidence until that sample; the current frame
- * for unknown evidence after it, or for evidence older than the kept history
- * of about four seconds but not older than the reach sample. The reach sample
- * of a take anchored at a punch-in is its first sample at or past that frame;
- * of any other take, its first sample, whatever frame it reads.
+ * amendment A11, rulings E62, E177, E183 and E221): an unlock or a resync at
+ * the newest sample at or before the evidence, a relock at the oldest sample
+ * at or after it; the take's start-frame for evidence from before the take's
+ * reach sample, for unknown evidence until that sample, and for evidence
+ * after it that is older than every sample kept; the current frame for
+ * unknown evidence after the reach, or with no take started. The history
+ * keeps about four seconds and the newest sample before them. The reach
+ * sample of a take anchored at a punch-in is its first sample at or past
+ * that frame; of any other take, its first sample, whatever frame it reads.
  */
 class TakeFrameHistoryTest {
 
     private static final long SECOND = 1_000_000_000L;
+    private static final long MILLI = 1_000_000L;
     private static final long CURRENT = 999_999L;
     private static final boolean PUNCH_IN = true;
     private static final boolean NOT_A_PUNCH_IN = false;
@@ -48,7 +54,7 @@ class TakeFrameHistoryTest {
     }
 
     @Test
-    void samplesOlderThanTheSpanAreDropped() {
+    void theNewestSampleAtTheSpansEdgeIsKeptAndOlderEvidenceIsTheStartFrame() {
         history.takeStartsAt(1_000, NOT_A_PUNCH_IN);
         history.sample(10 * SECOND, 1_000);
         history.sample(11 * SECOND, 1_500);
@@ -57,10 +63,64 @@ class TakeFrameHistoryTest {
 
         history.sample(11 * SECOND + TakeFrameHistory.SPAN_NANOS + 1, 3_000);
 
-        assertThat(history.frameAt(11 * SECOND, CURRENT)).as("dropped: older than the span").isEqualTo(CURRENT);
-        assertThat(history.frameAt(10 * SECOND, CURRENT)).as("at the reach sample, which has given way: the frame now")
-                .isEqualTo(CURRENT);
+        assertThat(history.frameAt(11 * SECOND, CURRENT)).as("older than the span, the newest sample before it")
+                .isEqualTo(1_500);
+        assertThat(history.frameAt(10 * SECOND, CURRENT))
+                .as("at the reach sample, which has given way: older than every sample kept, the start-frame")
+                .isEqualTo(1_000);
         assertThat(history.frameAt(12 * SECOND, CURRENT)).isEqualTo(2_000);
+    }
+
+    @Test
+    void theNewestSampleAtOrBeforeTheSpansEdgeSurvivesEveryEviction() {
+        history.sample(10 * SECOND, 1_000);
+        history.sample(11 * SECOND, 2_000);
+        history.sample(12 * SECOND, 3_000);
+
+        history.sample(20 * SECOND, 4_000);
+
+        assertThat(history.frameAt(13 * SECOND, CURRENT)).as("evidence older than the span: the sample before it")
+                .isEqualTo(3_000);
+        assertThat(history.frameAt(11 * SECOND, CURRENT)).as("older still: no take, so the frame now")
+                .isEqualTo(CURRENT);
+    }
+
+    @Test
+    void evidenceAfterTheReachOlderThanEveryKeptSampleIsTheStartFrame() {
+        history.takeStartsAt(900, NOT_A_PUNCH_IN);
+        history.sample(10 * SECOND, 1_000);
+        history.sample(11 * SECOND, 1_100);
+        history.sample(12 * SECOND, 1_200);
+        history.sample(20 * SECOND, 2_000);
+
+        assertThat(history.frameAt(11 * SECOND, CURRENT)).as("after the reach, older than the 12 s sample kept")
+                .isEqualTo(900);
+        assertThat(history.frameAt(13 * SECOND, CURRENT)).as("negative control: the 12 s sample is kept")
+                .isEqualTo(1_200);
+    }
+
+    @Test
+    void aRelockIsDatedAtTheOldestSampleAtOrAfterItsEvidence() {
+        TakeFrameHistory beforeItsReach = new TakeFrameHistory();
+        beforeItsReach.takeStartsAt(800, PUNCH_IN);
+        beforeItsReach.sample(9 * SECOND, 700);
+        history.takeStartsAt(900, NOT_A_PUNCH_IN);
+        history.sample(10 * SECOND, 1_000);
+        history.sample(11 * SECOND, 1_100);
+        history.sample(12 * SECOND, 1_200);
+
+        assertThat(beforeItsReach.relockFrameAt(9 * SECOND, CURRENT)).as("in a pre-roll: the start-frame")
+                .hasValue(800);
+        assertThat(beforeItsReach.relockFrameAt(0L, CURRENT)).as("unknown, before the reach").hasValue(800);
+        assertThat(history.relockFrameAt(9 * SECOND, CURRENT)).as("before the reach sample: the start-frame")
+                .hasValue(900);
+        assertThat(history.relockFrameAt(0L, CURRENT)).as("unknown, after the reach: the frame now")
+                .hasValue(CURRENT);
+        assertThat(history.relockFrameAt(10 * SECOND + SECOND / 2, CURRENT)).as("between two samples: the later")
+                .hasValue(1_100);
+        assertThat(history.relockFrameAt(11 * SECOND, CURRENT)).as("at a sample: that sample").hasValue(1_100);
+        assertThat(history.relockFrameAt(12 * SECOND + 1, CURRENT)).as("after the newest sample: none yet")
+                .isEqualTo(OptionalLong.empty());
     }
 
     @Test
@@ -151,7 +211,9 @@ class TakeFrameHistoryTest {
         assertThat(history.frameAt(9 * SECOND, CURRENT)).as("evidence before the reach, which has given way")
                 .isEqualTo(1_000);
         assertThat(history.frameAt(10 * SECOND + SECOND / 2, CURRENT))
-                .as("negative control: after the reach, in history that has given way").isEqualTo(CURRENT);
+                .as("after the reach, in history that has given way: the start-frame").isEqualTo(1_000);
+        assertThat(history.frameAt(11 * SECOND + 1_500, CURRENT)).as("negative control: inside the kept history")
+                .isEqualTo(3_500);
     }
 
     @Test
@@ -204,5 +266,82 @@ class TakeFrameHistoryTest {
 
         assertThat(history.frameAt(Long.MAX_VALUE, CURRENT)).as("before the reach, across the wrap").isEqualTo(1_000);
         assertThat(history.frameAt(Long.MAX_VALUE - SECOND + 3 * SECOND, CURRENT)).isEqualTo(1_100);
+    }
+
+    /** Ruling E291: given-up samples are kept, each for its own owed date; Clear forgets them. */
+    @Test
+    void aSampleGivenUpIsKeptWhileItIsTheNewestAtOrBeforeAnOwedDate() {
+        long firstDate = 10 * SECOND + 50 * MILLI;
+        long secondDate = 11 * SECOND + 230 * MILLI;
+        history.keepSamplesFor(() -> new long[] {secondDate, firstDate});
+        history.takeStartsAt(900, NOT_A_PUNCH_IN);
+        for (int i = 0; i <= 60; i++) {
+            history.sample(10 * SECOND + i * 100 * MILLI, 1_000 + i);
+        }
+
+        assertThat(history.frameAt(12 * SECOND, CURRENT)).as("premise: inside the span").isEqualTo(1_020);
+        assertThat(history.frameAt(firstDate, CURRENT)).as("kept for the first date").isEqualTo(1_000);
+        assertThat(history.frameAt(secondDate, CURRENT)).as("its own for the second").isEqualTo(1_012);
+        assertThat(history.frameAt(11 * SECOND + 550 * MILLI, CURRENT))
+                .as("evidence whose newest sample gave way unkept: the start-frame").isEqualTo(900);
+
+        history.clear();
+        history.sample(17 * SECOND, 5_000);
+
+        assertThat(history.frameAt(firstDate, CURRENT)).as("Clear forgets the kept samples").isEqualTo(CURRENT);
+    }
+
+    /** Ruling E291: past the history's capacity, too. */
+    @Test
+    void pastItsCapacityTheHistoryStillKeepsTheSampleAtOrBeforeAnOwedDate() {
+        long date = 10 * SECOND + 5 * MILLI + 500;
+        history.keepSamplesFor(() -> new long[] {date});
+        history.takeStartsAt(900, NOT_A_PUNCH_IN);
+        for (int i = 0; i < 2_000; i++) {
+            history.sample(10 * SECOND + i * MILLI, 1_000 + i);
+        }
+
+        assertThat(history.frameAt(10 * SECOND + 1_500 * MILLI, CURRENT)).as("premise: in the ring").isEqualTo(2_500);
+        assertThat(history.frameAt(date, CURRENT)).as("given way at the capacity, kept for the date")
+                .isEqualTo(1_005);
+        assertThat(history.frameAt(10 * SECOND + 6 * MILLI + 500, CURRENT)).as("not owed").isEqualTo(900);
+    }
+
+    /** Ruling E291: a kept sample goes once no date it is the newest at or before is owed. */
+    @Test
+    void aKeptSampleGoesOnceNoDateItIsTheNewestBeforeIsOwed() {
+        long date = 10 * SECOND + 50 * MILLI;
+        AtomicReference<long[]> owed = new AtomicReference<>(new long[] {date});
+        history.keepSamplesFor(owed::get);
+        history.takeStartsAt(900, NOT_A_PUNCH_IN);
+        for (int i = 0; i <= 50; i++) {
+            history.sample(10 * SECOND + i * 100 * MILLI, 1_000 + i);
+        }
+        assertThat(history.frameAt(date, CURRENT)).as("premise: kept while owed").isEqualTo(1_000);
+
+        owed.set(new long[0]);
+        history.sample(15 * SECOND + 100 * MILLI, 1_051);
+
+        assertThat(history.frameAt(date, CURRENT)).as("handed to the take: it gives way").isEqualTo(900);
+    }
+
+    /** Ruling E291: a kept sample behind one still owed goes too, once no date it is the newest before is owed. */
+    @Test
+    void aKeptSampleBehindOneStillOwedGoesOnceNoDateItIsTheNewestBeforeIsOwed() {
+        long stillOwed = 10 * SECOND + 50 * MILLI;
+        long handedOver = 10 * SECOND + 250 * MILLI;
+        AtomicReference<long[]> owed = new AtomicReference<>(new long[] {stillOwed, handedOver});
+        history.keepSamplesFor(owed::get);
+        history.takeStartsAt(900, NOT_A_PUNCH_IN);
+        for (int i = 0; i <= 50; i++) {
+            history.sample(10 * SECOND + i * 100 * MILLI, 1_000 + i);
+        }
+        assertThat(history.frameAt(handedOver, CURRENT)).as("premise: kept while owed").isEqualTo(1_002);
+
+        owed.set(new long[] {stillOwed});
+        history.sample(15 * SECOND + 100 * MILLI, 1_051);
+
+        assertThat(history.frameAt(handedOver, CURRENT)).as("handed to the take: it gives way").isEqualTo(900);
+        assertThat(history.frameAt(stillOwed, CURRENT)).as("the older one is still owed").isEqualTo(1_000);
     }
 }

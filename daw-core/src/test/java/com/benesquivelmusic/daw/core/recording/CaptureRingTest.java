@@ -136,7 +136,7 @@ class CaptureRingTest {
             float[][] scratch = new float[CHANNELS][SLOT_FRAMES];
             for (int block = 0; block < total && !abandoned.get(); block++) {
                 CaptureRing.Slot slot;
-                while ((slot = ring.claim()) == null) {
+                while ((slot = ring.claim(CaptureRing.DELIVERED)) == null) {
                     if (abandoned.get()) {
                         return;
                     }
@@ -200,16 +200,16 @@ class CaptureRingTest {
         CaptureRing ring = ring(8);
         float[][] scratch = new float[CHANNELS][SLOT_FRAMES];
         for (int block = 0; block < ring.capacity(); block++) {
-            CaptureRing.Slot slot = ring.claim();
+            CaptureRing.Slot slot = ring.claim(CaptureRing.DELIVERED);
             assertThat(slot).as("slot " + block).isNotNull();
             fill(slot, block, scratch);
             ring.publish();
         }
         assertThat(ring.size()).isEqualTo(ring.capacity());
 
-        assertThat(ring.claim()).as("a full ring refuses the incoming block").isNull();
+        assertThat(ring.claim(CaptureRing.DELIVERED)).as("a full ring refuses the incoming block").isNull();
         assertThat(ring.overflowCount()).isEqualTo(1);
-        assertThat(ring.claim()).isNull();
+        assertThat(ring.claim(CaptureRing.DELIVERED)).isNull();
         assertThat(ring.overflowCount()).isEqualTo(2);
 
         // The queued blocks are untouched: the oldest is still block 0.
@@ -224,15 +224,15 @@ class CaptureRingTest {
         CaptureRing ring = ring(8);
         float[][] scratch = new float[CHANNELS][SLOT_FRAMES];
         for (int block = 0; block < ring.capacity(); block++) {
-            fill(ring.claim(), block, scratch);
+            fill(ring.claim(CaptureRing.DELIVERED), block, scratch);
             ring.publish();
         }
-        assertThat(ring.claim()).isNull();
+        assertThat(ring.claim(CaptureRing.DELIVERED)).isNull();
         assertThat(ring.overflowCount()).isEqualTo(1);
 
         ring.release(); // consumer frees block 0's slot
 
-        CaptureRing.Slot slot = ring.claim();
+        CaptureRing.Slot slot = ring.claim(CaptureRing.DELIVERED);
         assertThat(slot).isNotNull();
         assertThat(slot.sequence()).isEqualTo(ring.capacity());
         fill(slot, ring.capacity(), scratch);
@@ -276,7 +276,7 @@ class CaptureRingTest {
         assertThat(ring.channelsPerSource()).isEqualTo(4);
         assertThat(ring.sourceCount()).isEqualTo(3);
         assertThat(ring.capacity()).isEqualTo(32);
-        CaptureRing.Slot slot = ring.claim();
+        CaptureRing.Slot slot = ring.claim(CaptureRing.DELIVERED);
         assertThat(slot.source(2)).hasDimensions(4, 512);
         assertThat(slot.slotFrames()).isEqualTo(512);
     }
@@ -284,7 +284,7 @@ class CaptureRingTest {
     @Test
     void headerFieldsSurviveARoundTrip() {
         CaptureRing ring = ring(8);
-        CaptureRing.Slot written = ring.claim();
+        CaptureRing.Slot written = ring.claim(CaptureRing.DELIVERED);
         written.setStartFrame(1_234_567_890_123L);
         written.setBeatPosition(97.125);
         written.setNumFrames(3);
@@ -314,12 +314,12 @@ class CaptureRingTest {
     void claimResetsTheHeaderOfAReusedSlot() {
         CaptureRing ring = ring(8);
         float[][] scratch = new float[CHANNELS][SLOT_FRAMES];
-        fill(ring.claim(), 0, scratch);
+        fill(ring.claim(CaptureRing.DELIVERED), 0, scratch);
         ring.publish();
         ring.release();
         // Fill the ring so the next claim wraps onto slot 0 again.
         for (int block = 1; block <= ring.capacity(); block++) {
-            CaptureRing.Slot slot = ring.claim();
+            CaptureRing.Slot slot = ring.claim(CaptureRing.DELIVERED);
             if (block == ring.capacity()) {
                 assertThat(slot.sequence()).isEqualTo(ring.capacity());
                 assertThat(slot.startFrame()).isZero();
@@ -339,7 +339,7 @@ class CaptureRingTest {
     @Test
     void claimedSlotIsNotVisibleToPeekBeforePublish() {
         CaptureRing ring = ring(8);
-        CaptureRing.Slot slot = ring.claim();
+        CaptureRing.Slot slot = ring.claim(CaptureRing.DELIVERED);
         slot.setStartFrame(42);
 
         assertThat(ring.peek()).isNull();
@@ -358,9 +358,9 @@ class CaptureRingTest {
     @Test
     void reclaimingWithoutPublishingReturnsTheSameSlot() {
         CaptureRing ring = ring(8);
-        CaptureRing.Slot first = ring.claim();
+        CaptureRing.Slot first = ring.claim(CaptureRing.DELIVERED);
         first.setStartFrame(7);
-        CaptureRing.Slot again = ring.claim();
+        CaptureRing.Slot again = ring.claim(CaptureRing.DELIVERED);
 
         assertThat(again).isSameAs(first);
         assertThat(again.startFrame()).as("re-claim resets the header").isZero();
@@ -370,7 +370,7 @@ class CaptureRingTest {
     @Test
     void copySourceClampsToTheSlotShapeAndZeroFillsMissingFrames() {
         CaptureRing ring = ring(8);
-        CaptureRing.Slot slot = ring.claim();
+        CaptureRing.Slot slot = ring.claim(CaptureRing.DELIVERED);
         float[][] wide = new float[CHANNELS + 2][SLOT_FRAMES + 3];
         for (float[] row : wide) {
             java.util.Arrays.fill(row, 1f);
@@ -476,33 +476,65 @@ class CaptureRingTest {
                 .isInstanceOf(ArithmeticException.class);
     }
 
+    /**
+     * Each slot is stamped at its claim with the ring's drop counts, each drop counted by what its block carried
+     * (story 338, rulings E273, E277, E281 and E287).
+     */
     @Test
-    void aDropMarksTheLastBlockPublishedBeforeIt() {
+    void eachBlockCarriesTheDropCountsOfItsClaim() {
         CaptureRing ring = ring(8);
         float[][] scratch = new float[CHANNELS][SLOT_FRAMES];
-        assertThat(ring.droppedAfterSequence()).as("nothing dropped yet").isEqualTo(CaptureRing.NO_DROP).isEqualTo(-1L);
         for (int block = 0; block < ring.capacity(); block++) {
-            fill(ring.claim(), block, scratch);
+            CaptureRing.Slot slot = ring.claim(CaptureRing.DELIVERED);
+            assertThat(ring.stampOf(slot)).as("nothing dropped before block %d", block)
+                    .isEqualTo(counts(0, 0, 0, 0, 0, 0));
+            fill(slot, block, scratch);
             ring.publish();
-            assertThat(ring.droppedAfterSequence()).as("a successful claim leaves the marker alone").isEqualTo(-1L);
         }
+        for (int carried : new int[] {CaptureRing.DELIVERED, 0, CaptureRing.INSTRUMENT, CaptureRing.STARVED}) {
+            assertThat(ring.claim(carried)).as("the full ring drops a block carrying %d", carried).isNull();
+        }
+        assertThat(ring.dropCounts()).as("delivered, silence, an instrument's audio after it, then starved")
+                .isEqualTo(counts(4, 2, 1, 2, 1, 1));
 
-        assertThat(ring.claim()).isNull();
-        assertThat(ring.droppedAfterSequence()).as("block 7 was the last one published before the drop").isEqualTo(7);
-        assertThat(ring.claim()).isNull();
-        assertThat(ring.droppedAfterSequence()).as("a second drop in the same episode shares the marker").isEqualTo(7);
-        assertThat(ring.overflowCount()).isEqualTo(2);
-
-        ring.release(); // the consumer frees block 0's slot
-        CaptureRing.Slot next = ring.claim();
-        assertThat(next.sequence()).isEqualTo(8);
-        fill(next, 8, scratch);
+        ring.release();
+        CaptureRing.Slot next = ring.claim(CaptureRing.STARVED);
+        assertThat(next.sequence()).isEqualTo(8L);
+        assertThat(ring.stampOf(next)).as("the block after the run carries its counts")
+                .isEqualTo(counts(4, 2, 1, 2, 1, 1));
         ring.publish();
-        assertThat(ring.droppedAfterSequence()).as("publishing does not move the marker").isEqualTo(7);
+        for (int carried : new int[] {CaptureRing.INSTRUMENT, 0}) {
+            assertThat(ring.claim(carried)).isNull();
+        }
+        assertThat(ring.dropCounts()).as("audio before silence in a run is no audio after silence")
+                .isEqualTo(counts(6, 3, 1, 4, 1, 1));
 
-        assertThat(ring.claim()).as("full again").isNull();
-        assertThat(ring.droppedAfterSequence()).as("the next drop follows block 8").isEqualTo(8);
-        assertThat(ring.overflowCount()).isEqualTo(3);
+        ring.release();
+        assertThat(ring.stampOf(ring.claim(CaptureRing.DELIVERED)))
+                .as("a delivery claimed starts the starved count again").isEqualTo(counts(6, 3, 1, 4, 0, 1));
+    }
+
+    @Test
+    void peekAtReadsAPublishedBlockInPlaceAndNothingOutsideTheQueue() {
+        CaptureRing ring = ring(8);
+        float[][] scratch = new float[CHANNELS][SLOT_FRAMES];
+        for (int block = 0; block < 3; block++) {
+            fill(ring.claim(CaptureRing.DELIVERED), block, scratch);
+            ring.publish();
+        }
+        ring.release();
+
+        assertThat(ring.peekAt(0)).as("released").isNull();
+        assertThat(verify(ring.peekAt(2), 2)).as("published and not released, read in place").isNull();
+        assertThat(ring.peekAt(3)).as("not published").isNull();
+        assertThat(ring.releasedBlocks()).as("peekAt consumes nothing").isEqualTo(1);
+        ring.claim(CaptureRing.DELIVERED);
+        assertThat(ring.peekAt(3)).as("claimed but not published").isNull();
+    }
+
+    private static CaptureRing.DropCounts counts(long total, long audio, long starved, long inputless,
+                                                 long starvedSinceDelivery, long audioAfterSilence) {
+        return new CaptureRing.DropCounts(total, audio, starved, inputless, starvedSinceDelivery, audioAfterSilence);
     }
 
     @Test
@@ -510,7 +542,7 @@ class CaptureRingTest {
         CaptureRing ring = ring(8);
         assertThat(ring.truncatedFrames()).isZero();
 
-        CaptureRing.Slot slot = ring.claim();
+        CaptureRing.Slot slot = ring.claim(CaptureRing.DELIVERED);
         assertThat(slot.truncatedFrames()).isZero();
         slot.setNumFrames(SLOT_FRAMES + 3);
         slot.setTruncatedFrames(3);
@@ -527,10 +559,10 @@ class CaptureRingTest {
 
         ring.release();
         for (int block = 1; block < ring.capacity(); block++) {
-            ring.claim();
+            ring.claim(CaptureRing.DELIVERED);
             ring.publish();
         }
-        CaptureRing.Slot reused = ring.claim();
+        CaptureRing.Slot reused = ring.claim(CaptureRing.DELIVERED);
         assertThat(reused).isSameAs(slot);
         assertThat(reused.truncatedFrames()).as("claim resets the stamp of a reused slot").isZero();
         reused.setTruncatedFrames(-1);
@@ -559,7 +591,7 @@ class CaptureRingTest {
     void aCallbackThatEnteredBeforeTheGateClosedReadsItClosedBeforeItsPublish() {
         CaptureRing ring = ring(8);
         assertThat(ring.enterProducer()).isTrue();
-        CaptureRing.Slot slot = ring.claim();
+        CaptureRing.Slot slot = ring.claim(CaptureRing.DELIVERED);
         assertThat(slot).isNotNull();
 
         ring.closeProducer();
@@ -631,7 +663,7 @@ class CaptureRingTest {
         for (float[] row : block) {
             Arrays.fill(row, 0.5f);
         }
-        CaptureRing.Slot abandoned = ring.claim();
+        CaptureRing.Slot abandoned = ring.claim(CaptureRing.DELIVERED);
         abandoned.setStartFrame(4096);
         abandoned.setBeatPosition(7.5);
         abandoned.setNumFrames(SLOT_FRAMES);
@@ -649,7 +681,7 @@ class CaptureRingTest {
         abandoned.copySource(1, block, CHANNELS, SLOT_FRAMES);
         long sequence = abandoned.sequence();
 
-        CaptureRing.Slot again = ring.claim();
+        CaptureRing.Slot again = ring.claim(CaptureRing.DELIVERED);
 
         assertThat(again).as("the same slot: nothing was published in between").isSameAs(abandoned);
         assertThat(again.sequence()).isEqualTo(sequence);

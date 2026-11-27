@@ -17,10 +17,12 @@ import com.benesquivelmusic.daw.core.recording.TakeManifest.SealedBy;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import com.benesquivelmusic.daw.sdk.audio.AudioBlock;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.audio.BackendDropoutCounters;
 import com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
+import com.benesquivelmusic.daw.sdk.audio.InputBlockLossListener;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,7 +33,11 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Flow;
+import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.TimeUnit;
 
 import static com.benesquivelmusic.daw.core.recording.RecordedAudioTestSupport.audioOnDisk;
@@ -449,6 +455,272 @@ class InputStallCaptureTest {
         backend.renderGate.awaitRendered();
         backend.dropouts = inputDrops(10);
         assertThat(engine.capturedInputBlocksLost()).as("a reopened backend counts from its new open").isEqualTo(9);
+    }
+
+    /**
+     * The blocks the stream's own input thread lost count in the take's figure
+     * from the stream's open; its input halts and callback faults never do, and
+     * a closed stream counts nothing more until it opens again (story 338,
+     * rulings E206, E207 and E211).
+     */
+    @Test
+    void theBlocksTheStreamsInputThreadLostCountFromItsOpenAndItsHaltsAndCallbackFaultsDoNot() throws Exception {
+        List<Track> tracks = List.of(track("Primary", 0, 1, 0));
+        backend.counters = threadCounters(0, 2, 0);
+        startStream(tracks);
+        long base = engine.capturedInputBlocksLost();
+
+        backend.counters = threadCounters(0, 5, 1);
+        assertThat(engine.capturedInputBlocksLost() - base).as("three blocks lost since the open").isEqualTo(3);
+        backend.counters = threadCounters(4, 5, 1);
+        assertThat(engine.capturedInputBlocksLost() - base).as("callback faults are not lost input").isEqualTo(3);
+        engine.stopAudioOutput();
+        assertThat(engine.capturedInputBlocksLost() - base).as("kept when the stream closes").isEqualTo(3);
+        backend.counters = threadCounters(0, 9, 1);
+        assertThat(engine.capturedInputBlocksLost() - base).as("a closed stream counts nothing more").isEqualTo(3);
+
+        startStream(tracks);
+        backend.counters = threadCounters(0, 10, 1);
+        assertThat(engine.capturedInputBlocksLost() - base).as("a reopened stream counts from its new open")
+                .isEqualTo(4);
+    }
+
+    /**
+     * An input opened beside the stream counts its lost blocks and its failed
+     * device callbacks, never its input halts, and keeps them when it closes
+     * (story 337, ruling E86; story 338, rulings E207 and E211).
+     */
+    @Test
+    void theBlocksAnInputBesideTheStreamLostCountWithItsFailedCallbacksAndItsHaltsDoNot() throws Exception {
+        backend.siblingCounters = threadCounters(1, 1, 0);
+        startStream(List.of(track("Primary", 0, 1, 0), track("Sibling", 0, 1, 1)));
+        long base = engine.capturedInputBlocksLost();
+
+        backend.sibling.counters = threadCounters(3, 2, 1);
+        assertThat(engine.capturedInputBlocksLost() - base).as("two failed callbacks and one lost block")
+                .isEqualTo(3);
+        engine.stopAudioOutput();
+        assertThat(engine.capturedInputBlocksLost() - base).as("kept when the input closes").isEqualTo(3);
+    }
+
+    /**
+     * An input opened beside the stream whose dropout report fails at the read
+     * a take baselines on brings none of the blocks it lost before the take
+     * into it, and counts on from its next good read (story 338, ruling E261).
+     */
+    @Test
+    void aReportBesideTheStreamThatFailsAsTheTakeStartsImportsNothingLostBeforeIt() throws Exception {
+        startStream(List.of(track("Primary", 0, 1, 0), track("Sibling", 0, 1, 1)));
+        backend.sibling.dropouts = null;
+
+        long base = engine.capturedInputBlocksLostAsATakeStarts();
+
+        backend.sibling.dropouts = inputDrops(3);
+        assertThat(engine.capturedInputBlocksLost() - base).as("the blocks lost before the take are not its own")
+                .isZero();
+        backend.sibling.dropouts = inputDrops(4);
+        assertThat(engine.capturedInputBlocksLost() - base).isEqualTo(1);
+    }
+
+    /** A stream report that fails keeps the count it had read: no throw, no fall (story 338, ruling E214). */
+    @Test
+    void aStreamReportThatThrowsKeepsTheCountItHadRead() throws Exception {
+        startStream(List.of(track("Primary", 0, 1, 0)));
+        long base = engine.capturedInputBlocksLost();
+        backend.counters = threadCounters(0, 4, 0);
+        assertThat(engine.capturedInputBlocksLost() - base).isEqualTo(4);
+        try {
+            backend.reportFailure = new AssertionError("the report broke");
+
+            long afterTheFailure = engine.capturedInputBlocksLost();
+
+            assertThat(afterTheFailure - base).isEqualTo(4);
+        } finally {
+            backend.reportFailure = null;
+        }
+    }
+
+    /**
+     * A {@link VirtualMachineError} from the stream's report reaches the one
+     * read that met it; a later read answers the count from before it (story
+     * 337, rulings E78 and E95).
+     */
+    @Test
+    void aVirtualMachineErrorFromTheStreamsReportReachesOnlyTheReadThatMetIt() throws Exception {
+        startStream(List.of(track("Primary", 0, 1, 0)));
+        backend.counters = threadCounters(0, 4, 0);
+        long before = engine.capturedInputBlocksLost();
+        InternalError fatal = new InternalError("the report met a fatal error");
+        try {
+            backend.reportFailure = fatal;
+
+            assertThatThrownBy(engine::capturedInputBlocksLost).isSameAs(fatal);
+            assertThat(engine.capturedInputBlocksLost()).isEqualTo(before);
+        } finally {
+            backend.reportFailure = null;
+        }
+    }
+
+    /**
+     * A block a publisher drops for the render pump's subscriber counts once,
+     * under the gate its queue drops count under: never once its input ended
+     * or its pump stopped (story 338, ruling E208).
+     */
+    @Test
+    void aBlockDroppedForTheStreamsSubscriberCountsOnlyWhileItsPumpRunsAndItsInputLives() throws Exception {
+        List<Track> tracks = List.of(track("Primary", 0, 1, 0));
+        startStream(tracks);
+        long base = engine.capturedInputBlocksLost();
+        Flow.Subscriber<? super AudioBlock> subscriber = backend.subscribers.get(0);
+        InputBlockLossListener pump = (InputBlockLossListener) subscriber;
+        AudioBlock dropped = AudioBlock.silence(48000, 2, BLOCK);
+
+        pump.inputBlockDropped(dropped);
+        assertThat(engine.capturedInputBlocksLost() - base).isEqualTo(1);
+        subscriber.onComplete();
+        pump.inputBlockDropped(dropped);
+        assertThat(engine.capturedInputBlocksLost() - base).as("its input ended").isEqualTo(1);
+
+        engine.stopAudioOutput();
+        startStream(tracks);
+        InputBlockLossListener restarted = (InputBlockLossListener) backend.subscribers.get(0);
+        engine.stopAudioOutput();
+        restarted.inputBlockDropped(dropped);
+        assertThat(engine.capturedInputBlocksLost() - base).as("its pump stopped").isEqualTo(1);
+    }
+
+    /**
+     * A block a publisher drops for the subscriber of an input beside the
+     * stream counts once while that subscriber is live, and never after its
+     * input closed (story 338, ruling E208).
+     */
+    @Test
+    void aBlockDroppedForTheSubscriberBesideTheStreamCountsOnlyWhileItIsLive() throws Exception {
+        startStream(List.of(track("Primary", 0, 1, 0), track("Sibling", 0, 1, 1)));
+        long base = engine.capturedInputBlocksLost();
+        InputBlockLossListener beside = (InputBlockLossListener) backend.sibling.subscribers.get(0);
+        AudioBlock dropped = AudioBlock.silence(48000, 1, BLOCK);
+
+        beside.inputBlockDropped(dropped);
+        assertThat(engine.capturedInputBlocksLost() - base).isEqualTo(1);
+        engine.stopAudioOutput();
+        beside.inputBlockDropped(dropped);
+        assertThat(engine.capturedInputBlocksLost() - base).as("its input closed").isEqualTo(1);
+    }
+
+    /**
+     * Through the real wiring: the stream's publisher holds one block per
+     * subscriber and never delivers. A block only another subscriber dropped
+     * moves the figure by 0, one the engine's subscriber dropped too moves it
+     * by exactly 1, and nothing counts once the pump stopped (story 338,
+     * ruling E208).
+     */
+    @Test
+    void aBlockOnlyAnotherSubscriberDroppedNeverCountsAndOneTheStreamsSubscriberDroppedCountsOnce() throws Exception {
+        backend.publisher = new SubmissionPublisher<>(task -> { }, 1);
+        backend.publisher.subscribe(new Flow.Subscriber<AudioBlock>() {
+            @Override public void onSubscribe(Flow.Subscription subscription) { }
+            @Override public void onNext(AudioBlock item) { }
+            @Override public void onError(Throwable throwable) { }
+            @Override public void onComplete() { }
+        });
+        backend.publisher.offer(AudioBlock.silence(48000, 2, BLOCK), InputBlockLossListener::reportDrop);
+        startStream(List.of(track("Primary", 0, 1, 0)));
+        long base = engine.capturedInputBlocksLost();
+
+        backend.emit(BLOCK);
+        assertThat(engine.capturedInputBlocksLost() - base).as("only the other subscriber dropped it").isZero();
+        backend.emit(BLOCK);
+        assertThat(engine.capturedInputBlocksLost() - base).as("the engine's subscriber dropped it too")
+                .isEqualTo(1);
+        engine.stopAudioOutput();
+        backend.emit(BLOCK);
+        assertThat(engine.capturedInputBlocksLost() - base).as("a stopped pump counts nothing").isEqualTo(1);
+    }
+
+    /**
+     * On the stream's own device, a failed device callback that lost its
+     * period's input counts one block in the take's dropouts, also when the
+     * input queue's backlog filled its place so nothing starved; it is one
+     * callback fault and no lost block in the health record (story 338,
+     * ruling E211).
+     */
+    @Test
+    void aFailedCallbackThatLostItsInputWhileTheQueueHeldABacklogCountsOneDropout() throws Exception {
+        startTake(List.of(track("Primary", 0, 1, 0)), null);
+        long base = engine.capturedInputBlocksLost();
+        block(true, false);
+        backend.emit(BLOCK);
+        backend.emit(BLOCK);
+        backend.renderGate.advance();
+        failOneCallbackLosingItsInput(backend);
+
+        backend.renderGate.advance();
+        pipeline.awaitFlushed();
+
+        assertThat(pipeline.getStarvedInputBlocks()).as("the backlog filled the place").isZero();
+        assertThat(pipeline.getFileOverflowBlocks()).isZero();
+        assertThat(engine.capturedInputBlocksLost() - base).as("Take dropouts = 0 + 0 + 1").isEqualTo(1);
+        BackendThreadCounters health = engine.audioHealth().backendCounters();
+        assertThat(health.callbackFaults()).isEqualTo(1);
+        assertThat(health.inputBlocksLost()).isZero();
+    }
+
+    /**
+     * The same failed callback with an empty queue: its place is a starved
+     * block, and its loss counts one dropout before the capture rings
+     * (counting it once in all is future story 463's).
+     */
+    @Test
+    void aFailedCallbackThatLostItsInputWithAnEmptyQueueCountsOneDropout() throws Exception {
+        startTake(List.of(track("Primary", 0, 1, 0)), null);
+        long base = engine.capturedInputBlocksLost();
+        block(true, false);
+        failOneCallbackLosingItsInput(backend);
+
+        backend.renderGate.advance();
+        block(true, false);
+
+        long lost = engine.capturedInputBlocksLost() - base;
+        assertThat(lost).isEqualTo(1);
+    }
+
+    /**
+     * An input opened beside the stream counts a failed device callback once,
+     * as lost input through its health record, never also as a failed
+     * callback of the stream's own device (story 337, rulings E49 and E86;
+     * story 338, ruling E211).
+     */
+    @Test
+    void aFailedCallbackOnAnInputBesideTheStreamCountsOnce() throws Exception {
+        startTake(List.of(track("Primary", 0, 1, 0), track("Sibling", 0, 1, 1)), null);
+        long base = engine.capturedInputBlocksLost();
+
+        failOneCallbackLosingItsInput(backend.sibling);
+
+        assertThat(engine.capturedInputBlocksLost() - base).isEqualTo(1);
+        BackendThreadCounters health = engine.audioHealth().backendCounters();
+        assertThat(health.inputBlocksLost()).as("an input's failed callback is lost input").isEqualTo(1);
+        assertThat(health.callbackFaults()).isZero();
+    }
+
+    private static void failOneCallbackLosingItsInput(PatternBackend device) {
+        device.failedCallbackInputBlocks = 1;
+        device.counters = new BackendThreadCounters(1, 0, 0, 0, OptionalLong.empty(),
+                Optional.of(new IllegalStateException("the device callback failed")), Optional.empty(),
+                Optional.empty());
+    }
+
+    private static BackendThreadCounters threadCounters(long callbackFaults, long inputBlocksLost, long inputHalts) {
+        return new BackendThreadCounters(callbackFaults, inputBlocksLost, inputHalts, 0, OptionalLong.empty(),
+                Optional.empty(), Optional.empty(), Optional.empty());
+    }
+
+    /** Opens the stream for {@code tracks}, with no take, and waits for its first rendered block. */
+    private void startStream(List<Track> tracks) throws Exception {
+        engine.setGraph(transport, new Mixer(), tracks);
+        engine.startAudioInputOutput(tracks);
+        backend.renderGate.awaitRendered();
     }
 
     @Test

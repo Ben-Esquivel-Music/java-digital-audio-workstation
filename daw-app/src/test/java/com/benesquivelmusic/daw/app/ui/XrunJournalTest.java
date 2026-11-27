@@ -14,10 +14,10 @@ import static org.assertj.core.api.Assertions.tuple;
 
 /**
  * The xrun log's store (story 338, rulings E17, E19, E20, E22,
- * E38, E42, E174, E199): which kinds raise the count, the count's restart
- * and Clear, the newest hundred entries, each drained once, the one entry
- * for the CPU budget markings that never reached the log, and the recent
- * gaps.
+ * E38, E42, E174, E199, E225 and E226): which kinds raise the count, the
+ * count's restart and Clear, the newest hundred entries, each drained once,
+ * the one entry for the CPU budget markings that never reached the log, the
+ * recent gaps, and the resync marks owed to the take apart from the log.
  */
 class XrunJournalTest {
 
@@ -160,6 +160,125 @@ class XrunJournalTest {
         assertThat(journal.gapsSince(now)).as("negative control: the newest arrival counts at its own time")
                 .isEqualTo(1);
         assertThat(journal.counts().gaps()).isEqualTo(6);
+    }
+
+    /** Ruling E225: the take's resync marks are kept apart from the log, whatever its limit drops. */
+    @Test
+    void everyResyncIsKeptForTheTakeWhateverTheLogKeeps() {
+        journal.append(XrunJournal.Detail.DRIVER_RESYNC, List.of(), 1);
+        for (int i = 0; i < 150; i++) {
+            journal.append(XrunJournal.Detail.OUTPUT_STARVED, List.of(), 1);
+        }
+
+        assertThat(journal.drain()).as("premise: the log's limit dropped the resync")
+                .extracting(XrunJournal.Entry::detail).doesNotContain(XrunJournal.Detail.DRIVER_RESYNC);
+        assertThat(journal.drainResyncMarks()).extracting(XrunJournal.ResyncMark::count).containsExactly(1L);
+        assertThat(journal.drainResyncMarks()).as("drained once").isEmpty();
+    }
+
+    /** Ruling E226: neither the log's Clear nor a restarted count takes a resync from the take. */
+    @Test
+    void clearAndARestartedCountKeepTheResyncMarks() {
+        journal.append(XrunJournal.Detail.DRIVER_RESYNC, List.of(), 2);
+        long arrived = nanos.get();
+
+        journal.restartCount();
+        journal.clear();
+
+        assertThat(journal.entries()).as("premise: the log is empty").isEmpty();
+        assertThat(journal.drainResyncMarks()).containsExactly(new XrunJournal.ResyncMark(arrived, 2L));
+    }
+
+    @Test
+    void moreThanTheBoundCoalesceTheOldestKeepingEveryCount() {
+        for (int i = 0; i < 650; i++) {
+            nanos.addAndGet(1L);
+            journal.append(XrunJournal.Detail.DRIVER_RESYNC, List.of(), 1);
+        }
+
+        List<XrunJournal.ResyncMark> owed = journal.drainResyncMarks();
+
+        assertThat(owed).hasSizeLessThanOrEqualTo(XrunJournal.RESYNC_MARKS_KEPT);
+        assertThat(owed.stream().mapToLong(XrunJournal.ResyncMark::count).sum()).as("every resync once")
+                .isEqualTo(650L);
+    }
+
+    @Test
+    void aMergedMarkCarriesTheEarlierArrival() {
+        long first = nanos.addAndGet(1L);
+        journal.append(XrunJournal.Detail.DRIVER_RESYNC, List.of(), 1);
+        for (int i = 0; i < XrunJournal.RESYNC_MARKS_KEPT; i++) {
+            nanos.addAndGet(1L);
+            journal.append(XrunJournal.Detail.DRIVER_RESYNC, List.of(), 1);
+        }
+
+        List<XrunJournal.ResyncMark> owed = journal.drainResyncMarks();
+
+        assertThat(owed).hasSize(XrunJournal.RESYNC_MARKS_KEPT);
+        assertThat(owed.getFirst()).as("the oldest two merged at the first's arrival")
+                .isEqualTo(new XrunJournal.ResyncMark(first, 2L));
+    }
+
+    /** A merge keeps the earlier arrival of the two, whichever of them was written first. */
+    @Test
+    void aMergeOfTwoMarksWrittenOutOfArrivalOrderKeepsTheEarlierArrival() {
+        long later = nanos.addAndGet(10L);
+        journal.appendResyncs(List.of(new XrunJournal.ResyncMark(later, 1L)));
+        long earlier = later - 5L;
+        journal.appendResyncs(List.of(new XrunJournal.ResyncMark(earlier, 1L)));
+        for (int i = 0; i < XrunJournal.RESYNC_MARKS_KEPT - 1; i++) {
+            nanos.addAndGet(1L);
+            journal.append(XrunJournal.Detail.DRIVER_RESYNC, List.of(), 1);
+        }
+
+        List<XrunJournal.ResyncMark> owed = journal.drainResyncMarks();
+
+        assertThat(owed).hasSize(XrunJournal.RESYNC_MARKS_KEPT);
+        assertThat(owed.getFirst()).as("the second written arrived first")
+                .isEqualTo(new XrunJournal.ResyncMark(earlier, 2L));
+    }
+
+    /** Rulings E270 and E279: an entry of several resync requests is dated at the first; each keeps its own mark. */
+    @Test
+    void aResyncEntryOfSeveralRequestsIsDatedAtTheFirstAndKeepsEachArrivalForTheTake() {
+        long first = nanos.get() - 90_000_000L;
+        long second = nanos.get() - 1_000_000L;
+
+        XrunJournal.Entry entry = journal.appendResyncs(List.of(new XrunJournal.ResyncMark(first, 1L),
+                new XrunJournal.ResyncMark(second, 1L)));
+
+        assertThat(entry.detail()).isEqualTo(XrunJournal.Detail.DRIVER_RESYNC);
+        assertThat(entry.count()).isEqualTo(2L);
+        assertThat(entry.arrivedNanos()).as("the first request's arrival").isEqualTo(first);
+        assertThat(entry.arrivedAt()).as("the same time on the wall clock").isEqualTo(wall.get().minusMillis(90));
+        assertThat(journal.drainResyncMarks()).as("a mark per arrival")
+                .containsExactly(new XrunJournal.ResyncMark(first, 1L), new XrunJournal.ResyncMark(second, 1L));
+        assertThat(journal.counts().gaps()).isEqualTo(2L);
+        assertThat(journal.gapsSince(nanos.get())).as("the 30-second figure counts them from now").isEqualTo(2L);
+    }
+
+    /** Ruling E279: a resync entry stands for at least one request. */
+    @Test
+    void aResyncEntryOfNoRequestIsRefused() {
+        assertThatThrownBy(() -> journal.appendResyncs(List.of())).isInstanceOf(IllegalArgumentException.class);
+
+        assertThat(journal.entries()).isEmpty();
+    }
+
+    /** Ruling E291: the dates owed to the take are its undrained marks and what the feed says it holds. */
+    @Test
+    void theDatesOwedToTheTakeAreItsUndrainedMarksAndWhatTheFeedHolds() {
+        assertThat(journal.resyncDatesOwed()).as("nothing owed").isEmpty();
+        journal.appendResyncs(List.of(new XrunJournal.ResyncMark(100L, 1L), new XrunJournal.ResyncMark(200L, 2L)));
+        long[] held = {300L};
+        journal.noteResyncDatesHeld(held);
+        held[0] = 999L;
+
+        assertThat(journal.resyncDatesOwed()).containsExactlyInAnyOrder(100L, 200L, 300L);
+        journal.drainResyncMarks();
+        assertThat(journal.resyncDatesOwed()).as("the marks were handed to the take").containsExactly(300L);
+        journal.noteResyncDatesHeld(XrunJournal.NO_DATES);
+        assertThat(journal.resyncDatesOwed()).isEmpty();
     }
 
     @Test

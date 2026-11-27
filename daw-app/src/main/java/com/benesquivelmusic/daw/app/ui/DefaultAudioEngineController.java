@@ -356,6 +356,32 @@ final class DefaultAudioEngineController implements AudioEngineController {
             new AtomicReference<>();
 
     /**
+     * A reopen a driver asked for: the request it answers, the device that
+     * request named, and the stream it found at the request — whether one
+     * was open, and whether it was paused.
+     */
+    private record ResetReopen(DeviceId watched, AudioDeviceEvent.FormatChangeRequested request,
+                               boolean wasOpen, boolean wasPaused) {
+
+        /** This reopen answering {@code later}, a request that came while it waited; the latest wins whole. */
+        ResetReopen joinedBy(DeviceId laterWatched, AudioDeviceEvent.FormatChangeRequested later) {
+            return new ResetReopen(laterWatched, later, wasOpen, wasPaused);
+        }
+    }
+
+    /**
+     * The reopen a driver asked for that waits for a driver's control panel
+     * to close, or {@code null} (ruling E278): set, before any call into the
+     * driver, while a panel is open, and kept while a later request is in its
+     * 250&nbsp;ms window; ended by its reopen once the panel has closed, by any
+     * apply that reaches {@link #endTheWaitForTheSettings()} (rulings E288 and E304),
+     * by a declared loss, or by {@link #shutdown()}. Written only under this controller's
+     * monitor, and never set once the controller is closed; volatile for the
+     * reads that take no monitor.
+     */
+    private volatile ResetReopen reopenAwaitingPanel;
+
+    /**
      * Serializes native driver control-panel launches against EACH OTHER,
      * without serializing them against the rest of the controller (story 316
      * re-review).
@@ -402,13 +428,17 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * {@link #runControlPanel(AudioBackend, Runnable)} takes the other two
      * as SIBLINGS under this one rather than nesting them:</p>
      * <pre>
-     * controlPanelLock &rarr; controller monitor          (brief: one field store)
+     * controlPanelLock &rarr; controller monitor          (brief: field stores and a clock read)
      * controlPanelLock &rarr; AudioEngine.lifecycleLock   (possibly LONG)
      * </pre>
      * <p>{@link #registerOpenControlPanel(AudioBackend)} and
      * {@link #releaseOpenControlPanel(AudioBackend)} are still
-     * {@code synchronized}, but they now do nothing beyond storing
-     * {@link #controlPanelBackend}; the engine calls
+     * {@code synchronized}, but they do nothing beyond storing
+     * {@link #controlPanelBackend} and, at the release, asking the heartbeat
+     * watchdog for its start-up allowance (ruling E228), which reads the
+     * engine-health clock, stores two fields and takes no lock, and handing a
+     * reopen that waited for the panel to the format-change worker (ruling
+     * E278), whose queue lock is a leaf; the engine calls
      * {@link AudioEngine#beginControlPanelSession(AudioBackend)} /
      * {@link AudioEngine#endControlPanelSession(AudioBackend)} are made by
      * {@code runControlPanel} itself, with the monitor already released. The
@@ -433,8 +463,12 @@ final class DefaultAudioEngineController implements AudioEngineController {
      *       monitor released. Nothing that holds the monitor, and nothing
      *       inside the engine, ever waits for this lock.</li>
      *   <li>Both edges out of it end at a LEAF, so neither can close a
-     *       cycle: the monitor is held here only across a field store, and
-     *       the lifecycle lock is taken here with no other lock of ours
+     *       cycle: the monitor is held here only across a field store and,
+     *       at the release, the watchdog's allowance request, which takes no
+     *       lock, and the hand-off of a reopen that waited for the panel to the
+     *       format-change worker, whose queue lock no thread holds while it
+     *       waits for this monitor, and the lifecycle lock is taken here with no
+     *       other lock of ours
      *       held. [controller monitor &rarr; lifecycleLock] still exists
      *       ELSEWHERE &mdash; {@link #applyConfiguration(Request)},
      *       {@link #installDefaultProvision()} and {@link #shutdown()} take
@@ -1172,7 +1206,11 @@ final class DefaultAudioEngineController implements AudioEngineController {
         LOG.info("Applying audio configuration: " + request);
 
         try {
-            boolean wasOpen = audioEngine.isStreamOpen();
+            ResetReopen awaiting = endTheWaitForTheSettings();
+            boolean openNow = audioEngine.isStreamOpen();
+            // Ruling E288: a stream a driver's reset stopped while a driver's control panel stayed open is
+            // restored by this apply, as that reset found it, instead of by the reopen that waited.
+            boolean wasOpen = openNow || (awaiting != null && awaiting.wasOpen());
             // Story 316 review — isStreamOpen() is true for RUNNING *or*
             // PAUSED, so "was open" alone does not describe the lifecycle
             // state this reconfigure is about to destroy. The pause fact has
@@ -1181,7 +1219,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
             // device or backend used to get the stream back RUNNING, which
             // restarts the render pump AND the RT clock underneath a
             // transport they deliberately left paused.
-            boolean wasPaused = audioEngine.isStreamPaused();
+            boolean wasPaused = openNow ? audioEngine.isStreamPaused() : (awaiting != null && awaiting.wasPaused());
             // Every apply that the record guard let
             // through is a reconfigure the engine cell shows, published before
             // the stream stops; a declined guard never reaches this method.
@@ -1360,6 +1398,32 @@ final class DefaultAudioEngineController implements AudioEngineController {
             // including the rethrown failure above.
             runPostReconfigureCallback();
         }
+    }
+
+    /**
+     * Ends, for each {@link #applyConfiguration(Request)} call that
+     * {@link #beginConfigurationChange()} lets through, whoever makes it (the
+     * start-up apply of the saved settings, a Settings apply, the rollback
+     * after a failed one, a Restart Audio Engine), a reopen's wait for a
+     * driver's control panel and any request still in its 250&nbsp;ms window,
+     * whether or not a reopen waits: the person's settings stand, and nothing
+     * reopens for the driver's request (rulings E288 and E304).
+     * Caller holds the monitor.
+     *
+     * @return the reopen that waited, or {@code null}
+     */
+    private ResetReopen endTheWaitForTheSettings() {
+        ResetReopen awaiting = reopenAwaitingPanel;
+        AudioDeviceEvent.FormatChangeRequested inItsWindow = latestFormatChange.getAndSet(null);
+        if (awaiting != null) {
+            reopenAwaitingPanel = null;
+            LOG.info("Audio settings applied while the reopen " + awaiting.watched()
+                    + " asked for waited for the driver's control panel; the settings stand");
+        } else if (inItsWindow != null) {
+            LOG.info("Audio settings applied while a format change " + inItsWindow.device()
+                    + " asked for was in its window; the settings stand");
+        }
+        return awaiting;
     }
 
     @Override
@@ -1715,9 +1779,9 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * Records {@code newState} and publishes it as an
      * {@link EngineStateChange} with the device watched at this instant,
      * unless it is the state already held. {@code synchronized} (story 327
-     * fix round): every caller but {@link #runFormatChangeReopen}'s catch
-     * already holds the monitor, and that catch runs on the format-change
-     * worker against handlers on the device-event thread, so without the
+     * fix round): every caller but {@link #failFormatChangeReopen} already
+     * holds the monitor, and that method runs on the format-change worker
+     * against handlers on the device-event thread, so without the
      * monitor its read-compare-write of {@link #engineState} could
      * interleave with theirs. Reentrant for the callers that hold it; see
      * the lock-order note on {@link #controlPanelLock} for why the
@@ -1759,7 +1823,10 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * Handles a hot-unplug. Declares {@link EngineState#DEVICE_LOST} only for
      * the device of an OPEN stream: BOTH the endpoint identity
      * ({@link #watchedDevice}) and {@link AudioEngine#isStreamOpen()} must
-     * hold.
+     * hold. A stream a driver's reset stopped counts as open while its
+     * reopen waits for a driver's control panel ({@link #isAStreamAwaitingItsReopen()},
+     * ruling E278): that reopen will restore it, so a removal of its device
+     * is the loss of an open stream, and the loss ends the wait.
      *
      * <p>Story 316 review — the open check is not redundant with the identity
      * check. The watch is bound pre-open by
@@ -1794,7 +1861,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * the flags and every UI transition stay on FX.</p>
      */
     private synchronized void onDeviceRemoved(DeviceId removed) {
-        if (!audioEngine.isStreamOpen()) {
+        if (!audioEngine.isStreamOpen() && !isAStreamAwaitingItsReopen()) {
             // Routine hot-unplug of an endpoint we merely watch — no stream
             // is holding it, so nothing was interrupted and there is nothing
             // to recover. FINE, not WARNING: this is the ordinary case for a
@@ -1824,8 +1891,9 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * watchdog's stall verdict ({@link #onHeartbeatStalled}, on the
      * engine-health monitor's thread) and a reopen the driver asked for that
      * could not reopen the stream that was open
-     * ({@code performFormatChangeReopen}, on the format-change worker, ruling
-     * E113). For a removal or a stall these steps close the lost stream, so
+     * ({@code reopenAtTheRequestedFormat}, on the format-change worker, ruling
+     * E113). A reopen a driver asked for that waits for a driver's control
+     * panel is ended first (ruling E278). For a removal or a stall these steps close the lost stream, so
      * the epoch is read and capture is halted before the close; for the
      * failed reopen, the reset's own step 1
      * ({@link #stopAndConfirmPumpQuiesced()}) had already closed the stream,
@@ -1843,6 +1911,8 @@ final class DefaultAudioEngineController implements AudioEngineController {
      */
     private void declareDeviceLost(EngineStateChange.LossCause cause, Runnable notice) {
         deviceLossBeingDeclared = true;
+        // Nothing reopens for a driver's request once a panel it waited for closes (ruling E278).
+        reopenAwaitingPanel = null;
         try {
             closeTheLostStream(cause);
         } finally {
@@ -1906,7 +1976,9 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * the still heartbeat but the device: the controller is not shut down
      * and the monitor not stopped; no configuration change is in progress;
      * no driver control panel is open (a driver may stop calling back while
-     * its dialog is up); no driver format change is pending (a driver may
+     * its dialog is up); no start-up allowance asked for at a panel's close
+     * or a clock-source switch is still waiting for a watchdog tick to take
+     * it up (ruling E228); no driver format change is pending (a driver may
      * stop streaming until it is reset); the render drive is alive and is
      * the drive the verdict was decided on; and its heartbeat still reads
      * the count that stood still. Otherwise the verdict is refused and the
@@ -1922,7 +1994,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
      */
     private synchronized boolean onHeartbeatStalled(EngineHeartbeatWatchdog.StreamStall stall) {
         if (controllerClosed.get() || engineHealthMonitorStopped || configurationInProgress.get()
-                || controlPanelBackend != null
+                || controlPanelBackend != null || heartbeatWatchdog.isAllowanceRequestPending()
                 || latestFormatChange.get() != null || isFormatChangeReopenScheduled()
                 || !audioEngine.isRenderDriveAlive()
                 || audioEngine.audioHealth().renderDriveEpoch() != stall.epoch()
@@ -1956,6 +2028,31 @@ final class DefaultAudioEngineController implements AudioEngineController {
     private boolean isFormatChangeReopenScheduled() {
         ScheduledFuture<?> pending = pendingFormatChange.get();
         return pending != null && !pending.isDone();
+    }
+
+    /**
+     * The request a reopen waiting for a driver's control panel will answer,
+     * or empty (ruling E278). One volatile read; for tests.
+     */
+    Optional<AudioDeviceEvent.FormatChangeRequested> formatChangeAwaitingTheControlPanel() {
+        ResetReopen awaiting = reopenAwaitingPanel;
+        return awaiting == null ? Optional.empty() : Optional.of(awaiting.request());
+    }
+
+    /** The driver's request still in its 250&nbsp;ms window, or empty. One atomic read; for tests. */
+    Optional<AudioDeviceEvent.FormatChangeRequested> formatChangeInItsWindow() {
+        return Optional.ofNullable(latestFormatChange.get());
+    }
+
+    /**
+     * Whether a stream a driver's reset stopped waits for its reopen until a
+     * driver's control panel closes (ruling E278): it counts as open for a
+     * removal of its device and for Restart Audio Engine (ruling E288). One
+     * volatile read; any thread.
+     */
+    boolean isAStreamAwaitingItsReopen() {
+        ResetReopen awaiting = reopenAwaitingPanel;
+        return awaiting != null && awaiting.wasOpen();
     }
 
     /** Whether the stalled heartbeat still reads the count that stood still, of the same kind. */
@@ -2374,7 +2471,8 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * is cancelled and rescheduled — the typical case where the user
      * is spinning a buffer-size dropdown in the driver panel. The
      * eventual reopen always uses the freshest proposed format /
-     * reason.</p>
+     * reason. A request that reaches the worker while a reopen waits for a
+     * driver's control panel joins that reopen (ruling E278).</p>
      *
      * @param requested the request to handle; must not be null
      */
@@ -2429,62 +2527,126 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * thread or the device-event thread.
      */
     private void runFormatChangeReopen() {
+        try {
+            performFormatChangeReopen();
+        } catch (RuntimeException e) {
+            failFormatChangeReopen(e);
+        }
+    }
+
+    /**
+     * The format-change worker's turn after a driver's control panel closed
+     * while a reopen a driver asked for waited for it (ruling E278).
+     */
+    private void runReopenAwaitingPanel() {
+        try {
+            resumeReopenAwaitingPanel();
+        } catch (RuntimeException e) {
+            failFormatChangeReopen(e);
+        }
+    }
+
+    /** A reopen that threw: the person is told, and the controller comes to rest in STOPPED. */
+    private void failFormatChangeReopen(RuntimeException failure) {
+        // Never let the worker thread die because of one bad reopen —
+        // the next event must still be handleable.
+        LOG.log(Level.WARNING, "Format-change reopen failed", failure);
+        try {
+            notifications.notify("Audio engine reconfiguration failed: " + failure.getMessage());
+        } catch (RuntimeException ignored) { /* best-effort */ }
+        // Always end up in STOPPED so the user can re-arm transport
+        // even after a failed reopen.
+        setEngineState(EngineState.STOPPED);
+    }
+
+    /**
+     * Takes the latest request up under this monitor, so every apply that
+     * reaches {@link #endTheWaitForTheSettings()} ends a request still in its
+     * 250&nbsp;ms window (rulings E288 and E304), and a request taken up after
+     * {@link #shutdown()} does nothing.
+     */
+    private synchronized void performFormatChangeReopen() {
         AudioDeviceEvent.FormatChangeRequested requested = latestFormatChange.getAndSet(null);
-        if (requested == null) {
-            // Coalesced into a later task that already ran — nothing to do.
+        if (requested == null || controllerClosed.get()) {
+            // Coalesced into a later task that already ran, or the controller is closed — nothing to do.
             return;
         }
         DeviceId watched = watchedDevice.get();
         if (watched == null || !sameDevice(watched, requested.device())) {
+            // A reopen waiting for a driver's control panel may have stayed waiting for this request.
+            resumeReopenAwaitingPanel();
             return;
         }
-        try {
-            performFormatChangeReopen(watched, requested);
-        } catch (RuntimeException e) {
-            // Never let the worker thread die because of one bad reopen —
-            // the next event must still be handleable.
-            LOG.log(Level.WARNING, "Format-change reopen failed", e);
-            try {
-                notifications.notify("Audio engine reconfiguration failed: " + e.getMessage());
-            } catch (RuntimeException ignored) { /* best-effort */ }
-            // Always end up in STOPPED so the user can re-arm transport
-            // even after a failed reopen.
-            setEngineState(EngineState.STOPPED);
-        }
-    }
-
-    private synchronized void performFormatChangeReopen(
-            DeviceId watched, AudioDeviceEvent.FormatChangeRequested requested) {
         if (isDeviceLost()) {
             // The request reached the worker before the loss; reopening now
             // would end DEVICE_LOST with no stream and leave Reconnect dead.
             LOG.info("A driver format change for " + watched + " is dropped: the device is lost");
             return;
         }
-        AudioBackend backend = boundBackend.get();
-        AudioFormat currentFormat = audioEngine.getFormat();
-
-        // Sample-rate change is treated specially — story 126's SRC is
-        // inserted at the device boundary so the project session rate
-        // does not change.
-        Optional<com.benesquivelmusic.daw.sdk.audio.AudioFormat> proposed = requested.proposedFormat();
-        boolean isSampleRateChange = requested.reason() instanceof FormatChangeReason.SampleRateChange;
-        boolean rateActuallyDiffers = proposed.isPresent()
-                && Double.compare(proposed.get().sampleRate(), currentFormat.sampleRate()) != 0;
-
+        ResetReopen awaiting = reopenAwaitingPanel;
+        if (awaiting != null) {
+            answerTheReopenAwaitingPanel(awaiting.joinedBy(watched, requested));
+            return;
+        }
         notifyQuietly("Reconfiguring audio engine…");
         setEngineState(EngineState.RECONFIGURING);
+        reopenAsFound(new ResetReopen(watched, requested, false, false));
+    }
 
+    /**
+     * Keeps {@code latest} waiting while a driver's control panel is open, or
+     * while a later request is still in its 250&nbsp;ms window, whose own
+     * reopen then joins it; otherwise runs it (ruling E278). Caller holds the
+     * monitor, on the format-change worker.
+     */
+    private void answerTheReopenAwaitingPanel(ResetReopen latest) {
+        if (controlPanelBackend != null || latestFormatChange.get() != null) {
+            reopenAwaitingPanel = latest;
+            return;
+        }
+        reopenAwaitingPanel = null;
+        reopenAsFound(latest);
+    }
+
+    /** {@link #answerTheReopenAwaitingPanel} for the reopen still waiting, if one is. */
+    private synchronized void resumeReopenAwaitingPanel() {
+        ResetReopen awaiting = reopenAwaitingPanel;
+        if (awaiting != null) {
+            answerTheReopenAwaitingPanel(awaiting);
+        }
+    }
+
+    /**
+     * Steps 1 to 9 of a reopen a driver asked for; its "Reconfiguring audio
+     * engine…" and RECONFIGURING are already out. A stream open now is
+     * restored as it is now, which after a wait is a stream a Play opened
+     * once the panel closed (ruling E289); otherwise the stream is restored
+     * as {@code reopen} found it at the request.
+     *
+     * <p>While a driver's control panel is registered, the reopen waits
+     * after step 1 instead, before any call into the driver (ruling E278). A
+     * panel is opened only on the backend the engine streams through or
+     * would open next ({@link #openControlPanel()}), and ASIO runs it on that
+     * driver's control thread, where a capability query or an open would
+     * wait out the thread's budget under this monitor. A panel is registered
+     * here, under this monitor, before the engine hears of it, and withdrawn
+     * after ({@link #runControlPanel}), so a reopen that finds none here
+     * meets none in the engine either, and its open is never refused for a
+     * panel. Caller holds the monitor, on the format-change worker.</p>
+     */
+    private void reopenAsFound(ResetReopen reopen) {
         // Whether a stream was open before this reopen — mirrors
         // applyConfiguration: only a previously-open stream is restored
         // after the format change (story 316, engine-seam routing).
-        boolean wasOpen = audioEngine.isStreamOpen();
         // ...and WHICH open state it was in, snapshotted here for the same
         // reason and in the same place as applyConfiguration's (story 316
         // review): isStreamOpen() covers RUNNING *and* PAUSED, and the stop
         // at step 1 erases the distinction, so a driver-initiated format
         // change silently promoted a paused stream back to rendering.
-        boolean wasPaused = audioEngine.isStreamPaused();
+        boolean openNow = audioEngine.isStreamOpen();
+        ResetReopen found = openNow
+                ? new ResetReopen(reopen.watched(), reopen.request(), true, audioEngine.isStreamPaused())
+                : reopen;
 
         // 1. Stop the transport AND confirm the render pump left
         //    processBlock. Story 316 re-review: the format change at step 5
@@ -2511,6 +2673,34 @@ final class DefaultAudioEngineController implements AudioEngineController {
             refuseFormatChangeReopen();
             return;
         }
+
+        if (controlPanelBackend != null) {
+            reopenAwaitingPanel = found;
+            LOG.info("The reopen " + found.watched() + " asked for waits for the driver's control panel to close");
+            return;
+        }
+        reopenAtTheRequestedFormat(found);
+    }
+
+    /**
+     * Steps 3 to 9 of a reopen a driver asked for, for the stream
+     * {@code reopen} found, once step 1 has stopped it and no driver's
+     * control panel is open. Caller holds the monitor, on the format-change
+     * worker.
+     */
+    private void reopenAtTheRequestedFormat(ResetReopen reopen) {
+        DeviceId watched = reopen.watched();
+        AudioDeviceEvent.FormatChangeRequested requested = reopen.request();
+        AudioBackend backend = boundBackend.get();
+        AudioFormat currentFormat = audioEngine.getFormat();
+
+        // Sample-rate change is treated specially — story 126's SRC is
+        // inserted at the device boundary so the project session rate
+        // does not change.
+        Optional<com.benesquivelmusic.daw.sdk.audio.AudioFormat> proposed = requested.proposedFormat();
+        boolean isSampleRateChange = requested.reason() instanceof FormatChangeReason.SampleRateChange;
+        boolean rateActuallyDiffers = proposed.isPresent()
+                && Double.compare(proposed.get().sampleRate(), currentFormat.sampleRate()) != 0;
 
         // 3. (Story 327) Nothing is flushed for an in-flight take here any
         //    more: the take streams to disk continuously and the record
@@ -2576,11 +2766,11 @@ final class DefaultAudioEngineController implements AudioEngineController {
         //    terminal state (side effects precede the terminal state
         //    observers gate on).
         boolean streamRestored = false;
-        if (wasOpen) {
+        if (reopen.wasOpen()) {
             try {
                 audioEngine.startAudioOutput();
                 streamRestored = true;
-                if (wasPaused) {
+                if (reopen.wasPaused()) {
                     try {
                         audioEngine.pauseAudioOutput();
                     } catch (RuntimeException pauseFailure) {
@@ -2599,11 +2789,13 @@ final class DefaultAudioEngineController implements AudioEngineController {
                 LOG.log(Level.WARNING, "Failed to reopen audio stream after format change", e);
             }
         }
-        if (wasOpen && !streamRestored) {
+        if (reopen.wasOpen() && !streamRestored) {
             // Ruling E113: a driver that asked to be reset and whose stream
             // will not reopen is lost — often an unplug the driver reports
             // as a reset. Closed, the stream is never watched again, so only
             // a loss gives the person Reconnect and seals a take honestly.
+            // A reopen never meets a driver's open control panel here: it
+            // waited for the panel to close first (ruling E278).
             runPostReconfigureCallback();
             String message = DeviceNames.atSentenceStart(watched) + " asked to be reset and could not be"
                     + " reopened — audio stopped. Check that it is connected and powered, then choose Reconnect.";
@@ -2677,7 +2869,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * {@link AudioEngine#setFormat(AudioFormat)}, and it is shared rather
      * than inlined precisely because there are two such paths —
      * {@link #applyConfiguration(Request)} on the settings thread and
-     * {@link #performFormatChangeReopen} on the format-change worker.
+     * {@link #reopenAsFound} on the format-change worker.
      *
      * <p>{@code false} means a render pump may STILL be inside
      * {@link AudioEngine#processBlock}, rendering through the
@@ -2726,7 +2918,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * and this path's contract is to log rather than throw — but a refusal
      * that only logged would be invisible to the user whose driver just
      * renegotiated. So it does exactly what every other terminal path of
-     * {@link #performFormatChangeReopen} does, in the same order: the
+     * {@link #reopenAsFound} does, in the same order: the
      * user-facing notification and the post-reconfigure callback FIRST, then
      * the terminal state that observers gate on (side effects precede the
      * terminal state). The callback runs for the same reason it runs on
@@ -3029,7 +3221,10 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * removed, with {@code SettingsDialog.updateAudioUtilityDisabledState()}
      * calling {@link #openControlPanel()} on the FX thread and queueing
      * behind a native teardown. As siblings, the monitor is held only for
-     * the two field stores, and the resulting order is
+     * the two field stores and, at the release, the heartbeat watchdog's
+     * allowance request, which takes no lock, and the hand-off of a reopen
+     * that waited for the panel to the format-change worker (ruling E278),
+     * whose queue lock is a leaf, and the resulting order is
      * [{@link #controlPanelLock} &rarr; monitor] and
      * [{@code controlPanelLock} &rarr; {@code lifecycleLock}], never
      * [monitor &rarr; {@code lifecycleLock}]; see {@link #controlPanelLock}
@@ -3081,11 +3276,12 @@ final class DefaultAudioEngineController implements AudioEngineController {
             try {
                 audioEngine.endControlPanelSession(panelBackend);
             } finally {
-                // A field store under the monitor, then the unlock: neither
-                // can throw, so nothing after an Error from the drain is
-                // stranded.
-                releaseOpenControlPanel(panelBackend);
-                controlPanelLock.unlock();
+                try {
+                    releaseOpenControlPanel(panelBackend);
+                } finally {
+                    // The lock is released even if the watchdog's allowance request throws.
+                    controlPanelLock.unlock();
+                }
             }
         }
     }
@@ -3113,7 +3309,10 @@ final class DefaultAudioEngineController implements AudioEngineController {
 
     /**
      * Withdraws THIS controller's half of the registration, by identity so a
-     * late release can never clear a newer one.
+     * late release can never clear a newer one, and asks the heartbeat
+     * watchdog for its start-up allowance (ruling E228): a driver may stop
+     * calling back while it applies a change made in its panel, as after a
+     * clock-source switch.
      *
      * <p>The engine's half is withdrawn by
      * {@link #runControlPanel(AudioBackend, Runnable)} just BEFORE this
@@ -3122,13 +3321,34 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * while that drain runs, is what keeps a concurrent
      * {@link #closeProvisionBackends(StreamingProvision, StreamingProvision)}
      * from freeing {@code panelBackend}'s INSTANCE underneath a drain that
-     * is inside {@code close()} on it. Like its register counterpart this is
-     * a field store under the monitor and nothing else, so it cannot throw
-     * and the caller's {@code finally} can rely on it completing.</p>
+     * is inside {@code close()} on it.</p>
+     *
+     * <p>No stall verdict is accepted between the panel's close and the
+     * allowance. {@link #onHeartbeatStalled} is synchronized on this same
+     * monitor, so it runs either before this method, while
+     * {@link #controlPanelBackend} still refuses it, or after it, when it
+     * refuses while {@link EngineHeartbeatWatchdog#isAllowanceRequestPending()}
+     * says no watchdog tick has taken the allowance up yet. The field clears
+     * in a {@code finally}, so the registration is withdrawn even if the
+     * allowance request throws (the watchdog's clock is a test seam that
+     * can).</p>
+     *
+     * <p>A reopen a driver asked for that waits for this panel (ruling E278)
+     * is handed to the format-change worker here, after the engine's drain:
+     * never run on this thread, so every step of a reopen stays on that one
+     * worker, serialized with the requests' own reopens.</p>
      */
     private synchronized void releaseOpenControlPanel(AudioBackend panelBackend) {
         if (controlPanelBackend == panelBackend) {
-            controlPanelBackend = null;
+            try {
+                heartbeatWatchdog.allowForAClockSourceSwitch();
+            } finally {
+                controlPanelBackend = null;
+                if (reopenAwaitingPanel != null) {
+                    // shutdown() ends the wait under this monitor, and a closed controller never waits.
+                    formatChangeWorker.execute(this::runReopenAwaitingPanel);
+                }
+            }
         }
     }
 
@@ -3172,6 +3392,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
         if (pending != null) {
             pending.cancel(false);
         }
+        reopenAwaitingPanel = null;
         formatChangeWorker.shutdownNow();
         monitorEventDrain.shutdownNow();
         XrunDetector detector = this.xrunDetector;

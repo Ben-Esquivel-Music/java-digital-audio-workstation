@@ -11,6 +11,8 @@ A driver that asks the host to reset (ASIO's `kAsioResetRequest`) or announces a
 
 Story 338 changed one end of that path only: when the reopen of a stream that was open fails, the device is declared lost, with its own notice and Reconnect, and a take in flight is sealed as a device loss under the lead "`<name>` could not be reopened after a driver reset during recording" (story 338, rulings E113 and E134). Its studio engineer ruled what a successful reset during a take must do (ruling E41), and story 338's manager deferred it here.
 
+When the request comes while the driver's control panel opened from Audio Settings is still open, the reopen waits for the panel to close (story 338, ruling E278), so the stretch the take misses lasts until the person closes it.
+
 ## Goals
 
 The requirement, as story 338's studio engineer ruled it (ruling E41):

@@ -13,6 +13,7 @@ import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -678,6 +679,121 @@ class CallbackInvokerTest {
             assertThat(invoker.lastCallbackFault()).isEmpty();
             assertThat(readFrames(output, 0, framesPerBuffer, channels)).containsOnly(RENDERED);
         }
+    }
+
+    // ── A failed period's captured input (story 338, ruling E211) ────────
+
+    /**
+     * A callback that fails inside its process never took the period's
+     * input: one block lost, beside its one fault, and never a lost block
+     * of the invoker's own report.
+     */
+    @Test
+    void aCallbackThatFailsCountsItsPeriodsBlockLost() {
+        RecordingCallback callback = new RecordingCallback((out, numFrames) -> {
+            throw new IllegalStateException("callback failed");
+        });
+        PortAudioBackend.CallbackInvoker invoker = PortAudioBackend.CallbackInvoker
+                .forStream(callback, 2, 2, 64);
+
+        try (Arena arena = Arena.ofConfined()) {
+            invoker.invoke(allocateFrames(arena, 64, 2), allocateFrames(arena, 64, 2), 64,
+                    MemorySegment.NULL, 0L, MemorySegment.NULL);
+        }
+
+        assertThat(invoker.failedPeriodInputBlocks()).isEqualTo(1L);
+        assertThat(invoker.callbackFaults()).isEqualTo(1L);
+        assertThat(invoker.counters().inputBlocksLost()).isZero();
+    }
+
+    /**
+     * A fault in the output interleave comes after the callback took the
+     * period's input, so the take lost nothing: no block lost, one fault.
+     */
+    @Test
+    void aFaultAfterTheCallbackTookThePeriodsInputCountsNoBlockLost() {
+        RecordingCallback callback = new RecordingCallback((out, numFrames) -> out[0] = new float[1]);
+        PortAudioBackend.CallbackInvoker invoker = PortAudioBackend.CallbackInvoker
+                .forStream(callback, 2, 2, 64);
+
+        try (Arena arena = Arena.ofConfined()) {
+            invoker.invoke(allocateFrames(arena, 64, 2), allocateFrames(arena, 64, 2), 64,
+                    MemorySegment.NULL, 0L, MemorySegment.NULL);
+        }
+
+        assertThat(callback.frameCounts).as("the callback returned").containsExactly(64);
+        assertThat(invoker.lastCallbackFault()).get().isInstanceOf(ArrayIndexOutOfBoundsException.class);
+        assertThat(invoker.callbackFaults()).isEqualTo(1L);
+        assertThat(invoker.failedPeriodInputBlocks()).isZero();
+    }
+
+    /** An output-only stream owes no captured block, so its failed callback loses none. */
+    @Test
+    void anOutputOnlyStreamsFailedCallbackCountsNoBlockLost() {
+        RecordingCallback callback = new RecordingCallback((out, numFrames) -> {
+            throw new IllegalStateException("callback failed");
+        });
+        PortAudioBackend.CallbackInvoker invoker = PortAudioBackend.CallbackInvoker
+                .forStream(callback, 0, 2, 64);
+
+        try (Arena arena = Arena.ofConfined()) {
+            invoker.invoke(MemorySegment.NULL, allocateFrames(arena, 64, 2), 64,
+                    MemorySegment.NULL, 0L, MemorySegment.NULL);
+        }
+
+        assertThat(invoker.callbackFaults()).isEqualTo(1L);
+        assertThat(invoker.failedPeriodInputBlocks()).isZero();
+    }
+
+    /**
+     * A fault before the callback — here the output reinterpret, refused for
+     * a heap segment — loses the period's input: one block lost, one fault,
+     * and the callback is never called.
+     */
+    @Test
+    void aFaultBeforeTheCallbackCountsOneBlockLost() {
+        RecordingCallback callback = new RecordingCallback(
+                (out, numFrames) -> fill(out, numFrames, RENDERED));
+        PortAudioBackend.CallbackInvoker invoker = PortAudioBackend.CallbackInvoker
+                .forStream(callback, 2, 2, 64);
+        MemorySegment heapOutput = MemorySegment.ofArray(new byte[(int) frameBytes(64, 2)]);
+
+        try (Arena arena = Arena.ofConfined()) {
+            invoker.invoke(allocateFrames(arena, 64, 2), heapOutput, 64,
+                    MemorySegment.NULL, 0L, MemorySegment.NULL);
+        }
+
+        assertThat(callback.frameCounts).as("the callback was never called").isEmpty();
+        assertThat(invoker.callbackFaults()).isEqualTo(1L);
+        assertThat(invoker.failedPeriodInputBlocks()).isEqualTo(1L);
+    }
+
+    /**
+     * Every period owes its own captured block: a callback that fails after a
+     * healthy period, which took its block, still loses the failing period's
+     * (story 338, ruling E211).
+     */
+    @Test
+    void aCallbackThatFailsAfterAHealthyPeriodCountsThatPeriodsBlockLost() {
+        AtomicInteger calls = new AtomicInteger();
+        RecordingCallback callback = new RecordingCallback((out, numFrames) -> {
+            if (calls.incrementAndGet() == 2) {
+                throw new IllegalStateException("callback failed");
+            }
+        });
+        PortAudioBackend.CallbackInvoker invoker = PortAudioBackend.CallbackInvoker.forStream(callback, 2, 2, 64);
+
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment input = allocateFrames(arena, 64, 2);
+            MemorySegment output = allocateFrames(arena, 64, 2);
+            invoker.invoke(input, output, 64, MemorySegment.NULL, 0L, MemorySegment.NULL);
+            assertThat(invoker.callbackFaults()).as("fixture: the first period was healthy").isZero();
+
+            invoker.invoke(input, output, 64, MemorySegment.NULL, 0L, MemorySegment.NULL);
+        }
+
+        assertThat(invoker.callbackFaults()).isEqualTo(1L);
+        assertThat(invoker.failedPeriodInputBlocks()).isEqualTo(1L);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────

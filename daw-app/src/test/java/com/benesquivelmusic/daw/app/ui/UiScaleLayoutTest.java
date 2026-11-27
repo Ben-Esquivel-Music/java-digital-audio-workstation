@@ -763,6 +763,9 @@ class UiScaleLayoutTest {
         assertThat(transportChildren.indexOf(clockBadge) + 1)
                 .as("the badge sits immediately before the transport status (ruling E32)")
                 .isEqualTo(transportChildren.indexOf(window.node("statusLabel", Label.class)));
+        assertThat(clockBadge.getParent().getStyleClass())
+                .as("the badge sits on the transport bar's gradient, the surface its colour tests read")
+                .contains("transport-bar");
         new ToolbarAppearanceController(
                 new ToolbarAppearanceController.TransportButtons(
                         window.node("skipBackButton", Button.class), window.node("playButton", Button.class),

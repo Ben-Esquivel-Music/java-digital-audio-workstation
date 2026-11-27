@@ -11,6 +11,7 @@ import com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters;
 import com.benesquivelmusic.daw.sdk.audio.BufferSize;
 import com.benesquivelmusic.daw.sdk.audio.CaptureRequirement;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
+import com.benesquivelmusic.daw.sdk.audio.InputBlockLossListener;
 import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
@@ -24,6 +25,7 @@ import java.util.concurrent.Flow;
 import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.BiPredicate;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -187,6 +189,14 @@ public final class CallbackBackendAdapter implements AudioBackend {
     /** How long {@link #close()} waits for the drain thread to finish. */
     private static final long DRAIN_SHUTDOWN_TIMEOUT_MILLIS = 2_000L;
 
+    /**
+     * The drop handler every input publisher shares (story 338, ruling E208):
+     * the SDK's one handler, {@link InputBlockLossListener#reportDrop}, which
+     * tells the subscriber a block was dropped for.
+     */
+    private static final BiPredicate<Flow.Subscriber<? super AudioBlock>, AudioBlock>
+            DROP_INPUT_BLOCK = InputBlockLossListener::reportDrop;
+
     private final NativeAudioBackend delegate;
     private final String inputDeviceName;
     private final Supplier<? extends NativeAudioBackend> inputBackendFactory;
@@ -215,11 +225,14 @@ public final class CallbackBackendAdapter implements AudioBackend {
 
     /**
      * Captured input blocks the {@code native-input-drain} thread could not
-     * publish (story 337, ruling E17) — {@code audio.input}. The drain counts
-     * the lost block and continues; it ends only on its stop flag. Single
-     * writer: the one drain thread ({@code stopDrainThread} joins it before
-     * another starts; a join that timed out can leave at worst one lost
-     * increment, never a torn value).
+     * build or publish while its stream was live (story 337, ruling E17) —
+     * {@code audio.input}. The drain counts the lost block and continues; it
+     * ends when its stream ends: its stop flag clears,
+     * {@code stopDrainThread} interrupts it, or its pinned publisher is
+     * closed. An offer its closed publisher refuses is teardown, not a lost
+     * block (story 338, ruling E215). Single writer: the current stream's
+     * drain. A drain left behind by a join that timed out can add at worst
+     * one lost increment, never a torn value.
      */
     private volatile long inputBlocksLost;
 
@@ -274,12 +287,6 @@ public final class CallbackBackendAdapter implements AudioBackend {
      * (no callback runs then) and by the device callback afterwards.
      */
     private boolean outputPrimed;
-
-    /**
-     * Captured blocks the drain offered that a subscriber's full buffer
-     * dropped, counted once per block. Single writer: the drain thread.
-     */
-    private volatile long inputBlocksDroppedAtPublish;
 
     /**
      * Creates an adapter over the given legacy backend that opens its input
@@ -435,6 +442,11 @@ public final class CallbackBackendAdapter implements AudioBackend {
      * lives inside {@code openStreamWithInputRetry}, which the {@code try}
      * below already covers with a {@code stopDrainThread()} in its catch.</p>
      *
+     * <p>A failed open stops its drain and then completes and replaces its
+     * input publisher, as {@link #close()} does, so a drain its bounded join
+     * left behind can never deliver into a stream later opened on this
+     * adapter (story 338, ruling E215).</p>
+     *
      * @param device       the device to open; {@link DeviceId#isDefault()}
      *                     resolves through the driver's real default query
      * @param format       the negotiated format to open with
@@ -553,6 +565,12 @@ public final class CallbackBackendAdapter implements AudioBackend {
             stopDrainThread();
             this.outputRing = null;
             this.inputRing = null;
+            // As close() does: a drain the bounded join left behind can offer only into this closed publisher.
+            try {
+                completeAndReplaceInputPublisher();
+            } catch (RuntimeException closeFailure) {
+                openFailure.addSuppressed(closeFailure);
+            }
             throw openFailure;
         }
         open = true;
@@ -764,8 +782,10 @@ public final class CallbackBackendAdapter implements AudioBackend {
      * <p>This adapter's own counts, which live as long as the adapter:
      * device periods that found the output ring empty once the stream had
      * played (output starved), rendered blocks the full output ring refused
-     * (discarded), and captured blocks lost to the full input ring or dropped
-     * by a subscriber's full buffer at publish. Blocks the drain could not
+     * (discarded), and captured blocks lost to the full input ring; a block
+     * the drain's publisher dropped for a subscriber is told to that
+     * subscriber ({@link InputBlockLossListener}) and not counted here (story
+     * 338, ruling E208). Blocks the drain could not
      * publish at all are {@link #threadCounters()}'s {@code inputBlocksLost}
      * and are not counted here. The wrapped driver reports no overloads or
      * resyncs.</p>
@@ -777,8 +797,19 @@ public final class CallbackBackendAdapter implements AudioBackend {
                 droppedOutputBlocks.get(),
                 0L,
                 0L,
-                droppedInputBlocks + inputBlocksDroppedAtPublish,
+                droppedInputBlocks,
                 true);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The wrapped backend's count: its device callback is this adapter's
+     * (story 338, ruling E211).</p>
+     */
+    @Override
+    public long failedCallbackInputBlocks() {
+        return delegate.failedCallbackInputBlocks();
     }
 
     /**
@@ -1153,7 +1184,13 @@ public final class CallbackBackendAdapter implements AudioBackend {
      * Invoked by the delegate on ITS audio thread once per hardware buffer.
      * Allocation-free and lock-free: one in-order ring read for playback, one
      * ring write for capture, and a single {@link LockSupport#unpark(Thread)}
-     * to wake the drain thread — never a {@code SubmissionPublisher} call.
+     * to wake the drain thread, whose failure is contained: the period's block
+     * is already in the ring, which the drain's next wake publishes, at the
+     * latest at its own {@code DRAIN_PARK_NANOS} backstop, or, with the ring
+     * full, already counted as its overflow (story 338, ruling E272). A
+     * failure before the wake still fails the callback, so its period's block
+     * counts as lost (ruling E211 (ii)). Never a {@code SubmissionPublisher}
+     * call.
      */
     @RealTimeSafe
     private void deviceCallback(float[][] inputBuffer, float[][] outputBuffer,
@@ -1180,7 +1217,13 @@ public final class CallbackBackendAdapter implements AudioBackend {
             }
             Thread drain = this.drainThread;
             if (drain != null) {
-                LockSupport.unpark(drain);
+                try {
+                    LockSupport.unpark(drain);
+                } catch (Throwable ignored) {
+                    // Only an error of the JVM itself fails this wake. The period's block is already in the ring, or
+                    // with the ring full already counted as its overflow, and its output is staged: nothing is lost
+                    // and the callback has not failed (ruling E272).
+                }
             }
         }
     }
@@ -1284,12 +1327,24 @@ public final class CallbackBackendAdapter implements AudioBackend {
 
     // ── The input drain thread (non-RT) ──────────────────────────────────
 
+    /**
+     * One stream's capture drain, pinned when the drain starts: the ring it
+     * reads, its scratch, the publisher it publishes into, and the shape of
+     * the blocks it builds.
+     */
+    private record DrainedStream(InterleavedBlockRing ring, float[] scratch,
+                                 SubmissionPublisher<AudioBlock> publisher,
+                                 double sampleRate, int channels, int frames) {
+    }
+
     private void startDrainThread() {
         draining = true;
+        DrainedStream stream = new DrainedStream(inputRing, drainScratch, inputPublisher,
+                openedSampleRate, inChannels, bufferFrames);
         drainThread = Thread.ofPlatform()
                 .name(DRAIN_THREAD_NAME)
                 .daemon(true)
-                .unstarted(this::drainLoop);
+                .unstarted(() -> drainLoop(stream));
         drainThread.start();
     }
 
@@ -1300,6 +1355,8 @@ public final class CallbackBackendAdapter implements AudioBackend {
         }
         draining = false;
         this.drainThread = null;
+        // The shared flag is set again by the next open; the interrupt stops this drain alone.
+        drain.interrupt();
         LockSupport.unpark(drain);
         try {
             drain.join(DRAIN_SHUTDOWN_TIMEOUT_MILLIS);
@@ -1315,37 +1372,74 @@ public final class CallbackBackendAdapter implements AudioBackend {
      * and publishes it. Non-RT thread: touching the
      * {@link SubmissionPublisher} is legal only here.
      *
-     * <p>A block that cannot be built or published is counted as lost
-     * ({@code audio.input}) and the loop continues: the drain ends only on
-     * its stop flag, so one bad block is a counted one-block gap, never a
-     * dead drain under a stream that still reports itself open (story 337,
-     * ruling E17).</p>
+     * <p>THE PUBLISHER-PINNING RULE (story 338, ruling E215), as on
+     * {@code JavaxSoundBackend}'s capture thread: the drain publishes only
+     * into the publisher, and reads only the ring, scratch and block shape,
+     * pinned in {@code stream} when it started — never the adapter's fields,
+     * which the next open replaces. It stops when its stream ends
+     * ({@link #drains}): the stop flag clears, its pinned publisher is
+     * closed, or {@code stopDrainThread} interrupts it. An offer its closed
+     * publisher refuses is teardown, not a lost block. A drain that outlives
+     * the bounded join of {@link #close()} or of a failed open, each of which
+     * completes and replaces the publisher after stopping the drain, is
+     * stopped by the cleared flag until a later open sets it again, and from
+     * then on by its closed publisher; so it can never publish its stream's
+     * block into a later stream, nor drain a later stream's ring. Its
+     * interrupt stops it alone only when that publisher could not be
+     * closed.</p>
+     *
+     * <p>A block that cannot be built or published while its stream is live
+     * is counted as lost ({@code audio.input}) and the loop continues: the
+     * drain ends only on its stream's end, so one bad block is a counted
+     * one-block gap, never a dead drain under a stream that still reports
+     * itself open (story 337, ruling E17).</p>
      */
-    private void drainLoop() {
-        while (draining) {
-            InterleavedBlockRing ring = this.inputRing;
-            float[] scratch = this.drainScratch;
-            if (ring != null && scratch != null) {
-                while (draining && ring.readInto(scratch)) {
-                    try {
-                        AudioBlock block = new AudioBlock(
-                                openedSampleRate, inChannels, bufferFrames, scratch.clone());
-                        if (inputPublisher.offer(block, (subscriber, dropped) -> false) < 0) {
-                            inputBlocksDroppedAtPublish++; // single writer: this drain thread
-                        }
-                    } catch (Throwable lostBlock) {
+    private void drainLoop(DrainedStream stream) {
+        while (drains(stream)) {
+            while (drains(stream) && stream.ring().readInto(stream.scratch())) {
+                try {
+                    AudioBlock block = new AudioBlock(stream.sampleRate(), stream.channels(),
+                            stream.frames(), stream.scratch().clone());
+                    stream.publisher().offer(block, DROP_INPUT_BLOCK);
+                } catch (Throwable lostBlock) {
+                    if (drains(stream)) {
                         // The fault first, then its count: a reader that sees
                         // the count sees this fault or a newer one (story 337,
                         // ruling E82).
                         lastInputFault = lostBlock;
                         inputBlocksLost++; // single writer: this drain thread
+                    } else {
+                        return;
                     }
                 }
             }
-            if (draining) {
+            if (drains(stream)) {
                 LockSupport.parkNanos(DRAIN_PARK_NANOS);
             }
         }
+    }
+
+    /**
+     * Whether the drain's own stream is still live: not stopped, its pinned
+     * publisher not closed, and the drain not interrupted. A failure after
+     * that is the stream's teardown, never a lost block.
+     *
+     * <p>Which clause stops a drain: {@link #close()}, a failed open and the
+     * output-only fallback ({@code disableInputSide}) each clear the shared
+     * flag in {@code stopDrainThread}, which stops the drain until an open
+     * sets the flag again. Before any later open, close and a failed open
+     * close the drain's pinned publisher, and the fallback is followed by one
+     * of the two, so from then on the closed publisher stops it. The
+     * interrupt is a second line of defence that none of those paths reaches
+     * alone. It is the one clause left only when completing the publisher
+     * failed before that publisher was closed, which for the adapter's own
+     * {@code SubmissionPublisher} only an error of the JVM itself while
+     * building its replacement can cause: the drain's publisher is then still
+     * open at the next open, which pins it for the next stream too.</p>
+     */
+    private boolean drains(DrainedStream stream) {
+        return draining && !stream.publisher().isClosed()
+                && !Thread.currentThread().isInterrupted();
     }
 
     private void completeAndReplaceInputPublisher() {

@@ -59,8 +59,10 @@ import static org.assertj.core.api.Assertions.tuple;
  * take's first segment is to be sealed, and a segment is never overwritten,
  * so that lane's seal throws and its segment is left as its {@code .part}.
  * When the same take recorded MIDI notes, their SUCCESS toast comes first
- * — the Stop shows it — and the failure last, when the take is published, so
- * the failure is what the notification bar shows.
+ * — the Stop shows it — and the failure when the take is published, so
+ * the failure is what the notification bar shows; the WARNING the failed
+ * seal itself gave follows it in the Notifications history only (story 338,
+ * ruling E284).
  *
  * <p>The recording is real: a {@link TransportController} over a real
  * {@link AudioEngine} on a {@link MockAudioBackend}, streaming a stereo 24-bit
@@ -70,8 +72,8 @@ import static org.assertj.core.api.Assertions.tuple;
  * stopped take is published, on a later FX turn, which the test waits for.
  * The seams set are the still-writing warning's delay
  * ({@link ManualFxDelay}, never fired), so that a seal slower than that
- * delay on a busy disk cannot slip a WARNING into the sequence asserted,
- * and the pipeline-setup seam, which only tells the device below which
+ * delay on a busy disk cannot slip the still-writing WARNING into the
+ * sequence asserted, and the pipeline-setup seam, which only tells the device below which
  * take is the latest; neither stands in for anything of the core. For the
  * same reason as the delay, the mock's clock stops once the take has been
  * handed its budget of blocks ({@link CaptureBlockBudget}): no block of
@@ -146,9 +148,12 @@ class TakeFinalizationFailureReportTest {
         String report = "Recording stopped — finishing the take on disk failed (sealed segment already exists;"
                 + " a segment is never overwritten); one or more segment files that could not be finished are"
                 + " left under audio/takes/" + takeDirectory.getFileName() + " (1 clip created)";
-        assertThat(entriesSince(before)).as("one ERROR, and no SUCCESS")
+        assertThat(entriesSince(before))
+                .as("one ERROR, no SUCCESS, then the failed seal's WARNING, kept in the history (ruling E284)")
                 .extracting(NotificationEntry::level, NotificationEntry::message)
-                .containsExactly(tuple(NotificationLevel.ERROR, report));
+                .containsExactly(tuple(NotificationLevel.ERROR, report), tuple(NotificationLevel.WARNING,
+                        "Could not seal a segment of track Guitar; the streaming file is left under "
+                                + takeDirectory.resolve(guitar.getId())));
         assertThat(onFx(statusBar::getText)).isEqualTo(report);
         assertThat(onFx(() -> List.copyOf(guitar.getClips()))).as("the take's clip is published all the same")
                 .hasSize(1);
@@ -179,10 +184,13 @@ class TakeFinalizationFailureReportTest {
         String report = "Recording stopped — finishing the take on disk failed (sealed segment already exists;"
                 + " a segment is never overwritten); one or more segment files that could not be finished are"
                 + " left under audio/takes/" + takeDirectory.getFileName() + " (1 clip created)";
-        assertThat(entriesSince(before)).as("the MIDI notes' SUCCESS, then the failure")
+        assertThat(entriesSince(before))
+                .as("the MIDI notes' SUCCESS, then the failure, then the failed seal's WARNING (ruling E284)")
                 .extracting(NotificationEntry::level, NotificationEntry::message)
                 .containsExactly(tuple(NotificationLevel.SUCCESS, "Recording stopped — 1 MIDI note captured"),
-                        tuple(NotificationLevel.ERROR, report));
+                        tuple(NotificationLevel.ERROR, report), tuple(NotificationLevel.WARNING,
+                                "Could not seal a segment of track Guitar; the streaming file is left under "
+                                        + takeDirectory.resolve(guitar.getId())));
         assertThat(onFx(notificationBar::getCurrentLevel)).as("the failure is what the bar shows")
                 .isEqualTo(NotificationLevel.ERROR);
         assertThat(onFx(notificationBar::getMessage)).isEqualTo(report);

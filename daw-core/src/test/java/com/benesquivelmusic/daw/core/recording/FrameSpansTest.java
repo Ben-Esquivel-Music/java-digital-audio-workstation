@@ -62,4 +62,16 @@ class FrameSpansTest {
         assertThat(FrameSpans.framesInsideAcrossTheWrap(1032, 8, 0, 0, 1036, 1040))
                 .as("no loop: the span stays where it is").isEqualTo(4);
     }
+
+    /** Ruling E282: where a span of silence first reaches the punch region, in wraps from its start. */
+    @Test
+    void wrapsBeforeTheRegionCountsTheWrapsBeforeTheSpansFirstFrameInside() {
+        assertThat(FrameSpans.wrapsBeforeTheRegion(72, 24, 0, 0, 80, 200)).as("[72, 96) reaches 80").isZero();
+        assertThat(FrameSpans.wrapsBeforeTheRegion(8, 64, 0, 0, 80, 200)).as("[8, 72) never reaches it")
+                .isEqualTo(-1L);
+        assertThat(FrameSpans.wrapsBeforeTheRegion(112, 32, 70, 136, 60, 100))
+                .as("[112, 136) misses, then [70, 78) after one wrap reaches it").isEqualTo(1L);
+        assertThat(FrameSpans.wrapsBeforeTheRegion(150, 20, 0, 100, 40, 60))
+                .as("a start past the loop end is already one lap on").isEqualTo(1L);
+    }
 }

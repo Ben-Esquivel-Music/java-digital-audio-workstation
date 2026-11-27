@@ -132,6 +132,9 @@ class FailureSpineWiringSourceTest {
 
         assertThat(main).contains("private final com.benesquivelmusic.daw.app.ui.status.EngineHealthStatus"
                 + " engineHealthStatus = new com.benesquivelmusic.daw.app.ui.status.EngineHealthStatus();");
+        assertThat(main).as("ruling E291: the take keeps the frame samples its owed resync marks need")
+                .contains("transportController.recordCoordinator().setResyncDatesOwed(controller.xrunJournal()"
+                        + "::resyncDatesOwed);");
         assertThat(body(main, "private void attachAudioHealthDrain(FailureFunnel funnel)"))
                 .endsWith("})); engineHealthStatus.bindEngineFault(audioHealthDrain.engineFaultProperty());"
                         + " audioHealthDrainRemoval = fxDispatcher.addPulseParticipant(audioHealthDrain::pulse); }");
@@ -484,10 +487,12 @@ class FailureSpineWiringSourceTest {
         assertThat(flat(SourceScanSupport.stripComments(read(UI.resolve("MainController.java")))))
                 .contains("static final String RESTART_AUDIO_ENGINE_THREAD = \"daw-audio-engine-restart\";");
         assertThat(body(main, "public Thread restartAudioEngine()"))
-                .as("the engine's stream answers whether a stream is open; on success, the window's engine fault"
-                        + " clears on the FX thread")
+                .as("the engine's stream, or one a driver's reset stopped whose reopen waits for the driver's control"
+                        + " panel (ruling E288), answers whether a stream is open; on success, the window's engine"
+                        + " fault clears on the FX thread")
                 .contains("return restartAudioEngine(settingsModel, audioEngineController, () -> {"
-                        + " AudioEngine engine = audioEngine; return engine != null && engine.isStreamOpen(); },"
+                        + " AudioEngine engine = audioEngine; return (engine != null && engine.isStreamOpen())"
+                        + " || audioEngineController.isAStreamAwaitingItsReopen(); },"
                         + " () -> FxDispatcher.runOnFx(fxDispatcher, () -> audioHealthDrain()"
                         + ".ifPresent(AudioHealthDrain::clearEngineFault)));");
         assertThat(occurrences(main, "applyConfiguration(")).as("startup's apply and the restart's")

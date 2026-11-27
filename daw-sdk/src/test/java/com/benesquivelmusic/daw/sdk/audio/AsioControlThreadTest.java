@@ -141,6 +141,26 @@ class AsioControlThreadTest {
     }
 
     /**
+     * Ruling E249: every modal call counts one closed control-panel session
+     * once the driver returned, also when the operation threw, so the
+     * clock-lock poll sees every session however short.
+     */
+    @Test
+    void eachModalCallCountsOneClosedSessionWhenItReturnsOrThrows() throws Throwable {
+        long before = AsioControlThread.closedControlPanelSessions();
+        long during = AsioControlThread.callUnbounded(AsioControlThread::closedControlPanelSessions);
+        long afterTheReturn = AsioControlThread.closedControlPanelSessions();
+        assertThatThrownBy(() -> AsioControlThread.callUnbounded(() -> {
+            throw new IllegalStateException("the panel failed");
+        })).isInstanceOf(IllegalStateException.class);
+
+        assertThat(during).as("not counted while the panel's call runs").isEqualTo(before);
+        assertThat(afterTheReturn).as("counted once it returned").isEqualTo(before + 1);
+        assertThat(AsioControlThread.closedControlPanelSessions()).as("and once it threw")
+                .isEqualTo(before + 2);
+    }
+
+    /**
      * Story 316 re-review — the modal exemption covers INTERRUPTION as well as
      * the budget.
      *

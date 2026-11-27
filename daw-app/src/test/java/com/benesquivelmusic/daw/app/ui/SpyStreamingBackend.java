@@ -5,7 +5,9 @@ import com.benesquivelmusic.daw.sdk.audio.AudioBlock;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.BackendDropoutCounters;
 import com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters;
+import com.benesquivelmusic.daw.sdk.audio.BufferSizeRange;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
+import com.benesquivelmusic.daw.sdk.audio.DriverResyncArrivals;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -82,12 +84,18 @@ final class SpyStreamingBackend implements AudioBackend {
     /** What {@link #dropoutCounters()} reports; a test scripts the backend's observed drops (story 338). */
     volatile BackendDropoutCounters dropouts = BackendDropoutCounters.NONE;
 
-    /** What {@link #newestDriverResyncNanos()} reports: when the newest scripted resync arrived. */
-    volatile java.util.OptionalLong resyncArrival = java.util.OptionalLong.empty();
+    /** What the next {@link #takeDriverResyncArrivals()} calls answer, one each; none once it is empty. */
+    final java.util.Queue<DriverResyncArrivals> resyncArrivals =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    /** How many times the engine took the resync arrivals up. */
+    final AtomicInteger resyncTakes = new AtomicInteger();
 
     @Override
-    public java.util.OptionalLong newestDriverResyncNanos() {
-        return resyncArrival;
+    public DriverResyncArrivals takeDriverResyncArrivals() {
+        resyncTakes.incrementAndGet();
+        DriverResyncArrivals taken = resyncArrivals.poll();
+        return taken != null ? taken : DriverResyncArrivals.NONE;
     }
 
     /** What {@link #threadCounters()} reports; a test scripts callback faults and device periods. */
@@ -383,6 +391,21 @@ final class SpyStreamingBackend implements AudioBackend {
     @Override
     public Optional<Runnable> openControlPanel() {
         return Optional.ofNullable(controlPanelAction);
+    }
+
+    /** Counts this backend's capability queries: {@link #bufferSizeRange} and {@link #supportedSampleRates}. */
+    final AtomicInteger capabilityQueries = new AtomicInteger();
+
+    @Override
+    public BufferSizeRange bufferSizeRange(DeviceId device) {
+        capabilityQueries.incrementAndGet();
+        return AudioBackend.super.bufferSizeRange(device);
+    }
+
+    @Override
+    public java.util.Set<Integer> supportedSampleRates(DeviceId device) {
+        capabilityQueries.incrementAndGet();
+        return AudioBackend.super.supportedSampleRates(device);
     }
 
     @Override

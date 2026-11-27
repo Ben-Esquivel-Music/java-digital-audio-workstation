@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
@@ -458,6 +459,77 @@ class EngineStreamPumpTest {
                 .as("a faulted block is counted once, as a render fault")
                 .isZero();
         detector.close();
+    }
+
+    /**
+     * Ruling E276: once the render has passed the stalled input's first zero-width block, a block its queue still
+     * yields is discarded unrendered and counted nowhere. The gate and the offer are adjacent instructions no test
+     * can hold a thread between, so the test offers the block to the queue itself, where a delivery past the gate
+     * leaves it, after the render passed that zero-width block, and reads the outcome only once a render that
+     * polled it has completed: two zero-width renders counted after the offer returned.
+     */
+    @Test
+    void aBlockTheStalledInputDeliversAfterItsFirstZeroWidthBlockIsDiscardedUnrendered() throws Exception {
+        RecordingBackend backend = new RecordingBackend();
+        backend.openedInputChannels = 2;
+        AtomicInteger rendered = new AtomicInteger();
+        AtomicInteger zeroWidthBlocks = new AtomicInteger();
+        AtomicInteger wideBlocksAfterAZeroWidthOne = new AtomicInteger();
+        AtomicBoolean lateBlockRendered = new AtomicBoolean();
+        XrunDetector detector = new XrunDetector(FORMAT.sampleRate(), FORMAT.bufferSize());
+        try {
+            engine = new AudioEngine(FORMAT);
+            engine.setXrunDetector(detector);
+            engine.setRecordingCallback((inputBuffer, numFrames) -> {
+                rendered.incrementAndGet();
+                if (inputBuffer.length == 0) {
+                    zeroWidthBlocks.incrementAndGet();
+                    return;
+                }
+                if (zeroWidthBlocks.get() > 0) {
+                    wideBlocksAfterAZeroWidthOne.incrementAndGet();
+                }
+                if (inputBuffer[0][0] == 0.75f) {
+                    lateBlockRendered.set(true);
+                }
+            });
+            engine.start();
+            pump = new EngineStreamPump(backend, engine, FORMAT, SDK_FORMAT);
+            pump.start();
+            long lostBefore = engine.capturedInputBlocksLost();
+
+            assertThat(pump.declareInputStalled()).as("fixture: the declaration ends a live input").isTrue();
+            awaitCondition(() -> zeroWidthBlocks.get() > 0, "the render passed a zero-width block");
+            ArrayBlockingQueue<AudioBlock> queue = inputQueueOf(pump);
+            float[] samples = new float[2 * 128];
+            java.util.Arrays.fill(samples, 0.75f);
+            assertThat(queue.offer(new AudioBlock(48_000.0, 2, 128, samples))).as("fixture: the late block is queued")
+                    .isTrue();
+            int afterTheOffer = zeroWidthBlocks.get();
+            awaitCondition(() -> queue.isEmpty() && zeroWidthBlocks.get() >= afterTheOffer + 2,
+                    "a render polled the late block and the next one completed");
+
+            assertThat(lateBlockRendered).as("none of the late block's samples reached the planes").isFalse();
+            assertThat(wideBlocksAfterAZeroWidthOne).as("the input stays zero width").hasValue(0);
+            assertThat(pump.droppedInputBlocks()).as("the input queue dropped nothing").isZero();
+            assertThat(engine.capturedInputBlocksLost()).as("the take's blocks lost do not move")
+                    .isEqualTo(lostBefore);
+            assertThat(pump.stop()).as("fixture: the drive stopped").isTrue();
+            assertThat(detector.getTickCount())
+                    .as("the detector ticked once per rendered block; the discard added none")
+                    .isEqualTo(rendered.get());
+        } finally {
+            detector.close();
+        }
+    }
+
+    /** The pump's input queue, where an offer that passed the subscriber's gate lands. */
+    @SuppressWarnings("unchecked")
+    private static ArrayBlockingQueue<AudioBlock> inputQueueOf(EngineStreamPump pump)
+            throws ReflectiveOperationException {
+        java.lang.reflect.Field field = EngineStreamPump.class.getDeclaredField("inputQueue");
+        field.setAccessible(true);
+        return (ArrayBlockingQueue<AudioBlock>) field.get(pump);
     }
 
     /**
@@ -1187,10 +1259,17 @@ class EngineStreamPumpTest {
         volatile boolean deferSubscribe;
         final AtomicReference<Flow.Subscriber<? super AudioBlock>> lastSubscriber =
                 new AtomicReference<>();
+        /** The input width the pump finds opened; 0, the default, opens none. */
+        volatile int openedInputChannels;
 
         @Override
         public String name() {
             return "Recording";
+        }
+
+        @Override
+        public int openedInputChannels() {
+            return openedInputChannels;
         }
 
         @Override

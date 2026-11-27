@@ -7,6 +7,11 @@ import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.TakeManifest;
+import com.benesquivelmusic.daw.sdk.audio.ClockKind;
+import com.benesquivelmusic.daw.sdk.audio.ClockLockStatus;
+import com.benesquivelmusic.daw.sdk.audio.ClockSource;
+import com.benesquivelmusic.daw.sdk.audio.DeviceId;
+import com.benesquivelmusic.daw.sdk.audio.MockAudioBackend;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -14,6 +19,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 import static com.benesquivelmusic.daw.app.ui.DeviceLossRecordingFixture.awaitOnFx;
 import static com.benesquivelmusic.daw.app.ui.DeviceLossRecordingFixture.onFx;
@@ -23,10 +31,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * What the window's clock badge reads from the current transport's record
  * coordinator through {@code TakeClockMarks.of} (story 338,
- * rulings E108, E146 and E173): an audio take is marked, a MIDI-only take
- * records with no audio manifest, so its unlock notice promises no mark, and
- * with no take, or a take still being prepared or counting in, nothing
- * records and nothing is marked.
+ * rulings E108, E146, E173 and E280): an audio take is marked, a MIDI-only
+ * take records with no audio manifest, so its unlock notice promises no mark,
+ * and with no take, a take still being prepared or counting in, or an audio
+ * or a mixed take whose capture its capture thread has sealed early, until
+ * the take is stopped for it, nothing records and nothing is marked.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class TakeClockMarksOfTheTransportTest {
@@ -64,6 +73,36 @@ class TakeClockMarksOfTheTransportTest {
         recording.start();
 
         assertThat(onFx(marks::takeRecording)).isEqualTo(TakeRecording.AUDIO);
+    }
+
+    /**
+     * Ruling E280: a mixed take whose capture its capture thread has sealed early reads as not recording, not as
+     * one without audio, so the unlock's notice is the plain one and does not say that recording continues.
+     */
+    @Test
+    void aMidiAndAudioTakeAfterTheEarlySealGetsNoRecordingContinues() throws Exception {
+        recording = RecordingInFlightFixture.mixed(project());
+        TakeClockMarks marks = TakeClockMarks.of(recording::controller);
+        List<String> notices = Collections.synchronizedList(new ArrayList<>());
+        ClockLockAnnouncer announcer = onFx(() -> new ClockLockAnnouncer(notices::add, marks, () -> 0L));
+        DeviceId device = new DeviceId(MockAudioBackend.NAME, "Interface A");
+        ClockSource wordClock = new ClockSource(1, "Word Clock", true, new ClockKind.WordClock());
+        recording.start();
+        Path take = onFx(recording.controller()::activeTakeDirectory).orElseThrow();
+        TakeRecording before = onFx(marks::takeRecording);
+        runOnFx(recording.controller().recordCoordinator()::readTheCaptureAsSealedForTest);
+        TakeRecording after = onFx(marks::takeRecording);
+        runOnFx(() -> {
+            announcer.measured(new ClockLockStatus(device, 1, 1L, ClockLockStatus.Lock.LOCKED, 1L), wordClock, false);
+            announcer.measured(new ClockLockStatus(device, 1, 1L, ClockLockStatus.Lock.UNLOCKED, 2L), wordClock, false);
+        });
+        recording.stop();
+
+        assertThat(before).as("premise: a mixed take records as an audio take does").isEqualTo(TakeRecording.AUDIO);
+        assertThat(after).as("not WITHOUT_AUDIO: recording does not continue").isEqualTo(TakeRecording.NONE);
+        assertThat(notices).containsExactly(
+                "External clock lost on Interface A (Word Clock). Check the clock cable and the clock master.");
+        assertThat(TakeManifest.read(TakeManifest.manifestPath(take)).clockMarks()).isEmpty();
     }
 
     /**

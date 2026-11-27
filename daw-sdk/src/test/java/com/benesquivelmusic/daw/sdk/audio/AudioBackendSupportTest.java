@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.sdk.audio;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Flow;
 import java.util.concurrent.SubmissionPublisher;
 import java.util.function.BiPredicate;
@@ -51,58 +53,111 @@ class AudioBackendSupportTest {
     }
 
     /**
-     * A block that at least one subscriber dropped counts once, however many
-     * subscribers dropped it; a block every subscriber took counts nothing.
+     * A block the publisher drops is told only to the listener whose full
+     * buffer dropped it (story 338, ruling E208). The publisher's executor
+     * never runs a task, so no buffer ever drains, and each buffer holds one
+     * block: a subscriber's first block fills it and every later one is
+     * dropped for it.
      */
     @Test
-    void inputBlocksDroppedCountsEachDroppedBlockOnce() {
-        ScriptedOfferPublisher<AudioBlock> inputPublisher = new ScriptedOfferPublisher<>(-2, 5, -1, 0);
+    void aDroppedBlockIsToldOnlyToTheSubscriberThatDroppedIt() {
         try (AudioBackendSupport support = new AudioBackendSupport(
-                inputPublisher, new SubmissionPublisher<>())) {
+                new SubmissionPublisher<>(task -> { }, 1), new SubmissionPublisher<>())) {
             support.markOpen(FORMAT, BLOCK.frames());
+            RecordingListener first = new RecordingListener();
+            RecordingListener second = new RecordingListener();
+            support.inputBlocks().subscribe(first);
+            support.publishInput(AudioBlock.silence(48_000.0, 2, 128));
+            support.inputBlocks().subscribe(second);
+            support.inputBlocks().subscribe(new PlainSubscriber());
 
-            support.publishInput(BLOCK);
-            assertThat(support.inputBlocksDropped())
-                    .as("dropped by two subscribers, counted as one block")
-                    .isEqualTo(1L);
-            support.publishInput(BLOCK);
-            assertThat(support.inputBlocksDropped())
-                    .as("a block every subscriber took is no drop")
-                    .isEqualTo(1L);
-            support.publishInput(BLOCK);
-            support.publishInput(BLOCK);
-            assertThat(support.inputBlocksDropped()).isEqualTo(2L);
+            AudioBlock secondBlock = AudioBlock.silence(48_000.0, 2, 128);
+            support.publishInput(secondBlock);
+            assertThat(first.dropped).as("the first listener's buffer was full").containsExactly(secondBlock);
+            assertThat(second.dropped).as("the second listener took it").isEmpty();
+
+            AudioBlock thirdBlock = AudioBlock.silence(48_000.0, 2, 128);
+            support.publishInput(thirdBlock);
+            assertThat(first.dropped).containsExactly(secondBlock, thirdBlock);
+            assertThat(second.dropped).containsExactly(thirdBlock);
         }
     }
 
+    /**
+     * A listener whose notice throws costs only that notice: the publish does
+     * not throw, and the publisher goes on to tell the next subscriber it
+     * dropped the block for (story 338, ruling E208).
+     */
     @Test
-    void aCloseRaceIsNotCountedAsADroppedBlock() {
-        CloseBeforeOfferPublisher<AudioBlock> inputPublisher = new CloseBeforeOfferPublisher<>();
+    void aListenerThatThrowsLeavesTheOtherDroppingSubscribersTold() {
         try (AudioBackendSupport support = new AudioBackendSupport(
-                inputPublisher, new SubmissionPublisher<>())) {
+                new SubmissionPublisher<>(task -> { }, 1), new SubmissionPublisher<>())) {
             support.markOpen(FORMAT, BLOCK.frames());
+            RecordingListener throwing = new RecordingListener();
+            throwing.failure = new IllegalStateException("a broken notice");
+            RecordingListener told = new RecordingListener();
+            support.inputBlocks().subscribe(throwing);
+            support.inputBlocks().subscribe(told);
+            support.publishInput(AudioBlock.silence(48_000.0, 2, 128));
 
-            support.publishInput(BLOCK);
+            AudioBlock dropped = AudioBlock.silence(48_000.0, 2, 128);
+            assertThatCode(() -> support.publishInput(dropped)).doesNotThrowAnyException();
 
-            assertThat(support.inputBlocksDropped()).isZero();
+            assertThat(throwing.dropped).containsExactly(dropped);
+            assertThat(told.dropped).as("told after the first listener threw").containsExactly(dropped);
         }
     }
 
-    /** Answers each {@code offer} with the next scripted value, delivering nothing. */
-    private static final class ScriptedOfferPublisher<T> extends SubmissionPublisher<T> {
+    /** Records each block dropped for it; requests nothing. */
+    private static final class RecordingListener
+            implements Flow.Subscriber<AudioBlock>, InputBlockLossListener {
 
-        private final int[] answers;
-        private int next;
+        final List<AudioBlock> dropped = new CopyOnWriteArrayList<>();
+        volatile RuntimeException failure;
 
-        ScriptedOfferPublisher(int... answers) {
-            this.answers = answers.clone();
+        @Override
+        public void inputBlockDropped(AudioBlock block) {
+            dropped.add(block);
+            RuntimeException thrown = failure;
+            if (thrown != null) {
+                throw thrown;
+            }
         }
 
         @Override
-        public int offer(
-                T item,
-                BiPredicate<Flow.Subscriber<? super T>, ? super T> dropHandler) {
-            return answers[next++];
+        public void onSubscribe(Flow.Subscription subscription) {
+        }
+
+        @Override
+        public void onNext(AudioBlock item) {
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+        }
+
+        @Override
+        public void onComplete() {
+        }
+    }
+
+    /** A subscriber that is not a listener; requests nothing. */
+    private static final class PlainSubscriber implements Flow.Subscriber<AudioBlock> {
+
+        @Override
+        public void onSubscribe(Flow.Subscription subscription) {
+        }
+
+        @Override
+        public void onNext(AudioBlock item) {
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+        }
+
+        @Override
+        public void onComplete() {
         }
     }
 

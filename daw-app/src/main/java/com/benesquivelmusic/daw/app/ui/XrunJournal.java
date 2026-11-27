@@ -18,9 +18,9 @@ import java.util.function.LongSupplier;
  * <p>An entry carries its {@link Detail} and the detail's arguments, never
  * formatted text: the surfaces format it from the message bundle (rulings
  * E20, E38 and E42). It carries how many occurrences it stands for (the "×n"
- * of ruling E20) and when the feed wrote it, both on the wall clock and as a
- * {@link System#nanoTime()} reading, so a resync's arrival can be mapped to a
- * take frame (ruling E40).</p>
+ * of ruling E20) and when the feed wrote it, a Resync entry the date of its
+ * first request instead, both on the wall clock and as a
+ * {@link System#nanoTime()} reading (rulings E40, E279 and E292).</p>
  *
  * <p>The count — the "Xruns N" of ruling E22 — is the sum of the entries
  * whose kind {@linkplain Kind#raisesTheCount() raises it}: gaps, discarded
@@ -34,8 +34,19 @@ import java.util.function.LongSupplier;
  * arrivals of the last {@value #RECENT_WINDOW_SECONDS} seconds, so a reader
  * can say how many of the count are recent ({@link #gapsSince(long)}).</p>
  *
- * <p>Thread-safe: every method holds this journal's monitor briefly and none
- * waits, calls out or throws for a closed engine.</p>
+ * <p>Apart from the log it keeps the resync marks owed to the take
+ * ({@link #drainResyncMarks()}): one per date of the requests a resync entry
+ * stands for, never cut by {@value #MAX_ENTRIES} nor by Clear, at most
+ * {@value #RESYNC_MARKS_KEPT}, the oldest two merged beyond that at the earlier
+ * date with their counts summed, so every resync counted reaches the take
+ * once and no merge dates a request later than its mark did (rulings E225,
+ * E226 and E279). With the dates the xrun feed says it holds, they are the
+ * dates the take's frame history keeps a sample for
+ * ({@link #resyncDatesOwed()}, ruling E291).</p>
+ *
+ * <p>Thread-safe: every instance method holds this journal's monitor briefly
+ * and none waits, calls out or throws for a closed engine; the static
+ * {@link #keepMerging} works only on its caller's own marks.</p>
  */
 final class XrunJournal {
 
@@ -46,6 +57,15 @@ final class XrunJournal {
     static final int RECENT_WINDOW_SECONDS = 30;
 
     private static final long RECENT_WINDOW_NANOS = RECENT_WINDOW_SECONDS * 1_000_000_000L;
+
+    /**
+     * The most resync marks kept for the take, one per arrival: 60 s of the feed's 100 ms ticks at one request a
+     * tick.
+     */
+    static final int RESYNC_MARKS_KEPT = 600;
+
+    /** No dates: what {@link #resyncDatesOwed()} answers when none is owed. */
+    static final long[] NO_DATES = new long[0];
 
     /** The kinds of ruling E20, with the resync of ruling E38. */
     enum Kind {
@@ -136,8 +156,9 @@ final class XrunJournal {
      * @param detail       what it says
      * @param arguments    the detail's arguments, in the order its javadoc lists them
      * @param count        how many occurrences it stands for; at least 1
-     * @param arrivedAt    when the feed wrote it, on the wall clock
-     * @param arrivedNanos when the feed wrote it, as a {@link System#nanoTime()} reading
+     * @param arrivedAt    when the feed wrote it, on the wall clock; for an entry {@link #appendResyncs} writes, the
+     *                     date of its first request (rulings E279 and E292)
+     * @param arrivedNanos the same time, as a {@link System#nanoTime()} reading
      */
     record Entry(Detail detail, List<Object> arguments, long count, Instant arrivedAt, long arrivedNanos) {
         Entry {
@@ -179,6 +200,24 @@ final class XrunJournal {
         }
     }
 
+    /**
+     * Resyncs owed to the take's clock marks (rulings E40, E225, E226 and E279): requests dated at one arrival.
+     *
+     * @param arrivedNanos when they arrived, as a {@link System#nanoTime()} reading: their own arrival, the last
+     *                     arrival the backend kept before them when it did not keep theirs, or, when the feed holds
+     *                     no arrival for them, its read before the one that counted them, never later than the
+     *                     driver's call that brought them (ruling E292); for an entry {@link #append(Detail, List,
+     *                     long)} writes, its write; for marks merged past the bound, the earlier of the two
+     * @param count        how many; at least 1
+     */
+    record ResyncMark(long arrivedNanos, long count) {
+        ResyncMark {
+            if (count < 1L) {
+                throw new IllegalArgumentException("count must be at least 1: " + count);
+            }
+        }
+    }
+
     /** One write of occurrences that raise the count, for {@link #gapsSince(long)}. */
     private record GapArrival(long nanos, long count) {
     }
@@ -191,6 +230,10 @@ final class XrunJournal {
     private final Deque<Entry> undrained = new ArrayDeque<>();
     /** Guarded by this: the recent writes that raised the count, oldest first. */
     private final Deque<GapArrival> recentGaps = new ArrayDeque<>();
+    /** Guarded by this: the resync marks owed to the take, in the order written. */
+    private final Deque<ResyncMark> resyncMarks = new ArrayDeque<>();
+    /** Guarded by this: the dates of the resyncs the xrun feed holds and may yet write, as it last said (E291). */
+    private long[] heldByTheFeed = NO_DATES;
     private long gaps;
     private long lateBlocks;
     private Instant since;
@@ -229,32 +272,43 @@ final class XrunJournal {
      */
     synchronized Entry append(Detail detail, List<Object> arguments, long count) {
         long nanos = nanoClock.getAsLong();
-        return append(new Entry(detail, arguments, count, wallClock.instant(), nanos), nanos);
+        Entry entry = new Entry(detail, arguments, count, wallClock.instant(), nanos);
+        return append(entry, nanos,
+                detail == Detail.DRIVER_RESYNC ? List.of(new ResyncMark(nanos, count)) : List.of());
     }
 
     /**
-     * Writes one entry standing for {@code count} occurrences that arrived at
-     * {@code arrivedNanos}, before now: its time, on both clocks, is that
-     * arrival (a driver's resync message, rulings E40 and E62). The 30-second
-     * figure counts it from now.
+     * Writes one Resync entry standing for the driver resync requests
+     * {@code arrivals} date, in request order (rulings E40, E62, E270 and
+     * E279): its count is theirs, and its time, on both clocks, the arrival of
+     * the first of them; each of {@code arrivals} is kept for the take as a
+     * mark of its own. The 30-second figure counts them from now.
      *
-     * @param detail       what it says
-     * @param arguments    the detail's arguments
-     * @param count        the occurrences; at least 1
-     * @param arrivedNanos when they arrived, as a {@link System#nanoTime()} reading
+     * @param arrivals the requests, as runs dated at one arrival each, in request order; not empty
      * @return the entry written
      */
-    synchronized Entry append(Detail detail, List<Object> arguments, long count, long arrivedNanos) {
+    synchronized Entry appendResyncs(List<ResyncMark> arrivals) {
+        if (arrivals.isEmpty()) {
+            throw new IllegalArgumentException("a resync entry stands for at least one request");
+        }
+        long count = 0L;
+        for (ResyncMark arrival : arrivals) {
+            count += arrival.count();
+        }
+        long arrivedNanos = arrivals.getFirst().arrivedNanos();
         long nanos = nanoClock.getAsLong();
         Instant arrivedAt = wallClock.instant().minusNanos(Math.max(0L, nanos - arrivedNanos));
-        return append(new Entry(detail, arguments, count, arrivedAt, arrivedNanos), nanos);
+        return append(new Entry(Detail.DRIVER_RESYNC, List.of(), count, arrivedAt, arrivedNanos), nanos, arrivals);
     }
 
-    private Entry append(Entry entry, long nanos) {
+    private Entry append(Entry entry, long nanos, List<ResyncMark> marks) {
         Detail detail = entry.detail();
         long count = entry.count();
         keepNewest(entries, entry);
         keepNewest(undrained, entry);
+        for (ResyncMark mark : marks) {
+            keepMerging(resyncMarks, mark);
+        }
         if (detail.kind().raisesTheCount()) {
             gaps += count;
             recentGaps.addLast(new GapArrival(nanos, count));
@@ -265,6 +319,67 @@ final class XrunJournal {
             lateBlocks += count;
         }
         return entry;
+    }
+
+    /**
+     * Adds {@code mark} as the newest of {@code marks}, oldest first, keeping at most {@value #RESYNC_MARKS_KEPT}:
+     * beyond that the oldest two become one at the earlier of their arrivals with their counts summed, so no request
+     * is lost or dated later than it was (rulings E226 and E279). The caller owns {@code marks}.
+     */
+    static void keepMerging(Deque<ResyncMark> marks, ResyncMark mark) {
+        marks.addLast(mark);
+        if (marks.size() > RESYNC_MARKS_KEPT) {
+            ResyncMark oldest = marks.removeFirst();
+            ResyncMark next = marks.removeFirst();
+            long earlier = oldest.arrivedNanos() - next.arrivedNanos() < 0L
+                    ? oldest.arrivedNanos()
+                    : next.arrivedNanos();
+            marks.addFirst(new ResyncMark(earlier, oldest.count() + next.count()));
+        }
+    }
+
+    /**
+     * The resync marks owed to the take since the previous call, in the order written: every resync written
+     * since, whatever {@value #MAX_ENTRIES} or {@link #clear()} removed from the log.
+     *
+     * @return the marks; empty when none is owed
+     */
+    synchronized List<ResyncMark> drainResyncMarks() {
+        if (resyncMarks.isEmpty()) {
+            return List.of();
+        }
+        List<ResyncMark> owed = List.copyOf(resyncMarks);
+        resyncMarks.clear();
+        return owed;
+    }
+
+    /**
+     * Notes the dates of the resyncs the xrun feed holds and may yet write: the arrivals it has taken up, and the
+     * date of the resyncs it carries without one (ruling E291). Replaces what it noted before.
+     *
+     * @param dates the dates, as {@link System#nanoTime()} readings in any order; copied
+     */
+    synchronized void noteResyncDatesHeld(long[] dates) {
+        heldByTheFeed = dates.length == 0 ? NO_DATES : dates.clone();
+    }
+
+    /**
+     * The dates the take may still be owed a resync mark at: each mark not drained yet and each date the xrun feed
+     * holds, so the take's frame history keeps the sample at or before each (ruling E291).
+     *
+     * @return the dates, as {@link System#nanoTime()} readings in any order; {@link #NO_DATES} when none
+     */
+    synchronized long[] resyncDatesOwed() {
+        if (resyncMarks.isEmpty() && heldByTheFeed.length == 0) {
+            return NO_DATES;
+        }
+        long[] owed = new long[resyncMarks.size() + heldByTheFeed.length];
+        int next = 0;
+        for (ResyncMark mark : resyncMarks) {
+            owed[next++] = mark.arrivedNanos();
+        }
+        System.arraycopy(heldByTheFeed, 0, owed, next, heldByTheFeed.length);
+        return owed;
     }
 
     /**
@@ -298,7 +413,10 @@ final class XrunJournal {
         cpuBudgetEntriesLost += lost;
     }
 
-    /** The log's Clear (ruling E22): restarts the count and forgets every entry, drained or not, and every loss. */
+    /**
+     * The log's Clear (ruling E22): restarts the count and forgets every entry, drained or not, and every loss, and
+     * keeps the resync marks owed to the take (ruling E226).
+     */
     synchronized void clear() {
         restartCount();
         entries.clear();
@@ -323,7 +441,7 @@ final class XrunJournal {
         }
         long nanos = nanoClock.getAsLong();
         append(new Entry(Detail.CPU_BUDGET_ENTRIES_NOT_LOGGED, List.of(cpuBudgetEntriesLost), 1L,
-                wallClock.instant(), nanos), nanos);
+                wallClock.instant(), nanos), nanos, List.of());
         cpuBudgetEntriesLost = 0L;
     }
 

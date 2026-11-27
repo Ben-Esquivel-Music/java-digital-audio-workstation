@@ -947,6 +947,7 @@ class MultichannelInputCaptureStory326Test {
             assertThat(held.await(5,TimeUnit.SECONDS)).isTrue();
             for(int block=0;block<12;block++)backend.sibling.emit(256);
             release.countDown();pipeline.awaitFlushed();
+            backend.sibling.emit(256);pipeline.awaitFlushed();
             TakeManifest manifest=TakeManifest.read(directory.resolve(TakeManifest.FILE_NAME));
             assertThat(manifest.overflowBlocks()).isEqualTo(4);
             assertThat(manifest.gaps()).isNotEmpty().allSatisfy(gap->assertThat(gap.trackId()).isEqualTo(b.getId()));
@@ -1138,6 +1139,11 @@ class MultichannelInputCaptureStory326Test {
         /** What {@link #dropoutCounters()} reports. */
         volatile BackendDropoutCounters dropouts = BackendDropoutCounters.NONE;
         @Override public BackendDropoutCounters dropoutCounters(){return dropouts;}
+        /** What {@link #failedCallbackInputBlocks()} reports. */
+        volatile long failedCallbackInputBlocks;
+        @Override public long failedCallbackInputBlocks(){return failedCallbackInputBlocks;}
+        /** While set, {@link #inputBlocks()} hands it out and {@link #emit} offers into it through the shared drop handler. */
+        volatile SubmissionPublisher<AudioBlock> publisher;
         RenderGate renderGate;
         final List<Flow.Subscriber<? super AudioBlock>> subscribers=new CopyOnWriteArrayList<>();
         String name="Pattern ASIO";
@@ -1172,7 +1178,8 @@ class MultichannelInputCaptureStory326Test {
         @Override public int openedInputChannels(){return open?openedWidth:0;}
         @Override public double openedInputSampleRate(){return openedRate;}
         @Override public RoundTripLatency reportedLatency(){return input.contains("B")?new RoundTripLatency(12,0,0):primaryLatency;}
-        @Override public Flow.Publisher<AudioBlock> inputBlocks(){return subscriber->{subscribers.add(subscriber);subscriber.onSubscribe(new Flow.Subscription(){
+        @Override public Flow.Publisher<AudioBlock> inputBlocks(){SubmissionPublisher<AudioBlock> shared=publisher;if(shared!=null)return shared;
+            return subscriber->{subscribers.add(subscriber);subscriber.onSubscribe(new Flow.Subscription(){
             public void request(long n){} public void cancel(){subscribers.remove(subscriber);}
         });if(terminatesOnSubscribe!=null)terminatesOnSubscribe.signal(subscriber);};}
         @Override public void sink(AudioBlock block){if(renderGate != null)renderGate.rendered(block);}
@@ -1182,6 +1189,8 @@ class MultichannelInputCaptureStory326Test {
         @Override public void close(){if(failClose)throw new AudioBackendException("held sibling");open=false;}
         void emit(int frames){float[] samples=new float[frames*openedWidth];for(int f=0;f<frames;f++)for(int c=0;c<openedWidth;c++)
             samples[f*openedWidth+c]=input.contains("B")?.9f:(c+1)/10f;
-            AudioBlock block=new AudioBlock(48000,openedWidth,frames,samples);subscribers.forEach(subscriber->subscriber.onNext(block));}
+            AudioBlock block=new AudioBlock(48000,openedWidth,frames,samples);
+            SubmissionPublisher<AudioBlock> shared=publisher;
+            if(shared!=null)shared.offer(block,InputBlockLossListener::reportDrop);else subscribers.forEach(subscriber->subscriber.onNext(block));}
     }
 }

@@ -1229,9 +1229,16 @@ public final class RecordingPipeline {
      * stamped before the transport stop here moved the playhead. If the
      * callback has not left when that bound elapses — an audio thread that
      * died or hangs inside it — the flush thread warns, sweeps and seals
-     * all the same, and a block published behind that sweep is recorded in
-     * the manifest as a gap if it is in the ring once the lanes have been
-     * sealed.</p>
+     * all the same, and a block published behind that sweep that carried
+     * audio a track records is recorded in the manifest as a gap if it is in
+     * the ring once the lanes have been sealed, and counted in the take's
+     * dropouts, in a punch take only when its gap reaches into the punch
+     * region (ruling E256); one dropped behind it is recorded and counted
+     * the same way, an input-starved one only where an applied starved block
+     * would count, and the silence after an input's declared stop is
+     * neither (rulings E275, E277 and E281). In a take the flush thread had
+     * already sealed early, nothing behind the final sweep is recorded or
+     * counted: the take ended at that seal (rulings E263 and E274).</p>
      *
      * <p>On a device loss the gate is already closed and the callback
      * already removed when this runs: the engine controller's loss path
@@ -1246,7 +1253,9 @@ public final class RecordingPipeline {
      * one more volatile store of {@code true}, {@code setRecordingCallback(null)}
      * twice one more store of {@code null} — and no step here presumes the
      * callback is still installed; the flags, the transport stop and the
-     * seal request are this method's alone, as before.</p>
+     * seal request are this method's alone, as before. A block published or
+     * dropped behind the final sweep of a device-loss seal is part of the
+     * loss: nothing records or counts it (ruling E264).</p>
      *
      * @return the flush thread's termination ({@link CaptureFlushService#termination()}):
      *         once it has completed, {@link #completeStop()} builds the
@@ -2086,11 +2095,16 @@ public final class RecordingPipeline {
 
     /**
      * Returns the ring-overflow blocks of the current take (or the last one
-     * until the next {@link #prepare(long)}) whose gap reaches into the punch
-     * region: every block {@link #getOverflowCount()} counts when the take
-     * has no punch region (story 338, ruling E86). A gap is counted once the
-     * next block from its ring, or the seal, closes it. {@code 0} while the
-     * pipeline holds no take. Any thread.
+     * until the next {@link #prepare(long)}) that have a {@code gap=} line and
+     * whose run reaches into the punch region, all of them with no punch
+     * region: blocks that carried audio a track records, and input-starved
+     * blocks where an applied starved block in their place would count; and,
+     * at a stop that is not a device loss's in a take not sealed early, the
+     * blocks a ring received after the take's final sweep that carried such
+     * audio (story 338, rulings E86, E213 and E273 to E287). A run of dropped
+     * blocks is counted once the block after it is applied, once the input's
+     * starved run it leads into has ended, or at the seal when none follows.
+     * {@code 0} while the pipeline holds no take. Any thread.
      */
     public long getFileOverflowBlocks() {
         CaptureFlushService service = flush;
@@ -2118,11 +2132,28 @@ public final class RecordingPipeline {
     }
 
     /**
+     * Returns whether the current take's capture takes no clock event any
+     * more: its {@code capture-flush} thread has sealed it, early or for a
+     * stop, or has terminated, so {@link #noteClockEvent} ignores what it is
+     * handed ({@link CaptureFlushService#ignoresClockEvents()}; story 338,
+     * ruling E280). Volatile reads only and no allocation, so a caller may
+     * ask on every display frame. {@code false} while no prepare has created
+     * a take's flush service. Any thread.
+     *
+     * @return whether the take's capture has been sealed or its thread has ended
+     */
+    public boolean isCaptureSealed() {
+        CaptureFlushService service = flush;
+        return service != null && service.ignoresClockEvents();
+    }
+
+    /**
      * Hands a clock event to the current take, dated at {@code frame}, a
      * transport frame at the take's rate: the flush thread writes it into
      * {@code take.manifest} as a {@code clock} entry on its next pass, or at
      * the seal (story 338, rulings E30, E40 and E62). Any thread; never
-     * blocks. Ignored while no take is prepared and once the take is sealed.
+     * blocks. Ignored while no take is prepared and once the take is sealed
+     * or its thread has ended ({@link #isCaptureSealed()}).
      *
      * @param event what the clock did; not {@code null}
      * @param frame the transport frame the event is dated at

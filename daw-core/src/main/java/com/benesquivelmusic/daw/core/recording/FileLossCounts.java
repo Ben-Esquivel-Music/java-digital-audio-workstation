@@ -1,32 +1,45 @@
 package com.benesquivelmusic.daw.core.recording;
 
 /**
- * The take's ring-overflow and truncation losses counted as the take's files
+ * The take's ring-overflow and truncation losses judged as the take's files
  * see them: only what reaches into the punch region counts. With no punch
- * region every loss counts, exactly as the raw ring counts do. The
- * {@code gap=} lines and the {@code truncated-frames} total of the manifest
- * are not affected; they are written as the losses happened.
+ * region every loss a line records counts. The {@code gap=} lines and the
+ * {@code truncated-frames} total of the manifest are not affected; they are
+ * written as the losses happened.
  *
- * <p>A ring-overflow gap runs from its start frame to the start frame of the
- * next block the take received from that ring; across the loop wrap, to the
- * loop end and on from the loop start. A gap that starts past the loop end,
- * at the end of a block across the wrap, starts where the transport
- * continued after the wrap. All of its blocks count when that extent
- * overlaps the punch region, none otherwise. A gap no block follows has the
- * extent its {@code gap=} line gives: its start frame plus its blocks times
- * the take's block length, split at the loop wrap the same way; that the take
- * looped adds nothing (ruling E104). A gap a lap long or longer is judged by
- * that extent too, whatever block follows it, since its end points cannot
- * tell which frames it passed in between: the frames the transport passed
- * from its start, followed across every wrap, and it counts when any of them
- * lies in the region (rulings E180 and E182). It passed the whole loop range
- * only when its frames from the loop start on number a lap or more; frames
- * of lap 1's pre-roll count toward no lap. Truncated frames
- * lie after the kept frames of their block and count where they lie inside
- * the region; an episode counts once one of its frames does.</p>
+ * <p>A run of blocks a ring dropped right before a block the take kept is
+ * judged by that block's punch region and loop window (ruling E273): its
+ * extent runs from its {@code gap=} line, at the end of the block the ring
+ * delivered before the run, to the start frame of the block after it; across
+ * the loop wrap, to the loop end and on from the loop start. A line past the
+ * loop end, at the end of a block across the wrap, starts where the transport
+ * continued after the wrap. When that block starts at or before the line with
+ * no loop wrap between them, as the take counts wraps, the transport was
+ * moved back or stood still, and the run reaches the region when the frames
+ * its blocks would have held forward from its line, or back from that block's
+ * start, do (ruling E285). A run some of whose blocks do not count — the
+ * silence after an input's declared stop, or input-starved blocks whose
+ * starved run went on into that stop where it flags every track of the
+ * input, or was still open at a device-loss seal — is judged by the extent of
+ * the blocks it counts, which lead it (ruling E301); one
+ * whose silence-only blocks came before its audio, by the frames to the next
+ * block (rulings E277, E281 and E287). A run no block the take kept follows
+ * has the extent its {@code gap=} line gives: its start frame plus its blocks
+ * times the take's block length, split at the loop wrap the same way; that
+ * the take looped adds nothing (rulings E104 and E275). Blocks a ring
+ * received after the take's final sweep are such a run too (ruling E213). A
+ * run a lap long or longer is judged by that extent too, whatever block
+ * follows it, since its end points cannot tell which frames it passed in
+ * between: the frames the transport passed from its start, followed across
+ * every wrap, and it counts when any of them lies in the region (rulings E180
+ * and E182). It passed the whole loop range only when its frames from the
+ * loop start on number a lap or more; frames of lap 1's pre-roll count toward
+ * no lap. Truncated frames lie after the kept frames of their block and count
+ * where they lie inside the region; an episode counts once one of its frames
+ * does.</p>
  *
- * <p>Written by the flush thread only; the counts are read from any
- * thread.</p>
+ * <p>Written by the flush thread only, which judges a run and then counts it;
+ * the counts are read from any thread.</p>
  */
 final class FileLossCounts {
 
@@ -35,15 +48,20 @@ final class FileLossCounts {
     private final long[] regionEnd;
     private final long[] loopStart;
     private final long[] loopEnd;
-    private final boolean[] gapPending;
-    private final long[] gapStart;
-    private final long[] gapBlocks;
-    private final int[] gapBlockFrames;
     private final boolean[] episodeCounted;
 
     private volatile long overflowBlocks;
     private volatile long truncatedFrames;
     private volatile long truncationEpisodes;
+
+    /** A source's punch region and loop window, those of the last block of it received (ruling E282). */
+    record Window(long regionStart, long regionEnd, long loopStart, long loopEnd) {
+
+        /** Whether the window has a punch region. */
+        boolean hasPunchRegion() {
+            return regionStart != FrameSpans.UNBOUNDED_START || regionEnd != FrameSpans.UNBOUNDED_END;
+        }
+    }
 
     /** @param sources the number of input sources */
     FileLossCounts(int sources) {
@@ -52,76 +70,76 @@ final class FileLossCounts {
         regionEnd = new long[sources];
         loopStart = new long[sources];
         loopEnd = new long[sources];
-        gapPending = new boolean[sources];
-        gapStart = new long[sources];
-        gapBlocks = new long[sources];
-        gapBlockFrames = new int[sources];
         episodeCounted = new boolean[sources];
     }
 
     /**
-     * A block of {@code source} was received: it ends the extent of a gap
-     * waiting for it, and its punch region and loop window are the ones a
-     * later gap of that source is judged by until the next block.
+     * A block of {@code source} was received: its punch region and loop window are the ones the runs of that
+     * source are judged by until the next block.
      *
-     * @param blockStart  the block's start frame
-     * @param regionFrom  the punch-in frame, or {@link FrameSpans#UNBOUNDED_START} with no punch region
-     * @param regionTo    the punch-out frame, or {@link FrameSpans#UNBOUNDED_END} with no punch region
-     * @param loopFrom    the block's loop start frame
-     * @param loopTo      the block's loop end frame; not after {@code loopFrom} when the take does not loop
+     * @param regionFrom the punch-in frame, or {@link FrameSpans#UNBOUNDED_START} with no punch region
+     * @param regionTo   the punch-out frame, or {@link FrameSpans#UNBOUNDED_END} with no punch region
+     * @param loopFrom   the block's loop start frame
+     * @param loopTo     the block's loop end frame; not after {@code loopFrom} when the take does not loop
      */
-    void blockReceived(int source, long blockStart, long regionFrom, long regionTo, long loopFrom, long loopTo) {
+    void blockReceived(int source, long regionFrom, long regionTo, long loopFrom, long loopTo) {
         regionKnown[source] = true;
         regionStart[source] = regionFrom;
         regionEnd[source] = regionTo;
         loopStart[source] = loopFrom;
         loopEnd[source] = loopTo;
-        if (gapPending[source]) {
-            gapPending[source] = false;
-            if (extentOverlapsTheRegion(source, gapStart[source], blockStart)) {
-                overflowBlocks = overflowBlocks + gapBlocks[source];
-            }
-        }
     }
 
     /**
-     * The ring of {@code source} dropped {@code dropped} blocks after
-     * {@code start}. Counted at once with no punch region; otherwise when the
-     * next block (or the seal) closes its extent. Gaps noticed before that
-     * block arrives join the first one.
+     * Whether {@code frames} frames of a run of {@code source}'s ring from its line at {@code start} reach into
+     * the punch region by the frames to {@code next}, the start of the block just received after the run
+     * (rulings E86, E180, E182, E273 and E285). Called after that block's {@link #blockReceived}.
      *
-     * @param blockFrames the take's block length, the frames each dropped block held
+     * @param wrapped whether the take counted a loop wrap between the block before the run and that block
      */
-    void gapNoticed(int source, long start, long dropped, int blockFrames) {
-        if (regionKnown[source] && !hasPunchRegion(source) && !gapPending[source]) {
-            overflowBlocks = overflowBlocks + dropped;
-            return;
+    boolean runReachesTheRegion(int source, long start, long frames, long next, boolean wrapped) {
+        long from = regionStart[source];
+        long to = regionEnd[source];
+        long loopFrom = loopStart[source];
+        long loopTo = loopEnd[source];
+        boolean looped = FrameSpans.looped(loopFrom, loopTo);
+        if (looped && frames >= loopTo - loopFrom) {
+            // A lap or more: its end points cannot tell which frames it passed in between.
+            return FrameSpans.framesInsideAcrossTheWrap(start, frames, loopFrom, loopTo, from, to) > 0L;
         }
-        if (gapPending[source]) {
-            gapBlocks[source] += dropped;
-            return;
+        long first = FrameSpans.intoLoop(start, loopFrom, loopTo);
+        if (next > first) {
+            return FrameSpans.overlaps(first, next, from, to);
         }
-        gapPending[source] = true;
-        gapStart[source] = start;
-        gapBlocks[source] = dropped;
-        gapBlockFrames[source] = blockFrames;
+        if (!wrapped || !looped) {
+            // Moved back or standing still: the blocks lay in one of these two extents, which is not known.
+            return FrameSpans.overlaps(first, first + frames, from, to)
+                    || FrameSpans.overlaps(next - frames, next, from, to);
+        }
+        return FrameSpans.overlaps(first, loopTo, from, to) || FrameSpans.overlaps(loopFrom, next, from, to);
     }
 
-    /** The take is sealed: every gap still waiting for a next block is judged by its own extent. */
-    void takeSealed() {
-        for (int source = 0; source < gapPending.length; source++) {
-            if (!gapPending[source]) {
-                continue;
-            }
-            gapPending[source] = false;
-            boolean counted = !regionKnown[source] || !hasPunchRegion(source)
-                    || FrameSpans.framesInsideAcrossTheWrap(gapStart[source],
-                            gapBlocks[source] * gapBlockFrames[source], loopStart[source], loopEnd[source],
-                            regionStart[source], regionEnd[source]) > 0L;
-            if (counted) {
-                overflowBlocks = overflowBlocks + gapBlocks[source];
-            }
-        }
+    /**
+     * Whether {@code frames} frames of {@code source}'s from {@code start}, split at the loop wrap, reach into the
+     * punch region: a run judged by its own extent, which no kept block follows or some of whose blocks do not
+     * count (rulings E104, E213, E275, E277 and E281); always with no punch region or no block received.
+     */
+    boolean reachesTheRegionByItsOwnExtent(int source, long start, long frames) {
+        return !regionKnown[source] || !hasPunchRegion(source)
+                || FrameSpans.framesInsideAcrossTheWrap(start, frames, loopStart[source], loopEnd[source],
+                        regionStart[source], regionEnd[source]) > 0L;
+    }
+
+    /** Counts {@code blocks} lined blocks whose run reaches into the punch region. Flush thread. */
+    void countOverflowBlocks(long blocks) {
+        overflowBlocks = overflowBlocks + blocks;
+    }
+
+    /** {@code source}'s {@link Window}, or {@code null} before a block of it was received. */
+    Window windowOf(int source) {
+        return regionKnown[source]
+                ? new Window(regionStart[source], regionEnd[source], loopStart[source], loopEnd[source])
+                : null;
     }
 
     /**
@@ -146,7 +164,11 @@ final class FileLossCounts {
         }
     }
 
-    /** Ring-overflow blocks whose gap reaches into the punch region. Any thread. */
+    /**
+     * Lined ring-overflow blocks whose run reaches into the punch region, and blocks a ring received after the
+     * take's final sweep, judged the same way; every one with no punch region (rulings E86, E104, E213, E273 and
+     * E281). Any thread.
+     */
     long overflowBlocks() {
         return overflowBlocks;
     }
@@ -163,27 +185,5 @@ final class FileLossCounts {
 
     private boolean hasPunchRegion(int source) {
         return regionStart[source] != FrameSpans.UNBOUNDED_START || regionEnd[source] != FrameSpans.UNBOUNDED_END;
-    }
-
-    private boolean extentOverlapsTheRegion(int source, long start, long next) {
-        long from = regionStart[source];
-        long to = regionEnd[source];
-        boolean looped = FrameSpans.looped(loopStart[source], loopEnd[source]);
-        long frames = gapBlocks[source] * gapBlockFrames[source];
-        if (looped && frames >= loopEnd[source] - loopStart[source]) {
-            // A lap or more: its end points cannot tell which frames it passed in between.
-            return FrameSpans.framesInsideAcrossTheWrap(start, frames, loopStart[source], loopEnd[source],
-                    from, to) > 0L;
-        }
-        long first = FrameSpans.intoLoop(start, loopStart[source], loopEnd[source]);
-        if (next > first) {
-            return FrameSpans.overlaps(first, next, from, to);
-        }
-        if (next == first) {
-            return FrameSpans.overlaps(first, first + 1, from, to);
-        }
-        long wrapEnd = looped ? loopEnd[source] : FrameSpans.UNBOUNDED_END;
-        long wrapStart = looped ? loopStart[source] : FrameSpans.UNBOUNDED_START;
-        return FrameSpans.overlaps(first, wrapEnd, from, to) || FrameSpans.overlaps(wrapStart, next, from, to);
     }
 }

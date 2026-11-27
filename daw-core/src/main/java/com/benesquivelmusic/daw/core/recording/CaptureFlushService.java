@@ -26,6 +26,7 @@ import java.util.Optional;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
@@ -97,7 +98,8 @@ import java.util.logging.Logger;
  * row of the routed block the source did not provide is zeroed, never
  * stale); (e) the session append, which forces on cadence and rotates on
  * exact counts; (f) the truncation note for a block that was longer than
- * its slot; (g) a manifest rewrite whenever a segment opened, sealed or was
+ * its slot, and, once the block is kept, the {@code gap=} line of the run
+ * the ring dropped right before it (ruling E273); (g) a manifest rewrite whenever a segment opened, sealed or was
  * discarded, or a truncation episode began; (h) the cadence tick, before the
  * block is released and counted.</p>
  *
@@ -148,28 +150,47 @@ import java.util.logging.Logger;
  * opens with a {@code force(true)} of every segment it seals; and a force
  * that throws ends the take exactly as a failed append does (below).</p>
  *
- * <p><strong>Loss is recorded, never hidden.</strong> Ring overflow is
- * noticed after each drain pass and recorded as one {@code gap=} line per
- * noticed episode, positioned at the end of the last block accepted before
- * the drop: the callback marks that block
- * ({@link CaptureRing#droppedAfterSequence()}) and the drain pass remembers
- * its end frame when it applies it, so blocks published after the drop and
- * applied in the same pass do not move the position. Drops at different
- * points that one pass notices together share one line, at the most recent
- * marked block. If the marked block's end was not captured — the marker
- * was not yet visible to this thread when it applied that block, or the
- * drop happened after the pass's last look at the ring, so the marked
- * block is still queued — the line falls back to the end of the last
- * block applied. A block longer than its ring slot keeps the slot's worth
- * of frames; the first such block of a run is recorded as a
- * {@code gap=*|<end of its kept frames>|0} line with a warning, and the
+ * <p><strong>Loss is recorded, never hidden.</strong> Every block a capture
+ * ring publishes carries the ring's drop counts at its claim
+ * ({@link CaptureRing#stampOf}), so for each block it keeps this thread knows
+ * the run of blocks the ring dropped right before it and what they carried:
+ * delivered input or a recorded instrument's audio, input-starved silence,
+ * or the silence after an input's declared stop (story 338, rulings E273,
+ * E277, E281 and E287). Once the block is kept — applied in full: written
+ * to the file, or passed over outside the punch region — that run gets one
+ * {@code gap=} line at the end of the block the ring delivered before it,
+ * never merged across a delivered block and never split, counting its
+ * blocks that carried audio a track records and its input-starved blocks
+ * where an applied starved block would count; a run whose starved blocks
+ * lead into more of the input's starved blocks keeps its line until that
+ * starved run has ended, which a declared stop that flags not every track
+ * of the input does not do (ruling E301), and the silence after a declared
+ * stop gets nothing, unless a block of that input the take kept shows it
+ * live again after it, as a reopened stream's input does: that block marks
+ * the stop and lines the whole run (ruling E302).
+ * A pass over a ring rewrites the manifest for the lines it added at most
+ * once, at the look that ends it, and gives at most one ring-overflow
+ * warning, for the first run it lined, whose total is the take's
+ * {@code overflow-blocks} so far. A run no kept block follows gets nothing
+ * while the take runs: at the person's Stop the seal lines it after the
+ * blocks published behind the final sweep (below), and at a device-loss seal
+ * from the counts the final sweep's look read, at the end of the last block
+ * applied (ruling E275); a run before the block whose write failed or the
+ * block the headroom floor discarded, and every run after an early seal,
+ * gets nothing, on every ring when the early seal comes in a device-loss
+ * seal's final sweep (rulings E274 and E286). Each look notes the ring's
+ * drops for {@link #awaitFlushed}. A block longer than its ring slot keeps
+ * the slot's worth of frames; the first such block of a run is recorded as
+ * a {@code gap=*|<end of its kept frames>|0} line with a warning, and the
  * running total goes into {@code truncated-frames} with every later
  * manifest write (exact at the seal). A block published behind the final
  * sweep of a stop — possible only when the wait for the callback in flight
  * timed out, or the stop was requested without the ring's producer gate
  * being closed — is recorded as a {@code gap=} line at the end of the last
  * block applied, with a warning, if it is in the ring once the lanes have
- * been sealed.</p>
+ * been sealed and carried audio a track records; nothing behind a device
+ * loss's final sweep, whose blocks are that loss's, nor after an early seal,
+ * is recorded (rulings E242, E264 and E274).</p>
  *
  * <p><strong>Silence the input did not deliver is marked</strong> (story
  * 338). The render stamps each block of the stream's own input it rendered
@@ -188,7 +209,12 @@ import java.util.logging.Logger;
  * first frame in the lap of the input's own frames at the flagging block
  * when that end lies outside the region; inside the loop range in a loop
  * take, where the resume frame may lie before the stop), and one warning,
- * which names the lap in a loop-record take. Clock events handed in through
+ * which names the lap in a loop-record take. When none of an input's silence
+ * reaches the take before a seal by the person's Stop, or by a device loss
+ * not sealed early in its final sweep, the seal gives each track of that
+ * input the input-stopped line and warning the take would have written had
+ * that silence reached it, saying the track holds no audio from there
+ * (rulings E277, E282 to E284 and E286). Clock events handed in through
  * {@link #noteClockEvent} are written as {@code clock} entries on the next
  * pass, or at the seal.</p>
  *
@@ -200,11 +226,14 @@ import java.util.logging.Logger;
  * {@code sealed-by=write-failure} ({@code disk-exhaustion} for the headroom
  * floor), after which the thread keeps draining until a stop: further
  * blocks are discarded and counted ({@link #discardedBlocks()}) so the
- * callback side never notices. A throwable that escapes the drain loop
- * itself is reported the same way and ends the thread after the seal. Each
- * such early seal, once done, completes {@link #earlySeal()}. A lane whose
- * seal throws in the seal a stop requested is no early seal: the take is
- * already stopping, and {@link #stopSealFailure()} reports it.</p>
+ * callback side never notices, and a run of blocks a ring dropped is
+ * recorded only when a block the take kept from that ring follows it
+ * (rulings E274 and E286). A throwable that
+ * escapes the drain loop itself is reported the same way and ends the
+ * thread after the seal. Each such early seal, once done, completes
+ * {@link #earlySeal()}. A lane whose seal throws in the seal a stop
+ * requested is no early seal: the take is already stopping, and
+ * {@link #stopSealFailure()} reports it.</p>
  *
  * <p><strong>The manifest is a sidecar.</strong> A manifest write that fails
  * — an {@link IOException} or a {@link RuntimeException} from building or
@@ -333,8 +362,6 @@ public final class CaptureFlushService {
     private double[] sourcePreviousBeat;
     private boolean[] sourceWasInsidePunchRegion;
     private long[] sourceLastOverflow;
-    private long[] sourceGapAnchorSequence;
-    private long[] sourceGapAnchorFrame;
     private long[] sourceLastAppliedEndFrame;
     private boolean[] sourceTruncationEpisode;
     private java.util.concurrent.atomic.AtomicLongArray sourceOverflowNoted;
@@ -365,6 +392,14 @@ public final class CaptureFlushService {
     /** Per source, the run of input-starved blocks written since its last delivered block. */
     private StarvedRuns starvedRuns = new StarvedRuns(1);
     private FileLossCounts fileLosses = new FileLossCounts(1);
+    /** Per source, its ring's runs of dropped blocks as this thread lines them (story 338, rulings E273 to E287). */
+    private DroppedRuns[] droppedRuns = {new DroppedRuns()};
+    /**
+     * Per source, the blocks released by the end of the last look at its ring, or by the thread's exit: the
+     * block half of the {@link #awaitFlushed} fence, which so covers the {@code gap=} lines a pass writes at its
+     * look (ruling E273).
+     */
+    private AtomicLongArray sourceLookedBlocks = new AtomicLongArray(1);
     void setOpenedInputWidths(int[] widths) { openedInputWidths = widths.clone(); }
     void setInputRings(CaptureRing[] rings) {
         if (started) throw new IllegalStateException("input rings already started");
@@ -379,9 +414,9 @@ public final class CaptureFlushService {
         sourceWasInsidePunchRegion = new boolean[rings.length];
         Arrays.fill(sourcePreviousBeat, -1.0);
         sourceLastOverflow = new long[rings.length];
-        sourceGapAnchorSequence = new long[rings.length];
-        sourceGapAnchorFrame = new long[rings.length];
-        Arrays.fill(sourceGapAnchorSequence, CaptureRing.NO_DROP);
+        droppedRuns = new DroppedRuns[rings.length];
+        Arrays.setAll(droppedRuns, _ -> new DroppedRuns());
+        sourceLookedBlocks = new AtomicLongArray(rings.length);
         sourceLastAppliedEndFrame = new long[rings.length];
         sourceTruncationEpisode = new boolean[rings.length];
         sourceOverflowNoted = new java.util.concurrent.atomic.AtomicLongArray(rings.length);
@@ -439,7 +474,11 @@ public final class CaptureFlushService {
     private volatile SealedBy requestedReason = SealedBy.STOP;
     private volatile long appliedBlocks;
     private volatile long discardedBlocks;
-    /** Overflow count whose gap bookkeeping is done (the other half of the {@link #awaitFlushed} fence). */
+    /**
+     * Overflow count this thread has noted for {@link #awaitFlushed}, at the look that ends each pass and at the
+     * seal's look ({@link #accountLateDrops}), whatever becomes of the drops' lines (ruling E273): the other half
+     * of that fence.
+     */
     private volatile long overflowNoted;
     /** Blocks and frames of the closed input-starved runs written to the manifest; flush thread writes. */
     private volatile long starvedInputBlocks;
@@ -516,10 +555,23 @@ public final class CaptureFlushService {
     /** The throwable behind an early seal for a write failure; {@code null} for the headroom floor. */
     private Throwable earlySealFailure;
     private long lastOverflowSeen;
+    /** Ring-overflow blocks that have a {@code gap=} line: what {@code overflow-blocks} records (ruling E273). */
+    private long overflowBlocksLined;
     private long lastAppliedEndFrame;
-    /** Sequence and end frame of the applied block the ring's drop marker named when it was applied. */
-    private long gapAnchorSequence = CaptureRing.NO_DROP;
-    private long gapAnchorFrame;
+    /** Lines of runs of dropped blocks in the manifest builder that no manifest write has carried yet. */
+    private boolean runLinesUnwritten;
+    /** The first run this pass lined, which the pass's one ring-overflow warning names (ruling E273). */
+    private boolean passLinedARun;
+    private long passRunFrame;
+    private long passRunBlocks;
+    /**
+     * A stop is being written for silence of an input the take did not keep, dropped by a full ring or left behind
+     * on it (ruling E284): at the seal, or in {@link #applyBlock} by the block with which the input delivers again,
+     * whose words {@link #stopBeforeADelivery} picks (ruling E302); named when only the seal wrote such stops.
+     */
+    private boolean sealWritesTheStops;
+    /** A delivery marks its dropped silence's stop (E302); plain: set, read and cleared on the flush thread alone. */
+    private boolean stopBeforeADelivery;
     private long truncatedFramesNoted;
     private boolean truncationEpisodeOpen;
     private double previousBeat = -1.0;
@@ -878,6 +930,8 @@ public final class CaptureFlushService {
                 LOG.log(Level.SEVERE, "capture-flush loop failed while its take was being discarded", t);
             } else {
                 LOG.log(Level.SEVERE, "capture-flush loop failed; sealing the take", t);
+                // Before the early seal's warning: a run the failing pass lined keeps its own (rulings E274, E281).
+                lineThePassBeforeTheEarlySeal();
                 warn("Recording stopped unexpectedly — " + describe(t)
                         + "; sealing everything captured so far under " + config.takeDirectory());
                 try {
@@ -904,6 +958,8 @@ public final class CaptureFlushService {
                 LOG.log(Level.SEVERE, "capture-flush could not " + (abortRequested ? "discard" : "abandon")
                         + " the take under " + config.takeDirectory(), exitFailure);
             } finally {
+                // Done with every block it released: a fence read after the thread ended reads the rings.
+                markEveryRingLooked();
                 running = false;
                 // Last: every path out of the drain — a normal seal, a take
                 // sealed early earlier on, a throwable that escaped the loop,
@@ -926,10 +982,14 @@ public final class CaptureFlushService {
      * sweep and seal. Which blocks the take then holds is decided by the
      * final sweep, not by the warning: a block that callback publishes
      * before the sweep's last look at the ring is applied and is part of
-     * the take; one it publishes after that look is not, and is recorded as
-     * a gap by {@link #noteBlocksLeftBehind()} if it is in the ring when
-     * that method looks. The warning says the same. Flush thread; the
-     * thread that requested the stop never waits.
+     * the take, or is discarded when the take was sealed early; one it
+     * publishes after that look is not part of the take, and is recorded
+     * as a gap by {@link #noteBlocksLeftBehind()} if it is in the ring
+     * when that method looks and carried audio a track records, except
+     * after an early seal or at a device-loss seal, where nothing records it
+     * (rulings E263, E264 and E277).
+     * The warning describes a Stop's seal, whatever the seal. Flush
+     * thread; the thread that requested the stop never waits.
      */
     private void awaitProducerQuiescence() {
         awaitingProducerExit = true;
@@ -947,28 +1007,32 @@ public final class CaptureFlushService {
                     + " began waiting for it; the take under " + config.takeDirectory() + " is swept and sealed"
                     + " without waiting any longer: a block it publishes before the final sweep has read the ring"
                     + " is still part of the take, and one it publishes after that is not and is recorded in the"
-                    + " take manifest as a gap if it has arrived by the time the lanes are sealed");
+                    + " take manifest as a gap if it has arrived by the time the lanes are sealed and carried audio"
+                    + " a track records");
         }
     }
 
     /**
-     * Records the blocks the final sweep did not get: published to the ring
-     * after the sweep had drained it. That can only happen when the wait for
-     * the callback in flight timed out ({@link #awaitProducerQuiescence()}),
-     * or when the stop was requested without the ring's producer gate being
-     * closed. Each such block is audio the take does not hold, so it is
-     * recorded the way a ring overflow is — one {@code gap=} line at the end
-     * of the last block applied, and a warning — and goes into the final
-     * manifest, which is written right after. Does nothing unless the final
-     * sweep has completed, and nothing a second time. Flush thread, once
-     * every lane has had its seal attempt: a block published while the lanes
-     * were being sealed is counted too; one published after this look is
-     * not, and nothing ever reads it. Only published blocks are counted
-     * here: the ring's overflow counter is not read again, so on the
-     * timeout path a block the late callback had to drop because the ring
-     * was full, counted after the final sweep's overflow accounting, goes
-     * unrecorded — no gap line, and the manifest's overflow count stays at
-     * what the sweep last saw.
+     * The seal's one look at the rings, once every lane has had its seal attempt and before the trailing starved
+     * run is written, which an input-stopped line given here covers (ruling E49). At the person's Stop, per ring
+     * ({@link #lineWhatTheSweepLeft}): the blocks published behind the final sweep — which need a wait for the
+     * callback in flight that timed out ({@link #awaitProducerQuiescence()}), or a stop requested without the
+     * ring's producer gate closed — that carried audio a track records get one {@code gap=} line at L, the end
+     * of the last block applied from that ring, with their warning; the runs waiting on the input's open starved
+     * run get their line; the drops no applied block follows get one at L plus the blocks left behind times the
+     * ring's block length, whichever look found them, join {@code overflow-blocks} and get the pass's
+     * ring-overflow warning, so the two lines cover the missing stretch once, whatever order its blocks came in
+     * (rulings E242, E275 and E281). At a device-loss seal not sealed early in its final sweep, per ring
+     * ({@link #lineTheDropsBeforeTheDeviceLoss}): the waiting runs and the drops the final sweep's look found,
+     * from the counts it read (ruling E286). Each line it adds for drops no kept block follows counts in the
+     * take's file losses by its own extent, or by the whole run's when silence came before audio in it (rulings
+     * E104, E213 and E287); a waiting run keeps the judgement made when it was noticed (ruling E281). The
+     * silence after an input's declared stop gets no line, and for its silence that did not reach the take after
+     * the last block kept from its ring its tracks not yet flagged get their input-stopped line here (rulings
+     * E277, E282 to E284 and E303). After an early seal it records, counts and warns of nothing (rulings E264,
+     * E274 and E286); late drops are only accounted, for {@link #awaitFlushed}. Does nothing unless the final
+     * sweep has completed, and nothing a second time; a block published or dropped after this look, or a drop
+     * whose count its callback stores after it, is not recorded (ruling E255).
      */
     private void noteBlocksLeftBehind() {
         if (!finalSweepDone || leftBehindNoted) {
@@ -976,18 +1040,313 @@ public final class CaptureFlushService {
         }
         leftBehindNoted = true;
         int count = inputRings == null ? 1 : inputRings.length;
-        for (int i = 0; i < count; i++) {
-            CaptureRing input = inputRings == null ? ring : inputRings[i];
-            long leftBehind = input.publishedBlocks() - input.releasedBlocks();
-            if (leftBehind <= 0) continue;
-            inputSource = i;
-            long gapStart = Math.max(0L, inputRings == null ? lastAppliedEndFrame : sourceLastAppliedEndFrame[i]);
-            addInputGaps(gapStart, leftBehind);
-            manifestDirty = true;
-            warn(leftBehind + " capture block(s) were published after the final sweep at frame " + gapStart
-                    + " and are not part of the take; the manifest records the gap");
+        for (int source = 0; source < count; source++) {
+            CaptureRing input = inputRings == null ? ring : inputRings[source];
+            long overflow = input.overflowCount();
+            long accounted = inputRings == null ? lastOverflowSeen : sourceLastOverflow[source];
+            accountLateDrops(source, overflow, Math.max(0L, overflow - accounted));
+            if (sealedEarly) {
+                continue;
+            }
+            inputSource = source;
+            if (sealReason == SealedBy.DEVICE_LOSS) {
+                lineTheDropsBeforeTheDeviceLoss(input, source);
+            } else {
+                lineWhatTheSweepLeft(input, source);
+            }
+            warnOfThePassRuns();
         }
         inputSource = 0;
+    }
+
+    /**
+     * At the person's Stop, the seal's look at {@code source}'s ring (see {@link #noteBlocksLeftBehind}), reading
+     * the ring's drop counts total first; for the input's silence dropped since the last block kept from its ring,
+     * or left behind, its tracks not yet flagged get the input-stopped line the take would have written (rulings
+     * E277, E282, E283 and E303).
+     */
+    private void lineWhatTheSweepLeft(CaptureRing input, int source) {
+        DroppedRuns runs = droppedRuns[source];
+        CaptureRing.DropCounts now = input.dropCounts();
+        long trailing = Math.max(0L, now.total() - runs.seen.total());
+        long audio = Math.min(trailing, now.audio() - runs.seen.audio());
+        long starved = Math.min(trailing - audio, now.starved() - runs.seen.starved());
+        long silence = Math.min(trailing, now.inputless() - runs.seen.inputless());
+        long line = Math.max(0L, inputRings == null ? lastAppliedEndFrame : sourceLastAppliedEndFrame[source]);
+        int blockFrames = input.slotFrames();
+        long released = input.releasedBlocks();
+        long leftBehind = Math.max(0L, input.publishedBlocks() - released);
+        List<CaptureRing.Slot> held = new ArrayList<>();
+        for (long sequence = released; sequence < released + leftBehind; sequence++) {
+            CaptureRing.Slot slot = input.peekAt(sequence);
+            if (slot == null) {
+                break;
+            }
+            held.add(slot);
+        }
+        long leftAudio = held.stream().filter(CaptureFlushService::carriesAudio).count();
+        boolean silenceHeld = held.stream().anyMatch(slot -> slot.sourceChannels(0) == 0);
+        if (leftAudio > 0L) {
+            addInputGaps(source, line, leftAudio);
+            if (fileLosses.reachesTheRegionByItsOwnExtent(source, line, leftAudio * blockFrames)) {
+                fileLosses.countOverflowBlocks(leftAudio);
+            }
+            manifestDirty = true;
+            warn(leftAudio + " capture block(s) were published after the final sweep at frame " + line
+                    + " and are not part of the take; the manifest records the gap");
+        }
+        // Before the audio the stamp shows came after the silence (ruling E302).
+        long silenceStart = line + Math.max(0L, trailing - silence
+                - (now.audioAfterSilence() - runs.seen.audioAfterSilence())) * blockFrames;
+        if (silence == 0L || !markTheDroppedSilence(source, silenceStart, silence)) {
+            markTheFirstHeldSilence(source, held);
+        }
+        // The declared stop takes the starved drops after the last delivery only when, marked, it covers every
+        // track of the input (rulings E49 and E301).
+        boolean stopAfter = (silence > 0L || silenceHeld) && !hasAnUncoveredTrack(source);
+        long open = runs.waitingStarved + starved;
+        long afterTheLastDelivery = Math.min(now.starvedSinceDelivery(), open);
+        resolveWaitingRuns(source, afterTheLastDelivery < open || !stopAfter);
+        long starvedCounted = stopAfter ? starved - Math.min(afterTheLastDelivery, starved) : starved;
+        long lateDrops = audio + starvedCounted;
+        if (lateDrops > 0L) {
+            long dropStart = line + leftBehind * blockFrames;
+            boolean silenceFirst = now.audioAfterSilence() > runs.seen.audioAfterSilence();
+            long judged = silenceFirst ? trailing : lateDrops;
+            lineRun(source, dropStart, lateDrops,
+                    fileLosses.reachesTheRegionByItsOwnExtent(source, dropStart, judged * blockFrames));
+        }
+    }
+
+    /**
+     * At a device-loss seal not sealed early in its final sweep, for {@code source}'s ring, from the counts the
+     * final sweep's look read (ruling E286), as {@link #lineWhatTheSweepLeft} reads its own: a run waiting on the
+     * input's open starved run gets its line, with its starved blocks when that starved run ended with a
+     * delivery, published or dropped, and without them when it was still open at the loss, whose tail the loss
+     * reports (ruling E281); the drops that look found after the last block applied, delivered before the
+     * dropout, get one line at the end of that block for those that carried audio and the input-starved ones a
+     * delivery followed, counted by their own extent (ruling E275); for the input's silence dropped since the
+     * last block kept from its ring, its tracks not yet flagged get their input-stopped line (rulings E282 and
+     * E303). What the ring received or dropped after that look is the loss's (ruling E264).
+     */
+    private void lineTheDropsBeforeTheDeviceLoss(CaptureRing input, int source) {
+        DroppedRuns runs = droppedRuns[source];
+        CaptureRing.DropCounts found = runs.atTheLoss;
+        if (found == null) {
+            resolveWaitingRuns(source, false);
+            return;
+        }
+        long trailing = Math.max(0L, found.total() - runs.seen.total());
+        long audio = Math.min(trailing, found.audio() - runs.seen.audio());
+        long starved = Math.min(trailing - audio, found.starved() - runs.seen.starved());
+        long silence = Math.min(trailing, found.inputless() - runs.seen.inputless());
+        long open = runs.waitingStarved + starved;
+        long afterTheLastDelivery = Math.min(found.starvedSinceDelivery(), open);
+        resolveWaitingRuns(source, afterTheLastDelivery < open);
+        long counted = audio + starved - Math.min(afterTheLastDelivery, starved);
+        long line = Math.max(0L, inputRings == null ? lastAppliedEndFrame : sourceLastAppliedEndFrame[source]);
+        int blockFrames = input.slotFrames();
+        if (counted > 0L) {
+            boolean silenceFirst = found.audioAfterSilence() > runs.seen.audioAfterSilence();
+            long judged = silenceFirst ? trailing : counted;
+            lineRun(source, line, counted,
+                    fileLosses.reachesTheRegionByItsOwnExtent(source, line, judged * blockFrames));
+        }
+        if (silence > 0L) {
+            markTheDroppedSilence(source, line + Math.max(0L, trailing - silence
+                    - (found.audioAfterSilence() - runs.seen.audioAfterSilence())) * blockFrames, silence);
+        }
+    }
+
+    /** Whether a block left behind carried audio a track records: any source with a channel (rulings E265, E277). */
+    private static boolean carriesAudio(CaptureRing.Slot slot) {
+        for (int source = 0; source < slot.sourceCount(); source++) {
+            if (slot.sourceChannels(source) > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The input-stopped line the take would have written for {@code source} had {@code blocks} blocks of its
+     * silence from {@code start}, none of which reached it, reached it (rulings E277 and E282), judged by the
+     * punch region, loop window and legacy range of the last block of that input the take received: the stop at
+     * the input's delivered end with no region, inside the legacy range, or when that end lies inside the punch
+     * region. For an input that stopped at or before punch-in whose silence's first block the transport played at
+     * or after punch-out, in the lap the wraps before it reach (ruling E283), first at the region's first frame in
+     * that lap for the tracks whose file of that lap holds frames, as an applied block of that silence would flag
+     * them; under loop recording a lap after the last block of that input the take received has no file (rulings
+     * E296, E297 and E300). Every other track at the region's first frame in the lap the silence first reaches it
+     * in (rulings E77, E88, E179 and E186), and none when the silence never reaches the region. The resume at the
+     * stop. Its warning has ruling E284's words, or E302's when a block with which the input delivers again marks
+     * it. Returns whether a track was flagged. Flush thread, at the seal or in {@link #applyBlock}.
+     */
+    private boolean markTheDroppedSilence(int source, long start, long blocks) {
+        long delivered = sourceDeliveredEndFrame[source];
+        long stopFrame = Math.max(0L, delivered == NOTHING_DELIVERED ? config.recordingStartFrame() : delivered);
+        int blockFrames = inputRings == null ? ring.slotFrames() : inputRings[source].slotFrames();
+        FileLossCounts.Window window = fileLosses.windowOf(source);
+        boolean flagged = false;
+        if (window != null && window.hasPunchRegion()) {
+            if (delivered <= window.regionStart() || delivered >= window.regionEnd()) {
+                long lapsAhead = 0L;
+                long playedStart = start;
+                if (FrameSpans.looped(window.loopStart(), window.loopEnd()) && start >= window.loopEnd()) {
+                    long length = window.loopEnd() - window.loopStart();
+                    lapsAhead = (start - window.loopEnd()) / length + 1;
+                    playedStart = start - lapsAhead * length;
+                }
+                // Under loop recording a later lap's lane opens only with a block of it; none reached the take.
+                boolean theLapsFileIsCurrent = lapsAhead == 0L || !config.loopRecord();
+                if (delivered <= window.regionStart() && playedStart >= window.regionEnd() && theLapsFileIsCurrent) {
+                    flagged = flagTheInputsTracks(source, regionStartInLap(window.regionStart(), window.loopStart(),
+                            window.loopEnd(), sourceWraps[source] + lapsAhead), true);
+                }
+                long wraps = FrameSpans.wrapsBeforeTheRegion(start, blocks * blockFrames, window.loopStart(),
+                        window.loopEnd(), window.regionStart(), window.regionEnd());
+                if (wraps < 0L) {
+                    return flagged;
+                }
+                stopFrame = regionStartInLap(window.regionStart(), window.loopStart(), window.loopEnd(),
+                        sourceWraps[source] + wraps);
+            }
+        } else if (config.legacyPunchRange() != null && !legacyRangeReached(start, blocks, blockFrames, window)) {
+            return false;
+        }
+        return flagTheInputsTracks(source, stopFrame, false) || flagged;
+    }
+
+    /**
+     * Gives each of {@code source}'s physical tracks not yet flagged, only those whose file holds frames when
+     * {@code onlyTracksWithFrames}, a stop at {@code stopFrame} for silence of the input the take did not keep, the
+     * resume equal; whether a track was flagged. Flush thread: at the seal, or in {@link #applyBlock} by the block
+     * with which the input delivers again (ruling E302).
+     */
+    private boolean flagTheInputsTracks(int source, long stopFrame, boolean onlyTracksWithFrames) {
+        boolean flagged = false;
+        sealWritesTheStops = true;
+        try {
+            for (TrackCapture capture : captures) {
+                if (capture.inputSource() != source || capture.isInstrument() || capture.session() == null
+                        || onlyTracksWithFrames && capture.session().getTotalSamplesRecorded() <= 0) {
+                    continue;
+                }
+                if (flagRoute(capture, 0)) {
+                    recordInputStopped(capture, stopFrame, stopFrame);
+                    flagged = true;
+                }
+            }
+        } finally {
+            sealWritesTheStops = false;
+        }
+        return flagged;
+    }
+
+    /**
+     * Whether a block of {@code blocks} from {@code start} would have begun inside the legacy beat range, which
+     * gates by a block's beat ({@link #applyBlock}), each start followed across the loop wrap (ruling E282).
+     */
+    private boolean legacyRangeReached(long start, long blocks, int blockFrames, FileLossCounts.Window window) {
+        double beatsPerFrame = config.tempoBpm() / 60.0 / config.format().sampleRate();
+        for (long block = 0L; block < blocks; block++) {
+            long frame = start + block * blockFrames;
+            if (window != null && FrameSpans.looped(window.loopStart(), window.loopEnd())
+                    && frame >= window.loopEnd()) {
+                frame = window.loopStart() + (frame - window.loopEnd()) % (window.loopEnd() - window.loopStart());
+            }
+            if (config.legacyPunchRange().contains(frame * beatsPerFrame)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Judges the blocks left behind on {@code source}'s ring, in ring order, as the take would have judged them
+     * had they been applied, until one of its silence flags the input's tracks: each held block's lap counts the
+     * wraps among the blocks before it the take did not receive (ruling E283), so the line and the resume read
+     * from that block's header are the ones it would have given (rulings E77, E88 and E277); the warning has
+     * ruling E284's words and names the lap of the last delivered frame the take received (rulings E172 and
+     * E293).
+     */
+    private void markTheFirstHeldSilence(int source, List<CaptureRing.Slot> held) {
+        double beat = inputRings == null ? previousBeat : sourcePreviousBeat[source];
+        for (CaptureRing.Slot slot : held) {
+            if (beat >= 0.0 && slot.beatPosition() < beat && slot.loopEnabled()) {
+                sourceWraps[source] = sourceWraps[source] + 1;
+            }
+            beat = slot.beatPosition();
+            if (slot.sourceChannels(0) == 0 && markTheInputStoppedAt(source, slot)) {
+                return;
+            }
+        }
+    }
+
+    /** Judges a held block of {@code source}'s silence as {@link #applyBlock} would; whether a track was flagged. */
+    private boolean markTheInputStoppedAt(int source, CaptureRing.Slot silence) {
+        long flaggedBefore = flaggedTracks(source);
+        inputSource = source;
+        sealWritesTheStops = true;
+        try {
+            long blockStart = silence.startFrame();
+            long blockEnd = blockStart + silence.numFrames();
+            if (silence.punchEnabled() && !FrameSpans.overlaps(blockStart, blockEnd, silence.punchStartFrames(),
+                    silence.punchEndFrames())) {
+                flagStopOutsideThePunchRegion(silence, blockStart);
+            } else if (!legacyRangeExcludes(silence)) {
+                for (TrackCapture capture : captures) {
+                    if (capture.inputSource() == source && !capture.isInstrument() && capture.session() != null) {
+                        flagUnavailable(capture, 0, silence);
+                    }
+                }
+            }
+        } finally {
+            sealWritesTheStops = false;
+        }
+        return flaggedTracks(source) > flaggedBefore;
+    }
+
+    /** The tracks recording {@code source}'s input whose route is flagged. */
+    private long flaggedTracks(int source) {
+        return captures.stream().filter(capture -> capture.inputSource() == source && !capture.isInstrument()
+                && capture.isRoutingFlagged()).count();
+    }
+
+    /**
+     * Whether a physical track of {@code source}'s input is not flagged, the tracks {@link #endStarvedRun} gives
+     * an entry: a declared stop that leaves one covers none of its starved drops (rulings E49 and E301).
+     */
+    private boolean hasAnUncoveredTrack(int source) {
+        return captures.stream().anyMatch(capture -> capture.inputSource() == source && !capture.isInstrument()
+                && !capture.isRoutingFlagged());
+    }
+
+    /** The thread takes nothing more up: every block it released is done with, for {@link #awaitFlushed}. */
+    private void markEveryRingLooked() {
+        if (inputRings == null) {
+            sourceLookedBlocks.set(0, ring.releasedBlocks());
+            return;
+        }
+        for (int i = 0; i < inputRings.length; i++) {
+            sourceLookedBlocks.set(i, inputRings[i].releasedBlocks());
+        }
+    }
+
+    /** Notes ring {@code source}'s drops behind the final sweep, up to {@code overflow}, for {@link #awaitFlushed}. */
+    private void accountLateDrops(int source, long overflow, long lateDrops) {
+        if (lateDrops == 0L) {
+            return;
+        }
+        if (inputRings == null) {
+            lastOverflowSeen = overflow;
+        } else {
+            sourceLastOverflow[source] = overflow;
+        }
+        overflowNoted += lateDrops;
+        if (sourceOverflowNoted != null) {
+            sourceOverflowNoted.set(source, overflow);
+        }
     }
 
     /**
@@ -1011,7 +1370,8 @@ public final class CaptureFlushService {
     /**
      * Drains every published slot in order, running the cadence tick
      * ({@link #forceDueSegments()}) after each block and once more at the
-     * end of the pass; returns whether any block was applied.
+     * end of the pass; returns whether any block was applied. Each ring's
+     * pass ends with its look ({@link #lookAtTheRing()}).
      */
     private boolean drainOnce() {
         if (!sealed && !finalSweep) {
@@ -1026,16 +1386,12 @@ public final class CaptureFlushService {
             previousBeat = sourcePreviousBeat[i];
             wasInsidePunchRegion = sourceWasInsidePunchRegion[i];
             lastOverflowSeen = sourceLastOverflow[i];
-            gapAnchorSequence = sourceGapAnchorSequence[i];
-            gapAnchorFrame = sourceGapAnchorFrame[i];
             lastAppliedEndFrame = sourceLastAppliedEndFrame[i];
             truncationEpisodeOpen = sourceTruncationEpisode[i];
             progressed |= drainInputRing();
             sourcePreviousBeat[i] = previousBeat;
             sourceWasInsidePunchRegion[i] = wasInsidePunchRegion;
             sourceLastOverflow[i] = lastOverflowSeen;
-            sourceGapAnchorSequence[i] = gapAnchorSequence;
-            sourceGapAnchorFrame[i] = gapAnchorFrame;
             sourceLastAppliedEndFrame[i] = lastAppliedEndFrame;
             sourceTruncationEpisode[i] = truncationEpisodeOpen;
         }
@@ -1057,16 +1413,10 @@ public final class CaptureFlushService {
             long sequence = slot.sequence();
             long startFrame = slot.startFrame();
             int numFrames = slot.numFrames();
-            if (sequence == ring.droppedAfterSequence()) {
-                // The callback dropped the block(s) that would have followed
-                // this one: the loss begins where this block ends.
-                gapAnchorSequence = sequence;
-                gapAnchorFrame = startFrame + numFrames;
-            }
-            // Counted and observed before the release, which ends
-            // awaitFlushed's wait, so the fence covers both (story 336,
-            // studio-engineer ruling R992-22). The slot is released even
-            // when the observer throws.
+            // Counted and observed before the release, and so before the
+            // look that ends awaitFlushed's wait (story 336, studio-engineer
+            // ruling R992-22). The slot is released even when the observer
+            // throws.
             appliedBlocks = appliedBlocks + 1;
             BlockObserver observer = blockObserver;
             try {
@@ -1077,7 +1427,7 @@ public final class CaptureFlushService {
                 ring.release();
             }
         }
-        noteOverflow();
+        lookAtTheRing();
         forceDueSegments(); // a dry ring's pass forces on cadence too
         if (manifestDirty) {
             flushManifest(); // the idle tick of a manifest that could not be written
@@ -1185,6 +1535,8 @@ public final class CaptureFlushService {
             return;
         }
         try {
+            // First: the window, lap, lane and delivered end are still those of the silence before this block.
+            markTheSilenceBeforeTheInputDeliversAgain(slot);
             // Loop-record: a beat position that went backwards between
             // consecutive blocks while looping means a lap just completed.
             // Detected before routing so the wrapped audio goes into the new
@@ -1208,6 +1560,7 @@ public final class CaptureFlushService {
             if (headroom.check(now) == DiskHeadroomWatch.State.EXHAUSTED) {
                 // Counted before the seal: the seal may rethrow a lane's Error.
                 discardedBlocks = discardedBlocks + 1;
+                lineThePassBeforeTheEarlySeal();
                 sealEarly(SealedBy.DISK_EXHAUSTION, null);
                 // Reached when the seal returned; a seal that threw (a lane's
                 // Error) is announced by failAndSeal, after its re-entry.
@@ -1218,7 +1571,7 @@ public final class CaptureFlushService {
             long blockStart = slot.startFrame();
             int numFrames = slot.numFrames();
             long blockEnd = blockStart + numFrames;
-            fileLosses.blockReceived(inputSource, blockStart,
+            fileLosses.blockReceived(inputSource,
                     slot.punchEnabled() ? slot.punchStartFrames() : FrameSpans.UNBOUNDED_START,
                     slot.punchEnabled() ? slot.punchEndFrames() : FrameSpans.UNBOUNDED_END,
                     slot.loopStartFrame(), slot.loopEndFrame());
@@ -1238,7 +1591,10 @@ public final class CaptureFlushService {
             // After the write: a block whose write failed never reached the
             // file, so the tail the failure's seal writes stops before it.
             noteStarvedBlockWritten(slot, blockStart, blockEnd);
+            long runLine = Math.max(0L, lastAppliedEndFrame);
             lastAppliedEndFrame = blockEnd;
+            // Kept: written, or passed over outside the region, so the run before it is the take's (ruling E274).
+            lineTheRunBefore(slot, runLine, blockStart, wrapped);
             publishPeaksIfDue(now);
             noteTruncation(slot, blockEnd);
             if (manifestDirty) {
@@ -1246,6 +1602,32 @@ public final class CaptureFlushService {
             }
         } catch (Throwable failure) {
             failAndSeal(failure);
+        }
+    }
+
+    /**
+     * When {@code slot}, a kept block with channels of its input, follows drops that held the input's silence, the
+     * input delivers again after a declared stop in this take, which only a reopened stream gives: its tracks get
+     * the input-stopped line the seal gives such silence (ruling E282), judged by the state before this block, in
+     * the words of a stop before a delivery (ruling E302); {@link #lineTheRunBefore} then lines the whole run.
+     * The silence is placed before the audio the stamp shows came after it. Flush thread, in {@link #applyBlock}.
+     */
+    private void markTheSilenceBeforeTheInputDeliversAgain(CaptureRing.Slot slot) {
+        DroppedRuns runs = droppedRuns[inputSource];
+        CaptureRing.DropCounts stamp = ring.stampOf(slot);
+        long silence = stamp.inputless() - runs.seen.inputless();
+        if (slot.sourceChannels(0) == 0 || silence <= 0L) {
+            return;
+        }
+        long blocks = stamp.total() - runs.seen.total();
+        long audioAfterIt = stamp.audioAfterSilence() - runs.seen.audioAfterSilence();
+        long start = Math.max(0L, lastAppliedEndFrame)
+                + Math.max(0L, blocks - silence - audioAfterIt) * ring.slotFrames();
+        stopBeforeADelivery = true;
+        try {
+            markTheDroppedSilence(inputSource, start, silence);
+        } finally {
+            stopBeforeADelivery = false;
         }
     }
 
@@ -1273,7 +1655,7 @@ public final class CaptureFlushService {
         truncationEpisodeOpen = true;
         truncationEpisodes = truncationEpisodes + 1;
         long gapStart = Math.max(0L, keptEndFrame);
-        addInputGaps(gapStart, 0);
+        addInputGaps(inputSource, gapStart, 0);
         manifestDirty = true;
         int delivered = slot.numFrames() + truncated;
         warn("Capture block of " + delivered + " frames is longer than the " + ring.slotFrames()
@@ -1454,39 +1836,179 @@ public final class CaptureFlushService {
         }
     }
 
+    /** A run held until the input's open starved run ends: its line, and its count and reach either way. */
+    private record WaitingRun(long line, long ifStarvedCount, boolean reachesIfStarvedCount, long ifNot,
+                              boolean reachesIfNot) {
+    }
+
+    /** One input ring's runs of dropped blocks on the flush thread (story 338, rulings E273 to E287). */
+    private static final class DroppedRuns {
+        /** The drop counts the last block kept from the ring was stamped with: where the next run begins. */
+        CaptureRing.DropCounts seen = new CaptureRing.DropCounts(0L, 0L, 0L, 0L, 0L, 0L);
+        /** Runs whose line waits for the input's open starved run to end (ruling E281). */
+        final List<WaitingRun> waiting = new ArrayList<>();
+        /** The input-starved drops of {@link #waiting}. */
+        long waitingStarved;
+        /** The ring's counts the final sweep's look read at a device-loss seal (ruling E286). */
+        CaptureRing.DropCounts atTheLoss;
+    }
+
     /**
-     * Turns an advance of the ring's overflow counter into one {@code gap=}
-     * line, positioned at the end of the last block accepted before the
-     * drop (see the class note for the fallback). The fallback position —
-     * the end of the last block applied — has no test: it is not reachable
-     * deterministically, because both ways into it are races between single
-     * loads and stores of the two threads (the callback's marker store
-     * against this thread's marker load for the block it names, or a drop
-     * between this thread's last look at the ring and its read of the
-     * counter) and no seam holds this thread at either point — the
-     * {@link BlockObserver} runs after the marker comparison and before the
-     * next look at the ring, where a block published meanwhile is applied
-     * and matched in order.
+     * The run of blocks the ring dropped right before the block just kept (ruling E273), from the counts that
+     * block was stamped with: lined at {@code line}, the end of the block the ring delivered before it, for its
+     * blocks that carried audio a track records and, where they count, its input-starved blocks (ruling E281);
+     * held whole while its starved blocks lead into more of the input's starved blocks, until that starved run
+     * ends; its starved drops wait while the stop flags not every track of the input (ruling E301); the silence
+     * after a declared stop gets nothing (ruling E277), unless this block, with channels of the input, delivers
+     * again after it: then every block of the run is lined and counted, and the waiting runs end counted (ruling
+     * E302). Flush thread, in {@link #applyBlock}.
+     */
+    private void lineTheRunBefore(CaptureRing.Slot slot, long line, long next, boolean wrapped) {
+        DroppedRuns runs = droppedRuns[inputSource];
+        CaptureRing.DropCounts stamp = ring.stampOf(slot);
+        long blocks = stamp.total() - runs.seen.total();
+        long audio = stamp.audio() - runs.seen.audio();
+        long starved = stamp.starved() - runs.seen.starved();
+        boolean silenceFirst = stamp.audioAfterSilence() > runs.seen.audioAfterSilence();
+        boolean deliversAfterItsSilence = slot.sourceChannels(0) > 0 && stamp.inputless() > runs.seen.inputless();
+        runs.seen = stamp;
+        boolean delivered = slot.sourceChannels(0) > 0 && !slot.inputStarved();
+        // This block's own flags are set: applyBlock judged its stop before it lines the run.
+        boolean stopCovers = !delivered && !slot.inputStarved() && !hasAnUncoveredTrack(inputSource);
+        long open = runs.waitingStarved + starved;
+        // The starved drops since a block with delivered input was last claimed, kept or dropped.
+        long afterTheLastDelivery = Math.min(stamp.starvedSinceDelivery(), open);
+        if (delivered || deliversAfterItsSilence || afterTheLastDelivery < open) {
+            resolveWaitingRuns(inputSource, true);
+        } else if (stopCovers) {
+            resolveWaitingRuns(inputSource, false);
+        }
+        long waits = delivered || deliversAfterItsSilence ? 0L : Math.min(afterTheLastDelivery, starved);
+        long counted = deliversAfterItsSilence ? blocks : audio + starved - waits;
+        if (!delivered && !stopCovers && waits > 0L) {
+            runs.waiting.add(new WaitingRun(line, audio + starved,
+                    runReaches(line, audio + starved, blocks, silenceFirst, next, wrapped), counted,
+                    runReaches(line, counted, blocks, silenceFirst, next, wrapped)));
+            runs.waitingStarved += waits;
+        } else if (counted > 0L) {
+            lineRun(inputSource, line, counted, runReaches(line, counted, blocks, silenceFirst, next, wrapped));
+        }
+    }
+
+    /**
+     * Whether a run of {@code blocks} dropped blocks, {@code counted} of which count, reaches into the punch
+     * region: a whole run, or one whose silence-only blocks came before its audio, by the frames to the next
+     * block (rulings E273, E285 and E287); any other by the own extent of the blocks it counts, which lead it
+     * (rulings E104, E277 and E281). Flush thread, for the ring being drained.
+     */
+    private boolean runReaches(long line, long counted, long blocks, boolean silenceFirst, long next, boolean wrapped) {
+        int blockFrames = ring.slotFrames();
+        if (counted == blocks || silenceFirst) {
+            return fileLosses.runReachesTheRegion(inputSource, line, blocks * blockFrames, next, wrapped);
+        }
+        return fileLosses.reachesTheRegionByItsOwnExtent(inputSource, line, counted * blockFrames);
+    }
+
+    /**
+     * Ends the waiting runs of {@code source}'s open starved run: each gets its line, counting its input-starved
+     * blocks when {@code starvedCount} — the run ended with its input delivering again, or the take was sealed at
+     * the person's Stop or early with no declared stop covering every track of the input after it — and without
+     * them otherwise (rulings E281 and E301).
+     */
+    private void resolveWaitingRuns(int source, boolean starvedCount) {
+        DroppedRuns runs = droppedRuns[source];
+        for (WaitingRun run : runs.waiting) {
+            long blocks = starvedCount ? run.ifStarvedCount() : run.ifNot();
+            if (blocks > 0L) {
+                lineRun(source, run.line(), blocks, starvedCount ? run.reachesIfStarvedCount() : run.reachesIfNot());
+            }
+        }
+        runs.waiting.clear();
+        runs.waitingStarved = 0L;
+    }
+
+    /** Adds a run's line to the manifest builder, for the look's one write and the pass's one warning (E273). */
+    private void lineRun(int source, long line, long blocks, boolean reachesTheRegion) {
+        addInputGaps(source, line, blocks);
+        if (reachesTheRegion) {
+            fileLosses.countOverflowBlocks(blocks);
+        }
+        overflowBlocksLined += blocks;
+        manifest.overflowBlocks(overflowBlocksLined);
+        runLinesUnwritten = true;
+        if (!passLinedARun) {
+            passLinedARun = true;
+            passRunFrame = line;
+            passRunBlocks = blocks;
+        }
+    }
+
+    /**
+     * The pass's one ring-overflow warning, for the first run it lined, whose total is the take's
+     * {@code overflow-blocks} so far: the pass's other runs are in that total and in the manifest (ruling E273).
+     */
+    private void warnOfThePassRuns() {
+        if (!passLinedARun) {
+            return;
+        }
+        passLinedARun = false;
+        warn(overflowWarning(passRunBlocks, passRunFrame, overflowBlocksLined));
+    }
+
+    /**
+     * Before the flush thread seals the take early: the runs waiting on an open starved run get their line, their
+     * starved blocks counted (ruling E281), and the pass's ring-overflow warning is given before the early seal's,
+     * so the record coordinator shows it while the take still records (ruling E274). The runs only while the
+     * take is not sealed. Flush thread; besides the warning sink it touches what lining a run does: the manifest
+     * builder, the take's file losses and its {@code overflow-blocks} count.
+     */
+    private void lineThePassBeforeTheEarlySeal() {
+        if (!sealed) {
+            for (int source = 0; source < droppedRuns.length; source++) {
+                resolveWaitingRuns(source, true);
+            }
+        }
+        warnOfThePassRuns();
+    }
+
+    /**
+     * The look that ends every pass over the ring: writes the manifest, once, for the runs the pass lined, gives
+     * the pass's one ring-overflow warning, notes the ring's drops for {@link #awaitFlushed} and moves that fence
+     * past the blocks the pass released (ruling E273); at the final sweep of a device-loss seal it first keeps the
+     * ring's drop counts for the seal, which lines what they hold unless the take is sealed early (rulings E275
+     * and E286). Flush thread.
+     */
+    private void lookAtTheRing() {
+        if (finalSweep && requestedReason == SealedBy.DEVICE_LOSS) {
+            droppedRuns[inputSource].atTheLoss = ring.dropCounts();
+        }
+        if (runLinesUnwritten) {
+            manifestDirty = true;
+            flushManifest();
+        }
+        warnOfThePassRuns();
+        noteOverflow();
+        sourceLookedBlocks.set(inputSource, ring.releasedBlocks());
+    }
+
+    /**
+     * Notes the ring's drops for {@link #awaitFlushed} as this look counts them, whatever becomes of their lines:
+     * a run is lined only once a block the take keeps follows it, its line can wait for an input's starved run to
+     * end, and some runs get none (rulings E273 to E281). Flush thread, at the look that ends each pass.
      */
     private void noteOverflow() {
         long overflow = ring.overflowCount();
         if (overflow <= lastOverflowSeen) {
             return;
         }
-        long dropped = overflow - lastOverflowSeen;
+        overflowNoted += overflow - lastOverflowSeen;
         lastOverflowSeen = overflow;
-        // Read after the count: the callback stores the marker first.
-        long droppedAfter = ring.droppedAfterSequence();
-        long gapStart = Math.max(0L, gapAnchorSequence == droppedAfter ? gapAnchorFrame : lastAppliedEndFrame);
-        addInputGaps(gapStart, dropped);
-        fileLosses.gapNoticed(inputSource, gapStart, dropped, ring.slotFrames());
-        manifest.overflowBlocks(totalOverflow());
-        manifestDirty = true;
-        warn("Capture ring overflow: " + dropped + " block(s) dropped at frame " + gapStart
-                + " (" + overflow + " dropped in total); the take manifest records the gap");
-        flushManifest();
-        overflowNoted += dropped;
         if (sourceOverflowNoted != null) sourceOverflowNoted.set(inputSource, overflow);
+    }
+
+    private static String overflowWarning(long dropped, long gapStart, long total) {
+        return "Capture ring overflow: " + dropped + " block(s) dropped at frame " + gapStart
+                + " (" + total + " dropped in total); the take manifest records the gap";
     }
 
     private long totalOverflow() {
@@ -1495,9 +2017,9 @@ public final class CaptureFlushService {
         for (CaptureRing input : inputRings) total += input.overflowCount();
         return total;
     }
-    private void addInputGaps(long start, long dropped) {
+    private void addInputGaps(int source, long start, long dropped) {
         if (inputRings == null || inputRings.length == 1) manifest.addGap(new GapEntry(GapEntry.ALL_TRACKS, start, dropped));
-        else for (TrackCapture capture : captures) if (capture.inputSource() == inputSource)
+        else for (TrackCapture capture : captures) if (capture.inputSource() == source)
             manifest.addGap(new GapEntry(capture.trackId(), start, dropped));
     }
     /**
@@ -1558,7 +2080,8 @@ public final class CaptureFlushService {
         if (slot.punchEnabled()) {
             boolean deliveredInside = delivered > slot.punchStartFrames() && delivered < slot.punchEndFrames();
             long stopLap = deliveredInside ? sourceWrapsAtDelivery[source] : sourceWraps[source];
-            stopFrame = deliveredInside ? delivered : regionStartInLap(slot, stopLap);
+            stopFrame = deliveredInside ? delivered
+                    : regionStartInLap(slot.punchStartFrames(), slot.loopStartFrame(), slot.loopEndFrame(), stopLap);
             stopInTheTransportsLap = stopLap == transportLap;
         }
         long outputClockFrame = slot.outputClockFrame();
@@ -1567,33 +2090,51 @@ public final class CaptureFlushService {
             resumeFrame = Math.max(0L, outputClockFrame);
             if (slot.punchEnabled()) {
                 // In the stop's lap a clock frame before the stop is the block across the region's start.
-                resumeFrame = Math.max(resumeFrame,
-                        stopInTheTransportsLap ? stopFrame : regionStartInLap(slot, transportLap));
+                resumeFrame = Math.max(resumeFrame, stopInTheTransportsLap ? stopFrame
+                        : regionStartInLap(slot.punchStartFrames(), slot.loopStartFrame(), slot.loopEndFrame(),
+                                transportLap));
             }
         }
+        recordInputStopped(capture, stopFrame, resumeFrame);
+    }
+
+    /**
+     * Writes the track's input-stopped line and warns in the words of story 338's ruling E14, which E172 gives a
+     * lap in a loop-record take; a stop the seal writes because none of the input's silence reached the take
+     * says that the track holds no audio from there (ruling E284); a stop marked by the block with which the input
+     * delivers again after its dropped silence says only where it stopped, since audio follows (ruling E302).
+     */
+    private void recordInputStopped(TrackCapture capture, long stopFrame, long resumeFrame) {
         manifest.addInputStopped(new TakeManifest.InputStopped(capture.trackId(), stopFrame, resumeFrame));
         String lead = "Track '" + capture.trackName() + "': " + InputNames.shown(capture.inputDeviceName())
                 .map(name -> "input from '" + name + "' ").orElse("the audio input ");
         String stoppedIn = config.loopRecord()
                 ? "lap " + (capture.laneAtLastDelivery() + 1) + " of the take" : "the take";
+        String stoppedAt = "stopped delivering audio at "
+                + takePosition(capture.recordedAtLastDelivery(), config.format().sampleRate()) + " into " + stoppedIn;
+        if (stopBeforeADelivery) {
+            warn(capture.hasRoutedDeliveredBlock()
+                    ? lead + stoppedAt + "."
+                    : lead + "delivered no audio before it stopped.");
+            return;
+        }
+        String holds = sealWritesTheStops ? "holds no audio" : "records silence";
         warn(capture.hasRoutedDeliveredBlock()
-                ? lead + "stopped delivering audio at "
-                        + takePosition(capture.recordedAtLastDelivery(), config.format().sampleRate())
-                        + " into " + stoppedIn + "; the track records silence from there."
-                : lead + "delivered no audio; the track records silence.");
+                ? lead + stoppedAt + "; the track " + holds + " from there."
+                : lead + "delivered no audio; the track " + holds + ".");
     }
 
     /**
-     * The first frame of the slot's punch region played in the lap after
+     * The first frame of the punch region from {@code punchIn} played in the lap after
      * {@code wraps} wraps: the punch-in frame in lap 1, the later of the
      * punch-in and the loop start in a later lap (rulings E179 and E186).
      */
-    private static long regionStartInLap(CaptureRing.Slot slot, long wraps) {
-        long punchIn = Math.max(0L, slot.punchStartFrames());
-        if (wraps == 0 || !FrameSpans.looped(slot.loopStartFrame(), slot.loopEndFrame())) {
-            return punchIn;
+    private static long regionStartInLap(long punchIn, long loopStart, long loopEnd, long wraps) {
+        long first = Math.max(0L, punchIn);
+        if (wraps == 0 || !FrameSpans.looped(loopStart, loopEnd)) {
+            return first;
         }
-        return Math.max(punchIn, slot.loopStartFrame());
+        return Math.max(first, loopStart);
     }
 
     /** Flags the track's route once in the manifest; {@code false} when it already was. */
@@ -1745,6 +2286,7 @@ public final class CaptureFlushService {
     }
 
     private void failAndSeal(Throwable failure) {
+        lineThePassBeforeTheEarlySeal();
         lastFailure = failure;
         LOG.log(Level.SEVERE, "capture write failed; sealing the take early with what is on disk", failure);
         warn("Recording stopped early — " + describe(failure)
@@ -1885,6 +2427,8 @@ public final class CaptureFlushService {
             }
         }
         if (!finalManifestWritten) {
+            // Before the trailing starved run: an input-stopped line it gives covers that run (ruling E49).
+            noteBlocksLeftBehind();
             if (!sealMarksWritten) {
                 sealMarksWritten = true;
                 // The trailing starved run the final sweep reached, up to the
@@ -1894,10 +2438,8 @@ public final class CaptureFlushService {
                 for (int source = 0; source < sourceDeliveredEndFrame.length; source++) {
                     endStarvedRun(source, tailCounted);
                 }
-                fileLosses.takeSealed();
                 drainClockNotes();
             }
-            noteBlocksLeftBehind();
             SealedBy first = sealReason;
             SealedBy manifestReason;
             if (first == SealedBy.STOP && !sealFailed) {
@@ -2123,6 +2665,7 @@ public final class CaptureFlushService {
         built.write(config.takeDirectory());
         lastManifest = built;
         manifestDirty = false;
+        runLinesUnwritten = false;
         manifestWrites = manifestWrites + 1;
         if (built.sealStatus() != TakeManifest.SealStatus.STREAMING) {
             finalManifestWritten = true;
@@ -2181,9 +2724,13 @@ public final class CaptureFlushService {
     /**
      * Blocks until every block published before this call has been applied
      * — routed, written, counted, its manifest rewrite done, the cadence
-     * tick after it run and the {@link BlockObserver}, when a test has set
-     * one, returned — and every ring overflow counted before this call
-     * has its {@code gap=} line recorded, or the timeout elapses. The
+     * tick after it run, the {@link BlockObserver}, when a test has set one,
+     * returned, and the look that ends its pass done, which writes the
+     * {@code gap=} line of a run of dropped blocks the block follows (ruling
+     * E273) — and every ring overflow counted before this call has been
+     * noticed at such a look, whether or not a block has followed it yet, or
+     * the timeout elapses. A thread that has ended is done with every block
+     * it released. The
      * end-of-pass cadence tick is not part of the fence. "Manifest rewrite
      * done" means attempted, or — while an earlier manifest failure is still being
      * retried — deferred to the next retry slot: a rewrite that failed is
@@ -2194,7 +2741,7 @@ public final class CaptureFlushService {
      * @param timeout the bound
      * @throws IllegalStateException if the timeout elapses, or the flush
      *                               thread is no longer running with blocks
-     *                               still unapplied or drops still unrecorded
+     *                               still unapplied or drops still unnoticed
      */
     public void awaitFlushed(Duration timeout) {
         Objects.requireNonNull(timeout, "timeout must not be null");
@@ -2209,6 +2756,10 @@ public final class CaptureFlushService {
         long deadline = System.nanoTime() + timeout.toNanos();
         while (!allInputsFlushed(inputs, targets, overflowTargets)) {
             if (!running) {
+                // The thread's last fence stores precede its store of running: read the fence once more.
+                if (allInputsFlushed(inputs, targets, overflowTargets)) {
+                    return;
+                }
                 throw new IllegalStateException("capture-flush is not running: applied " + appliedBlocks
                         + " of " + target + " published block(s), noted " + overflowNoted + " of "
                         + targetOverflow + " dropped");
@@ -2262,7 +2813,7 @@ public final class CaptureFlushService {
      * into the manifest on its next pass, or at the seal (story 338, rulings
      * E30, E40 and E62). Any thread; never blocks, no storage I/O. An event
      * handed in once the take is sealed, or after its thread terminated, is
-     * ignored.
+     * ignored ({@link #ignoresClockEvents()}).
      *
      * @param event what the clock did
      * @param frame the transport frame at the take's rate the event is dated
@@ -2270,7 +2821,7 @@ public final class CaptureFlushService {
      */
     public void noteClockEvent(TakeManifest.ClockEvent event, long frame) {
         Objects.requireNonNull(event, "event must not be null");
-        if (sealed || terminated) {
+        if (ignoresClockEvents()) {
             return;
         }
         clockNotes.add(new TakeManifest.ClockMark(event, Math.max(0L, frame)));
@@ -2303,10 +2854,15 @@ public final class CaptureFlushService {
     }
 
     /**
-     * Ring-overflow blocks whose gap reaches into the punch region; every
-     * one with no punch region. The {@code gap=} lines and
-     * {@code overflow-blocks} record every drop (story 338, ruling E86).
-     * Any thread.
+     * Ring-overflow blocks with a {@code gap=} line, counted when the frames their run would have held reach
+     * into the punch region, every one with no punch region: blocks that carried audio a track records, and
+     * input-starved blocks where an applied starved block in their place would count; a run is counted once the
+     * block after it is applied, once the input's starved run it leads into has ended, or at the seal when no
+     * applied block follows it — at the person's Stop with the blocks a ring received after the final sweep, and
+     * at a device loss not sealed early in its final sweep, the drops that sweep's look found and the runs whose
+     * line waited on the input's starved run (story 338, rulings E86, E213 and E273 to E287). The {@code gap=}
+     * lines record these blocks, and {@code overflow-blocks} the dropped ones, whether or not they reach into the
+     * punch region. Any thread.
      */
     public long fileOverflowBlocks() {
         return fileLosses.overflowBlocks();
@@ -2441,7 +2997,7 @@ public final class CaptureFlushService {
      * Test seam: told about every block the flush thread has finished with,
      * in drain order, on the flush thread, once the block has been applied
      * and counted and before its slot is released. {@link #awaitFlushed(Duration)}
-     * ends at the release, so it returns only once the observer has returned
+     * ends at the look that ends the block's pass, after the release, so it returns only once the observer has returned
      * for every block it waits for (story 336, studio-engineer ruling R992-22).
      * The slot is released even when the observer throws, and the throwable
      * then ends the drain loop; an observer that blocks keeps that one slot
@@ -2572,7 +3128,7 @@ public final class CaptureFlushService {
     /** Returns how many incoming blocks the callback dropped because the ring was full. */
     private boolean allInputsFlushed(CaptureRing[] inputs, long[] targets, long[] overflows) {
         for (int i = 0; i < inputs.length; i++) {
-            if (inputs[i].releasedBlocks() < targets[i]) return false;
+            if (sourceLookedBlocks.get(i) < targets[i]) return false;
             if ((sourceOverflowNoted == null ? overflowNoted : sourceOverflowNoted.get(i)) < overflows[i]) return false;
         }
         return true;
@@ -2585,6 +3141,16 @@ public final class CaptureFlushService {
     /** Returns whether the take has been sealed (normally or early). */
     public boolean isSealed() {
         return sealed;
+    }
+
+    /**
+     * Returns whether the take takes no clock event any more: it is sealed,
+     * normally or early, or its thread has terminated, so
+     * {@link #noteClockEvent} ignores what it is handed from now on (story 338,
+     * ruling E280). Two volatile reads and no allocation. Any thread.
+     */
+    public boolean ignoresClockEvents() {
+        return sealed || terminated;
     }
 
     /** Returns what sealed the take, once it is sealed. */

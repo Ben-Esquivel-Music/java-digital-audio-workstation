@@ -116,7 +116,6 @@ public final class ChannelCpuBudgetDialog extends DawgDialog<Void> {
         policyCombo.setValue(SettingsModel.policyName(initialPolicy));
 
         Label policyNote = new Label(noteFor(policyCombo.getValue()));
-        policyNote.getStyleClass().add("dialog-hint");
         policyNote.setWrapText(true);
         policyCombo.valueProperty().addListener((_, _, name) -> policyNote.setText(noteFor(name)));
 

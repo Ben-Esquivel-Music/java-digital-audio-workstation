@@ -10,6 +10,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector;
 import com.benesquivelmusic.daw.sdk.audio.BackendDropoutCounters;
 import com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
+import com.benesquivelmusic.daw.sdk.audio.DriverResyncArrivals;
 import com.benesquivelmusic.daw.sdk.audio.MockAudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 import com.benesquivelmusic.daw.sdk.audio.XrunEvent;
@@ -18,6 +19,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
@@ -328,7 +330,7 @@ class XrunFeedTest {
     void aResyncIsLoggedAtTheTimeTheDriversMessageArrived() throws Exception {
         startCounting();
         long arrived = System.nanoTime() - TimeUnit.MILLISECONDS.toNanos(80);
-        spy.resyncArrival = OptionalLong.of(arrived);
+        spy.resyncArrivals.add(new DriverResyncArrivals(0L, List.of(new DriverResyncArrivals.Run(arrived, 1L))));
         spy.dropouts = new BackendDropoutCounters(0, 0, 0, 1, 0, true);
         tickAfterBlocks();
 
@@ -339,23 +341,299 @@ class XrunFeedTest {
     }
 
     @Test
-    void aResyncCarriedThroughAStandstillIsLoggedAtItsArrival() throws Exception {
+    void aResyncCarriedThroughAStandstillAndOneAfterItAreEachMarkedAtTheirOwnArrival() throws Exception {
         carryGrowthWhileTheDevicePeriodsStandStill();
-        long arrived = System.nanoTime() - TimeUnit.MILLISECONDS.toNanos(1_500);
-        spy.resyncArrival = OptionalLong.of(arrived);
-        spy.dropouts = new BackendDropoutCounters(40, 9, 0, 2, 0, true);
+        long during = System.nanoTime() - TimeUnit.MILLISECONDS.toNanos(1_500);
+        spy.resyncArrivals.add(new DriverResyncArrivals(0L, List.of(new DriverResyncArrivals.Run(during, 1L))));
+        spy.dropouts = new BackendDropoutCounters(40, 9, 0, 1, 0, true);
         tickAfterBeats();
-        assertThat(controller.xrunJournal().entries()).as("premise: carried while the device stands still")
-                .isEmpty();
+        XrunJournal journal = controller.xrunJournal();
+        assertThat(journal.entries()).filteredOn(entry -> entry.detail() == XrunJournal.Detail.DRIVER_RESYNC)
+                .as("premise: carried while the device stands still").isEmpty();
+        assertThat(journal.resyncDatesOwed()).as("ruling E291: owed to the take's frame history while carried")
+                .contains(during);
 
+        long after = System.nanoTime() - TimeUnit.MILLISECONDS.toNanos(20);
+        spy.resyncArrivals.add(new DriverResyncArrivals(1L, List.of(new DriverResyncArrivals.Run(after, 1L))));
+        spy.dropouts = new BackendDropoutCounters(40, 9, 0, 2, 0, true);
         spy.threadCounters = devicePeriods(30);
         tickAfterBeats();
 
-        assertThat(controller.xrunJournal().entries()).filteredOn(entry -> entry.detail()
-                        == XrunJournal.Detail.DRIVER_RESYNC)
+        assertThat(journal.entries()).filteredOn(entry -> entry.detail() == XrunJournal.Detail.DRIVER_RESYNC)
                 .extracting(XrunJournal.Entry::arrivedNanos, XrunJournal.Entry::count)
-                .as("both resyncs at the newest one's arrival")
-                .containsExactly(org.assertj.core.groups.Tuple.tuple(arrived, 2L));
+                .as("one entry at the first arrival").containsExactly(org.assertj.core.groups.Tuple.tuple(during, 2L));
+        assertThat(journal.drainResyncMarks()).as("each request at its own arrival")
+                .containsExactly(new XrunJournal.ResyncMark(during, 1L), new XrunJournal.ResyncMark(after, 1L));
+    }
+
+    /** Rulings E270 and E279: two resyncs in one tick are one entry at the first arrival, and a mark at each. */
+    @Test
+    void twoResyncsInOneTickAreOneEntryAtTheFirstArrivalAndAMarkAtEachArrival() throws Exception {
+        startCounting();
+        long first = System.nanoTime() - TimeUnit.MILLISECONDS.toNanos(95);
+        long second = first + TimeUnit.MILLISECONDS.toNanos(90);
+        spy.resyncArrivals.add(new DriverResyncArrivals(0L, List.of(new DriverResyncArrivals.Run(first, 1L),
+                new DriverResyncArrivals.Run(second, 1L))));
+        spy.dropouts = new BackendDropoutCounters(0, 0, 0, 2, 0, true);
+        tickAfterBlocks();
+
+        XrunJournal journal = controller.xrunJournal();
+        assertThat(journal.entries()).filteredOn(entry -> entry.detail() == XrunJournal.Detail.DRIVER_RESYNC)
+                .extracting(XrunJournal.Entry::arrivedNanos, XrunJournal.Entry::count)
+                .as("one entry at the first arrival").containsExactly(org.assertj.core.groups.Tuple.tuple(first, 2L));
+        assertThat(journal.drainResyncMarks()).as("a mark at each arrival")
+                .containsExactly(new XrunJournal.ResyncMark(first, 1L), new XrunJournal.ResyncMark(second, 1L));
+        assertThat(journal.counts().gaps()).isEqualTo(2L);
+    }
+
+    /** Ruling E279: the feed takes the resync arrivals up at every tick, whether or not it writes an entry. */
+    @Test
+    void theFeedTakesTheResyncArrivalsUpAtEveryTickWhetherOrNotItWrites() throws Exception {
+        spy.threadCounters = devicePeriods(10);
+        engine.startAudioOutput();
+        int before = spy.resyncTakes.get();
+        tick();
+        tickAfterBeats();
+        spy.threadCounters = devicePeriods(20);
+        tickAfterBeats();
+        tickAfterBeats();
+
+        assertThat(controller.xrunJournal().counts().gaps()).as("premise: nothing written").isZero();
+        assertThat(spy.resyncTakes.get() - before).as("one take a tick").isEqualTo(4);
+    }
+
+    /** Rulings E73 and E279: a resync carried into a pause is discarded with its arrival; the next keeps its own. */
+    @Test
+    void aResyncCarriedIntoAPauseIsDiscardedWithItsArrival() throws Exception {
+        spy.threadCounters = devicePeriods(10);
+        streamAndCount();
+        spy.threadCounters = devicePeriods(20);
+        tickAfterBeats();
+        long carried = System.nanoTime() - TimeUnit.MILLISECONDS.toNanos(60);
+        spy.resyncArrivals.add(new DriverResyncArrivals(0L, List.of(new DriverResyncArrivals.Run(carried, 1L))));
+        spy.dropouts = new BackendDropoutCounters(0, 0, 0, 1, 0, true);
+        tickAfterBeats();
+        XrunJournal journal = controller.xrunJournal();
+        assertThat(journal.entries()).filteredOn(entry -> entry.detail() == XrunJournal.Detail.DRIVER_RESYNC)
+                .as("premise: carried").isEmpty();
+
+        engine.pauseAudioOutput();
+        tick();
+        engine.startAudioOutput();
+        tick();
+        tickAfterBeats();
+        spy.threadCounters = devicePeriods(30);
+        tickAfterBeats();
+        long counted = System.nanoTime() - TimeUnit.MILLISECONDS.toNanos(5);
+        spy.resyncArrivals.add(new DriverResyncArrivals(1L, List.of(new DriverResyncArrivals.Run(counted, 1L))));
+        spy.dropouts = new BackendDropoutCounters(0, 0, 0, 2, 0, true);
+        spy.threadCounters = devicePeriods(40);
+        tickAfterBeats();
+
+        assertThat(journal.entries()).filteredOn(entry -> entry.detail() == XrunJournal.Detail.DRIVER_RESYNC)
+                .extracting(XrunJournal.Entry::arrivedNanos, XrunJournal.Entry::count)
+                .as("only the resync after the resume, at its own arrival")
+                .containsExactly(org.assertj.core.groups.Tuple.tuple(counted, 1L));
+        assertThat(journal.drainResyncMarks()).containsExactly(new XrunJournal.ResyncMark(counted, 1L));
+        assertThat(journal.counts().gaps()).isEqualTo(1L);
+    }
+
+    /**
+     * Rulings E19, E73 and E291: a resync carried until the stream closes is never counted, so its arrival goes
+     * with it, though the closed stream counts no resync to forget it below; another driver numbering its
+     * requests afresh never brings it back.
+     */
+    @Test
+    void aResyncCarriedUntilTheStreamClosesTakesItsArrivalWithIt() throws Exception {
+        carryGrowthWhileTheDevicePeriodsStandStill();
+        long carried = System.nanoTime() - TimeUnit.MILLISECONDS.toNanos(60);
+        spy.resyncArrivals.add(new DriverResyncArrivals(0L, List.of(new DriverResyncArrivals.Run(carried, 1L))));
+        spy.dropouts = new BackendDropoutCounters(40, 9, 0, 1, 0, true);
+        tickAfterBeats();
+        XrunJournal journal = controller.xrunJournal();
+        assertThat(journal.resyncDatesOwed()).as("premise: carried, and owed to the take's frame history")
+                .contains(carried);
+
+        engine.stopAudioOutput();
+        tick();
+
+        assertThat(journal.resyncDatesOwed()).as("the stream closed: the carried resync is never written").isEmpty();
+        spy.dropouts = new BackendDropoutCounters(0, 0, 0, 0, 0, true);
+        engine.startAudioOutput();
+        tick();
+        tickAfterBeats();
+
+        assertThat(journal.resyncDatesOwed()).isEmpty();
+        assertThat(journal.entries()).filteredOn(entry -> entry.detail() == XrunJournal.Detail.DRIVER_RESYNC)
+                .isEmpty();
+    }
+
+    /**
+     * Rulings E73, E291 and E292: a resync carried when the stream closes and reopens between two ticks, so that no
+     * tick sees the drive dead, is never counted, so the new epoch takes its arrival with it, though the reopened
+     * stream's backend counts fewer resyncs, as another backend numbering its own requests; a resync that backend
+     * counts later with no arrival is dated at the read before the one that counted it, not at the forgotten one.
+     */
+    @Test
+    void aResyncCarriedAcrossAReopenNoTickSawTakesItsArrivalWithIt() throws Exception {
+        carryGrowthWhileTheDevicePeriodsStandStill();
+        long carried = System.nanoTime() - TimeUnit.MILLISECONDS.toNanos(60);
+        spy.resyncArrivals.add(new DriverResyncArrivals(0L, List.of(new DriverResyncArrivals.Run(carried, 1L))));
+        spy.dropouts = new BackendDropoutCounters(40, 9, 0, 1, 0, true);
+        tickAfterBeats();
+        XrunJournal journal = controller.xrunJournal();
+        assertThat(journal.resyncDatesOwed()).as("premise: carried, and owed to the take's frame history")
+                .contains(carried);
+        long epochBefore = engine.audioHealth().renderDriveEpoch();
+
+        engine.stopAudioOutput();
+        spy.dropouts = new BackendDropoutCounters(0, 0, 0, 0, 0, true);
+        engine.startAudioOutput();
+        tick();
+
+        assertThat(engine.audioHealth().renderDriveEpoch()).as("premise: a new epoch").isNotEqualTo(epochBefore);
+        assertThat(engine.isRenderDriveAlive()).as("premise: the tick saw the reopened drive alive").isTrue();
+        assertThat(journal.resyncDatesOwed()).as("the carried resync is never written").isEmpty();
+
+        spy.threadCounters = devicePeriods(30);
+        long beforeThePreviousRead = System.nanoTime();
+        tickAfterBeats();
+        long afterThePreviousRead = System.nanoTime();
+        spy.dropouts = new BackendDropoutCounters(0, 0, 0, 1, 0, true);
+        spy.threadCounters = devicePeriods(40);
+        tickAfterBeats();
+
+        assertThat(journal.entries()).filteredOn(entry -> entry.detail() == XrunJournal.Detail.DRIVER_RESYNC)
+                .singleElement().satisfies(entry -> {
+                    assertThat(entry.count()).isEqualTo(1L);
+                    assertThat(entry.arrivedNanos()).as("ruling E292, not the forgotten arrival")
+                            .isBetween(beforeThePreviousRead, afterThePreviousRead);
+                });
+        assertThat(journal.drainResyncMarks()).singleElement().satisfies(mark ->
+                assertThat(mark.arrivedNanos()).isBetween(beforeThePreviousRead, afterThePreviousRead));
+        assertThat(journal.resyncDatesOwed()).isEmpty();
+    }
+
+    /** Ruling E279: an arrival taken up before its request is counted waits for the tick that counts it. */
+    @Test
+    void anArrivalTakenUpBeforeItsRequestIsCountedWaitsForTheTickThatCountsIt() throws Exception {
+        startCounting();
+        long a0 = System.nanoTime() - TimeUnit.MILLISECONDS.toNanos(50);
+        long a1 = System.nanoTime() - TimeUnit.MILLISECONDS.toNanos(40);
+        spy.resyncArrivals.add(new DriverResyncArrivals(0L, List.of(new DriverResyncArrivals.Run(a0, 1L),
+                new DriverResyncArrivals.Run(a1, 1L))));
+        spy.dropouts = new BackendDropoutCounters(0, 0, 0, 1, 0, true);
+        tickAfterBlocks();
+        spy.dropouts = new BackendDropoutCounters(0, 0, 0, 2, 0, true);
+        tickAfterBlocks();
+
+        XrunJournal journal = controller.xrunJournal();
+        assertThat(journal.entries()).filteredOn(entry -> entry.detail() == XrunJournal.Detail.DRIVER_RESYNC)
+                .extracting(XrunJournal.Entry::arrivedNanos, XrunJournal.Entry::count)
+                .containsExactly(org.assertj.core.groups.Tuple.tuple(a0, 1L),
+                        org.assertj.core.groups.Tuple.tuple(a1, 1L));
+        assertThat(journal.drainResyncMarks())
+                .containsExactly(new XrunJournal.ResyncMark(a0, 1L), new XrunJournal.ResyncMark(a1, 1L));
+    }
+
+    /**
+     * Ruling E279 at the feed: 300 resyncs in one tick are one entry at the first arrival, with every date the
+     * backend gave, the last 45 at the 256th's arrival.
+     */
+    @Test
+    void threeHundredResyncsInOneTickAreOneEntryAtTheFirstArrivalWithEachDateTheBackendGave() throws Exception {
+        startCounting();
+        long base = System.nanoTime() - TimeUnit.MILLISECONDS.toNanos(90);
+        List<DriverResyncArrivals.Run> runs = new ArrayList<>();
+        for (int i = 0; i < 255; i++) {
+            runs.add(new DriverResyncArrivals.Run(base + 1_000L * i, 1L));
+        }
+        runs.add(new DriverResyncArrivals.Run(base + 255_000L, 45L));
+        spy.resyncArrivals.add(new DriverResyncArrivals(0L, runs));
+        spy.dropouts = new BackendDropoutCounters(0, 0, 0, 300, 0, true);
+        tickAfterBlocks();
+
+        XrunJournal journal = controller.xrunJournal();
+        assertThat(journal.entries()).filteredOn(entry -> entry.detail() == XrunJournal.Detail.DRIVER_RESYNC)
+                .extracting(XrunJournal.Entry::arrivedNanos, XrunJournal.Entry::count)
+                .containsExactly(org.assertj.core.groups.Tuple.tuple(base, 300L));
+        assertThat(journal.drainResyncMarks()).as("each date the backend gave")
+                .containsExactlyElementsOf(runs.stream()
+                        .map(run -> new XrunJournal.ResyncMark(run.arrivedNanos(), run.requests())).toList());
+    }
+
+    /** A resync counted inside the start-up allowance takes its arrival with it; the next one keeps its own. */
+    @Test
+    void aResyncCountedInTheStartUpAllowanceLeavesTheNextOneDatedAtItsOwnArrival() throws Exception {
+        engine.startAudioOutput();
+        tick();
+        long early = System.nanoTime() - TimeUnit.MILLISECONDS.toNanos(50);
+        spy.resyncArrivals.add(new DriverResyncArrivals(0L, List.of(new DriverResyncArrivals.Run(early, 1L))));
+        spy.dropouts = new BackendDropoutCounters(0, 0, 0, 1, 0, true);
+        tickAfterBeats();
+        long own = System.nanoTime() - TimeUnit.MILLISECONDS.toNanos(5);
+        spy.resyncArrivals.add(new DriverResyncArrivals(1L, List.of(new DriverResyncArrivals.Run(own, 1L))));
+        spy.dropouts = new BackendDropoutCounters(0, 0, 0, 2, 0, true);
+        tickAfterBeats();
+
+        XrunJournal journal = controller.xrunJournal();
+        assertThat(journal.entries()).filteredOn(entry -> entry.detail() == XrunJournal.Detail.DRIVER_RESYNC)
+                .extracting(XrunJournal.Entry::arrivedNanos, XrunJournal.Entry::count)
+                .as("the allowance's resync is not counted; the next one is dated at its own arrival")
+                .containsExactly(org.assertj.core.groups.Tuple.tuple(own, 1L));
+        assertThat(journal.drainResyncMarks()).containsExactly(new XrunJournal.ResyncMark(own, 1L));
+    }
+
+    /** Ruling E292: a resync the feed holds no arrival for is dated at the read before the one that counted it. */
+    @Test
+    void aResyncWithNoArrivalIsDatedAtTheReadBeforeTheOneThatCountedIt() throws Exception {
+        startCounting();
+        long beforeThePreviousRead = System.nanoTime();
+        tickAfterBlocks();
+        long afterThePreviousRead = System.nanoTime();
+        spy.dropouts = new BackendDropoutCounters(0, 0, 0, 1, 0, true);
+        tickAfterBlocks();
+
+        XrunJournal journal = controller.xrunJournal();
+        assertThat(journal.entries()).filteredOn(entry -> entry.detail() == XrunJournal.Detail.DRIVER_RESYNC)
+                .singleElement().satisfies(entry -> {
+                    assertThat(entry.count()).isEqualTo(1L);
+                    assertThat(entry.arrivedNanos()).as("not the tick that wrote it")
+                            .isBetween(beforeThePreviousRead, afterThePreviousRead);
+                });
+        assertThat(journal.drainResyncMarks()).singleElement().satisfies(mark ->
+                assertThat(mark.arrivedNanos()).isBetween(beforeThePreviousRead, afterThePreviousRead));
+    }
+
+    /**
+     * Ruling E292: resyncs carried with no arrival are dated at the read before the first interval that counted
+     * them, a date owed to the take's frame history while they are carried (ruling E291).
+     */
+    @Test
+    void resyncsCarriedWithNoArrivalAreDatedAtTheReadBeforeTheFirstIntervalThatCountedThem() throws Exception {
+        carryGrowthWhileTheDevicePeriodsStandStill();
+        long beforeTheRead = System.nanoTime();
+        tickAfterBeats();
+        long afterTheRead = System.nanoTime();
+        spy.dropouts = new BackendDropoutCounters(40, 9, 0, 1, 0, true);
+        tickAfterBeats();
+        List<Long> owedWhileCarried = Arrays.stream(controller.xrunJournal().resyncDatesOwed()).boxed().toList();
+        spy.dropouts = new BackendDropoutCounters(40, 9, 0, 2, 0, true);
+        tickAfterBeats();
+        spy.threadCounters = devicePeriods(30);
+        tickAfterBeats();
+
+        XrunJournal journal = controller.xrunJournal();
+        assertThat(owedWhileCarried).anySatisfy(date -> assertThat(date).isBetween(beforeTheRead, afterTheRead));
+        assertThat(journal.entries()).filteredOn(entry -> entry.detail() == XrunJournal.Detail.DRIVER_RESYNC)
+                .singleElement().satisfies(entry -> {
+                    assertThat(entry.count()).isEqualTo(2L);
+                    assertThat(entry.arrivedNanos()).isBetween(beforeTheRead, afterTheRead);
+                });
+        assertThat(journal.drainResyncMarks()).singleElement().satisfies(mark -> {
+            assertThat(mark.count()).isEqualTo(2L);
+            assertThat(mark.arrivedNanos()).isBetween(beforeTheRead, afterTheRead);
+        });
     }
 
     /**

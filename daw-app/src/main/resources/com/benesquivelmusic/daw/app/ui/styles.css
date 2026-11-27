@@ -574,10 +574,16 @@
     -fx-font-weight: bold;
 }
 
-/* The transport bar's clock badge (story 338): dim while the lock is not measured. */
+/* The transport bar's clock badge (story 338). Every state carries the 1 px border, transparent
+   unless the state is outlined, so the outline never changes the badge's size between states that
+   show the same words, and border plus padding keep the unlocked flash's ring off the words at
+   every UI scale. */
 .clock-status-indicator {
     -fx-padding: 2 8 2 8;
     -fx-background-radius: 8;
+    -fx-border-color: transparent;
+    -fx-border-width: 1;
+    -fx-border-radius: 8;
     -fx-font-size: 10px;
 }
 
@@ -586,9 +592,13 @@
     -fx-text-fill: -text;
 }
 
+/* Lock not checked, the dim view of rulings E81, E100 and E119: outlined with no fill, so it never
+   reads as the filled locked chip. A transparent fill rather than none keeps a change of state a
+   repaint, with no relayout. */
 .clock-status-indicator.clock-dim {
-    -fx-background-color: -surface-2;
-    -fx-text-fill: -text-mute;
+    -fx-background-color: transparent;
+    -fx-border-color: -text-mute;
+    -fx-text-fill: -text;
 }
 
 .clock-status-indicator.clock-unlocked {
@@ -597,8 +607,12 @@
     -fx-font-weight: bold;
 }
 
+/* A two-tone ring over the badge's outer 2 px, with the -danger fill and the words inside it unchanged,
+   stepped on and off, so the words keep their contrast in both phases: -text-hi stands out from the
+   transport bar, -text-on-accent from -danger. */
 .clock-status-indicator.clock-unlocked:flash {
-    -fx-opacity: 0.6;
+    -fx-background-color: -text-hi, -text-on-accent, -danger;
+    -fx-background-insets: 0, 1, 2;
 }
 
 /* ── Time Display ── */
@@ -2209,12 +2223,6 @@
     -fx-text-fill: -text-mute;
     -fx-font-size: 10px;
     -fx-font-weight: 600;
-}
-
-/* ── Dialog hint labels ── */
-.dialog-hint {
-    -fx-text-fill: -text-mute;
-    -fx-font-size: 11px;
 }
 
 /* ── Dialog warning labels ── */

@@ -64,6 +64,13 @@ public final class PortAudioBackend implements NativeAudioBackend {
      * invoker counted twice or not at all.
      */
     private volatile BackendCounterLedger invokerCounters = BackendCounterLedger.EMPTY;
+
+    /**
+     * The callback invokers' failed-period input losses (story 338, ruling
+     * E211), folded like {@link #invokerCounters}: attached with the stream's
+     * invoker and detached at its close or a failed open.
+     */
+    private volatile InvokerInputLoss invokerInputLoss = InvokerInputLoss.EMPTY;
     private MemorySegment streamHandle;
     private Arena streamArena;
 
@@ -222,6 +229,7 @@ public final class PortAudioBackend implements NativeAudioBackend {
             // driver ever entered it) are folded, never dropped (story 337,
             // rulings E4 and E90).
             invokerCounters = invokerCounters.detached(this);
+            invokerInputLoss = invokerInputLoss.detached();
             currentInvoker = null;
             throw e;
         }
@@ -396,6 +404,7 @@ public final class PortAudioBackend implements NativeAudioBackend {
         }
         // Story 337, rulings E4 and E90: fold the closed stream's callback counters.
         invokerCounters = invokerCounters.detached(this);
+        invokerInputLoss = invokerInputLoss.detached();
         this.currentInvoker = null;
     }
 
@@ -416,6 +425,18 @@ public final class PortAudioBackend implements NativeAudioBackend {
         return new BackendThreadCounters(invokers.callbackFaults(), 0L, 0L, 0L,
                 OptionalLong.of(invokers.deviceCallbackPeriods().orElse(0L)),
                 invokers.lastCallbackFault(), Optional.empty(), Optional.empty());
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The callback faults that came before the callback took the period's
+     * input, across every stream of this backend (story 338, ruling
+     * E211).</p>
+     */
+    @Override
+    public long failedCallbackInputBlocks() {
+        return invokerInputLoss.total();
     }
 
     private void ensureInitialized() {
@@ -699,6 +720,7 @@ public final class PortAudioBackend implements NativeAudioBackend {
                 callback, inputChannels, outputChannels, framesPerBuffer);
         this.currentInvoker = invoker;
         invokerCounters = invokerCounters.attached(this, invoker::counters, BackendThreadCounters.NONE);
+        invokerInputLoss = invokerInputLoss.attached(invoker);
 
         // Create an upcall stub that bridges the C callback to the Java callback
         return Linker.nativeLinker().upcallStub(
@@ -706,6 +728,32 @@ public final class PortAudioBackend implements NativeAudioBackend {
                 CALLBACK_DESCRIPTOR,
                 arena
         );
+    }
+
+    /**
+     * The failed-period input losses of every invoker this backend retired,
+     * plus the live one's (story 338, ruling E211). Immutable: swapped whole
+     * in one volatile write, as {@link #invokerCounters} is.
+     *
+     * @param folded the retired invokers' total
+     * @param live   the live stream's invoker, or {@code null} with no stream
+     */
+    record InvokerInputLoss(long folded, CallbackInvoker live) {
+
+        static final InvokerInputLoss EMPTY = new InvokerInputLoss(0L, null);
+
+        InvokerInputLoss attached(CallbackInvoker invoker) {
+            return new InvokerInputLoss(detached().folded, invoker);
+        }
+
+        InvokerInputLoss detached() {
+            return live == null ? this : new InvokerInputLoss(total(), null);
+        }
+
+        long total() {
+            CallbackInvoker invoker = live;
+            return folded + (invoker == null ? 0L : invoker.failedPeriodInputBlocks());
+        }
     }
 
     /**
@@ -873,6 +921,26 @@ public final class PortAudioBackend implements NativeAudioBackend {
         private volatile Throwable lastCallbackFault;
 
         /**
+         * 1 when this stream has input channels, else 0: what each period
+         * starts owing in captured input.
+         */
+        private final long inputBlockPerPeriod;
+
+        /**
+         * The period's captured block not yet taken: {@link #inputBlockPerPeriod}
+         * from {@link #invoke}'s entry until {@code callback} has returned from
+         * its process. Driver callback thread only.
+         */
+        private long periodInputPending;
+
+        /**
+         * Callback faults whose period's captured block the callback never
+         * took (story 338, ruling E211). Single writer: the driver's callback
+         * thread, with the {@link #clampedOversizedPeriods} idiom.
+         */
+        private volatile long failedPeriodInputBlocks;
+
+        /**
          * Creates an invoker with its channel planes pre-allocated at
          * {@code framesPerBuffer}.
          *
@@ -902,6 +970,7 @@ public final class PortAudioBackend implements NativeAudioBackend {
             this.inputChannels = inputChannels;
             this.outputChannels = outputChannels;
             this.framesPerBuffer = framesPerBuffer;
+            this.inputBlockPerPeriod = inputChannels > 0 ? 1L : 0L;
         }
 
         /**
@@ -950,7 +1019,8 @@ public final class PortAudioBackend implements NativeAudioBackend {
          *
          * <h2>The guard (story 337, rulings E1 to E3)</h2>
          * <p>Before the {@code try} this method only bumps the device
-         * heartbeat and computes the two frame counts — own-field access and
+         * heartbeat, marks the period's captured block as not yet taken, and
+         * computes the two frame counts — own-field access and
          * primitive arithmetic, nothing that can throw. The output segment is
          * reinterpreted FIRST inside the {@code try}, so the common fault, a
          * throw from the callback, finds it already sized to the host extent
@@ -971,6 +1041,7 @@ public final class PortAudioBackend implements NativeAudioBackend {
         public int invoke(MemorySegment input, MemorySegment output, long frameCount,
                           MemorySegment timeInfo, long statusFlags, MemorySegment userData) {
             deviceCallbackPeriods++; // single writer: the driver's callback thread
+            periodInputPending = inputBlockPerPeriod;
             // Pure arithmetic before the try: nothing here can throw.
             long hostFrames = frameCount < 0L ? 0L : frameCount;
             int frames = hostFrames < framesPerBuffer ? (int) hostFrames : framesPerBuffer;
@@ -990,10 +1061,11 @@ public final class PortAudioBackend implements NativeAudioBackend {
                     // The reinterpret on this path can itself fail; the count
                     // below still lands and nothing reaches the driver.
                 }
-                // The fault first, then its count: a reader that sees the
+                // The fault first, then its counts: a reader that sees a
                 // count sees this fault or a newer one (story 337, ruling E82).
                 lastCallbackFault = fault;
                 callbackFaults++; // single writer: the driver's callback thread
+                failedPeriodInputBlocks = failedPeriodInputBlocks + periodInputPending;
             }
             return PortAudioBindings.PA_CONTINUE;
         }
@@ -1019,6 +1091,7 @@ public final class PortAudioBackend implements NativeAudioBackend {
             // Invoke the Java callback with the CLAMPED count — the planes are
             // only framesPerBuffer long.
             callback.process(inputBuffer, outputBuffer, frames);
+            periodInputPending = 0L;
 
             // Interleave output: float[][] → native interleaved float buffer
             if (outputSeg != null) {
@@ -1144,6 +1217,14 @@ public final class PortAudioBackend implements NativeAudioBackend {
         /** The newest fault the callback guard caught, if any. */
         Optional<Throwable> lastCallbackFault() {
             return Optional.ofNullable(lastCallbackFault);
+        }
+
+        /**
+         * Faults that came before the callback took the period's input (story
+         * 338, ruling E211). A volatile read.
+         */
+        long failedPeriodInputBlocks() {
+            return failedPeriodInputBlocks;
         }
 
         /**

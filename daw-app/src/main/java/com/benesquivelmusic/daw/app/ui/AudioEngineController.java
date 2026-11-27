@@ -653,8 +653,9 @@ public interface AudioEngineController {
      * stream or of a newly selected source, which is not a relock (story
      * 338, rulings E82 and E83). The transport-bar clock-status indicator
      * does not follow these events: it reads {@link #clockLockStatus()} on
-     * every pulse, so no change can be missed. A clock event never stops
-     * or pauses a take (story 338, ruling E30).
+     * every pulse, whose transitions carry the changes made between two
+     * looks (rulings E216 to E220). A clock event never stops or pauses a
+     * take (story 338, ruling E30).
      *
      * <p>Story 316 review — deliberately not called "the ACTIVE backend's"
      * events: this seam names no backend and takes no backend name. Only a

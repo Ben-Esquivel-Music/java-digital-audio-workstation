@@ -33,8 +33,10 @@ import java.util.function.Supplier;
  *       it, stamped "near m:ss.s" with the transport's position read at the
  *       drain, only while the transport rolls; a CPU budget entry names its
  *       track as the project has it now, or "Track (removed)";</li>
- *   <li>hands each drained resync entry to the current take's clock marks
- *       (ruling E40: nothing is marked unless an audio take records);</li>
+ *   <li>hands each resync the journal keeps for the take to the current
+ *       take's clock marks, whatever the log's limit or its Clear dropped
+ *       (rulings E40, E225 and E226: nothing is marked unless an audio take
+ *       records);</li>
  *   <li>sets the xrun figures — the count, how many arrived in the last 30
  *       seconds, the late blocks, when the count restarted and whether the
  *       driver reports underruns — and the take's dropout figures, read from
@@ -152,7 +154,7 @@ final class EngineHealthFeed {
         return OptionalDouble.of(transportView.getPlayhead() * 60.0 / transportView.getTempo());
     }
 
-    /** One pulse: the new entries, the resync marks, the figures. FX thread. */
+    /** One pulse: the new entries, the resync marks owed to the take, the figures. FX thread. */
     void pulse() {
         sources.retiringCpuBudgetLogs().run();
         ShedLogSubscriber cpuBudgetLog = sources.cpuBudgetLog().get();
@@ -167,8 +169,8 @@ final class EngineHealthFeed {
                 lines.add(line(entry, position));
             }
             status.appendXrunLog(lines);
-            markResyncs(fresh);
         }
+        markResyncs();
         refreshFigures();
     }
 
@@ -183,18 +185,17 @@ final class EngineHealthFeed {
         refreshFigures();
     }
 
-    private void markResyncs(List<XrunJournal.Entry> fresh) {
+    private void markResyncs() {
+        List<XrunJournal.ResyncMark> owed = journal.drainResyncMarks();
         TransportController transport = sources.transport().get();
-        if (transport == null) {
+        if (transport == null || owed.isEmpty()) {
             return;
         }
-        for (XrunJournal.Entry entry : fresh) {
-            if (entry.detail() == XrunJournal.Detail.DRIVER_RESYNC) {
-                // One mark per resync (ruling E106), all at the entry's arrival: the newest message's.
-                for (long resync = 0L; resync < entry.count(); resync++) {
-                    transport.recordCoordinator().noteClockEvent(TakeManifest.ClockEvent.RESYNC,
-                            entry.arrivedNanos());
-                }
+        for (XrunJournal.ResyncMark mark : owed) {
+            // One line per request counted (rulings E40 and E225); a mark stands for the requests dated at one
+            // arrival (E279).
+            for (long resync = 0L; resync < mark.count(); resync++) {
+                transport.recordCoordinator().noteClockEvent(TakeManifest.ClockEvent.RESYNC, mark.arrivedNanos());
             }
         }
     }

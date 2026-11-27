@@ -1,9 +1,11 @@
 package com.benesquivelmusic.daw.sdk.audio;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.Flow;
 import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.ThreadFactory;
@@ -43,30 +45,61 @@ import java.util.logging.Logger;
  *       whose resyncs belong to the person's source switch: from the moment
  *       it is sent until the poll after the one that judges the driver's
  *       answer, accepted or not (E122, E137, E138; see {@link #switchSent()}
- *       and {@link #switchAnswered(boolean)}).</li>
+ *       and {@link #switchAnswered(boolean)}), and, a change made in the
+ *       driver's own control panel being the person's switch too, an
+ *       interval whose tick found the panel open, or during whose tick a
+ *       session of the panel closed between its two reads of the
+ *       closed-session count, and, from the tick that counts a closed session
+ *       at its first read of that count, the intervals of the first two ticks
+ *       that read the panel closed before they send anything and that their
+ *       second reads do not stop (E248, E249, E260), and the first two polls
+ *       of the stream that answers a driver's reset request, counted the
+ *       same way (E271).</li>
  * </ul>
  * <p>An interval that is none resets both runs, so unlock needs two bad
  * intervals with nothing between them, and messages that all arrived inside
  * one interval never unlock. A resync's count, log entry and take mark are
- * not this monitor's: it only reads the backend's resync counter. While the
- * driver's control panel is open nothing is sent to the driver: the interval
- * is unanswered. Once it closes, the source is read again, since the panel
- * may have switched it.</p>
+ * not this monitor's: it only reads the backend's resync counter and the
+ * arrival of each interval's first request. While the
+ * driver's control panel is open nothing is sent to the driver. A tick
+ * judges nothing, whatever its poll answered, when it reads the panel open,
+ * before it sends anything or after its poll and evidence, or when a session
+ * of the panel closes between its two reads of the closed-session count; it
+ * reads the level before the count each time (E248, E249, E260). Every
+ * session of the panel that ends, however short, is counted by the first
+ * tick whose first read of the closed-session count comes after its close;
+ * from that tick on, the first tick that sends anything reads the source
+ * again, and the first two ticks that read the panel closed before they send
+ * anything and that their second reads do not stop are the person's switch
+ * (it counts closed sessions, E227, E249).</p>
  *
- * <p><strong>What is published.</strong> Every stream, and every source
- * change inside one, starts not yet measured: it reads locked, but nothing
- * this stream answered has said so. The first good answer then publishes
+ * <p><strong>What is published.</strong> Every stream, and every change
+ * inside one of the current source or of whether it can be measured, starts
+ * a measurement, not yet measured: it reads locked, but nothing this stream
+ * answered has said so. The first good answer then publishes
  * {@code locked = true} once, and two consecutive bad answers publish an
- * unlock; one bad answer publishes nothing. After an unlock, three
- * consecutive good answers relock. An internal or unjudged source publishes
- * nothing.</p>
+ * unlock; one bad answer publishes nothing. An unlock is dated at the first
+ * bad answer of its run (E62), and, when no good answer of its measurement
+ * came before that run, no later than the measurement's start: the stream's
+ * start, or the start of the first source read applied that finds such a
+ * change, since nothing showed the clock good since (E269). A bad answer that
+ * an interval's resync requests make is dated at the arrival of its first
+ * request, or, when the backend no longer keeps that arrival, at the
+ * interval's start, read just before the tick before it read the resync
+ * count (E279). After an unlock,
+ * three consecutive good answers relock. An internal or unjudged source
+ * publishes nothing.</p>
  *
  * <p>The same state is kept as a level, {@link #status()}: one volatile
  * field holding an immutable {@link ClockLockStatus}, written under this
  * monitor's lock at every change (a start, a source read that succeeded, a
  * first measurement, an unlock, a relock), always before the change's event
- * is offered, and emptied by {@link #stop()}. A start and a source change give
- * it a new serial. A source read that fails changes nothing in it.</p>
+ * is offered, and emptied by {@link #stop()}. A start, and each change of the
+ * source or of whether it can be measured, give it a new serial. A source
+ * read that fails changes nothing in it. It also carries the measurement's
+ * newest {@link #TRANSITIONS_KEPT} unlocks and relocks, each appended in the
+ * same write as its change, so before its event is offered; a new serial
+ * empties them.</p>
  *
  * <p>A clock-source read that names no current source (it timed out behind
  * the driver's control panel, say) is no answer too: nothing is judged until
@@ -75,9 +108,10 @@ import java.util.logging.Logger;
  *
  * <p><strong>Lifetimes.</strong> The lock state and both runs belong to one
  * stream: every {@link #start(DeviceId)} begins with them fresh, also on the
- * same device, and so does a change of the current source inside a stream
- * (both silently, with no event). A source read that fails keeps them. The
- * sample-position baseline belongs to one run of the poller.</p>
+ * same device, and so does a change inside a stream of the current source or
+ * of whether it can be measured (both silently, with no event). A source
+ * read that fails keeps them. The sample-position baseline belongs to one
+ * run of the poller.</p>
  *
  * <p><strong>Threads.</strong> {@link #start(DeviceId)} starts one daemon
  * thread per stream. It is stopped by a flag and a generation bump, and woken
@@ -114,9 +148,21 @@ final class AsioClockLockMonitor {
     /**
      * Polls, from the one that judges the interval the driver's answer to a
      * source switch falls in, whose resyncs belong to the switch (rulings
-     * E122, E137).
+     * E122, E137); likewise, from the tick that counts a closed session of
+     * the driver's control panel at its first read of the closed-session
+     * count, the first two ticks that read the panel closed before they send
+     * anything and that their second reads do not stop (E249, E260); and the
+     * first two polls of the stream that answers a driver's reset request
+     * (E271).
      */
     static final int SWITCH_INTERVALS = 2;
+
+    /**
+     * The newest changes of lock a status carries. An unlock takes two bad
+     * answers and a relock three good ones, so 32 changes take at least 80
+     * one-second polls, far longer than a consumer leaves between two looks.
+     */
+    static final int TRANSITIONS_KEPT = 32;
 
     /** The SDK's {@code ASE_SPNotAdvancing}: the sample position is not advancing. */
     static final int ASE_SP_NOT_ADVANCING = -996;
@@ -156,12 +202,28 @@ final class AsioClockLockMonitor {
         /** Resync requests the driver has sent, monotonic for the backend's life. */
         long driverResyncs();
 
-        /** The {@link System#nanoTime()} at which the newest resync request arrived. */
-        long lastDriverResyncNanos();
+        /**
+         * The {@link System#nanoTime()} at which resync request number
+         * {@code request} arrived, counting from 0 as {@link #driverResyncs()}
+         * counts, while the backend still keeps it (ruling E279).
+         *
+         * @param request a request {@link #driverResyncs()} has counted
+         * @return its arrival; empty when the backend no longer keeps it
+         */
+        OptionalLong driverResyncArrivalNanos(long request);
 
         /** Whether the driver's modal control panel owns the control thread; cheap, any thread. */
         default boolean controlPanelOpen() {
             return false;
+        }
+
+        /**
+         * How many sessions of the driver's modal control panel have closed,
+         * monotonic for the process; raised before {@link #controlPanelOpen()}
+         * reads false for the session it counts. Cheap, any thread.
+         */
+        default long closedControlPanelSessions() {
+            return 0L;
         }
     }
 
@@ -181,8 +243,10 @@ final class AsioClockLockMonitor {
      * @param answer          the poll's answer
      * @param resynced        whether a resync request arrived that no interval has judged yet
      * @param periodsAdvanced whether the device periods advanced since the previous interval
-     * @param switchInterval  whether its resyncs belong to the person's source switch
-     * @param resyncNanos     when the newest resync request arrived
+     * @param switchInterval  whether its resyncs belong to the person's source switch, to a session of the
+     *                        driver's control panel, or to the driver's reset request this stream answers (E271)
+     * @param resyncNanos     when the interval's first resync request arrived, or, when the backend no longer keeps
+     *                        that arrival, when the interval began (ruling E279)
      * @param now             when the interval ended
      */
     private record Interval(Answer answer, boolean resynced, boolean periodsAdvanced, boolean switchInterval,
@@ -202,6 +266,10 @@ final class AsioClockLockMonitor {
 
     private volatile long generation;
     private volatile boolean running;
+    /**
+     * Set by a driver's reset request ({@link #pause()}); cleared only by a start, whose stream answers that
+     * request (ruling E271).
+     */
     private volatile boolean paused;
     /** The level behind the events; {@code null} while stopped. Written under {@link #lock}. */
     private volatile ClockLockStatus status;
@@ -211,8 +279,11 @@ final class AsioClockLockMonitor {
     private long sourceEpoch;
     private boolean sourceKnown;
     private boolean sourceUnreadable;
-    /** Whether a tick of this stream found the driver's control panel open; the source is read once it closes. */
-    private boolean panelSeenOpen;
+    /**
+     * Driver control-panel sessions counted closed at the stream's start, or at the first count read of the last
+     * tick that took a session up (rulings E227, E249).
+     */
+    private long panelSessionsSeen;
     private int intervalsToSourceRetry;
     private boolean pollable;
     private int sourceId = -1;
@@ -221,7 +292,16 @@ final class AsioClockLockMonitor {
     private boolean havePeriods;
     private long lastPeriods;
     private long seenResyncs;
-    /** Polls still to come whose resyncs belong to the person's answered source switch (rulings E122, E137). */
+    /**
+     * When the read that gave {@link #seenResyncs} began, or the stream's start: the start of the interval the next
+     * tick judges (ruling E279).
+     */
+    private long seenResyncsNanos;
+    /**
+     * Polls still to come whose resyncs belong to the person's answered source switch (rulings E122, E137), to a
+     * closed session of the driver's control panel (E249) or to the driver's reset request this stream answers
+     * (E271).
+     */
     private int switchIntervals;
     /** Whether the person's source switch was sent and the driver has not answered it yet (ruling E138). */
     private boolean switchPending;
@@ -232,8 +312,17 @@ final class AsioClockLockMonitor {
     private int badRun;
     private int goodRun;
     private long firstBadNanos;
+    /**
+     * When the measurement began: the stream's start, or the start of the source read that took up a change of
+     * the current source or of whether it can be measured (ruling E269).
+     */
+    private long measurementStartNanos;
     private long serial;
     private long lockEvidenceNanos;
+    /** The measurement's newest unlocks and relocks, oldest first; at most {@link #TRANSITIONS_KEPT}. */
+    private List<ClockLockStatus.Transition> transitions = List.of();
+    /** How many unlocks and relocks the measurement has had. */
+    private long transitionSequence;
 
     /**
      * @param probe         what the monitor reads; must not be null
@@ -267,8 +356,12 @@ final class AsioClockLockMonitor {
     /**
      * Starts polling for a freshly opened stream of {@code device}, with a
      * fresh, not yet measured lock state: nothing is carried from the
-     * previous stream. The current clock source is read on the poller's
-     * first tick, not here, so starting costs the caller no downcall.
+     * previous stream, except that a {@link #pause()} since the previous
+     * start, which only the driver's request to be reset makes, makes this
+     * stream the one that answers the request: its first two polls are switch
+     * intervals ({@link #SWITCH_INTERVALS}, ruling E271). The current clock
+     * source is read on the poller's first tick, not here, so starting costs
+     * the caller no downcall.
      *
      * @param device the opened device, as the backend names it in its events;
      *               must not be null
@@ -278,21 +371,26 @@ final class AsioClockLockMonitor {
         Thread started;
         synchronized (lock) {
             resetLockState();
+            measurementStartNanos = nanoClock.getAsLong();
             sourceId = -1;
             pollable = false;
             sourceUnreadable = false;
-            panelSeenOpen = false;
+            panelSessionsSeen = closedControlPanelSessions();
             this.device = device;
             generation++;
             long mine = generation;
             running = true;
+            // Only a driver's reset request pauses, so a pause since the previous start is a request this stream
+            // answers.
+            boolean answersADriverReset = paused;
             paused = false;
             sourceKnown = false;
             sourceEpoch++;
             havePosition = false;
             havePeriods = false;
             seenResyncs = probe.driverResyncs();
-            switchIntervals = 0;
+            seenResyncsNanos = measurementStartNanos;
+            switchIntervals = answersADriverReset ? SWITCH_INTERVALS : 0;
             switchPending = false;
             writeStatus();
             started = threadFactory.newThread(() -> pollUntilStopped(mine));
@@ -304,7 +402,9 @@ final class AsioClockLockMonitor {
     /**
      * Stops polling: a flag, a generation bump, and an unpark of the poller.
      * Never interrupts it, never waits for it. A poll still inside a downcall
-     * finishes there and publishes nothing.
+     * finishes there and publishes nothing. A {@link #pause()} stays for the
+     * next start, whose stream answers the driver's reset request (ruling
+     * E271).
      */
     void stop() {
         Thread stopped;
@@ -324,8 +424,11 @@ final class AsioClockLockMonitor {
     /**
      * Suspends judging until the next {@link #start(DeviceId)}: the driver
      * asked to be reset, so its answers mean nothing until the stream is
-     * reopened. A single volatile write, safe on the driver's notification
-     * thread.
+     * reopened. That next start's stream answers the request, whether this
+     * monitor was running or stopped when it came: its first two polls are
+     * switch intervals ({@link #SWITCH_INTERVALS}, ruling E271). Only the
+     * driver's reset request calls this. A single volatile write, safe on the
+     * driver's notification thread.
      */
     void pause() {
         paused = true;
@@ -441,23 +544,28 @@ final class AsioClockLockMonitor {
         long epoch;
         boolean needSource;
         boolean pollNow;
+        long firstRequest;
+        // Read before the closed-session count, so a tick that reads the panel closed also sees its session (E249).
         boolean panelOpen = controlPanelOpen();
         synchronized (lock) {
             if (!isCurrent(mine) || paused) {
                 return;
             }
-            if (panelOpen) {
-                panelSeenOpen = true;
-            } else if (panelSeenOpen) {
-                // The person may have chosen another source in the driver's own panel.
-                panelSeenOpen = false;
+            long panelSessions = closedControlPanelSessions();
+            if (panelSessions != panelSessionsSeen) {
+                // A change made in the driver's own panel is the person's switch: the source is read again (E227)
+                // and its close is answered like a switch the person sent (E249).
+                panelSessionsSeen = panelSessions;
                 sourceKnown = false;
                 sourceEpoch++;
+                switchIntervals = SWITCH_INTERVALS;
+                breakRuns();
             }
             runDevice = device;
             epoch = sourceEpoch;
             needSource = !sourceKnown || sourceRetryDue();
             pollNow = sourceKnown && pollable && !sourceUnreadable;
+            firstRequest = seenResyncs;
         }
         if (panelOpen) {
             // Each call would wait behind the modal panel and leak its shim when withdrawn.
@@ -465,38 +573,62 @@ final class AsioClockLockMonitor {
             pollNow = false;
         }
         SourceReading reading = null;
+        long readNanos = 0L;
         if (needSource) {
+            readNanos = nanoClock.getAsLong();
             reading = readSource(runDevice);
             pollNow = reading.pollable();
         }
         Answer answer = pollNow ? poll() : Answer.NO_ANSWER;
         long periods = probe.deviceCallbackPeriods();
+        // Read just before the count: the start of the interval the next tick judges (ruling E279).
+        long resyncsReadNanos = nanoClock.getAsLong();
         long resyncs = probe.driverResyncs();
-        long resyncNanos = probe.lastDriverResyncNanos();
+        OptionalLong firstArrival = resyncs - firstRequest > 0L
+                ? driverResyncArrival(firstRequest)
+                : OptionalLong.empty();
         long now = nanoClock.getAsLong();
+        // Read again after the evidence, the level before the count (E249): a panel session that began after this
+        // tick's first reads, while its poll waited or after it, is judged by no tick (E248, E260).
+        boolean panelOpenAfterTheEvidence = controlPanelOpen();
         synchronized (lock) {
             if (!isCurrent(mine) || paused) {
                 return;
             }
-            boolean switchInterval = switchPending || switchIntervals > 0;
-            if (!switchPending && switchIntervals > 0) {
+            if (panelOpenAfterTheEvidence || closedControlPanelSessions() != panelSessionsSeen) {
+                // Left uncounted, so the next tick that reads the panel closed reads the source again and grants
+                // the close its switch intervals (E227, E249, E260).
+                breakRuns();
+                havePosition = false;
+                seenResyncs = resyncs;
+                seenResyncsNanos = resyncsReadNanos;
+                havePeriods = true;
+                lastPeriods = periods;
+                return;
+            }
+            boolean switchInterval = panelOpen || switchPending || switchIntervals > 0;
+            if (!switchPending && !panelOpen && switchIntervals > 0) {
                 switchIntervals--;
             }
             if (epoch != sourceEpoch) {
                 // An accepted switch answered while this tick ran: its reading is stale and its resyncs the switch's.
                 seenResyncs = resyncs;
+                seenResyncsNanos = resyncsReadNanos;
                 havePeriods = true;
                 lastPeriods = periods;
                 return;
             }
             boolean periodsAdvanced = havePeriods && periods != lastPeriods;
             if (reading != null) {
-                applySource(reading);
+                applySource(reading, readNanos);
             }
             if (pollable && !sourceUnreadable) {
+                // The interval's first request, or its start when the backend no longer keeps that arrival (E279).
+                long resyncNanos = firstArrival.orElse(seenResyncsNanos);
                 judge(new Interval(answer, resyncs > seenResyncs, periodsAdvanced, switchInterval, resyncNanos, now));
             }
             seenResyncs = resyncs;
+            seenResyncsNanos = resyncsReadNanos;
             havePeriods = true;
             lastPeriods = periods;
         }
@@ -550,6 +682,25 @@ final class AsioClockLockMonitor {
         }
     }
 
+    /** Caller holds {@link #lock}. A count that cannot be read is no closed session. */
+    private long closedControlPanelSessions() {
+        try {
+            return probe.closedControlPanelSessions();
+        } catch (RuntimeException unknown) {
+            return panelSessionsSeen;
+        }
+    }
+
+    /** The arrival of resync request {@code request}; empty when the backend no longer keeps it or cannot say. */
+    private OptionalLong driverResyncArrival(long request) {
+        try {
+            OptionalLong arrival = probe.driverResyncArrivalNanos(request);
+            return arrival != null ? arrival : OptionalLong.empty();
+        } catch (RuntimeException unknown) {
+            return OptionalLong.empty();
+        }
+    }
+
     private Answer poll() {
         AsioCapabilityShim.SamplePosition answer;
         try {
@@ -568,9 +719,12 @@ final class AsioClockLockMonitor {
     /**
      * An unreadable source is no answer: the runs reset, the lock state and
      * the last known source stay, nothing is judged, and the read is retried
-     * every {@link #SOURCE_RETRY_INTERVALS} intervals.
+     * every {@link #SOURCE_RETRY_INTERVALS} intervals. A source other than the
+     * one known, or a change of whether it can be measured, starts a
+     * measurement at {@code readNanos}, when its read began (ruling E269); a
+     * stream's first source keeps the stream's start.
      */
-    private void applySource(SourceReading reading) {
+    private void applySource(SourceReading reading, long readNanos) {
         sourceKnown = true;
         if (!reading.known()) {
             sourceUnreadable = true;
@@ -582,6 +736,9 @@ final class AsioClockLockMonitor {
         }
         sourceUnreadable = false;
         if (reading.sourceId() != sourceId || reading.pollable() != pollable) {
+            if (sourceId >= 0) {
+                measurementStartNanos = readNanos;
+            }
             resetLockState();
         }
         sourceId = reading.sourceId();
@@ -604,8 +761,10 @@ final class AsioClockLockMonitor {
      *       since the previous answered poll.</li>
      *   <li>None, which breaks both runs: the periods did not advance (E59,
      *       E120: the watchdog's case, resyncs or not), its resyncs belong to
-     *       a source switch (E122), its poll went unanswered (E59), or it
-     *       could only set a new baseline (E121).</li>
+     *       a source switch (E122), to the driver's control panel (E248,
+     *       E249) or to the driver's reset request the stream answers (E271),
+     *       its poll went unanswered (E59), or it could only set a new
+     *       baseline (E121).</li>
      * </ul>
      */
     private void judge(Interval interval) {
@@ -647,9 +806,13 @@ final class AsioClockLockMonitor {
         }
         badRun = Math.min(badRun + 1, BAD_ANSWERS_TO_UNLOCK);
         if (locked && badRun >= BAD_ANSWERS_TO_UNLOCK) {
+            // With no good answer of its measurement before it, the unlock can have begun at the start (E269).
+            long unlockNanos = measured || firstBadNanos - measurementStartNanos < 0L
+                    ? firstBadNanos : measurementStartNanos;
             locked = false;
             measured = true;
-            publish(false, firstBadNanos);
+            appendTransition(false, unlockNanos);
+            publish(false, unlockNanos);
         }
     }
 
@@ -663,11 +826,15 @@ final class AsioClockLockMonitor {
         }
         if (!locked && goodRun >= GOOD_ANSWERS_TO_RELOCK) {
             locked = true;
+            appendTransition(true, now);
             publish(true, now);
         }
     }
 
-    /** A fresh measurement: a start or a source change. Caller holds {@link #lock}. */
+    /**
+     * A fresh measurement: a start, or a change of the source or of whether it can be measured. Caller holds
+     * {@link #lock}.
+     */
     private void resetLockState() {
         locked = true;
         measured = false;
@@ -675,7 +842,18 @@ final class AsioClockLockMonitor {
         goodRun = 0;
         firstBadNanos = 0L;
         lockEvidenceNanos = 0L;
+        transitions = List.of();
+        transitionSequence = 0L;
         serial = SERIALS.incrementAndGet();
+    }
+
+    /** Keeps the newest {@link #TRANSITIONS_KEPT}, this one included. Caller holds {@link #lock}. */
+    private void appendTransition(boolean nowLocked, long evidenceNanos) {
+        transitionSequence++;
+        int oldestKept = Math.max(0, transitions.size() - (TRANSITIONS_KEPT - 1));
+        List<ClockLockStatus.Transition> kept = new ArrayList<>(transitions.subList(oldestKept, transitions.size()));
+        kept.add(new ClockLockStatus.Transition(transitionSequence, nowLocked, evidenceNanos));
+        transitions = List.copyOf(kept);
     }
 
     /** The status first, then the event, so a consumer the event wakes reads the new state. */
@@ -698,6 +876,6 @@ final class AsioClockLockMonitor {
             state = locked ? ClockLockStatus.Lock.LOCKED : ClockLockStatus.Lock.UNLOCKED;
         }
         boolean decided = state == ClockLockStatus.Lock.LOCKED || state == ClockLockStatus.Lock.UNLOCKED;
-        status = new ClockLockStatus(device, sourceId, serial, state, decided ? lockEvidenceNanos : 0L);
+        status = new ClockLockStatus(device, sourceId, serial, state, decided ? lockEvidenceNanos : 0L, transitions);
     }
 }

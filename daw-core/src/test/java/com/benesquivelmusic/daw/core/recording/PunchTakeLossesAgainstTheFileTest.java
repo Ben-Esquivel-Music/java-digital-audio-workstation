@@ -63,7 +63,7 @@ class PunchTakeLossesAgainstTheFileTest {
             publish(8 + (long) block * BLOCK, Kind.DELIVERED);
         }
         for (int dropped = 0; dropped < 3; dropped++) {
-            assertThat(ring.claim()).isNull();
+            assertThat(ring.claim(CaptureRing.DELIVERED)).isNull();
         }
         service.setDrainPaused(false);
         service.awaitFlushed(GUARD);
@@ -89,7 +89,7 @@ class PunchTakeLossesAgainstTheFileTest {
             publish(1916 + (long) block * BLOCK, Kind.DELIVERED);
         }
         for (int dropped = 0; dropped < 3; dropped++) {
-            assertThat(ring.claim()).isNull();
+            assertThat(ring.claim(CaptureRing.DELIVERED)).isNull();
         }
         service.setDrainPaused(false);
         service.awaitFlushed(GUARD);
@@ -128,6 +128,42 @@ class PunchTakeLossesAgainstTheFileTest {
                 "Track 'Take': input from 'Interface' delivered no audio; the track records silence.");
     }
 
+    /**
+     * Rulings E49, E282, E284 and E296: the same input, but the full ring drops the block that ends it, after
+     * punch-out. The seal writes the line that block would have given, from the first frame the file holds, so the
+     * starved run is reported once, by the stop.
+     */
+    @Test
+    void anInputEndedBeforePunchInWhoseEndTheRingDroppedAfterPunchOutIsFlaggedFromPunchInAgainstTheFile()
+            throws IOException {
+        punchIn = 1012;
+        punchOut = 1044;
+        start(CaptureRing.MIN_SLOTS);
+        service.setDrainPaused(true);
+        publish(984, Kind.DELIVERED);
+        publish(992, Kind.DELIVERED);
+        for (long start = 1000; start <= 1040; start += BLOCK) {
+            publish(start, Kind.STARVED);
+        }
+        assertThat(ring.claim(0)).as("fixture: the full ring drops the block that ends the input, at 1048").isNull();
+        service.setDrainPaused(false);
+        service.awaitFlushed(GUARD);
+
+        TakeManifest manifest = stopAndRead();
+        long fileFrames = manifest.segmentsFor(capture.trackId()).stream()
+                .mapToLong(TakeManifest.SegmentEntry::frames).sum();
+        assertThat(fileFrames).as("the file holds punch-in to punch-out").isEqualTo(punchOut - punchIn);
+        assertThat(manifest.inputStops()).as("flagged from the first frame the file holds")
+                .containsExactly(new InputStopped(capture.trackId(), punchIn, punchIn));
+        assertThat(manifest.inputSilences()).as("the stop covers the run (E49)").isEmpty();
+        assertThat(service.starvedInputBlocks()).as("the take figures: starved blocks").isZero();
+        assertThat(service.starvedInputFrames()).isZero();
+        assertThat(service.fileOverflowBlocks()).isZero();
+        assertThat(manifest.gaps()).as("the silence after the stop gets no line (E277)").isEmpty();
+        assertThat(warnings).containsExactly(
+                "Track 'Take': input from 'Interface' delivered no audio; the track holds no audio.");
+    }
+
     private void start(int slots) {
         CaptureFlushService.TakeConfig config = new CaptureFlushService.TakeConfig(takeDir, MONO, 120.0,
                 0.0, 0L, null, false, Duration.ofSeconds(5), Instant.parse("2026-11-16T10:00:00Z"));
@@ -150,7 +186,7 @@ class PunchTakeLossesAgainstTheFileTest {
     }
 
     private void publish(long start, Kind kind) {
-        CaptureRing.Slot slot = ring.claim();
+        CaptureRing.Slot slot = ring.claim(CaptureRing.DELIVERED);
         assertThat(slot).as("fixture: the ring has room").isNotNull();
         slot.setNumFrames(BLOCK);
         slot.setTruncatedFrames(0);

@@ -928,7 +928,7 @@ class TakeMarksInPunchAndLoopTakesTest {
             publish(ring, start + (long) block * BLOCK, Kind.DELIVERED, 0);
         }
         for (int dropped = 0; dropped < 3; dropped++) {
-            assertThat(ring.claim()).as("fixture: the ring is full").isNull();
+            assertThat(ring.claim(CaptureRing.DELIVERED)).as("fixture: the ring is full").isNull();
         }
         service.setDrainPaused(false);
         service.awaitFlushed(GUARD);
@@ -956,7 +956,7 @@ class TakeMarksInPunchAndLoopTakesTest {
             }
             lastTransportFrame = transportFrame;
         }
-        CaptureRing.Slot slot = target.claim();
+        CaptureRing.Slot slot = target.claim(CaptureRing.DELIVERED);
         assertThat(slot).as("fixture: the ring has room").isNotNull();
         slot.setNumFrames(BLOCK);
         slot.setTruncatedFrames(truncated);

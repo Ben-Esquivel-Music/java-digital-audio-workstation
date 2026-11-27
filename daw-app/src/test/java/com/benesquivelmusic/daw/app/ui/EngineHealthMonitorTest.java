@@ -20,13 +20,19 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
 import static com.benesquivelmusic.daw.app.ui.DeviceLossRecordingFixture.await;
@@ -40,7 +46,8 @@ import static org.assertj.core.api.Assertions.tuple;
  * is declared lost through the same steps as the host's removal, with the
  * stall's notice and its Reconnect action, sent to a real injected
  * {@link NotificationManager}; nothing is declared while the drive is not
- * alive, while a driver panel is open or while a configuration change is in
+ * alive, while a driver panel is open or within the start-up allowance
+ * after it closes (ruling E228), or while a configuration change is in
  * progress, nor on real threads streaming healthily across Stop, pause,
  * resume and a Settings apply. Ticks run on the test thread through the
  * controller's tick seam with an injected clock, except where the monitor's
@@ -51,6 +58,9 @@ class EngineHealthMonitorTest {
     private static final long TICK_NANOS = TimeUnit.MILLISECONDS.toNanos(DefaultAudioEngineController.ENGINE_HEALTH_TICK_MILLIS);
     private static final String STALL_NOTICE = "Interface A stopped responding — audio stopped. Check that it is"
             + " connected and powered, then choose Reconnect.";
+
+    // Held strongly: the log manager keeps a logger only weakly, so a handler added to one nobody holds may be lost.
+    private final Logger controllerLog = Logger.getLogger(DefaultAudioEngineController.class.getName());
 
     /** What the loss's two observation points saw: the stream's close, then its notice. */
     private record AtTheClose(AudioEngine.RecordingCallback installed, int halts, boolean haltedOnThisThread,
@@ -243,14 +253,130 @@ class EngineHealthMonitorTest {
             closePanel.countDown();
             panel.join(TimeUnit.SECONDS.toMillis(10));
             assertThat(panel.isAlive()).as("the dialog closed").isFalse();
-            tickUntil(controller, clock, () -> controller.engineState() == EngineState.DEVICE_LOST, 30);
-            assertThat(controller.engineState()).as("the refusal re-baselined; the stall is declared a window later")
+            for (int i = 0; i < 45; i++) {
+                tick(controller, clock);
+            }
+            assertThat(controller.engineState()).as("the start-up allowance from the panel's close (ruling E228)")
+                    .isNotEqualTo(EngineState.DEVICE_LOST);
+            tickUntil(controller, clock, () -> controller.engineState() == EngineState.DEVICE_LOST, 15);
+            assertThat(controller.engineState()).as("the stall is declared once that allowance ran out")
                     .isEqualTo(EngineState.DEVICE_LOST);
         } finally {
             closePanel.countDown();
             if (panel != null) {
                 panel.join(TimeUnit.SECONDS.toMillis(10));
             }
+            spy.blockAwait = false;
+            engine.stopAudioOutput();
+            engine.stop();
+            controller.shutdown();
+        }
+    }
+
+    /**
+     * Ruling E228: a verdict due in the very tick during which the driver
+     * panel closes, after that tick read the allowance requests, is refused:
+     * the allowance the close asked for is not taken up yet. The stall is
+     * declared only once that allowance ran out.
+     */
+    @Test
+    void aVerdictDueAsTheDriverPanelClosesWaitsForTheAllowanceFromItsClose() throws Exception {
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        RecordingNotifications notices = new RecordingNotifications();
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null, notices);
+        AtomicLong clock = new AtomicLong();
+        controller.setEngineHealthClock(clock::get);
+        SpyStreamingBackend spy = new SpyStreamingBackend("SpyPanelClose");
+        DeviceId active = new DeviceId("SpyPanelClose", "Interface A");
+        engine.setStreamingProvision(new StreamingProvision("SpyPanelClose",
+                List.of(new BackendStreamRung(spy, active))));
+        CountDownLatch panelOpen = new CountDownLatch(1);
+        CountDownLatch closePanel = new CountDownLatch(1);
+        spy.setControlPanelAction(() -> {
+            panelOpen.countDown();
+            try {
+                closePanel.await(30, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        List<String> refusals = new CopyOnWriteArrayList<>();
+        Handler refusalLog = new Handler() {
+            @Override
+            public void publish(LogRecord logRecord) {
+                if (logRecord.getMessage() != null && logRecord.getMessage().contains("refused on re-check")) {
+                    refusals.add(logRecord.getMessage());
+                }
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        refusalLog.setLevel(Level.ALL);
+        Level levelBefore = controllerLog.getLevel();
+        controllerLog.setLevel(Level.FINE);
+        controllerLog.addHandler(refusalLog);
+        Thread panel = null;
+        try {
+            engine.startAudioOutput();
+            Runnable panelAction = controller.openControlPanel().orElseThrow();
+            controller.tickEngineHealthMonitor();
+            assertThat(spy.awaitSunkBlocks(8, 5, TimeUnit.SECONDS)).isTrue();
+            tick(controller, clock);
+            panel = Thread.ofVirtual().name("test-driver-panel").start(panelAction);
+            assertThat(panelOpen.await(5, TimeUnit.SECONDS)).as("the driver dialog is up").isTrue();
+            spy.blockAwait = true;
+            await(() -> spy.blockedAwaitEntries.get() >= 1, "the render pump is wedged");
+            tickUntil(controller, clock, () -> !refusals.isEmpty(), 100);
+            for (int i = 0; i < 19; i++) {
+                tick(controller, clock);
+            }
+            int refusalsWhileOpen = refusals.size();
+
+            Thread ticking = Thread.currentThread();
+            Thread dialog = panel;
+            AtomicBoolean closeAtTheNextRead = new AtomicBoolean(true);
+            controller.setEngineHealthClock(() -> {
+                if (Thread.currentThread() == ticking && closeAtTheNextRead.getAndSet(false)) {
+                    closePanel.countDown();
+                    try {
+                        dialog.join(TimeUnit.SECONDS.toMillis(10));
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+                return clock.get();
+            });
+            tick(controller, clock);
+            boolean closedInTheTick = !dialog.isAlive();
+            int refusalsAtTheClose = refusals.size();
+            EngineState atTheClose = controller.engineState();
+            for (int i = 0; i < 45; i++) {
+                tick(controller, clock);
+            }
+            EngineState withinTheAllowance = controller.engineState();
+            tickUntil(controller, clock, () -> controller.engineState() == EngineState.DEVICE_LOST, 15);
+
+            assertThat(refusalsWhileOpen).as("premise: one verdict refused while the panel is open").isEqualTo(1);
+            assertThat(closedInTheTick).as("premise: the panel closed inside the tick").isTrue();
+            assertThat(atTheClose).as("the verdict due in that tick is refused").isNotEqualTo(EngineState.DEVICE_LOST);
+            assertThat(refusalsAtTheClose).as("premise: a verdict was due in that tick").isEqualTo(2);
+            assertThat(withinTheAllowance).as("the start-up allowance from the close")
+                    .isNotEqualTo(EngineState.DEVICE_LOST);
+            assertThat(controller.engineState()).as("declared once the allowance ran out")
+                    .isEqualTo(EngineState.DEVICE_LOST);
+        } finally {
+            closePanel.countDown();
+            if (panel != null) {
+                panel.join(TimeUnit.SECONDS.toMillis(10));
+            }
+            controllerLog.removeHandler(refusalLog);
+            controllerLog.setLevel(levelBefore);
             spy.blockAwait = false;
             engine.stopAudioOutput();
             engine.stop();

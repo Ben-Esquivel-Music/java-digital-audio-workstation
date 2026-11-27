@@ -50,6 +50,11 @@ class AsioBackendClockLockTest {
     private volatile int setClockSourceAnswer;
     private volatile RuntimeException setClockSourceFailure;
     private volatile boolean switchPendingDuringTheCall;
+    /** Each stream's poller is its own thread: its polls, counted apart from a closed stream's late poll. */
+    private final ThreadLocal<AtomicInteger> pollsOfThisPoller = ThreadLocal.withInitial(AtomicInteger::new);
+    /** The polls of the stream whose poller polled first most recently; replaced by a test before each reopen. */
+    private volatile AtomicInteger pollsOfTheNewestStream = new AtomicInteger();
+    private final AtomicInteger sourceReads = new AtomicInteger();
 
     @BeforeEach
     void setUp() {
@@ -264,6 +269,130 @@ class AsioBackendClockLockTest {
     }
 
     /**
+     * Ruling E271, as the backend wires it: the stream the engine reopens after the driver asked to be reset judges
+     * no resync in its first two polls, and the plain reopen after it is judged from its second poll again.
+     */
+    @Test
+    void aStreamReopenedForADriverResetJudgesNoResyncInItsFirstTwoPollsAndAPlainReopenDoes() throws Exception {
+        positionAnswer = movingPositionWithAResyncInEachStreamsSecondAndThirdPolls();
+        backend.open(DEVICE, FORMAT, FRAMES);
+        assertThat(await(() -> pollsOfTheNewestStream.get() >= 4)).as("the first stream's resyncs are behind it")
+                .isTrue();
+
+        backend.stopStreamingForDriverReset();
+        backend.close();
+        pollsOfTheNewestStream = new AtomicInteger();
+        backend.open(DEVICE, FORMAT, FRAMES);
+        assertThat(await(() -> pollsOfTheNewestStream.get() >= 5)).as("the reopened stream's fourth poll is applied")
+                .isTrue();
+        ClockLockStatus reopened = backend.clockLockStatus().orElseThrow();
+        backend.close();
+        pollsOfTheNewestStream = new AtomicInteger();
+        backend.open(DEVICE, FORMAT, FRAMES);
+
+        assertThat(reopened.lock()).as("measured locked at its fourth poll").isEqualTo(ClockLockStatus.Lock.LOCKED);
+        assertThat(reopened.transitions()).as("the resyncs of its second and third polls unlocked nothing").isEmpty();
+        assertThat(await(() -> backend.clockLockStatus()
+                .map(status -> !status.transitions().isEmpty() && !status.transitions().getFirst().locked())
+                .orElse(false)))
+                .as("a plain reopen is judged from its second poll").isTrue();
+    }
+
+    /**
+     * Ruling E271: the stream that answers the driver's reset request gets its window also when the stream before
+     * it already took up the session of the driver's control panel that caused the request.
+     */
+    @Test
+    void aStreamReopenedForADriverResetGetsItsWindowAfterTheStreamBeforeItTookThePanelSessionUp() throws Throwable {
+        positionAnswer = movingPositionWithAResyncInEachStreamsSecondAndThirdPolls();
+        backend.open(DEVICE, FORMAT, FRAMES);
+        assertThat(await(() -> pollsOfTheNewestStream.get() >= 4)).as("the first stream's resyncs are behind it")
+                .isTrue();
+        int readsBefore = sourceReads.get();
+        AsioControlThread.callUnbounded(() -> null);
+        assertThat(await(() -> sourceReads.get() > readsBefore)).as("the open stream's poll took the session up")
+                .isTrue();
+
+        backend.stopStreamingForDriverReset();
+        backend.close();
+        pollsOfTheNewestStream = new AtomicInteger();
+        backend.open(DEVICE, FORMAT, FRAMES);
+        assertThat(await(() -> pollsOfTheNewestStream.get() >= 5)).as("the reopened stream's fourth poll is applied")
+                .isTrue();
+        ClockLockStatus reopened = backend.clockLockStatus().orElseThrow();
+
+        assertThat(reopened.lock()).as("measured locked at its fourth poll").isEqualTo(ClockLockStatus.Lock.LOCKED);
+        assertThat(reopened.transitions()).as("the resyncs of its second and third polls unlocked nothing").isEmpty();
+    }
+
+    /**
+     * Rulings E278 and E271: a reset requested while the driver's panel owns the control thread is answered by the
+     * stream opened once the panel has closed; its first two polls are switch intervals.
+     */
+    @Test
+    void aResetWhileThePanelIsOpenIsAnsweredByTheStreamOpenedAfterTheClose() throws Exception {
+        positionAnswer = movingPositionWithAResyncInEachStreamsSecondAndThirdPolls();
+        backend.open(DEVICE, FORMAT, FRAMES);
+        assertThat(await(() -> pollsOfTheNewestStream.get() >= 4)).as("the first stream's resyncs are behind it")
+                .isTrue();
+        CountDownLatch panelShown = new CountDownLatch(1);
+        CountDownLatch panelClosed = new CountDownLatch(1);
+        Thread panel = Thread.ofPlatform().name("test-asio-control-panel").start(() -> {
+            try {
+                AsioControlThread.callUnbounded(() -> {
+                    panelShown.countDown();
+                    panelClosed.await();
+                    return null;
+                });
+            } catch (Throwable ignored) {
+                // The panel's result does not matter here.
+            }
+        });
+        try {
+            assertThat(panelShown.await(AWAIT_SECONDS, TimeUnit.SECONDS)).as("the panel owns the control thread")
+                    .isTrue();
+            backend.stopStreamingForDriverReset();
+        } finally {
+            panelClosed.countDown();
+            panel.join(TimeUnit.SECONDS.toMillis(AWAIT_SECONDS));
+        }
+        assertThat(panel.isAlive()).as("the panel has closed").isFalse();
+
+        backend.close();
+        pollsOfTheNewestStream = new AtomicInteger();
+        backend.open(DEVICE, FORMAT, FRAMES);
+        assertThat(await(() -> pollsOfTheNewestStream.get() >= 5)).as("the reopened stream's fourth poll is applied")
+                .isTrue();
+        ClockLockStatus reopened = backend.clockLockStatus().orElseThrow();
+
+        assertThat(reopened.lock()).as("measured locked at its fourth poll").isEqualTo(ClockLockStatus.Lock.LOCKED);
+        assertThat(reopened.transitions()).as("the resyncs of its second and third polls unlocked nothing").isEmpty();
+    }
+
+    /**
+     * Ruling E279, as the backend wires it: two resyncs in the third poll and one in the fourth unlock, dated at the
+     * arrival the backend kept for the first request of the first bad interval.
+     */
+    @Test
+    void anUnlockFromResyncsIsDatedAtTheFirstRequestOfItsFirstBadInterval() throws Exception {
+        positionAnswer = twoResyncsInTheThirdPollAndOneInTheFourth();
+        backend.open(DEVICE, FORMAT, FRAMES);
+        assertThat(await(() -> backend.clockLockStatus().map(status -> !status.transitions().isEmpty())
+                .orElse(false))).as("the resyncs unlock").isTrue();
+
+        ClockLockStatus.Transition unlock = backend.clockLockStatus().orElseThrow().transitions().getFirst();
+        List<DriverResyncArrivals.Run> runs = backend.takeDriverResyncArrivals().runs();
+
+        assertThat(runs).as("premise: each request kept, at its own arrival").hasSize(3)
+                .allSatisfy(run -> assertThat(run.requests()).isEqualTo(1L));
+        assertThat(runs.get(0).arrivedNanos()).as("premise: the first two arrived apart")
+                .isLessThan(runs.get(1).arrivedNanos());
+        assertThat(unlock.locked()).isFalse();
+        assertThat(unlock.evidenceNanos()).as("the first request of the first bad interval")
+                .isEqualTo(runs.get(0).arrivedNanos());
+    }
+
+    /**
      * With no driver loaded (and on any host without the native library) the
      * production binding has no sample position to give: no answer, never a
      * bad one.
@@ -372,6 +501,86 @@ class AsioBackendClockLockTest {
         assertThat(await(() -> positionCalls.get() > callsAfterThePanel)).as("the poll resumes").isTrue();
     }
 
+    /**
+     * Ruling E227: a session of the driver's control panel that opens and
+     * closes between two polls, so that no poll sees it open, still makes the
+     * poll read the source again: the backend's probe counts closed sessions.
+     */
+    @Test
+    void aPanelSessionShorterThanAPollMakesThePollReadTheSourceAgain() throws Throwable {
+        positionAnswer = frozenPositionWhileTheDeviceCallsBack();
+        backend.open(DEVICE, FORMAT, FRAMES);
+        assertThat(await(() -> positionCalls.get() >= 2)).as("the poll runs").isTrue();
+        assertThat(backend.clockLockStatus().orElseThrow().sourceId()).as("premise: the word clock").isEqualTo(1);
+
+        currentSourceId = 0;
+        AsioControlThread.callUnbounded(() -> null);
+
+        assertThat(await(() -> backend.clockLockStatus().map(ClockLockStatus::sourceId).orElse(-1) == 0))
+                .as("the source the panel chose is read").isTrue();
+    }
+
+    /**
+     * Ruling E249: the closed-session count is raised before the panel's flag
+     * falls, so a poll that reads the panel closed also sees the session that
+     * closed it. The order of two stores cannot be observed without a seam,
+     * so the source is read.
+     */
+    @Test
+    void aPanelSessionIsCountedBeforeThePanelReadsClosed() throws Exception {
+        String code = Files.readString(sdkSource("AsioControlThread.java")).replaceAll("\\s+", " ");
+
+        assertThat(code).contains(
+                "} finally { CLOSED_CONTROL_PANEL_SESSIONS.incrementAndGet(); controlPanelOpen = false; }");
+    }
+
+    /** OK with a moving position while the device calls back; a resync during each stream's second and third polls. */
+    private Supplier<AsioCapabilityShim.SamplePosition> movingPositionWithAResyncInEachStreamsSecondAndThirdPolls() {
+        return () -> {
+            positionCalls.incrementAndGet();
+            AtomicInteger polls = pollsOfThisPoller.get();
+            int poll = polls.incrementAndGet();
+            if (poll == 1) {
+                pollsOfTheNewestStream = polls;
+            }
+            AsioBufferSwitchShim bridge = backend.activeBufferSwitchShim();
+            if (bridge != null) {
+                bridge.bufferSwitchUpcall(0, 1);
+            }
+            if (poll == 2 || poll == 3) {
+                backend.noteDriverResync();
+            }
+            return new AsioCapabilityShim.SamplePosition(0, 4_096L * poll, 0L);
+        };
+    }
+
+    /**
+     * OK with a moving position while the device calls back; two resyncs, apart, in the third poll, and one in the
+     * fourth.
+     */
+    private Supplier<AsioCapabilityShim.SamplePosition> twoResyncsInTheThirdPollAndOneInTheFourth() {
+        return () -> {
+            positionCalls.incrementAndGet();
+            int poll = pollsOfThisPoller.get().incrementAndGet();
+            AsioBufferSwitchShim bridge = backend.activeBufferSwitchShim();
+            if (bridge != null) {
+                bridge.bufferSwitchUpcall(0, 1);
+            }
+            if (poll == 3) {
+                backend.noteDriverResync();
+                long afterTheFirst = System.nanoTime();
+                while (System.nanoTime() == afterTheFirst) {
+                    Thread.onSpinWait();
+                }
+                backend.noteDriverResync();
+            }
+            if (poll == 4) {
+                backend.noteDriverResync();
+            }
+            return new AsioCapabilityShim.SamplePosition(0, 4_096L * poll, 0L);
+        };
+    }
+
     /** OK answers with one frozen position, while the device's callbacks keep coming. */
     private Supplier<AsioCapabilityShim.SamplePosition> frozenPositionWhileTheDeviceCallsBack() {
         return () -> {
@@ -417,6 +626,7 @@ class AsioBackendClockLockTest {
         @Override Optional<int[]> getChannelCount() { return Optional.empty(); }
         @Override boolean isClockSourceAvailable() { return true; }
         @Override List<RawClockSource> getClockSources() {
+            sourceReads.incrementAndGet();
             int current = currentSourceId;
             return List.of(new RawClockSource(0, "Internal", -1, 0, current == 0),
                     new RawClockSource(1, "Word Clock", -1, 1, current == 1));

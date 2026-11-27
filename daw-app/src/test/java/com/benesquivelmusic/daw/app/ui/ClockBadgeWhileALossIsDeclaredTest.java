@@ -145,11 +145,13 @@ class ClockBadgeWhileALossIsDeclaredTest {
         }
 
         @Override
-        public void lockChanged(boolean locked, long evidenceNanos) {
+        public boolean lockChanged(boolean locked, long evidenceNanos) {
+            return false;
         }
 
         @Override
-        public void takeStartsUnlocked() {
+        public boolean takeStartsUnlocked() {
+            return false;
         }
     }
 }

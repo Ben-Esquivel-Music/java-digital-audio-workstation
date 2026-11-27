@@ -17,17 +17,17 @@ import java.util.concurrent.locks.LockSupport;
  * <p><strong>Threads.</strong> Exactly one producer and one consumer:</p>
  * <ul>
  *   <li>The audio callback ({@code CaptureCallback.onAudioCaptured}) enters
- *       the producer gate ({@link #enterProducer()}), calls {@link #claim()},
- *       fills the returned {@link Slot} (header + payload copies), calls
- *       {@link #publish()} if the gate is still open
+ *       the producer gate ({@link #enterProducer()}), calls
+ *       {@link #claim(int)} with what the block carries, fills the returned
+ *       {@link Slot}, calls {@link #publish()} if the gate is still open
  *       ({@link #producerOpen()}), and leaves the gate
  *       ({@link #exitProducer()}); it counts what it had to cut off with
  *       {@link #noteTruncatedFrames(int)}. Those, plus the read-only
- *       {@link #overflowCount()} / {@link #droppedAfterSequence()} /
- *       {@link #truncatedFrames()} / {@link #size()} / {@link #isEmpty()},
- *       are the {@link RealTimeSafe} surface: bounded arithmetic, volatile
- *       and release stores, no allocation, no locks, no throwing paths
- *       reachable from a well-formed call.</li>
+ *       {@link #overflowCount()} / {@link #truncatedFrames()} /
+ *       {@link #size()} / {@link #isEmpty()}, are the {@link RealTimeSafe}
+ *       surface: bounded arithmetic, volatile and release stores, no
+ *       allocation, no locks, no throwing paths reachable from a well-formed
+ *       call.</li>
  *   <li>The flush thread calls {@link #peek()} to read the oldest published
  *       slot in place and {@link #release()} once it has finished with it. It
  *       is the only writer of the read index. Before the final sweep of a
@@ -95,15 +95,14 @@ import java.util.concurrent.locks.LockSupport;
  * already proves.</p>
  *
  * <p><strong>Overflow policy</strong> (book §4.2). This ring drops the
- * <em>incoming</em> block, not the oldest queued one: {@link #claim()} returns
- * {@code null}, {@link #overflowCount()} advances, and the callback returns
- * at once. Overwriting the oldest slot is not single-producer-safe — the
- * consumer may be copying out of exactly that slot at that moment (the same
- * reason {@code AudioBlockRing.write} gives). Either way the loss is bounded
- * to one block per overflow and honestly recorded: the flush thread notices
- * the counter advancing and writes a {@code gap=} line to the take manifest,
- * positioned by {@link #droppedAfterSequence()}. The callback never blocks
- * (book §9.14).</p>
+ * <em>incoming</em> block, not the oldest queued one: {@link #claim(int)}
+ * returns {@code null} and the callback returns at once. Overwriting the
+ * oldest slot is not single-producer-safe — the consumer may be copying out
+ * of exactly that slot (the reason {@code AudioBlockRing.write} gives). A
+ * drop is counted by what the block carried, and each slot is stamped at its
+ * claim with the counts, so the flush thread knows the run dropped right
+ * before each block it takes up (story 338, rulings E273, E277, E281 and
+ * E287). The callback never blocks (book §9.14).</p>
  *
  * <p><strong>Over-long blocks.</strong> A slot holds {@code slotFrames}
  * frames. A delivered block longer than that keeps its first
@@ -112,10 +111,9 @@ import java.util.concurrent.locks.LockSupport;
  * ({@link #noteTruncatedFrames(int)}), and the flush thread records the
  * episode in the manifest. Nothing is cut off silently.</p>
  *
- * <p>The counters and the drop marker are each a plain load followed by a
- * release store ({@code lazySet}) rather than an atomic read-modify-write:
- * the callback is their only writer, and the story-316 sentinels forbid the
- * CAS family on callback bridges.</p>
+ * <p>The counters are each a plain load followed by a release store ({@code lazySet}) rather than an atomic
+ * read-modify-write: the callback is their only writer, and the story-316 sentinels forbid the CAS family on
+ * callback bridges.</p>
  */
 public final class CaptureRing {
 
@@ -134,8 +132,12 @@ public final class CaptureRing {
     /** Hand-off tolerance the default sizing covers (book §4.2: "≥ 250 ms of audio"). */
     public static final Duration DEFAULT_HANDOFF_TOLERANCE = Duration.ofMillis(250);
 
-    /** Value of {@link #droppedAfterSequence()} while no block has ever been dropped. */
-    public static final long NO_DROP = -1L;
+    /** What a block carries, for {@link #claim(int)}: a channel of input its input delivered (ruling E277). */
+    public static final int DELIVERED = 1;
+    /** Input the render passed while the input was live and had delivered nothing: input-starved (E281). */
+    public static final int STARVED = 2;
+    /** A recorded instrument's audio; a block with none of the three kinds is the silence after a stop. */
+    public static final int INSTRUMENT = 4;
 
     /** Value of {@link Slot#outputClockFrame()} for a block its input delivered itself. */
     public static final long NO_OUTPUT_CLOCK_FRAME = -1L;
@@ -155,7 +157,12 @@ public final class CaptureRing {
     private final AtomicLong head = new AtomicLong(0);          // consumer: next slot to read
     private final AtomicLong tail = new AtomicLong(0);          // producer: next slot to publish
     private final AtomicLong overflowCount = new AtomicLong(0); // producer-only writer
-    private final AtomicLong droppedAfterSequence = new AtomicLong(NO_DROP); // producer-only writer
+    private final AtomicLong audioOverflowCount = new AtomicLong(0); // producer-only writer, as are the four below
+    private final AtomicLong starvedOverflowCount = new AtomicLong(0);
+    private final AtomicLong inputlessOverflowCount = new AtomicLong(0);
+    private final AtomicLong starvedSinceDelivery = new AtomicLong(0);
+    private final AtomicLong audioAfterSilenceCount = new AtomicLong(0);
+    private boolean runDroppedSilence; // producer-only: a silence-only block dropped since the last claim
     private final AtomicLong truncatedFrames = new AtomicLong(0);            // producer-only writer
     private boolean claimed;                                    // producer-only
     /** The take is ending: no block is to be published any more. Written by the thread that ends the take. */
@@ -354,41 +361,53 @@ public final class CaptureRing {
     }
 
     /**
-     * Claims the next free slot for the producer to fill. Audio-callback
-     * side.
+     * Claims the next free slot, its header reset and stamped with the drop counts, which hold every earlier drop
+     * by program order on the one producer; claimed again before {@link #publish()}, it is handed out again.
      *
-     * <p>The returned slot's header and per-source channel counts are reset;
-     * its payload is stale until written. The slot is not visible to the
-     * consumer until {@link #publish()}. Claiming again without publishing
-     * simply returns the same slot again, reset — which is what a callback
-     * that found the producer gate closed before its publish leaves behind.</p>
-     *
-     * @return the slot to fill, or {@code null} when the ring is full — in
-     *         which case the incoming block is dropped,
-     *         {@link #droppedAfterSequence()} names the last block published
-     *         before it and {@link #overflowCount()} has advanced (see the
-     *         class note on the overflow policy)
+     * @param carried {@link #DELIVERED} or {@link #STARVED} or neither, with or without {@link #INSTRUMENT}
+     * @return the slot, or {@code null} when the ring is full: the block is then dropped and counted (class note)
      */
     @RealTimeSafe
-    public Slot claim() {
+    public Slot claim(int carried) {
+        if ((carried & DELIVERED) != 0) {
+            starvedSinceDelivery.lazySet(0L);
+        }
         long t = tail.get();
         long h = head.get();
         if (t - h >= capacity) {
-            // Single writer of both: plain load + release store, no RMW. The
-            // marker goes first so a reader that sees the advanced count
-            // also sees where that drop happened.
-            droppedAfterSequence.lazySet(t - 1);
+            // Each kind goes before the total: a reader that loads the total first sees every kind it counts.
+            if ((carried & (DELIVERED | INSTRUMENT)) != 0) {
+                audioOverflowCount.lazySet(audioOverflowCount.get() + 1);
+                if (runDroppedSilence) {
+                    audioAfterSilenceCount.lazySet(audioAfterSilenceCount.get() + 1);
+                }
+            } else if (carried == STARVED) {
+                starvedOverflowCount.lazySet(starvedOverflowCount.get() + 1);
+                starvedSinceDelivery.lazySet(starvedSinceDelivery.get() + 1);
+            } else {
+                runDroppedSilence = true;
+            }
+            if ((carried & (DELIVERED | STARVED)) == 0) {
+                inputlessOverflowCount.lazySet(inputlessOverflowCount.get() + 1);
+            }
             overflowCount.lazySet(overflowCount.get() + 1);
             return null;
         }
         Slot slot = slots[(int) (t & mask)];
         slot.reset(t);
+        slot.droppedBefore = overflowCount.get();
+        slot.audioDroppedBefore = audioOverflowCount.get();
+        slot.starvedDroppedBefore = starvedOverflowCount.get();
+        slot.inputlessDroppedBefore = inputlessOverflowCount.get();
+        slot.starvedSinceDelivery = starvedSinceDelivery.get();
+        slot.audioAfterSilenceBefore = audioAfterSilenceCount.get();
+        runDroppedSilence = false;
         claimed = true;
         return slot;
     }
 
     /**
-     * Publishes the slot returned by the last {@link #claim()}. Audio-callback
+     * Publishes the slot returned by the last {@link #claim(int)}. Audio-callback
      * side.
      *
      * <p>A release store on the tail: every header/payload write made to the
@@ -422,6 +441,16 @@ public final class CaptureRing {
         return slots[(int) (h & mask)];
     }
 
+    /** Returns the published, unreleased slot of {@code sequence} in place, or {@code null}: the seal's look. */
+    public Slot peekAt(long sequence) {
+        long h = head.get();
+        long t = tail.get();
+        if (sequence < h || sequence >= t) {
+            return null;
+        }
+        return slots[(int) (sequence & mask)];
+    }
+
     /**
      * Consumes the slot last returned by {@link #peek()}. Flush-thread side.
      *
@@ -446,25 +475,22 @@ public final class CaptureRing {
         return overflowCount.get();
     }
 
-    /**
-     * Returns the sequence number of the last block that was published
-     * before the most recent drop — the block the dropped audio would have
-     * followed — or {@link #NO_DROP} while nothing has been dropped.
-     * Readable from any thread.
-     *
-     * <p>Written by the producer in {@link #claim()}'s drop path, before
-     * {@link #overflowCount()} advances, so a reader that observes the
-     * advanced count also observes the marker of that drop (or of a later
-     * one). A drop needs a full ring, so the marked block was
-     * {@code capacity − 1} blocks ahead of the read index the producer
-     * loaded, and is normally still queued when the marker is stored (the
-     * flush service's fallback covers the case where it is not). Several
-     * drops between two publishes share one marker; a drop after a later
-     * publish moves it forward.</p>
-     */
-    @RealTimeSafe
-    public long droppedAfterSequence() {
-        return droppedAfterSequence.get();
+    /** The ring's drop counts by kind, as {@link #claim(int)} counts them (story 338, rulings E273 to E287). */
+    public record DropCounts(long total, long audio, long starved, long inputless, long starvedSinceDelivery,
+                             long audioAfterSilence) {
+    }
+
+    /** Reads the drop counts, the total first: each kind is stored before it, so none it counts is missing. */
+    public DropCounts dropCounts() {
+        long total = overflowCount.get();
+        return new DropCounts(total, audioOverflowCount.get(), starvedOverflowCount.get(),
+                inputlessOverflowCount.get(), starvedSinceDelivery.get(), audioAfterSilenceCount.get());
+    }
+
+    /** The drop counts {@code slot} was stamped with at its claim; flush-thread side, like {@link #peek()}. */
+    public DropCounts stampOf(Slot slot) {
+        return new DropCounts(slot.droppedBefore, slot.audioDroppedBefore, slot.starvedDroppedBefore,
+                slot.inputlessDroppedBefore, slot.starvedSinceDelivery, slot.audioAfterSilenceBefore);
     }
 
     /**
@@ -527,9 +553,9 @@ public final class CaptureRing {
 
     /**
      * Returns the total number of blocks published so far (the producer
-     * index). The flush service's {@code awaitFlushed} waits until
-     * {@link #releasedBlocks()} reaches the value this returned when it was
-     * called.
+     * index). The flush service's {@code awaitFlushed} waits until the flush
+     * thread has taken up every block this counted when it was called and
+     * ended the pass that took up the last of them.
      */
     public long publishedBlocks() {
         return tail.get();
@@ -548,7 +574,7 @@ public final class CaptureRing {
 
     /**
      * One preallocated ring slot: a primitives-only header plus the payload
-     * rows. Written only by the producer between {@link CaptureRing#claim()}
+     * rows. Written only by the producer between {@link CaptureRing#claim(int)}
      * and {@link CaptureRing#publish()}; read only by the consumer between
      * {@link CaptureRing#peek()} and {@link CaptureRing#release()}.
      *
@@ -591,6 +617,12 @@ public final class CaptureRing {
         private boolean inputStarved;
         private long outputClockFrame = NO_OUTPUT_CLOCK_FRAME;
         private long transportLap = NO_TRANSPORT_LAP;
+        private long droppedBefore;
+        private long audioDroppedBefore;
+        private long starvedDroppedBefore;
+        private long inputlessDroppedBefore;
+        private long starvedSinceDelivery;
+        private long audioAfterSilenceBefore;
 
         private Slot(int slotFrames, int channelsPerSource, int sourceCount) {
             this.slotFrames = slotFrames;

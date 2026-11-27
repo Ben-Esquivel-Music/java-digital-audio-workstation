@@ -9,6 +9,7 @@ import com.benesquivelmusic.daw.core.audio.health.RenderThread;
 import com.benesquivelmusic.daw.core.audio.performance.XrunDetector;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioBlock;
+import com.benesquivelmusic.daw.sdk.audio.InputBlockLossListener;
 
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -209,6 +210,8 @@ final class EngineStreamPump {
      * need re-zeroing when no capture arrives.
      */
     private boolean inputPlanesDirty;
+    /** Pump thread only: the render passed the ended input's first zero-width block (ruling E276). */
+    private boolean inputEnded;
 
     /**
      * Pre-allocates every buffer the render loop needs and claims the render
@@ -426,12 +429,12 @@ final class EngineStreamPump {
     }
 
     /**
-     * Ends this pump's input as a stall (story 338): from the
-     * next block that polls no captured block, the render passes zero-width
-     * input, so the take flags the input's tracks; blocks already queued are
-     * still rendered first (ruling E47). Acts on this pump only, so a
-     * declaration that arrives after the stream was reopened cannot end the
-     * new stream's input. Any non-real-time thread; lock-free.
+     * Ends this pump's input as a stall (story 338): from the next block that polls no captured block, the
+     * render passes zero-width input to the end of the stream, so the take flags the input's tracks; blocks
+     * already queued are still rendered first (ruling E47), and a block a delivery already past its gate adds
+     * after that block is discarded unrendered (ruling E276). Acts on this pump only, so a declaration that
+     * arrives after the stream was reopened cannot end the new stream's input. Any non-real-time thread;
+     * lock-free.
      *
      * @return {@code true} only for the call that ended a live input
      */
@@ -594,13 +597,12 @@ final class EngineStreamPump {
     /**
      * Renders one block into the output planes and the interleave buffer.
      *
-     * <p>Input of an ended stream (its publisher closed, or the engine
-     * declared it stalled) is passed at zero width, so the take flags it —
-     * but only once the blocks it delivered before it ended are rendered
-     * (story 338, ruling E47). A block rendered with no captured block while
-     * the input is live is stamped as input-starved for the duration of
-     * {@code processBlock}, so the take's capture callback, which runs on
-     * this thread inside it, marks its slot (amendment A6).</p>
+     * <p>Input of an ended stream (its publisher closed, or the engine declared it stalled) is passed at zero
+     * width, so the take flags it — but only once the blocks it delivered before it ended are rendered (story
+     * 338, ruling E47) — and from its first zero-width block to the end of the stream (ruling E276). A block
+     * rendered with no captured block while the input is live is stamped as input-starved for the duration of
+     * {@code processBlock}, so the take's capture callback, which runs on this thread inside it, marks its
+     * slot (amendment A6).</p>
      *
      * @param polled whether {@link #fillInputPlanes()} filled the input planes
      *               from a captured block this iteration
@@ -612,6 +614,7 @@ final class EngineStreamPump {
             long renderStartNanos = System.nanoTime();
             boolean terminated = inputStreamTerminated;
             int inputWidth = terminated && !polled ? 0 : availableInputChannels;
+            inputEnded |= terminated && !polled;
             boolean starved = ownInputOpened && !polled && !terminated;
             if (starved) {
                 engine.setCapturedInputStarved(true);
@@ -762,14 +765,14 @@ final class EngineStreamPump {
     }
 
     /**
-     * De-interleaves the oldest queued captured block into the input planes,
-     * or zeroes them when no capture arrived this period.
+     * De-interleaves the oldest queued captured block into the input planes, or zeroes them when no capture
+     * arrived this period or the input ended; a block polled after that is discarded unrendered (ruling E276).
      *
-     * @return whether a captured block was polled
+     * @return whether the planes hold a captured block
      */
     private boolean fillInputPlanes() {
         AudioBlock block = inputQueue.poll();
-        if (block == null) {
+        if (block == null || inputEnded) {
             if (inputPlanesDirty) {
                 for (int ch = 0; ch < input.length; ch++) {
                     java.util.Arrays.fill(input[ch], 0f);
@@ -800,12 +803,13 @@ final class EngineStreamPump {
     }
 
     /**
-     * Non-RT subscriber feeding the bounded input queue. The backend delivers
-     * blocks on its own (non-RT) marshalling thread — the ASIO backend's
-     * {@code asio-input-drain}, the adapter's {@code native-input-drain} —
-     * so offering into a lock-based queue is fine here.
+     * Non-RT subscriber feeding the bounded input queue. A publisher delivers
+     * on its own thread, never a driver's real-time one, so offering into a
+     * lock-based queue is fine here; a block the publisher drops for this
+     * subscriber is reported to {@link #inputBlockDropped} on the publishing
+     * thread, under the publisher's lock.
      */
-    private final class InputSubscriber implements Flow.Subscriber<AudioBlock> {
+    private final class InputSubscriber implements Flow.Subscriber<AudioBlock>, InputBlockLossListener {
 
         /**
          * Stores the capture subscription and opens the flow — unless the
@@ -867,6 +871,14 @@ final class EngineStreamPump {
             }
             if (!inputQueue.offer(item)) {
                 droppedInputBlocks.incrementAndGet();
+                engine.noteCapturedInputBlockLost();
+            }
+        }
+
+        /** A block the publisher dropped for this subscriber, counted under {@link #onNext}'s own gate. */
+        @Override
+        public void inputBlockDropped(AudioBlock block) {
+            if (running && !inputStreamTerminated) {
                 engine.noteCapturedInputBlockLost();
             }
         }

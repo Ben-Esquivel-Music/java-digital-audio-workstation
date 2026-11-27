@@ -5,9 +5,12 @@ import com.benesquivelmusic.daw.core.audio.health.AudioFailureCategory;
 import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.audio.performance.XrunDetector;
 import com.benesquivelmusic.daw.sdk.audio.BackendDropoutCounters;
+import com.benesquivelmusic.daw.sdk.audio.DriverResyncArrivals;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -44,6 +47,21 @@ import java.util.logging.Logger;
  * drop counters, which are a backend instance's and outlive a reopen, from the
  * sample before.</p>
  *
+ * <p>Each tick also takes up the arrivals of the driver resync requests the
+ * backend counted since the tick before
+ * ({@link AudioEngine#takeDriverResyncArrivals()}), whether or not it writes an
+ * entry, and keeps them, by request, with the growth it carries: a Resync entry
+ * is dated at the arrival of the first request it stands for and hands the
+ * journal the arrival of each for the take's marks (rulings E40, E73, E270 and
+ * E279). Requests whose growth is not counted, or is discarded, take their
+ * arrivals with them. An entry with a request whose arrival this feed did not
+ * take up, as when a read of the backend failed or the stream closed between
+ * two reads, is dated at this feed's read before the one that counted its
+ * first request, which is no later than the driver's call that brought it
+ * (ruling E292). After every tick the feed tells the journal the dates it
+ * holds, so the take's frame history keeps the sample at or before each
+ * however long a standstill carries them (ruling E291).</p>
+ *
  * <p>Late blocks — the render drive's late and dropped ticks, read from the
  * engine's {@link XrunDetector} — are written as Late entries and never raise
  * the count (ruling E17). Every gap is also reported to the detector, which
@@ -67,10 +85,13 @@ final class XrunFeed {
             XrunJournal.Detail.OUTPUT_STARVED, XrunJournal.Detail.CALLBACK_FAILED,
             XrunJournal.Detail.PROCESSING_FAILED, XrunJournal.Detail.OUTPUT_REFUSED,
             XrunJournal.Detail.BLOCK_NEVER_PLAYED, XrunJournal.Detail.DRIVER_OVERLOAD, XrunJournal.Detail.DRIVER_RESYNC};
+    /** {@link #GAP_DETAILS}' index of the driver resyncs. */
+    private static final int RESYNCS = GAP_DETAILS.length - 1;
 
-    /** One look at the engine. */
-    private record Sample(boolean valid, long epoch, long beats, OptionalLong devicePeriods, long[] totals,
-                          BackendDropoutCounters dropouts, OptionalLong resyncArrival, long underrunAnswers) {
+    /** One look at the engine; {@code readNanos} is read before its counters, on the arrivals' clock. */
+    private record Sample(boolean valid, long readNanos, long epoch, long beats, OptionalLong devicePeriods,
+                          long[] totals, BackendDropoutCounters dropouts, DriverResyncArrivals resyncArrivals,
+                          long underrunAnswers) {
     }
 
     private final AudioEngine engine;
@@ -96,6 +117,19 @@ final class XrunFeed {
     private long gapsReported;
     /** What grew in intervals in which the heartbeat stood still, per {@link #GAP_DETAILS} entry, not yet written. */
     private final long[] carried = new long[GAP_DETAILS.length];
+    /**
+     * The resync arrivals taken up and not yet written or forgotten, oldest first, as runs of requests dated at one
+     * arrival; they cover the requests from {@link #arrivalsFrom} up to {@link #arrivalsTo}, numbered as the backend
+     * counts them.
+     */
+    private final Deque<XrunJournal.ResyncMark> arrivals = new ArrayDeque<>();
+    private long arrivalsFrom;
+    private long arrivalsTo;
+    /**
+     * The read before the first interval whose resync growth is carried: the date of carried resyncs this feed holds
+     * no arrival for (ruling E292). Read only while that growth is carried.
+     */
+    private long resyncsCountedAfterNanos;
 
     /**
      * A feed of {@code journal}.
@@ -114,15 +148,38 @@ final class XrunFeed {
     void tick() {
         XrunDetector current = followTheDetector();
         Sample sample = sample();
+        long takenFrom = keepArrivals(sample.resyncArrivals());
         long[] faultGrowth = faultGrowth(sample.totals());
         if (current != null) {
             writeLateBlocks(current);
         }
-        long gaps = countGaps(sample, faultGrowth);
+        long gaps = countGaps(sample, faultGrowth, takenFrom);
+        if (carried[RESYNCS] == 0L) {
+            // Growth neither written nor carried is never counted: its requests take their arrivals with them.
+            forgetArrivalsBefore(sample.dropouts().driverResyncs());
+        }
+        journal.noteResyncDatesHeld(resyncDatesHeld());
         if (gaps > 0L && current != null) {
             current.reportDropped(gaps);
             gapsReported += gaps;
         }
+    }
+
+    /** The dates of the resyncs this feed holds and may yet write: each arrival kept, and the carried ones' date. */
+    private long[] resyncDatesHeld() {
+        boolean carriesResyncs = carried[RESYNCS] > 0L;
+        if (arrivals.isEmpty() && !carriesResyncs) {
+            return XrunJournal.NO_DATES;
+        }
+        long[] dates = new long[arrivals.size() + (carriesResyncs ? 1 : 0)];
+        int next = 0;
+        for (XrunJournal.ResyncMark run : arrivals) {
+            dates[next++] = run.arrivedNanos();
+        }
+        if (carriesResyncs) {
+            dates[next] = resyncsCountedAfterNanos;
+        }
+        return dates;
     }
 
     private XrunDetector followTheDetector() {
@@ -143,6 +200,8 @@ final class XrunFeed {
     }
 
     private Sample sample() {
+        // Before the counters: the date of what the next sample counts without an arrival (ruling E292).
+        long readNanos = System.nanoTime();
         // Read before the drop counters: an answer sampled before a forget is the forgotten driver's (ruling E116).
         long underrunAnswers = journal.underrunAnswers();
         AudioHealthRecord health = engine.audioHealth();
@@ -152,11 +211,13 @@ final class XrunFeed {
         long beats = health.renderDriveBeats();
         OptionalLong periods = health.deviceCallbackPeriods();
         BackendDropoutCounters dropouts = engine.dropoutCounters();
-        OptionalLong resyncArrival = engine.newestDriverResyncNanos();
+        // Taken after the counters, so it holds the arrival of every resync they counted (ruling E279).
+        DriverResyncArrivals resyncArrivals = engine.takeDriverResyncArrivals();
         boolean aliveAfter = engine.isRenderDriveAlive();
         long epochAfter = health.renderDriveEpoch();
         boolean valid = aliveBefore && aliveAfter && epochBefore == epochAfter;
-        return new Sample(valid, epochAfter, beats, periods, totals, dropouts, resyncArrival, underrunAnswers);
+        return new Sample(valid, readNanos, epochAfter, beats, periods, totals, dropouts, resyncArrivals,
+                underrunAnswers);
     }
 
     /** Each fault category's growth since the previous tick; nothing at the first. */
@@ -177,17 +238,22 @@ final class XrunFeed {
         return growth;
     }
 
-    /** Writes and returns the gaps between the previous sample and {@code sample}, where the gates allow. */
-    private long countGaps(Sample sample, long[] faultGrowth) {
+    /**
+     * Writes and returns the gaps between the previous sample and {@code sample}, where the gates allow;
+     * {@code takenFrom} is what {@link #keepArrivals} returned this tick.
+     */
+    private long countGaps(Sample sample, long[] faultGrowth, long takenFrom) {
         if (!sample.valid()) {
             previous = null;
             Arrays.fill(carried, 0L);
+            // Nothing taken up so far is counted: the next valid sample starts afresh, whatever its count reads.
+            forgetArrivalsBefore(arrivalsTo);
             return 0L;
         }
         journal.reportsOutputStarvation(sample.dropouts().reportsOutputStarvation(), sample.underrunAnswers());
         if (sample.epoch() != epoch) {
             epoch = sample.epoch();
-            startAfresh(sample);
+            startAfresh(sample, takenFrom);
             return 0L;
         }
         Sample before = previous;
@@ -196,7 +262,7 @@ final class XrunFeed {
             return 0L;
         }
         if (sample.devicePeriods().isPresent() != startUp.devicePeriods().isPresent()) {
-            startAfresh(sample);
+            startAfresh(sample, takenFrom);
             return 0L;
         }
         if (!started) {
@@ -205,15 +271,20 @@ final class XrunFeed {
         }
         long[] growth = intervalGrowth(before.dropouts(), sample.dropouts(), faultGrowth);
         if (!heartbeatAdvanced(before, sample)) {
+            if (carried[RESYNCS] == 0L && growth[RESYNCS] > 0L) {
+                resyncsCountedAfterNanos = before.readNanos();
+            }
             for (int i = 0; i < growth.length; i++) {
                 carried[i] += growth[i];
             }
             return 0L;
         }
+        long undatedNanos = carried[RESYNCS] > 0L ? resyncsCountedAfterNanos : before.readNanos();
         List<String> logged = new ArrayList<>();
         long gaps = 0L;
         for (int i = 0; i < growth.length; i++) {
-            gaps += write(GAP_DETAILS[i], carried[i] + growth[i], logged, sample.resyncArrival());
+            gaps += write(GAP_DETAILS[i], carried[i] + growth[i], logged, sample.dropouts().driverResyncs(),
+                    undatedNanos);
             carried[i] = 0L;
         }
         if (gaps > 0L) {
@@ -222,12 +293,17 @@ final class XrunFeed {
         return gaps;
     }
 
-    /** The start-up allowance begins again at {@code sample}; nothing grown before it is counted or carried. */
-    private void startAfresh(Sample sample) {
+    /**
+     * The start-up allowance begins again at {@code sample}; nothing grown before it is counted or carried, and the
+     * arrivals kept from before this tick, numbered below {@code takenFrom}, are forgotten: growth is measured from
+     * this sample's count on, which holds each of their requests or is another backend's.
+     */
+    private void startAfresh(Sample sample, long takenFrom) {
         started = false;
         startUp = sample;
         previous = sample;
         Arrays.fill(carried, 0L);
+        forgetArrivalsBefore(takenFrom);
     }
 
     /** Each {@link #GAP_DETAILS} entry's growth between two samples of one epoch. */
@@ -261,17 +337,80 @@ final class XrunFeed {
         return now >= was ? now - was : 0L;
     }
 
-    private long write(XrunJournal.Detail detail, long count, List<String> logged, OptionalLong resyncArrival) {
+    private long write(XrunJournal.Detail detail, long count, List<String> logged, long resyncsCounted,
+                       long undatedNanos) {
         if (count <= 0L) {
             return 0L;
         }
-        if (detail == XrunJournal.Detail.DRIVER_RESYNC && resyncArrival.isPresent()) {
-            journal.append(detail, List.of(), count, resyncArrival.getAsLong());
+        if (detail == XrunJournal.Detail.DRIVER_RESYNC) {
+            List<XrunJournal.ResyncMark> dated = arrivalsOf(resyncsCounted - count, count);
+            // Without every arrival: the read before the one that counted them, never after their driver's call (E292).
+            journal.appendResyncs(dated.isEmpty()
+                    ? List.of(new XrunJournal.ResyncMark(undatedNanos, count))
+                    : dated);
         } else {
             journal.append(detail, List.of(), count);
         }
         logged.add(count + " " + detail.name().toLowerCase(Locale.ROOT).replace('_', ' '));
         return count;
+    }
+
+    /**
+     * Keeps the resync arrivals this tick took up after those kept; a take that does not continue them starts them
+     * afresh, as another backend numbers its own requests. Beyond {@link XrunJournal#RESYNC_MARKS_KEPT} runs the
+     * oldest two are merged at the earlier arrival, as the journal merges its marks.
+     *
+     * @return the number of the first request this tick took up, or {@link #arrivalsTo} when it took none: the
+     *         arrivals still kept from earlier ticks are those numbered below it
+     */
+    private long keepArrivals(DriverResyncArrivals taken) {
+        if (taken.runs().isEmpty()) {
+            return arrivalsTo;
+        }
+        if (taken.firstRequest() != arrivalsTo) {
+            arrivals.clear();
+            arrivalsFrom = taken.firstRequest();
+            arrivalsTo = arrivalsFrom;
+        }
+        long takenFrom = arrivalsTo;
+        for (DriverResyncArrivals.Run run : taken.runs()) {
+            XrunJournal.keepMerging(arrivals, new XrunJournal.ResyncMark(run.arrivedNanos(), run.requests()));
+            arrivalsTo += run.requests();
+        }
+        return takenFrom;
+    }
+
+    /** Forgets the arrivals of the requests numbered below {@code request}: written, or never to be counted. */
+    private void forgetArrivalsBefore(long request) {
+        while (!arrivals.isEmpty() && request - arrivalsFrom > 0L) {
+            XrunJournal.ResyncMark oldest = arrivals.removeFirst();
+            long forgotten = Math.min(oldest.count(), request - arrivalsFrom);
+            if (forgotten < oldest.count()) {
+                arrivals.addFirst(new XrunJournal.ResyncMark(oldest.arrivedNanos(), oldest.count() - forgotten));
+            }
+            arrivalsFrom += forgotten;
+        }
+    }
+
+    /**
+     * The arrivals of the {@code requests} requests numbered from {@code first}, as runs in request order; empty
+     * unless this feed took up the arrival of every one of them.
+     */
+    private List<XrunJournal.ResyncMark> arrivalsOf(long first, long requests) {
+        if (first != arrivalsFrom || arrivalsTo - first < requests) {
+            return List.of();
+        }
+        List<XrunJournal.ResyncMark> runs = new ArrayList<>();
+        long left = requests;
+        for (XrunJournal.ResyncMark run : arrivals) {
+            if (left == 0L) {
+                break;
+            }
+            long these = Math.min(left, run.count());
+            runs.add(new XrunJournal.ResyncMark(run.arrivedNanos(), these));
+            left -= these;
+        }
+        return runs;
     }
 
     /** Writes the late and dropped ticks of {@code source} not yet written, as one Late entry. */

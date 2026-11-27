@@ -83,7 +83,7 @@ import java.util.Locale;
  * cell once, whichever text it shows, the amber checkpoint failure included
  * (ruling L2): it carries {@link StatusStripCell#FLASH_PSEUDO_CLASS} for
  * {@link SessionStatusStrip#SAVED_FLASH_DURATION}. Under Reduce Motion there
- * is no flash, as {@code ClockStatusIndicator} drops its pulse, and the new
+ * is no flash, as {@code ClockStatusIndicator} drops its flash, and the new
  * seconds carry the signal; nor while the strip's window is not showing (a
  * hidden window keeps its {@code Scene}, so the window is asked). A
  * checkpoint, a failure and a project replacement never advance that signal,
@@ -506,7 +506,7 @@ public final class SessionStatusStripSkin extends SkinBase<SessionStatusStrip> {
     /**
      * Flashes the Saved cell once for a head save success (ruling G4 (c), PM
      * book §4.5): restarted by a success during a flash. Under Reduce Motion
-     * nothing flashes — as {@code ClockStatusIndicator} drops its pulse; the
+     * nothing flashes — as {@code ClockStatusIndicator} drops its flash; the
      * new seconds carry the signal — and nothing flashes while the strip's
      * window is not showing. FX thread.
      */

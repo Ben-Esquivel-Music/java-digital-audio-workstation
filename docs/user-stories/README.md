@@ -98,12 +98,12 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 043 | [SoundFont Browser and MIDI Instrument Assignment](043-soundfont-browser.md) | 🟡 Medium | MIDI |
 | 096 | [Graceful MIDI Playback Degradation with User Notification](096-midi-playback-fallback-notification.md) | 🟠 High | MIDI |
 | 146 | [Piano-Roll Velocity and CC Lanes](146-piano-roll-velocity-and-cc-lanes.md) | 🟠 High | MIDI |
-| 147 | [MIDI Quantize with Swing and Groove Templates](147-midi-quantize-with-swing-and-groove.md) | 🟠 High | MIDI |
-| 148 | [MIDI Humanization](148-midi-humanization.md) | 🟡 Medium | MIDI |
-| 149 | [MIDI Clip Looping](149-midi-clip-looping.md) | 🟡 Medium | MIDI |
-| 150 | [Drum Grid Editor](150-drum-grid-editor.md) | 🟠 High | MIDI |
+| 147 | [MIDI Quantize with Swing and Groove Templates](future/147-midi-quantize-with-swing-and-groove.md) | 🟠 High | MIDI |
+| 148 | [MIDI Humanization](future/148-midi-humanization.md) | 🟡 Medium | MIDI |
+| 149 | [MIDI Clip Looping](future/149-midi-clip-looping.md) | 🟡 Medium | MIDI |
+| 150 | [Drum Grid Editor](future/150-drum-grid-editor.md) | 🟠 High | MIDI |
 | 151 | [MIDI Arpeggiator Built-In Plugin](151-midi-arpeggiator-plugin.md) | 🟡 Medium | MIDI |
-| 152 | [External MIDI Controller Mapping](152-external-midi-controller-mapping.md) | 🟠 High | MIDI |
+| 152 | [External MIDI Controller Mapping](future/152-external-midi-controller-mapping.md) | 🟠 High | MIDI |
 
 ## Mixer & Effects
 
@@ -172,7 +172,7 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 041 | [Reference Track A/B Comparison](041-reference-track-comparison.md) | 🟡 Medium | Mixing |
 | 167 | [Dithered Bit-Depth Reduction Stage](167-dithered-bit-depth-reduction-stage.md) | 🟠 High | Mastering |
 | 168 | [ISRC and CD-Text Metadata](168-isrc-cd-text-metadata.md) | 🟡 Medium | Mastering |
-| 182 | [DDP Image Export for CD Replication](182-ddp-image-export-for-cd.md) | 🟡 Medium | Mastering |
+| 182 | [DDP Image Export for CD Replication](future/182-ddp-image-export-for-cd.md) | 🟡 Medium | Mastering |
 
 ## Export & Interoperability
 
@@ -186,8 +186,8 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 026 | [ADM BWF Export for Dolby Atmos Deliverables](026-adm-bwf-atmos-export.md) | 🟢 Low | Immersive |
 | 097 | [Native Library Availability Detection and Export Format Validation](097-native-library-detection-export-validation.md) | 🟠 High | Export |
 | 181 | [Stem-Plus-Master Bundle Export](181-stem-plus-master-bundle-export.md) | 🟠 High | Export |
-| 183 | [Game-Audio Export for Wwise / FMOD](183-game-audio-export-wwise-fmod.md) | 🟢 Low | Export |
-| 184 | [MusicXML Export from MIDI](184-musicxml-export-from-midi.md) | 🟢 Low | Interop |
+| 183 | [Game-Audio Export for Wwise / FMOD](future/183-game-audio-export-wwise-fmod.md) | 🟢 Low | Export |
+| 184 | [MusicXML Export from MIDI](future/184-musicxml-export-from-midi.md) | 🟢 Low | Interop |
 | 185 | [OMF/AAF Interchange for Film Post](185-omf-aaf-interchange-for-film-post.md) | 🟢 Low | Interop |
 | 186 | [Offline Render Queue](186-offline-render-queue.md) | 🟡 Medium | Export |
 
@@ -249,6 +249,7 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 195 | [Resizable, Detachable, Dockable Panels](195-resizable-detachable-dockable-panels.md) | 🟠 High | Usability |
 | 196 | [Contextual Help Overlay](196-contextual-help-overlay.md) | 🟡 Medium | Usability |
 | 197 | [Drag-and-Drop Target Visual Feedback](197-drag-and-drop-target-visual-feedback.md) | 🟡 Medium | Usability |
+| 483 | [State-Carrying Text Meets Small-Text Contrast in Every Theme](future/483-state-carrying-text-meets-small-text-contrast-in-every-theme.md) | 🟡 Medium | Accessibility |
 
 ## UI Overhaul (Design Book)
 
@@ -386,6 +387,10 @@ Operationalises [`RECORDING_RELIABILITY_DESIGN_BOOK.md`](../design/RECORDING_REL
 | 328 | [Capture Workflows: Count-In, Punch, Loop Takes, Comping](328-capture-workflows-count-in-punch-loop-takes.md) | 🟠 High | Recording |
 | 350 | [Take Directory Ownership for Reused Recording Pipelines](350-take-directory-ownership-for-reused-recording-pipelines.md) | 🟡 Medium | Recording |
 | 352 | [Stable Audio Device Identity for Hot-Plug Matching](352-stable-audio-device-identity.md) | 🟡 Medium | Recording |
+| 481 | [PortAudio's Own Status Flags Reach the Take's Dropouts and the Xruns Count](future/481-portaudio-status-flags-reach-the-takes-dropouts-and-the-xruns-count.md) | 🟡 Medium | Recording |
+| 482 | [A Clock Event Inside a Take Is Marked Even When Seen After the Stop](future/482-a-clock-event-inside-a-take-is-marked-even-when-seen-after-the-stop.md) | 🟡 Medium | Recording |
+| 486 | [An Input Beside the Stream Stalled Inside a Delivery Still Gets Its Input-Stopped Line](future/486-an-input-beside-the-stream-stalled-inside-a-delivery-still-gets-its-input-stopped-line.md) | 🟡 Medium | Recording |
+| 488 | [An Error From the Capture Thread's Warning Sink Never Skips the Take's Seal](future/488-an-error-from-the-capture-threads-warning-sink-never-skips-the-takes-seal.md) | 🟢 Low | Recording |
 
 ### Persistence Integrity (round-trip fidelity)
 
@@ -400,6 +405,7 @@ Operationalises [`PERSISTENCE_INTEGRITY_DESIGN_BOOK.md`](../design/PERSISTENCE_I
 | 333 | [The App-Exit Protocol: Close Guard, Save As, Lock Lifecycle](333-app-exit-protocol-and-save-as.md) | 🟠 High | Persistence |
 | 334 | [Full-State Persistence: Plugin Inserts, Take Stacks, Tempo Map](334-full-state-persistence-inserts-takes-tempo-map.md) | 🟠 High | Persistence |
 | 335 | [Settings Truth: Every Setting Read by the Thing It Claims to Control](335-settings-truth-cleanup.md) | 🟡 Medium | Persistence |
+| 490 | [The Save Checkpoint Tests Hold on a Loaded Machine](future/490-the-save-checkpoint-tests-hold-on-a-loaded-machine.md) | 🟡 Medium | Persistence |
 
 ### Failure Surfacing (no silent failures)
 
@@ -413,6 +419,7 @@ Operationalises [`FAILURE_SURFACING_DESIGN_BOOK.md`](../design/FAILURE_SURFACING
 | 338 | [Engine Health: Watchdog, Xrun Counter, Clock and State Surfaces](338-engine-health-watchdog-and-status-surfaces.md) | 🟠 High | Failure Surfacing |
 | 339 | [Production Notification Injection and Dialog-Dismissibility Conformance](339-production-notification-injection-and-dialog-conformance.md) | 🟠 High | Failure Surfacing |
 | 340 | [Insert-Chain Concurrency and Fault Eviction](340-insert-chain-concurrency-and-fault-eviction.md) | 🟠 High | Failure Surfacing |
+| 487 | [A Play During a Device-Loss Declaration Never Ends the Loss With No Stream Open](future/487-a-play-during-a-device-loss-declaration-never-ends-the-loss-with-no-stream-open.md) | 🟡 Medium | Failure Surfacing |
 
 ### Interaction Completeness (every control real)
 

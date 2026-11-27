@@ -39,6 +39,7 @@ import java.lang.classfile.instruction.NewObjectInstruction;
 import java.lang.classfile.instruction.NewPrimitiveArrayInstruction;
 import java.lang.classfile.instruction.NewReferenceArrayInstruction;
 import java.lang.classfile.instruction.OperatorInstruction;
+import java.lang.classfile.instruction.ReturnInstruction;
 import java.lang.classfile.instruction.TableSwitchInstruction;
 import java.lang.classfile.instruction.ThrowInstruction;
 import java.lang.classfile.instruction.TypeCheckInstruction;
@@ -76,7 +77,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Reflection-based verification of the {@link RealTimeSafe} contract.
  *
  * <p>This suite discovers every class under {@code com.benesquivelmusic.daw}
- * at test time and enforces fourteen invariants:</p>
+ * at test time and enforces sixteen invariants:</p>
  * <ol>
  *   <li>Critical-path methods carry {@code @RealTimeSafe}
  *       ({@code Mixer.mixDown}, {@code EffectsChain.process},
@@ -148,8 +149,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       gate rests on are pinned, and so are those of the device-loss fence
  *       of a capture start ({@code AudioEngine.haltRecordingCapture} against
  *       {@code RecordingPipeline.beginCapture}), with the volatile fields
- *       each rests on. The callback-side methods carry
- *       {@code @RealTimeSafe}.</li>
+ *       each rests on, and those of the ring's drop counts, each count of a
+ *       drop stored before the total and the total read first (story 338).
+ *       The callback-side methods carry {@code @RealTimeSafe}.</li>
  *   <li>Story 337 (failure-surfacing book §6.3 gate 3, ruling E46) — every
  *       device-callback bridge in {@link #RT_CALLBACK_BRIDGES}, the ASIO
  *       upcall {@code bufferSwitchUpcall} and both exempt PortAudio entry
@@ -207,6 +209,24 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       write of the same count, with no branch and no branch target between
  *       the two, so a reader that reads the count first sees that fault or a
  *       newer one.</li>
+ *   <li>Story 338, ruling E272 — each device-callback bridge that wakes an
+ *       input drain ({@code CallbackBackendAdapter.deviceCallback},
+ *       {@code AsioBufferSwitchShim.bufferSwitch}) contains that wake and
+ *       nothing else: one handler, catching {@code Throwable}, whose try
+ *       holds the {@code LockSupport.unpark} alone, after the block is in the
+ *       ring, and whose handler stores no field, can throw nothing and falls
+ *       through to the code after the try; on ASIO the output half is written
+ *       after it. Read from the bytecode,
+ *       since a platform thread's unpark fails only on an error of the
+ *       JVM.</li>
+ *   <li>Story 338, rulings E270 and E279 — a driver's resync request is
+ *       counted and its arrival kept on the driver's message thread:
+ *       {@code AsioBackend.noteDriverResync}, followed into every project
+ *       method it reaches, takes no lock, allocates nothing, makes no
+ *       {@code invokedynamic} and calls out to nothing but
+ *       {@code java.util.concurrent.atomic} and {@code System.nanoTime};
+ *       {@code ResyncArrivalRing.record} claims, stores the arrival and
+ *       counts the request last.</li>
  * </ol>
  *
  * <p>These checks run as part of {@code mvn test} and fail the build if
@@ -1683,6 +1703,109 @@ class RealTimeSafeContractTest {
                 }));
     }
 
+    /**
+     * Story 338, ruling E272: the adapter's device callback contains its wake of the input drain and nothing else;
+     * read from the bytecode because a platform thread's unpark fails only on an error of the JVM, and a seam would
+     * take the wake out of {@link #everyRtCallbackBridgeIsGuardClean}'s walk.
+     */
+    @Test
+    void theNativeCallbackBridgeContainsItsDrainWakeAndNothingElse() throws Exception {
+        ContainedCall wake = theOneContainedCallOf(NATIVE_CALLBACK_BRIDGE_CLASS, NATIVE_CALLBACK_BRIDGE_METHOD);
+
+        assertThat(wake.catchType()).as("a stack overflow is an Error: it catches Throwable")
+                .isEqualTo("java/lang/Throwable");
+        assertThat(wake.throwingInTheTry()).as("the wake alone is contained")
+                .containsExactly("INVOKESTATIC java/util/concurrent/locks/LockSupport#unpark");
+        assertThat(wake.invokedBefore()).as("the output is staged and the block is in the ring before the wake")
+                .contains("InterleavedBlockRing#readInto", "CallbackBackendAdapter#deinterleave",
+                        "CallbackBackendAdapter#fillSilence", "CallbackBackendAdapter#interleave",
+                        "InterleavedBlockRing#write");
+        assertThat(wake.fromTheHandler()).as("a contained wake counts, calls, allocates and throws nothing")
+                .isEmpty();
+    }
+
+    /**
+     * Story 338, ruling E272, as on PortAudio: the ASIO bridge contains its wake of the input drain and nothing
+     * else, so a failed wake neither skips the output half written after it nor reaches the upcall's guard, which
+     * would silence that half and count a fault. Read from the bytecode: the drain is a final platform thread, whose
+     * unpark fails only on an error of the JVM.
+     */
+    @Test
+    void theAsioBridgeContainsItsDrainWakeAndNothingElse() throws Exception {
+        ContainedCall wake = theOneContainedCallOf(ASIO_BRIDGE_CLASS, ASIO_BRIDGE_METHOD);
+
+        assertThat(wake.catchType()).as("a stack overflow is an Error: it catches Throwable")
+                .isEqualTo("java/lang/Throwable");
+        assertThat(wake.throwingInTheTry()).as("the wake alone is contained")
+                .containsExactly("INVOKESTATIC java/util/concurrent/locks/LockSupport#unpark");
+        assertThat(wake.invokedBefore()).as("the block is in the ring before the wake")
+                .contains("AsioBufferSwitchShim#copyInputChannel", "AudioBlockRing#write");
+        assertThat(wake.fromTheHandler())
+                .as("a contained wake counts, calls, allocates and throws nothing, and goes on to the output half")
+                .isEmpty();
+        assertThat(wake.invokedAfter()).as("the output half is written after the contained wake")
+                .contains("AudioBlockRing#drainLatestCountingInto", "AsioBufferSwitchShim#copyOutputChannel");
+    }
+
+    /**
+     * A bridge's one exception handler, read from its bytecode: its catch type ({@code any} for catch-any), the
+     * calls before its try and after its handler, the instructions in its try that can throw, and those in its
+     * handler that can throw, store a field or return instead of falling through to the code after the try.
+     */
+    private record ContainedCall(String catchType, List<String> invokedBefore, List<String> throwingInTheTry,
+                                 List<String> fromTheHandler, List<String> invokedAfter) {
+    }
+
+    /**
+     * {@link ContainedCall} of the one method {@code methodName} of {@code className}. The handler ends where the
+     * {@code goto} that closes its try jumps to, so the code after the try statement is not counted as handler
+     * code.
+     */
+    private static ContainedCall theOneContainedCallOf(String className, String methodName) throws Exception {
+        String owner = className.replace('.', '/');
+        ClassModel model = modelOf(owner, new HashMap<>());
+        assertThat(model).as("%s is on the class path", owner).isNotNull();
+        CodeAttribute code = codeOfTheOneMethodNamed(model, methodName);
+        assertThat(code.exceptionHandlers()).as("%s#%s has one handler: its wake's", owner, methodName).hasSize(1);
+        ExceptionCatch handler = code.exceptionHandlers().getFirst();
+        int tryStart = code.labelToBci(handler.tryStart());
+        int tryEnd = code.labelToBci(handler.tryEnd());
+        int handlerStart = code.labelToBci(handler.handler());
+        int handlerEnd = code.codeLength();
+        List<String> invokedBefore = new ArrayList<>();
+        List<String> throwingInTheTry = new ArrayList<>();
+        List<String> fromTheHandler = new ArrayList<>();
+        List<String> invokedAfter = new ArrayList<>();
+        int bci = 0;
+        for (CodeElement element : code) {
+            if (!(element instanceof Instruction instruction)) {
+                continue;
+            }
+            if (bci == tryEnd && instruction instanceof BranchInstruction exit && exit.opcode() == Opcode.GOTO) {
+                handlerEnd = code.labelToBci(exit.target());
+            }
+            if (instruction instanceof InvokeInstruction invoke && (bci < tryStart || bci >= handlerEnd)) {
+                String invokedOwner = invoke.owner().asInternalName();
+                String invoked = invokedOwner.substring(invokedOwner.lastIndexOf('/') + 1) + "#"
+                        + invoke.name().stringValue();
+                (bci < tryStart ? invokedBefore : invokedAfter).add(invoked);
+            }
+            if (bci >= tryStart && bci < tryEnd && mayThrow(instruction, owner)) {
+                throwingInTheTry.add(describe(instruction));
+            }
+            boolean storesAField = instruction instanceof FieldInstruction field
+                    && (field.opcode() == Opcode.PUTFIELD || field.opcode() == Opcode.PUTSTATIC);
+            boolean leaves = instruction instanceof ReturnInstruction;
+            if (bci >= handlerStart && bci < handlerEnd
+                    && (storesAField || leaves || mayThrow(instruction, owner))) {
+                fromTheHandler.add(describe(instruction));
+            }
+            bci += instruction.sizeInBytes();
+        }
+        String catchType = handler.catchType().map(ClassEntry::asInternalName).orElse("any");
+        return new ContainedCall(catchType, invokedBefore, throwingInTheTry, fromTheHandler, invokedAfter);
+    }
+
     /** Story 337 — the render drive every push backend runs (JavaxSound, WASAPI, CoreAudio, JACK, ASIO, Mock). */
     private static final String RENDER_DRIVE_CLASS = "com.benesquivelmusic.daw.core.audio.EngineStreamPump";
 
@@ -1772,6 +1895,10 @@ class RealTimeSafeContractTest {
                             engineCall)
                     .anyMatch(key -> key.startsWith(AUDIO_ENGINE_INTERNAL + "#" + engineCall + "("));
         }
+        assertThat(scan.reached())
+                .as("the walk follows the drive into fillInputPlanes, where a block of an ended input is discarded "
+                        + "unrendered (ruling E276)")
+                .anyMatch(key -> key.startsWith(pumpInternal + "#fillInputPlanes("));
         assertThat(notAllowed(scan.invokeFindings(), RENDER_DRIVE_INVOKE_ALLOWLIST))
                 .as("the render drive (reached: %s) must record into its lane and never log, lock, "
                         + "publish, wait, sleep, iterate a collection or CAS (book §6.3 gate 3; story "
@@ -2673,6 +2800,7 @@ class RealTimeSafeContractTest {
             CAPTURE_CALLBACK + "#fillBlock", CAPTURE_CALLBACK + "#publishAndLeave",
             CAPTURE_RING + "#enterProducer", CAPTURE_RING + "#producerOpen", CAPTURE_RING + "#exitProducer",
             CAPTURE_RING + "#claim", CAPTURE_RING + "#publish", CAPTURE_SLOT + "#copySource",
+            CAPTURE_SLOT + "#reset", CAPTURE_CALLBACK + "#instrumentAudioPresent",
             CAPTURE_SLOT + "#setInputStarved", CAPTURE_SLOT + "#setOutputClockFrame",
             CAPTURE_SLOT + "#setTransportLap",
             CAPTURE_SLOT + "#setLoopStartFrame", CAPTURE_SLOT + "#setLoopEndFrame",
@@ -2836,7 +2964,8 @@ class RealTimeSafeContractTest {
         assertThat(recordingCalls)
                 .as("the callback never reaches the ring's consumer side")
                 .doesNotContain(CAPTURE_RING + "#peek", CAPTURE_RING + "#release",
-                        CAPTURE_RING + "#awaitProducerQuiescent", CAPTURE_RING + "#closeProducer");
+                        CAPTURE_RING + "#awaitProducerQuiescent", CAPTURE_RING + "#closeProducer",
+                        CAPTURE_RING + "#peekAt", CAPTURE_RING + "#dropCounts", CAPTURE_RING + "#stampOf");
         assertThat(recordingCalls.stream()
                 .filter(call -> {
                     int split = call.indexOf('#');
@@ -3001,6 +3130,36 @@ class RealTimeSafeContractTest {
         }
         assertThat(exit).as("CaptureRing#exitProducer only advances the phase")
                 .containsExactly("GETFIELD producerPhase", "PUTFIELD producerPhase");
+    }
+
+    /**
+     * The orders the ring's drop counts rest on (story 338, rulings E273, E277, E281 and E287), pinned in the
+     * bytecode as the producer gate's are: {@code CaptureRing.claim} stores each count of a drop — its kinds, the
+     * input-starved drops since a delivery and the audio drops after a silence-only one — before the total, whose
+     * release store is the method's last, and {@code CaptureRing.dropCounts} loads the total before every other
+     * count, so a reader that sees a drop in the total sees what it carried. No test can hold the callback between
+     * two adjacent stores.
+     */
+    @Test
+    void theRingsDropCountsAreStoredAndReadInTheOrderTheirReadersRestOn() throws Exception {
+        ClassModel ring = modelOf(CAPTURE_RING, new HashMap<>());
+        List<String> counts = List.of("audioOverflowCount", "starvedOverflowCount", "inputlessOverflowCount",
+                "starvedSinceDelivery", "audioAfterSilenceCount");
+        List<String> claim = ownedFieldAndInvokeSequence(codeOfTheOneMethodNamed(ring, "claim"));
+        int total = claim.indexOf("GETFIELD " + CAPTURE_RING + ".overflowCount");
+        assertThat(total).as("CaptureRing#claim stores the total").isPositive();
+        int totalStore = total + claim.subList(total, claim.size()).indexOf(ATOMIC_LONG + "#lazySet");
+        assertThat(fieldsAccessed(claim.subList(0, total), Opcode.GETFIELD, CAPTURE_RING))
+                .as("CaptureRing#claim stores every count of a drop before its total").containsAll(counts);
+        assertThat(fieldsAccessed(claim.subList(total, totalStore + 1), Opcode.GETFIELD, CAPTURE_RING))
+                .as("the total's release store is a load and a release store of the total alone")
+                .containsOnly("overflowCount");
+        assertThat(claim.subList(totalStore + 1, claim.size()))
+                .as("the total's release store is CaptureRing#claim's last: no count of a drop is stored after it")
+                .doesNotContain(ATOMIC_LONG + "#lazySet");
+        List<String> read = ownedFieldAndInvokeSequence(codeOfTheOneMethodNamed(ring, "dropCounts"));
+        assertThat(fieldsAccessed(read, Opcode.GETFIELD, CAPTURE_RING))
+                .as("CaptureRing#dropCounts loads the total first").startsWith("overflowCount").containsAll(counts);
     }
 
     /**
@@ -3397,9 +3556,11 @@ class RealTimeSafeContractTest {
      * stored before it: the Java Sound capture thread's lost blocks and input
      * halts, the native input drain's lost blocks, the ASIO buffer-switch
      * upcall's faults and its input drain's drops, the PortAudio callback
-     * guard's faults, the three device-notification counters, and the
-     * engine's own count of the capture inputs it declared stalled (story 338,
-     * rulings E11 and E15). A writer added later joins this list.
+     * guard's faults, the input blocks the ASIO upcall's and the PortAudio
+     * callback's failed periods lost (story 338, ruling E211), the three
+     * device-notification counters, and the engine's own count of the capture
+     * inputs it declared stalled (story 338, rulings E11 and E15). A writer
+     * added later joins this list.
      */
     private static final List<BackendCounterWriter> BACKEND_COUNTER_WRITERS = List.of(
             new BackendCounterWriter("com.benesquivelmusic.daw.sdk.audio.JavaxSoundBackend",
@@ -3410,8 +3571,11 @@ class RealTimeSafeContractTest {
                     "inputBlocksLost", "lastInputFault"),
             new BackendCounterWriter(ASIO_BRIDGE_CLASS, "upcallFaults", "lastUpcallFault"),
             new BackendCounterWriter(ASIO_BRIDGE_CLASS, "publishDrops", "lastPublishFault"),
+            new BackendCounterWriter(ASIO_BRIDGE_CLASS, "failedPeriodInputBlocks", "lastUpcallFault"),
             new BackendCounterWriter("com.benesquivelmusic.daw.core.audio.portaudio.PortAudioBackend$CallbackInvoker",
                     "callbackFaults", "lastCallbackFault"),
+            new BackendCounterWriter("com.benesquivelmusic.daw.core.audio.portaudio.PortAudioBackend$CallbackInvoker",
+                    "failedPeriodInputBlocks", "lastCallbackFault"),
             new BackendCounterWriter("com.benesquivelmusic.daw.sdk.audio.AsioBackend",
                     "deviceNotificationFaults", "lastDeviceNotificationFault"),
             new BackendCounterWriter("com.benesquivelmusic.daw.sdk.audio.WasapiBackend",
@@ -3612,6 +3776,241 @@ class RealTimeSafeContractTest {
                 lastFault = fault;
             }
             faults++;
+        }
+    }
+
+    /** The shared input drop handler; its {@code inputBlockDropped} calls are the listener roots below. */
+    private static final String INPUT_BLOCK_LOSS_LISTENER = "com/benesquivelmusic/daw/sdk/audio/InputBlockLossListener";
+
+    /**
+     * Story 338, ruling E208 — the shared input drop handler and the engine's
+     * two capture listeners run on a publisher's thread while it holds its
+     * lock, so every method they reach takes no lock (no monitor, no
+     * {@code synchronized} method), allocates nothing, makes no
+     * {@code invokedynamic} and calls out to nothing but
+     * {@code java.util.concurrent.atomic}. The walk follows every call into a
+     * project class, except the handler's call of
+     * {@code InputBlockLossListener#inputBlockDropped}, whose targets are the
+     * listener roots; a project call it cannot resolve fails the test. Every
+     * method of the expected chain must be reached with a Code attribute, and
+     * an atomic call seen, so the walk cannot pass vacuously.
+     */
+    @Test
+    void theInputBlockDropHandlerAndItsListenersTakeNoLockAllocateNothingAndLogNothing() throws Exception {
+        String engine = "com/benesquivelmusic/daw/core/audio/AudioEngine";
+        String pumpSubscriber = "com/benesquivelmusic/daw/core/audio/EngineStreamPump$InputSubscriber";
+        String besideSubscriber = engine + "$AdditionalInputSubscriber";
+        Map<String, ClassModel> models = new HashMap<>();
+        Map<String, MethodModel> reached = new LinkedHashMap<>();
+        Deque<String> pending = new ArrayDeque<>();
+        List<String> violations = new ArrayList<>();
+        for (String[] root : List.of(new String[] {INPUT_BLOCK_LOSS_LISTENER, "reportDrop"},
+                new String[] {pumpSubscriber, "inputBlockDropped"},
+                new String[] {besideSubscriber, "inputBlockDropped"})) {
+            ClassModel model = modelOf(root[0], models);
+            assertThat(model).as("%s's class file is readable", root[0]).isNotNull();
+            for (MethodModel method : model.methods()) {
+                if (method.methodName().stringValue().equals(root[1]) && codeOf(method) != null) {
+                    String key = root[0] + "#" + root[1] + method.methodType().stringValue();
+                    reached.put(key, method);
+                    pending.add(key);
+                }
+            }
+        }
+        int atomicCalls = 0;
+        while (!pending.isEmpty()) {
+            String key = pending.poll();
+            MethodModel method = reached.get(key);
+            String at = key.substring(0, key.indexOf('('));
+            if (method.flags().has(AccessFlag.SYNCHRONIZED)) {
+                violations.add(at + " is synchronized");
+            }
+            for (CodeElement element : codeOf(method)) {
+                if (element instanceof MonitorInstruction) {
+                    violations.add(at + " takes a monitor");
+                } else if (element instanceof NewObjectInstruction || element instanceof NewPrimitiveArrayInstruction
+                        || element instanceof NewReferenceArrayInstruction
+                        || element instanceof NewMultiArrayInstruction) {
+                    violations.add(at + " allocates");
+                } else if (element instanceof InvokeDynamicInstruction) {
+                    violations.add(at + " makes an invokedynamic");
+                } else if (element instanceof InvokeInstruction invoke) {
+                    String owner = invoke.owner().asInternalName();
+                    String name = invoke.name().stringValue();
+                    if (owner.startsWith("java/util/concurrent/atomic/")) {
+                        atomicCalls++;
+                    } else if (!owner.startsWith("com/benesquivelmusic/daw/")) {
+                        violations.add(at + " calls out to " + owner + "#" + name);
+                    } else if (!(owner.equals(INPUT_BLOCK_LOSS_LISTENER) && name.equals("inputBlockDropped"))) {
+                        String callee = owner + "#" + name + invoke.type().stringValue();
+                        ClassModel calleeModel = modelOf(owner, models);
+                        MethodModel resolved = calleeModel == null ? null
+                                : findMethod(calleeModel, name, invoke.type().stringValue());
+                        if (resolved == null || codeOf(resolved) == null) {
+                            violations.add(at + " calls " + callee + ", which the walk cannot resolve");
+                        } else if (!reached.containsKey(callee)) {
+                            reached.put(callee, resolved);
+                            pending.add(callee);
+                        }
+                    }
+                }
+            }
+        }
+
+        assertThat(reached.keySet().stream().map(key -> key.substring(0, key.indexOf('('))).toList())
+                .as("non-vacuity: the walk reached the handler, both listeners and the engine's count")
+                .contains(INPUT_BLOCK_LOSS_LISTENER + "#reportDrop",
+                        pumpSubscriber + "#inputBlockDropped",
+                        besideSubscriber + "#inputBlockDropped",
+                        engine + "#noteCapturedInputBlockLost",
+                        engine + "$CapturedInputLoss#noteSubscriberLoss",
+                        besideSubscriber + "#isLive",
+                        engine + "$InputSourceModes#states");
+        assertThat(atomicCalls).as("non-vacuity: the count's atomic increment was seen").isPositive();
+        assertThat(violations)
+                .as("the input drop handler and its listeners run under a publisher's lock (story 338, ruling E208)")
+                .isEmpty();
+    }
+
+    /**
+     * Story 338, rulings E270 and E279 — a driver's resync request is counted
+     * and its arrival kept on the driver's message thread, which may be its
+     * real-time thread: {@code AsioBackend.noteDriverResync}, followed into
+     * every project method it reaches, takes no lock (no monitor, no
+     * {@code synchronized} method), allocates nothing, makes no
+     * {@code invokedynamic} and calls out to nothing but
+     * {@code java.util.concurrent.atomic} and one {@code System.nanoTime}; a
+     * project call it cannot resolve fails the test. {@code
+     * ResyncArrivalRing.record} claims the request, stores its arrival and
+     * counts it last, so a reader that sees the count finds the arrival.
+     */
+    @Test
+    void theDriversResyncPathTakesNoLockAllocatesNothingAndLogsNothing() throws Exception {
+        String backend = "com/benesquivelmusic/daw/sdk/audio/AsioBackend";
+        String ring = "com/benesquivelmusic/daw/sdk/audio/ResyncArrivalRing";
+        Map<String, ClassModel> models = new HashMap<>();
+        Map<String, MethodModel> reached = new LinkedHashMap<>();
+        Deque<String> pending = new ArrayDeque<>();
+        List<String> violations = new ArrayList<>();
+        ClassModel backendModel = modelOf(backend, models);
+        assertThat(backendModel).as("%s's class file is readable", backend).isNotNull();
+        for (MethodModel method : backendModel.methods()) {
+            if (method.methodName().stringValue().equals("noteDriverResync") && codeOf(method) != null) {
+                String key = backend + "#noteDriverResync" + method.methodType().stringValue();
+                reached.put(key, method);
+                pending.add(key);
+            }
+        }
+        int atomicCalls = 0;
+        int clockReads = 0;
+        while (!pending.isEmpty()) {
+            String key = pending.poll();
+            MethodModel method = reached.get(key);
+            String at = key.substring(0, key.indexOf('('));
+            if (method.flags().has(AccessFlag.SYNCHRONIZED)) {
+                violations.add(at + " is synchronized");
+            }
+            for (CodeElement element : codeOf(method)) {
+                if (element instanceof MonitorInstruction) {
+                    violations.add(at + " takes a monitor");
+                } else if (element instanceof NewObjectInstruction || element instanceof NewPrimitiveArrayInstruction
+                        || element instanceof NewReferenceArrayInstruction
+                        || element instanceof NewMultiArrayInstruction) {
+                    violations.add(at + " allocates");
+                } else if (element instanceof InvokeDynamicInstruction) {
+                    violations.add(at + " makes an invokedynamic");
+                } else if (element instanceof InvokeInstruction invoke) {
+                    String owner = invoke.owner().asInternalName();
+                    String name = invoke.name().stringValue();
+                    if (owner.startsWith("java/util/concurrent/atomic/")) {
+                        atomicCalls++;
+                    } else if (owner.equals("java/lang/System") && name.equals("nanoTime")) {
+                        clockReads++;
+                    } else if (!owner.startsWith("com/benesquivelmusic/daw/")) {
+                        violations.add(at + " calls out to " + owner + "#" + name);
+                    } else {
+                        String callee = owner + "#" + name + invoke.type().stringValue();
+                        ClassModel calleeModel = modelOf(owner, models);
+                        MethodModel resolved = calleeModel == null ? null
+                                : findMethod(calleeModel, name, invoke.type().stringValue());
+                        if (resolved == null || codeOf(resolved) == null) {
+                            violations.add(at + " calls " + callee + ", which the walk cannot resolve");
+                        } else if (!reached.containsKey(callee)) {
+                            reached.put(callee, resolved);
+                            pending.add(callee);
+                        }
+                    }
+                }
+            }
+        }
+
+        assertThat(reached.keySet().stream().map(key -> key.substring(0, key.indexOf('('))).toList())
+                .as("non-vacuity: the walk reached the message handler and the ring's record")
+                .contains(backend + "#noteDriverResync", ring + "#record");
+        assertThat(atomicCalls).as("non-vacuity: the ring's atomic claim, stores and count were seen").isPositive();
+        assertThat(clockReads).as("the arrival is one clock read").isEqualTo(1);
+        assertThat(violations)
+                .as("the driver's resync message path runs on the driver's thread (story 338, rulings E270, E279)")
+                .isEmpty();
+        assertThat(fieldAndInvokeSequence(codeOfTheOneMethodNamed(modelOf(ring, models), "record")))
+                .as("the request is claimed, its arrival stored, and it is counted last")
+                .containsExactly("GETFIELD claimed", ATOMIC_LONG + "#getAndIncrement", "GETFIELD takenUpTo",
+                        "GETFIELD holders", ATOMIC_LONG_ARRAY + "#set", "GETFIELD arrivals",
+                        ATOMIC_LONG_ARRAY + "#set", "GETFIELD holders", ATOMIC_LONG_ARRAY + "#set",
+                        "GETFIELD counted", ATOMIC_LONG + "#incrementAndGet");
+    }
+
+    /**
+     * Story 338, ruling E214 — the engine's count of captured input lost
+     * before the rings publishes a fold inside an odd {@code version} window
+     * its readers spin on, so a throw between the two increments of
+     * {@code version} in {@code CapturedInputLoss.attach} or {@code detach}
+     * would leave the version odd and hang every later reader. Nothing in the
+     * window may throw, a call to {@code java.util.concurrent.atomic} or
+     * {@code java.lang.Math} excepted; the window must publish the folded
+     * total and the sources, so the walk cannot pass on an empty window.
+     */
+    @Test
+    void theCapturedInputLossFoldWindowRunsNothingThatCanThrow() throws Exception {
+        String loss = AUDIO_ENGINE + "$CapturedInputLoss";
+        ClassModel model = modelOf(loss, new HashMap<>());
+        assertThat(model).as("%s is on the class path", loss).isNotNull();
+        for (String method : List.of("attach", "detach")) {
+            int increments = 0;
+            boolean versionLoaded = false;
+            List<String> published = new ArrayList<>();
+            List<String> offenders = new ArrayList<>();
+            for (CodeElement element : codeOfTheOneMethodNamed(model, method)) {
+                if (!(element instanceof Instruction instruction)) {
+                    continue;
+                }
+                if (versionLoaded && instruction instanceof InvokeInstruction increment
+                        && increment.owner().asInternalName().equals(ATOMIC_LONG)
+                        && increment.name().stringValue().equals("incrementAndGet")) {
+                    increments++;
+                    versionLoaded = false;
+                    continue;
+                }
+                versionLoaded = instruction instanceof FieldInstruction load && load.opcode() == Opcode.GETFIELD
+                        && load.name().stringValue().equals("version");
+                if (increments != 1) {
+                    continue;
+                }
+                if (instruction instanceof FieldInstruction store && store.opcode() == Opcode.PUTFIELD) {
+                    published.add(store.name().stringValue());
+                }
+                boolean allowedCall = instruction instanceof InvokeInstruction call
+                        && (call.owner().asInternalName().startsWith("java/util/concurrent/atomic/")
+                                || call.owner().asInternalName().equals("java/lang/Math"));
+                if (!allowedCall && mayThrow(instruction, loss)) {
+                    offenders.add(describe(instruction));
+                }
+            }
+            assertThat(increments).as("%s#%s: one fold window, opened and closed on version", loss, method)
+                    .isEqualTo(2);
+            assertThat(published).as("%s#%s: the window publishes the folded total and the sources", loss, method)
+                    .contains("folded", "sources");
+            assertThat(offenders).as("%s#%s: nothing in the fold window can throw", loss, method).isEmpty();
         }
     }
 
@@ -3835,7 +4234,7 @@ class RealTimeSafeContractTest {
                 ring.getDeclaredMethod("enterProducer"),
                 ring.getDeclaredMethod("producerOpen"),
                 ring.getDeclaredMethod("exitProducer"),
-                ring.getDeclaredMethod("claim"),
+                ring.getDeclaredMethod("claim", int.class),
                 ring.getDeclaredMethod("publish"),
                 ring.getDeclaredMethod("noteTruncatedFrames", int.class),
                 flush.getDeclaredMethod("signal"),
@@ -3847,7 +4246,8 @@ class RealTimeSafeContractTest {
                 transport.getDeclaredMethod("getPositionSeek"),
                 transport.getDeclaredMethod("hasPendingPositionSeek"),
                 transport.getDeclaredMethod("getPunchRegion"),
-                transport.getDeclaredMethod("isLoopEnabled"));
+                transport.getDeclaredMethod("isLoopEnabled"),
+                callback.getDeclaredMethod("instrumentAudioPresent"));
         for (Method method : expected) {
             assertThat(method.isAnnotationPresent(RealTimeSafe.class))
                     .as("%s must be annotated @RealTimeSafe", method).isTrue();
@@ -3855,11 +4255,16 @@ class RealTimeSafeContractTest {
         assertThat(REAL_TIME_SAFE_METHODS)
                 .as("the suite's sweeps see the callback and the flush service's signal")
                 .contains(expected.get(0), expected.get(9));
-        for (String flushThreadSide : List.of("peek", "release", "closeProducer")) {
+        for (String flushThreadSide : List.of("peek", "release", "closeProducer", "dropCounts")) {
             assertThat(ring.getDeclaredMethod(flushThreadSide).isAnnotationPresent(RealTimeSafe.class))
                     .as("CaptureRing#%s is not the callback's and must not carry @RealTimeSafe", flushThreadSide)
                     .isFalse();
         }
+        assertThat(ring.getDeclaredMethod("peekAt", long.class).isAnnotationPresent(RealTimeSafe.class))
+                .as("CaptureRing#peekAt is the seal's and must not carry @RealTimeSafe").isFalse();
+        assertThat(ring.getDeclaredMethod("stampOf", Class.forName(CAPTURE_SLOT.replace('/', '.')))
+                .isAnnotationPresent(RealTimeSafe.class))
+                .as("CaptureRing#stampOf is the flush thread's and must not carry @RealTimeSafe").isFalse();
         assertThat(ring.getDeclaredMethod("awaitProducerQuiescent", long.class).isAnnotationPresent(RealTimeSafe.class))
                 .as("CaptureRing#awaitProducerQuiescent waits and must not carry @RealTimeSafe").isFalse();
         assertThat(transport.getDeclaredMethod("getTempo").isAnnotationPresent(RealTimeSafe.class))

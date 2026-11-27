@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.BackendDropoutCounters;
 import com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
+import com.benesquivelmusic.daw.sdk.audio.DriverResyncArrivals;
 import com.benesquivelmusic.daw.sdk.audio.MockAudioBackend;
 
 import org.junit.jupiter.api.AfterEach;
@@ -17,6 +18,8 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -140,6 +143,38 @@ class AudioEngineBackendCountersTest {
         backend.dropoutReport = () -> reported;
         assertThat(engine.stopAudioOutput()).isTrue();
         assertThat(engine.dropoutCounters()).as("the stream closed").isEqualTo(BackendDropoutCounters.NONE);
+    }
+
+    /**
+     * Story 338, rulings E270 and E279: the engine takes the resync arrivals up from the open stream's backend, and
+     * answers none while no stream is open or when the backend's answer is null or throws.
+     */
+    @Test
+    void resyncArrivalsAreTakenFromTheOpenStreamsBackendAndNoneWithoutAStream() {
+        AudioEngineOutputTest.SynchronousTestBackend backend =
+                new AudioEngineOutputTest.SynchronousTestBackend("Resyncing");
+        DriverResyncArrivals taken = new DriverResyncArrivals(3L, List.of(new DriverResyncArrivals.Run(42L, 2L)));
+        backend.resyncArrivalsReport = () -> taken;
+        engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        engine.setStreamingProvision(provision(backend));
+
+        assertThat(engine.takeDriverResyncArrivals()).as("no stream is open yet").isEqualTo(DriverResyncArrivals.NONE);
+
+        engine.startAudioOutput();
+        assertThat(engine.takeDriverResyncArrivals()).isEqualTo(taken);
+
+        backend.resyncArrivalsReport = () -> null;
+        assertThat(engine.takeDriverResyncArrivals()).as("a null answer reads as none")
+                .isEqualTo(DriverResyncArrivals.NONE);
+        backend.resyncArrivalsReport = () -> {
+            throw new IllegalStateException("the arrivals broke");
+        };
+        assertThat(engine.takeDriverResyncArrivals()).as("a throwing answer reads as none, never as a throw")
+                .isEqualTo(DriverResyncArrivals.NONE);
+
+        backend.resyncArrivalsReport = () -> taken;
+        assertThat(engine.stopAudioOutput()).isTrue();
+        assertThat(engine.takeDriverResyncArrivals()).as("the stream closed").isEqualTo(DriverResyncArrivals.NONE);
     }
 
     // ── A backend whose own report cannot be read (story 337, ruling E78) ──
@@ -360,6 +395,318 @@ class AudioEngineBackendCountersTest {
                 .doesNotThrowAnyException();
         assertThat(engine.isStreamOpen()).isTrue();
         assertThat(backend.openCount.get()).isEqualTo(2);
+    }
+
+    // ── The take's count of input lost before the rings (story 338, ruling E214) ──
+
+    @Test
+    void aDropoutReportThatFailsMidStreamKeepsTheCountItHadRead() {
+        AudioEngineOutputTest.SynchronousTestBackend backend =
+                new AudioEngineOutputTest.SynchronousTestBackend("Failing Drop Report");
+        backend.dropoutReport = () -> inputDrops(0);
+        engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        engine.setStreamingProvision(provision(backend));
+        engine.startAudioOutput();
+
+        backend.dropoutReport = () -> inputDrops(3);
+        assertThat(engine.capturedInputBlocksLost()).isEqualTo(3);
+        backend.dropoutReport = () -> {
+            throw new IllegalStateException("the drop report broke");
+        };
+        assertThat(engine.capturedInputBlocksLost()).as("a throwing report never lowers the count").isEqualTo(3);
+        backend.dropoutReport = () -> null;
+        assertThat(engine.capturedInputBlocksLost()).as("an empty report never lowers it either").isEqualTo(3);
+        backend.dropoutReport = () -> inputDrops(5);
+        assertThat(engine.capturedInputBlocksLost()).isEqualTo(5);
+    }
+
+    @Test
+    void aDropoutReportThatFailsAtTheCloseFoldsTheCountItHadRead() {
+        AudioEngineOutputTest.SynchronousTestBackend backend =
+                new AudioEngineOutputTest.SynchronousTestBackend("Failing At Close");
+        backend.dropoutReport = () -> inputDrops(0);
+        engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        engine.setStreamingProvision(provision(backend));
+        engine.startAudioOutput();
+        backend.dropoutReport = () -> inputDrops(4);
+        assertThat(engine.capturedInputBlocksLost()).isEqualTo(4);
+        backend.dropoutReport = () -> {
+            throw new IllegalStateException("the drop report broke at the close");
+        };
+
+        assertThat(engine.stopAudioOutput()).isTrue();
+
+        assertThat(engine.capturedInputBlocksLost()).as("the close folded the count it had read").isEqualTo(4);
+    }
+
+    @Test
+    void aDropoutReportThatFailsAtTheOpenCountsFromItsFirstGoodRead() {
+        AudioEngineOutputTest.SynchronousTestBackend backend =
+                new AudioEngineOutputTest.SynchronousTestBackend("Failing At Open");
+        AtomicInteger calls = new AtomicInteger();
+        AtomicLong dropped = new AtomicLong(7);
+        backend.dropoutReport = () -> {
+            if (calls.incrementAndGet() == 1) {
+                throw new IllegalStateException("the drop report broke at the open");
+            }
+            return inputDrops(dropped.get());
+        };
+        engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        engine.setStreamingProvision(provision(backend));
+        engine.startAudioOutput();
+
+        assertThat(engine.capturedInputBlocksLost()).as("the blocks lost before the open are history").isZero();
+        dropped.set(9);
+        assertThat(engine.capturedInputBlocksLost()).isEqualTo(2);
+    }
+
+    /**
+     * After a failed attach read, the baseline is the first good read to
+     * land: a read made earlier but landing later with a lower count must not
+     * pull the baseline down, or losses from before a figure already handed
+     * out would join it. The third call stands in for that earlier read.
+     */
+    @Test
+    void aLateEarlierReadAfterAFailedAttachNeverRaisesTheFigure() {
+        AudioEngineOutputTest.SynchronousTestBackend backend =
+                new AudioEngineOutputTest.SynchronousTestBackend("Late Read");
+        AtomicInteger calls = new AtomicInteger();
+        AtomicLong later = new AtomicLong(9);
+        backend.dropoutReport = () -> switch (calls.incrementAndGet()) {
+            case 1 -> throw new IllegalStateException("the drop report broke at the open");
+            case 2 -> inputDrops(9);
+            case 3 -> inputDrops(7);
+            default -> inputDrops(later.get());
+        };
+        engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        engine.setStreamingProvision(provision(backend));
+        engine.startAudioOutput();
+
+        assertThat(engine.capturedInputBlocksLost()).as("the first good read is the baseline").isZero();
+        assertThat(engine.capturedInputBlocksLost()).as("a lower read landing later moves nothing").isZero();
+        assertThat(engine.capturedInputBlocksLost()).isZero();
+        later.set(11);
+        assertThat(engine.capturedInputBlocksLost()).isEqualTo(2);
+    }
+
+    @Test
+    void aVirtualMachineErrorFromTheDropoutReportAtTheCloseCostsThatStopAloneAndTheReopenCountsAgain() {
+        AudioEngineOutputTest.SynchronousTestBackend backend =
+                new AudioEngineOutputTest.SynchronousTestBackend("Fatal Drop Report");
+        backend.dropoutReport = () -> inputDrops(0);
+        engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        engine.setStreamingProvision(provision(backend));
+        engine.startAudioOutput();
+        backend.dropoutReport = () -> inputDrops(2);
+        assertThat(engine.capturedInputBlocksLost()).isEqualTo(2);
+        CounterReportError error = new CounterReportError();
+        backend.dropoutReport = () -> {
+            throw error;
+        };
+
+        assertThat(catchThrowable(engine::stopAudioOutput)).as("the stop that met it gets it").isSameAs(error);
+        assertThat(engine.capturedInputBlocksLost()).as("a later read answers the count it had").isEqualTo(2);
+
+        backend.dropoutReport = () -> inputDrops(2);
+        engine.startAudioOutput();
+        backend.dropoutReport = () -> inputDrops(5);
+        assertThat(engine.capturedInputBlocksLost()).as("the reopen counts from its own open").isEqualTo(5);
+    }
+
+    /**
+     * A backend opened again while its source is still attached (a close whose
+     * health-record fold met a fatal error never reached the drop count's
+     * detach) is folded first and counted on from the highest count already
+     * read, even when the re-attach read itself is older and lower.
+     */
+    @Test
+    void aBackendReopenedWhileStillAttachedNeverCountsTheSameBlocksTwice() {
+        AudioEngineOutputTest.SynchronousTestBackend backend =
+                new AudioEngineOutputTest.SynchronousTestBackend("Reopened While Attached");
+        backend.dropoutReport = () -> inputDrops(0);
+        engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        engine.setStreamingProvision(provision(backend));
+        engine.startAudioOutput();
+        backend.dropoutReport = () -> inputDrops(5);
+        assertThat(engine.capturedInputBlocksLost()).isEqualTo(5);
+        CounterReportError error = new CounterReportError();
+        AtomicBoolean failOnce = new AtomicBoolean(true);
+        backend.counterReport = () -> {
+            if (failOnce.getAndSet(false)) {
+                throw error;
+            }
+            return BackendThreadCounters.NONE;
+        };
+
+        assertThat(catchThrowable(engine::stopAudioOutput)).isSameAs(error);
+        assertThat(engine.capturedInputBlocksLost()).isEqualTo(5);
+
+        AtomicInteger calls = new AtomicInteger();
+        backend.dropoutReport = () -> calls.incrementAndGet() == 1 ? inputDrops(3) : inputDrops(6);
+        engine.startAudioOutput();
+
+        assertThat(engine.capturedInputBlocksLost()).as("five folded, one since").isEqualTo(6);
+    }
+
+    /**
+     * A report that fails at the read a take baselines on leaves the blocks
+     * lost before it unknown: the next good read counts nothing for its gap,
+     * and the take counts on from there (story 338, ruling E261).
+     */
+    @Test
+    void aReportThatFailsAtTheTakesStartReadImportsNoEarlierLoss() {
+        AudioEngineOutputTest.SynchronousTestBackend backend =
+                new AudioEngineOutputTest.SynchronousTestBackend("Failing At The Take Start");
+        backend.dropoutReport = () -> inputDrops(0);
+        engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        engine.setStreamingProvision(provision(backend));
+        engine.startAudioOutput();
+        backend.dropoutReport = () -> {
+            throw new IllegalStateException("the drop report broke at the take's start");
+        };
+
+        long base = engine.capturedInputBlocksLostAsATakeStarts();
+
+        backend.dropoutReport = () -> inputDrops(3);
+        assertThat(engine.capturedInputBlocksLost() - base).as("the blocks lost before the take are not its own")
+                .isZero();
+        backend.dropoutReport = () -> inputDrops(5);
+        assertThat(engine.capturedInputBlocksLost() - base).as("the take counts on from its first good read")
+                .isEqualTo(2);
+    }
+
+    /** A {@code null} report at the take's start read is a failed one (story 338, ruling E261). */
+    @Test
+    void aNullReportAtTheTakesStartReadImportsNoEarlierLoss() {
+        AudioEngineOutputTest.SynchronousTestBackend backend =
+                new AudioEngineOutputTest.SynchronousTestBackend("Empty At The Take Start");
+        backend.dropoutReport = () -> inputDrops(0);
+        engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        engine.setStreamingProvision(provision(backend));
+        engine.startAudioOutput();
+        backend.dropoutReport = () -> null;
+
+        long base = engine.capturedInputBlocksLostAsATakeStarts();
+
+        backend.dropoutReport = () -> inputDrops(3);
+        assertThat(engine.capturedInputBlocksLost() - base).as("the blocks lost before the take are not its own")
+                .isZero();
+        backend.dropoutReport = () -> inputDrops(5);
+        assertThat(engine.capturedInputBlocksLost() - base).as("the take counts on from its first good read")
+                .isEqualTo(2);
+    }
+
+    /**
+     * A report that fails later in the take changes nothing, and the next good
+     * read counts every block lost since the take's last good read (story 338,
+     * ruling E262).
+     */
+    @Test
+    void aReportThatFailsMidTakeCountsEveryBlockLostSinceTheTakesLastGoodRead() {
+        AudioEngineOutputTest.SynchronousTestBackend backend =
+                new AudioEngineOutputTest.SynchronousTestBackend("Failing Mid Take");
+        backend.dropoutReport = () -> inputDrops(0);
+        engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        engine.setStreamingProvision(provision(backend));
+        engine.startAudioOutput();
+        long base = engine.capturedInputBlocksLostAsATakeStarts();
+
+        backend.dropoutReport = () -> inputDrops(3);
+        assertThat(engine.capturedInputBlocksLost() - base).isEqualTo(3);
+        backend.dropoutReport = () -> {
+            throw new IllegalStateException("the drop report broke mid take");
+        };
+        assertThat(engine.capturedInputBlocksLost() - base).as("a failed read changes nothing").isEqualTo(3);
+        backend.dropoutReport = () -> inputDrops(5);
+        assertThat(engine.capturedInputBlocksLost() - base).as("the gap since the last good read counts")
+                .isEqualTo(5);
+    }
+
+    /**
+     * On a stream that stays open across takes, a report that fails as the
+     * second take starts brings nothing lost since the first take's last
+     * good read into the second (story 338, ruling E261).
+     */
+    @Test
+    void aReportThatFailsAsATakeStartsOnARunningStreamImportsNothingSinceTheLastTake() {
+        AudioEngineOutputTest.SynchronousTestBackend backend =
+                new AudioEngineOutputTest.SynchronousTestBackend("Failing At The Second Take");
+        backend.dropoutReport = () -> inputDrops(0);
+        engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        engine.setStreamingProvision(provision(backend));
+        engine.startAudioOutput();
+        long first = engine.capturedInputBlocksLostAsATakeStarts();
+        backend.dropoutReport = () -> inputDrops(2);
+        assertThat(engine.capturedInputBlocksLost() - first).as("the first take's losses").isEqualTo(2);
+
+        backend.dropoutReport = () -> {
+            throw new IllegalStateException("the drop report broke as the second take started");
+        };
+        long second = engine.capturedInputBlocksLostAsATakeStarts();
+
+        backend.dropoutReport = () -> inputDrops(6);
+        assertThat(engine.capturedInputBlocksLost() - second).as("nothing lost before the second take is its own")
+                .isZero();
+        backend.dropoutReport = () -> inputDrops(7);
+        assertThat(engine.capturedInputBlocksLost() - second).isEqualTo(1);
+    }
+
+    /**
+     * With the open's read failed too, the take's start read that fails
+     * leaves the first good read as the baseline, and the take counts on from
+     * it (story 338, rulings E214 and E261). Call 1 is the open's read, call 2
+     * the take's start read.
+     */
+    @Test
+    void aTakeStartReadThatFailsAfterAFailedOpenCountsFromTheFirstGoodRead() {
+        AudioEngineOutputTest.SynchronousTestBackend backend =
+                new AudioEngineOutputTest.SynchronousTestBackend("Failing At Open And Take Start");
+        AtomicInteger calls = new AtomicInteger();
+        AtomicLong dropped = new AtomicLong(7);
+        backend.dropoutReport = () -> {
+            if (calls.incrementAndGet() <= 2) {
+                throw new IllegalStateException("the drop report broke");
+            }
+            return inputDrops(dropped.get());
+        };
+        engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        engine.setStreamingProvision(provision(backend));
+        engine.startAudioOutput();
+
+        long base = engine.capturedInputBlocksLostAsATakeStarts();
+
+        assertThat(engine.capturedInputBlocksLost() - base).as("the first good read is the baseline").isZero();
+        dropped.set(9);
+        assertThat(engine.capturedInputBlocksLost() - base).isEqualTo(2);
+    }
+
+    /**
+     * A read landing after a failed take start read with a count lower than
+     * the highest already read moves the figure neither up nor down (story
+     * 338, ruling E261).
+     */
+    @Test
+    void aStaleLowerReadAfterAFailedTakeStartReadNeverRaisesTheFigure() {
+        AudioEngineOutputTest.SynchronousTestBackend backend =
+                new AudioEngineOutputTest.SynchronousTestBackend("Stale After The Take Start");
+        backend.dropoutReport = () -> inputDrops(0);
+        engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        engine.setStreamingProvision(provision(backend));
+        engine.startAudioOutput();
+        backend.dropoutReport = () -> inputDrops(5);
+        assertThat(engine.capturedInputBlocksLost()).isEqualTo(5);
+        backend.dropoutReport = () -> {
+            throw new IllegalStateException("the drop report broke at the take's start");
+        };
+        long base = engine.capturedInputBlocksLostAsATakeStarts();
+
+        backend.dropoutReport = () -> inputDrops(3);
+
+        assertThat(engine.capturedInputBlocksLost() - base).as("a lower read moves nothing").isZero();
+    }
+
+    private static BackendDropoutCounters inputDrops(long dropped) {
+        return new BackendDropoutCounters(0, 0, 0, 0, dropped, false);
     }
 
     /** A {@link VirtualMachineError} a backend's counter report throws. */

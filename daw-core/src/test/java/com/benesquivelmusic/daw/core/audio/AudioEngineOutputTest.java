@@ -2732,6 +2732,15 @@ class AudioEngineOutputTest {
             return script == null ? AudioBackend.super.dropoutCounters() : script.get();
         }
 
+        /** What {@link #takeDriverResyncArrivals()} answers; {@code null} reports the interface default. */
+        volatile Supplier<com.benesquivelmusic.daw.sdk.audio.DriverResyncArrivals> resyncArrivalsReport;
+
+        @Override
+        public com.benesquivelmusic.daw.sdk.audio.DriverResyncArrivals takeDriverResyncArrivals() {
+            Supplier<com.benesquivelmusic.daw.sdk.audio.DriverResyncArrivals> script = resyncArrivalsReport;
+            return script == null ? AudioBackend.super.takeDriverResyncArrivals() : script.get();
+        }
+
         @Override
         public boolean isReleasePending() {
             if (failOnReleasePendingQuery) {

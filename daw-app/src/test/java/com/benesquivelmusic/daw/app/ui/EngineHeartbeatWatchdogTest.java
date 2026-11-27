@@ -251,6 +251,23 @@ class EngineHeartbeatWatchdogTest {
         assertThat(reactions.stalls).as("max(5 s, window) with no advance").hasSize(1);
     }
 
+    /** Ruling E228: an allowance asked for is pending until the next tick takes it up, never before. */
+    @Test
+    void anAllowanceRequestIsPendingUntilTheNextTickTakesItUp() {
+        ScriptedEngine engine = new ScriptedEngine(48_000.0, 256);
+        EngineHeartbeatWatchdog watchdog = watchdog(engine, TICK);
+        run(watchdog, engine, TICK, TimeUnit.SECONDS.toNanos(1), engine.periodNanos);
+        boolean before = watchdog.isAllowanceRequestPending();
+
+        watchdog.allowForAClockSourceSwitch();
+        boolean asked = watchdog.isAllowanceRequestPending();
+        runStill(watchdog, TICK, TICK);
+
+        assertThat(before).as("none asked for").isFalse();
+        assertThat(asked).as("asked for, no tick since").isTrue();
+        assertThat(watchdog.isAllowanceRequestPending()).as("the next tick took it up").isFalse();
+    }
+
     /** Ruling E107: after the first advance that follows the switch, the normal window applies again. */
     @Test
     void theSwitchAllowanceEndsAtTheFirstAdvanceAfterIt() {
