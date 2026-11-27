@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.audio.portaudio;
 
+import com.benesquivelmusic.daw.core.audio.BundledPortAudio;
+
 import org.junit.jupiter.api.Test;
 
 import java.lang.foreign.Linker;
@@ -13,12 +15,25 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class PortAudioBindingsTest {
 
+    /**
+     * Story 348 — the bindings load the PortAudio build on
+     * {@code java.library.path} through {@code NativeLibraryLoader}, on every
+     * operating system: {@code portaudio.dll} on Windows, the unversioned
+     * {@code libportaudio.so} the in-tree build produces on Linux. The
+     * precondition is a file-name glob, never the bindings' own answer, so a
+     * build the loader's names do not match fails here instead of skipping.
+     */
     @Test
-    void shouldReportAvailabilityBasedOnNativeLibrary() {
-        // PortAudio is unlikely to be installed in the CI/test environment
+    void bundledPortAudioShouldLoadThroughTheLoader() {
+        BundledPortAudio.assumePresent();
+
         PortAudioBindings bindings = new PortAudioBindings();
-        // We don't assert true/false — just that it doesn't crash
-        assertThat(bindings.isAvailable()).isIn(true, false);
+
+        assertThat(bindings.isAvailable())
+                .as("a file matching %s is on java.library.path, so the bindings must load it: %s",
+                        BundledPortAudio.glob(), bindings.unavailableReason().orElse(""))
+                .isTrue();
+        assertThat(bindings.unavailableReason()).isEmpty();
     }
 
     @Test
@@ -57,8 +72,8 @@ class PortAudioBindingsTest {
      * {@link MemoryLayout#structLayout(MemoryLayout...)} to insert it.</p>
      *
      * <p>Pure Java: it reads a constant and touches no native memory, so it
-     * says the same thing on every host, installed PortAudio or not — which
-     * matters because no CI workflow in this repository installs one.</p>
+     * says the same thing on every host, whether PortAudio loads there or not
+     * — a build run with {@code -DskipNativeBuild=true} has none.</p>
      */
     @Test
     void shouldDefineHostApiInfoLayoutMemberByMember() {
@@ -192,8 +207,8 @@ class PortAudioBindingsTest {
      * match, and under LLP64 the raw downcall handle takes two {@code int}s
      * where {@code openStream} passes two {@code long}s.
      *
-     * <p>Proven WITHOUT PortAudio installed — CI has none — by adapting a
-     * stand-in handle of the descriptor's own type. The invocation at the end
+     * <p>Proven WITHOUT PortAudio loaded, so it holds on a host that has none,
+     * by adapting a stand-in handle of the descriptor's own type. The invocation at the end
      * is the load-bearing half: asserting only {@code type()} would still pass
      * if {@code asType} had been used, which refuses the {@code long}-to-
      * {@code int} narrowing LLP64 needs, so the call is made in exactly the

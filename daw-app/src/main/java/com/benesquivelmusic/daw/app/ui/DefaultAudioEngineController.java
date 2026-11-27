@@ -82,6 +82,14 @@ final class DefaultAudioEngineController implements AudioEngineController {
 
     private static final Logger LOG = Logger.getLogger(DefaultAudioEngineController.class.getName());
 
+    /**
+     * What the person is told when settings that name no backend get Java
+     * Sound because PortAudio could not be built (story 348, studio-engineer
+     * ruling R1).
+     */
+    static final String PORTAUDIO_UNAVAILABLE_NOTICE = "PortAudio is unavailable — audio will play and"
+            + " record through Java Sound. See System Capabilities in Help.";
+
     private final AudioEngine audioEngine;
     private final TestTonePlayer tonePlayer;
     private final Runnable postReconfigureCallback;
@@ -120,6 +128,12 @@ final class DefaultAudioEngineController implements AudioEngineController {
     private volatile Runnable clockSourceSelectedCallback;
     /** True from the first step of {@link #declareDeviceLost} until DEVICE_LOST is published. */
     private volatile boolean deviceLossBeingDeclared;
+    /**
+     * Whether {@link #PORTAUDIO_UNAVAILABLE_NOTICE} was shown; once per
+     * session, because the library search path is fixed when the JVM starts.
+     * Guarded by this controller's monitor.
+     */
+    private boolean portAudioUnavailableNoticeShown;
     private volatile XrunDetector xrunDetector;
     /**
      * The xrun log the health monitor's feed writes and the status strip
@@ -3496,9 +3510,14 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * Called by {@code MainController} at startup, before the persisted
      * audio settings refine the provision via
      * {@link #applyConfiguration(Request)}.
+     *
+     * <p>It tells the person nothing when PortAudio is missing: the saved
+     * settings are not applied yet, and a person whose saved backend is ASIO
+     * would be told that audio goes through Java Sound (story 348,
+     * studio-engineer ruling R1).</p>
      */
     synchronized void installDefaultProvision() {
-        installProvision(buildDefaultProvision("", ""));
+        installProvision(buildDefaultProvision(tryCreatePortAudioAdapter(""), "", ""));
     }
 
     /**
@@ -3546,8 +3565,11 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * the first try published nothing at all and the substitution was
      * visible only as a transient notification.
      * A blank / {@link #BACKEND_NONE} name yields the default ladder
-     * (PortAudio when available, else Java Sound) with no notification and
-     * no pending cause. An unknown or unconstructible name (story 316
+     * (PortAudio when available, else Java Sound) with no pending cause; when
+     * PortAudio could not be built, so Java Sound is the head, the person is
+     * told once per session (story 348, studio-engineer ruling R1; see
+     * {@link #tellOnceThatPortAudioIsUnavailable(PortAudioAttempt)}). An
+     * unknown or unconstructible name (story 316
      * review) is treated exactly like an unavailable backend: the request is
      * preserved, the user is notified, and the rejection rides into the
      * ladder as a pending failed hop — previously it was silently replaced
@@ -3562,7 +3584,12 @@ final class DefaultAudioEngineController implements AudioEngineController {
         Objects.requireNonNull(request, "request must not be null");
         String name = request.backendName();
         if (name == null || name.isBlank() || BACKEND_NONE.equals(name)) {
-            return buildDefaultProvision(request.inputDeviceName(), request.outputDeviceName());
+            PortAudioAttempt portAudio = attemptPortAudioAdapter(request.inputDeviceName());
+            if (portAudio.adapter() == null) {
+                tellOnceThatPortAudioIsUnavailable(portAudio);
+            }
+            return buildDefaultProvision(
+                    portAudio.adapter(), request.inputDeviceName(), request.outputDeviceName());
         }
         AudioBackend requested = createStreamingBackendByName(name, request.inputDeviceName());
         if (requested == null) {
@@ -3664,10 +3691,13 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * Sound rung behind a PortAudio head is a fallback and stays on the
      * default output and the default input, as in
      * {@link #appendFallbackRungs(List, String)}.
+     *
+     * @param portAudio the PortAudio adapter built with
+     *                  {@code inputDeviceName}, or {@code null} when PortAudio
+     *                  could not be built
      */
     private StreamingProvision buildDefaultProvision(
-            String inputDeviceName, String outputDeviceName) {
-        AudioBackend portAudio = tryCreatePortAudioAdapter(inputDeviceName);
+            AudioBackend portAudio, String inputDeviceName, String outputDeviceName) {
         if (portAudio != null) {
             return new StreamingProvision("PortAudio", List.of(
                     new BackendStreamRung(portAudio, deviceId("PortAudio", outputDeviceName)),
@@ -3770,7 +3800,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * the rung under {@code REQUIRED}, which is the honest answer: there is
      * nothing to record from.)</p>
      *
-     * <p>{@link #buildDefaultProvision(String, String)} is the deliberate
+     * <p>{@link #buildDefaultProvision(AudioBackend, String, String)} is the deliberate
      * counter-example: there PortAudio IS the provisioned head for a request
      * that named no backend at all, so the configured input name genuinely
      * belongs to it and is passed through. Java Sound receives the configured
@@ -3805,17 +3835,78 @@ final class DefaultAudioEngineController implements AudioEngineController {
      * usable on this host.
      */
     private static AudioBackend tryCreatePortAudioAdapter(String inputDeviceName) {
+        return attemptPortAudioAdapter(inputDeviceName).adapter();
+    }
+
+    /**
+     * One attempt to build the PortAudio adapter.
+     *
+     * @param adapter the available adapter, or {@code null} when there is none
+     * @param reason  why there is none: the loader's message, which names the
+     *                file names it tried and {@code java.library.path}, or the
+     *                exception the construction threw; {@code null} with an
+     *                adapter
+     * @param failure that exception, or {@code null}
+     */
+    private record PortAudioAttempt(AudioBackend adapter, String reason, RuntimeException failure) { }
+
+    private static PortAudioAttempt attemptPortAudioAdapter(String inputDeviceName) {
         try {
+            PortAudioBackend portAudio = new PortAudioBackend();
             CallbackBackendAdapter adapter =
-                    new CallbackBackendAdapter(new PortAudioBackend(), inputDeviceName, PortAudioBackend::new);
+                    new CallbackBackendAdapter(portAudio, inputDeviceName, PortAudioBackend::new);
             if (adapter.isAvailable()) {
-                return adapter;
+                return new PortAudioAttempt(adapter, null, null);
             }
             closeQuietly(adapter);
+            return new PortAudioAttempt(null,
+                    portAudio.unavailableReason().orElse("PortAudio reported itself unavailable"), null);
         } catch (RuntimeException e) {
             LOG.log(Level.FINE, "PortAudio adapter unavailable", e);
+            return new PortAudioAttempt(null, e.toString(), e);
         }
-        return null;
+    }
+
+    /**
+     * Tells the person, once per application session, that a configuration
+     * naming no backend gets Java Sound because PortAudio could not be built
+     * (story 348, studio-engineer ruling R1). The first occasion logs the
+     * attempt's full reason at WARNING; that reason never goes on screen,
+     * because on Windows {@code java.library.path} is the whole PATH. Later
+     * occasions log at FINE.
+     *
+     * @param failed the attempt that built no adapter
+     */
+    private void tellOnceThatPortAudioIsUnavailable(PortAudioAttempt failed) {
+        if (portAudioUnavailableNoticeShown) {
+            LOG.log(Level.FINE, "PortAudio is still unavailable; Java Sound plays and records for"
+                    + " settings that name no backend: " + failed.reason(), failed.failure());
+            return;
+        }
+        portAudioUnavailableNoticeShown = true;
+        LOG.log(Level.WARNING, "PortAudio could not be built, so Java Sound plays and records for"
+                + " settings that name no backend: " + failed.reason(), failed.failure());
+        notifyQuietly(PORTAUDIO_UNAVAILABLE_NOTICE);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Java Sound heads the provision of settings that name no backend only
+     * when PortAudio could not be built for it; a fresh attempt then supplies
+     * the reason the log names.</p>
+     */
+    @Override
+    public synchronized void onSettingsAppliedWithoutABackend() {
+        if (!"Java Sound".equals(getProvisionedBackendName())) {
+            return;
+        }
+        PortAudioAttempt portAudio = attemptPortAudioAdapter("");
+        if (portAudio.adapter() != null) {
+            closeQuietly(portAudio.adapter());
+            return;
+        }
+        tellOnceThatPortAudioIsUnavailable(portAudio);
     }
 
     /**

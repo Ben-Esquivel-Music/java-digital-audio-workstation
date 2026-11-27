@@ -14,6 +14,20 @@ which sets `CMAKE_POLICY_VERSION_MINIMUM` to `3.5` for their
 A value you pass yourself (`-DCMAKE_POLICY_VERSION_MINIMUM=...`) is used
 unchanged; CMake 3.x ignores the variable.
 
+PortAudio is built as a shared library only, with no name suffix (story
+348): the PortAudio block of `lib/CMakeLists.txt` forces `PA_BUILD_SHARED`
+on and `PA_BUILD_STATIC` and `PA_LIBNAME_ADD_SUFFIX` off before it adds the
+sub-project. Upstream's MSVC default appends `_x64`, and building the
+static library beside the shared one forces that suffix back on, so the
+static library stays off. The result is `portaudio.dll` (import library
+`portaudio.lib`) with MSVC, `libportaudio.so` (no version number) on Linux
+and `libportaudio.dylib` on macOS. Java loads it through
+`NativeLibraryLoader.loadLibrary(arena, "portaudio", 2)`, which tries
+`portaudio.dll` / `libportaudio.dll`, `libportaudio.so.2` /
+`libportaudio.so` and `libportaudio.2.dylib` / `libportaudio.dylib`. The
+same block forces `PA_USE_ASIO` off, so PortAudio never loads an ASIO
+driver; ASIO goes through the project's own `asioshim`.
+
 | Directory             | Library          | License      | Built by CMake |
 |-----------------------|------------------|--------------|----------------|
 | `Clap-1.2.7/`         | CLAP             | MIT          | header-only    |

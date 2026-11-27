@@ -473,6 +473,7 @@ Operationalises [`INTERACTION_COMPLETENESS_DESIGN_BOOK.md`](../design/INTERACTIO
 | 208 | [JavaFX Snapshot / Visual Regression Testing](208-javafx-snapshot-visual-regression-testing.md) | 🟡 Medium | Testing |
 | 209 | [Long-Running Render Test Profile for End-to-End Exports](209-long-running-render-test-profile.md) | 🟡 Medium | Testing |
 | 210 | [Plugin DSP Regression Test Framework (Golden-File Audio)](210-plugin-dsp-regression-test-framework.md) | 🟠 High | Testing |
+| 492 | [Slow Test Classes Run on CI, Not in the Default Local Build](492-slow-test-classes-run-on-ci-not-in-the-default-local-build.md) | 🟠 High | Testing |
 
 ## Audio Processing
 
@@ -508,3 +509,4 @@ Operationalises [`INTERACTION_COMPLETENESS_DESIGN_BOOK.md`](../design/INTERACTIO
 | 256 | [Build asioshim.dll in CI and Bundle it into the Windows Distribution](256-bundle-asioshim-dll-into-windows-distribution.md) | 🟠 High | FFM |
 | 348 | [PortAudio Never Loads on Windows: DLL Name Mismatch and NativeLibraryLoader Adoption](348-portaudio-dll-name-mismatch-and-loader-adoption.md) | 🟠 High | FFM |
 | 349 | [PortAudio Rung Lifecycle Ownership and Bounded Control Thread](349-portaudio-rung-lifecycle-ownership-and-bounded-control-thread.md) | 🟠 High | FFM |
+| 491 | [The Launched Application Loads Its Bundled Native Libraries](future/491-the-launched-application-loads-its-bundled-native-libraries.md) | 🟠 High | FFM |

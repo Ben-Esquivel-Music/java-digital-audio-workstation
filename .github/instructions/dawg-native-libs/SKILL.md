@@ -24,7 +24,7 @@ generated bindings.**
 
 | Dir under `lib/` | Library | `baseName` · SOVERSION | License | CMake | Java binding |
 |---|---|---|---|---|---|
-| `portaudio/` | PortAudio | `portaudio` · in-tree build is **unversioned**: Linux `libportaudio.so` (SONAME `libportaudio.so`), Windows/MSVC `portaudio_x64.dll` (`PA_LIBNAME_ADD_SUFFIX` defaults `ON` under MSVC). Upstream applies `PA_SOVERSION` only when the macOS-only `PA_OUTPUT_OSX_FRAMEWORK` option (default `OFF`) is on (`lib/portaudio/CMakeLists.txt:420-429`). The `2` that `NativeLibraryDetector` probes is the distro package's `libportaudio.so.2`; the in-tree Linux build is found via the unversioned fallback name | MIT | yes (`BUILD_PORTAUDIO`) | `core.audio.portaudio.PortAudioBindings` / `PortAudioBackend` |
+| `portaudio/` | PortAudio | `portaudio` · in-tree build is **unversioned**: Linux `libportaudio.so` (SONAME `libportaudio.so`), Windows/MSVC `portaudio.dll` (story 348: the PortAudio block of `lib/CMakeLists.txt` forces `PA_LIBNAME_ADD_SUFFIX` and `PA_BUILD_STATIC` off — upstream's MSVC default appends `_x64`, and a static build beside the shared one forces that suffix back on — and `PA_USE_ASIO` off). Upstream applies `PA_SOVERSION` only when the macOS-only `PA_OUTPUT_OSX_FRAMEWORK` option (default `OFF`) is on (`lib/portaudio/CMakeLists.txt:420-429`). The `2` that `NativeLibraryDetector` probes is the distro package's `libportaudio.so.2`; the in-tree Linux build is found via the unversioned fallback name | MIT | yes (`BUILD_PORTAUDIO`) | `core.audio.portaudio.PortAudioBindings` / `PortAudioBackend` |
 | `fluidsynth-2.5.3/fluidsynth-2.5.3/` | FluidSynth | `fluidsynth` · 3 | LGPL-2.1 | yes (`BUILD_FLUIDSYNTH`) | `core.midi.fluidsynth.FluidSynthBindings` / `FluidSynthRenderer` |
 | `libmp3lame/` | LAME | `mp3lame` · 0 | LGPL-2 | yes (`BUILD_LIBMP3LAME`) | `core.export.Mp3Exporter` |
 | `ogg-1.3.6/` | libogg | `ogg` · 0 | BSD-3 | yes (`BUILD_LIBOGG`) | (transitive dep of vorbis) |
@@ -57,11 +57,16 @@ mvn ... (daw-core)                          [generate-resources phase]
   └─ exec: bash generate-third-party-notices.sh   (skippable: -DskipNoticesGeneration=true)
 ```
 
-Then at test/run time (`daw-core/pom.xml` surefire `argLine`):
+Then at test time (`daw-core/pom.xml` surefire `argLine`):
 
 ```
 --enable-native-access=daw.core,ALL-UNNAMED -Djava.library.path=<root>/target/build/native
 ```
+
+Only daw-core's test JVM gets that `java.library.path`. No launcher sets it
+(`mvn javafx:run`, the jlink launcher, the jpackage app image), so the
+launched application finds no bundled library in the dist `native/<os>/`
+folder; future story 491 owns that.
 
 Key knobs:
 
@@ -85,8 +90,7 @@ Most native access flows through one loader — this is a **strong
 convention, not an enforced invariant.** Know which side of it a class
 is on before you copy its pattern:
 
-- **Routes through `NativeLibraryLoader` — copy these for new code:** FluidSynth (`FluidSynthBindings`), AAC (`AacExporter`, `loadLibrary(arena, "fdk-aac", 2)` at `AacExporter.java:347`), OGG/Vorbis import + export.
-- **Bypasses the loader — *not* the template:** `PortAudioBindings.java:115` calls `SymbolLookup.libraryLookup(resolveLibraryName(), …)` directly with its own name resolution. It predates the shared loader and so loses the bundled-first search + platform name table + install-hint diagnostics. Migrating it onto `NativeLibraryLoader` is latent debt; do not propagate the pattern.
+- **Routes through `NativeLibraryLoader` — copy these for new code:** FluidSynth (`FluidSynthBindings`), PortAudio (`PortAudioBindings`, `loadLibrary(arena, "portaudio", 2)`, story 348; it keeps the loader's message as `unavailableReason()`), AAC (`AacExporter`, `loadLibrary(arena, "fdk-aac", 2)` at `AacExporter.java:347`), OGG/Vorbis import + export.
 - **Different category entirely:** `ClapBindings` / `ClapPluginHost` load **nothing from `lib/`** — they FFM-bind *external third-party `.clap` plugin binaries* at runtime via each plugin's global `clap_entry` symbol. Vendored `Clap-1.2.7/` is headers only (the host/plugin ABI), never a shared library.
 
 The loader contract itself:
@@ -97,7 +101,7 @@ The loader contract itself:
 - **`core.audio.NativeLibraryDetector`** (`.../audio/NativeLibraryDetector.java`)
   - `detectAll()` — the registry of every probed library + display name + "required for" string (powers the Help dialog "Native libraries" tab). **Adding a new library means adding a `detect(...)` line here** (`NativeLibraryDetector.java:42-67`).
   - `isAvailable(baseName[, soVersion])` — lightweight existence check; **call this before invoking any binding method.** Defaults SOVERSION to 0 (correct for `libogg.so.0`, `asioshim.dll`); pass the real SOVERSION for `vorbisenc`/`vorbisfile`.
-- **Binding classes** — thin per-library wrappers: cache a `Linker.nativeLinker()`, hold the `SymbolLookup` + a long-lived `Arena`, resolve each symbol into a `MethodHandle` once, expose an `isAvailable()` / `Optional`-returning factory. When extending one, model new code on **`FluidSynthBindings`** (the loader-routed reference), not `PortAudioBindings` (the bypass exception above).
+- **Binding classes** — thin per-library wrappers: cache a `Linker.nativeLinker()`, hold the `SymbolLookup` + a long-lived `Arena`, resolve each symbol into a `MethodHandle` once, expose an `isAvailable()` / `Optional`-returning factory. When extending one, model new code on **`FluidSynthBindings`** (the loader-routed reference). Catch `UnsupportedOperationException | IllegalArgumentException | UnsatisfiedLinkError` around `loadLibrary`: its system-library loop catches only `IllegalArgumentException`.
 
 SOVERSION discipline: the number passed from the binding must equal the
 library's upstream `LIB_VERSION_CURRENT` (FluidSynth documents this at
@@ -243,7 +247,7 @@ cmake --build target/build --config Release
 ### Diagnose `UnsupportedOperationException` / `UnsatisfiedLinkError` at runtime
 
 1. Was the native build skipped? Check for `-DskipNativeBuild=true` and whether `target/build/native/` is populated.
-2. Is `-Djava.library.path` pointed at `target/build/native`? (set in `daw-core/pom.xml` surefire `argLine`; for app runs it's the dist `native/<os>` dir).
+2. Is `-Djava.library.path` pointed at `target/build/native`? (set in `daw-core/pom.xml` surefire `argLine` only; no launcher sets it, so an app run finds a bundled library only when you pass it yourself, for example `JDK_JAVA_OPTIONS=-Djava.library.path=<root>/target/build/native` — future story 491).
 3. SOVERSION mismatch: the file on disk is `lib<x>.so.<A>` but the binding asked for `<B>`. Reconcile against upstream `LIB_VERSION_CURRENT` and the vorbis overrides in `lib/CMakeLists.txt:217-236`.
 4. FluidSynth specifically missing? GLib2 was absent at configure time — CMake skipped it with a `WARNING` (non-fatal). This is expected on a host without GLib2; the synth path degrades, the build is still green.
 5. `--enable-native-access` not granted to `daw.core` → JEP 454 access warning/denial. The reactor is fully JPMS-modular; the flag must name `daw.core`.
@@ -253,6 +257,6 @@ cmake --build target/build --config Release
 - **One flat output dir.** Everything is forced into `target/build/native/` regardless of CMake multi-config subdir behavior (the four `*_OUTPUT_DIRECTORY_<CFG>` overrides per target exist for MSVC/Xcode). Don't "simplify" them away.
 - **`EXCLUDE_FROM_ALL` everywhere + one aggregate `ALL` target** (`daw-native-libs`). Sub-project install/docs/pkg-config/test targets are deliberately suppressed via cache vars; re-enabling them is not a cleanup, it's a regression.
 - **User's primary platform is Windows + ASIO + multi-channel USB.** Treat Windows DLL behavior as the reference path; never write a test/assertion that bakes in "absent on non-Windows" as expected truth.
-- **Don't bypass the loader (in new code).** A binding that calls `SymbolLookup.libraryLookup` directly loses the bundled-first search, the platform name table, and the install-hint diagnostics — and drifts from the detector. `PortAudioBindings` already does this (`:115`); it is the one tolerated-debt exception, not precedent for adding more.
+- **Don't bypass the loader (in new code).** A binding that calls `SymbolLookup.libraryLookup` directly loses the bundled-first search, the platform name table, and the install-hint diagnostics — and drifts from the detector. Story 348 moved `PortAudioBindings` onto the loader after its bare `"portaudio"` lookup missed the bundled `portaudio_x64.dll` on every Windows build; the four `daw-sdk` asioshim shims (`AsioCapabilityShim`, `AsioDriverShim`, `AsioFormatChangeShim`, `AsioStreamingShim`) still call `SymbolLookup.libraryLookup("asioshim", …)` directly, which is existing debt and not precedent.
 - **License notices are load-bearing.** A new `lib/` entry without a `generate-third-party-notices.sh` mapping silently produces an incomplete `THIRD_PARTY_NOTICES.md` — a distribution-compliance bug, not a cosmetic one.
 - This skill exists in both trees: `.claude/skills/dawg-native-libs/SKILL.md` and its tracked mirror `.github/instructions/dawg-native-libs/SKILL.md` (story 337, ruling E50). They are not auto-synced, so edit both identically.

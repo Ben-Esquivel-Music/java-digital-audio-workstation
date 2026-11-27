@@ -23,6 +23,8 @@ daw-app/target/dist/native/windows-x64/  →  libmp3lame.dll, ogg.dll, portaudio
 target/build/native/                      →  libmp3lame.dll, ogg.dll, portaudio_x64.dll, vorbis.dll, vorbisenc.dll, vorbisfile.dll  (no asioshim.dll)
 ```
 
+> 2026-11-27: `portaudio_x64.dll`, here and below, was renamed `portaudio.dll` by story 348.
+
 Result: every `AsioFormatChangeShim` constructor takes the "library not present" branch and degrades to a no-op. On the user's primary platform (Windows + multi-channel USB ASIO driver), driver-initiated buffer-size changes, sample-rate changes, and clock-source changes are silently swallowed — the DAW never sees the event, never reopens the stream, and the next render callback fails the same crashy way as a yanked cable that story 214 was supposed to address.
 
 Stories 220 / 221 / 222 / 223 each grow the surface area of the `daw-core/native/asio/` shim with new exports. This story is the build-system underpinning that all four (and 218) ride on: produce the `.dll`, sign it where appropriate, and ship it with the distribution.

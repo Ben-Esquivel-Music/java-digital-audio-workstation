@@ -190,6 +190,21 @@ public interface AudioEngineController {
     }
 
     /**
+     * Says that the configuration just applied came from saved settings that
+     * name no backend: a blank saved backend, which reaches
+     * {@link #applyConfiguration(Request)} as the
+     * {@link #getProvisionedBackendName() provisioned} name (story 316
+     * review). When Java Sound heads the provision because PortAudio could
+     * not be built, the person is told so, once per session (story 348,
+     * studio-engineer ruling R1). A request whose backend is blank or
+     * {@link #BACKEND_NONE} needs no such call.
+     *
+     * <p>The default does nothing, which suits test doubles.</p>
+     */
+    default void onSettingsAppliedWithoutABackend() {
+    }
+
+    /**
      * Returns the list of backend names the user can switch between.
      * A backend appears only if BOTH gates pass: its native library /
      * runtime is usable on this system, and it can actually stream on this

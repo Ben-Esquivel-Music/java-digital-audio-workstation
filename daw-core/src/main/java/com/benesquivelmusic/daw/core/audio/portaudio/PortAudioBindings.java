@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.audio.portaudio;
 
 import com.benesquivelmusic.daw.core.audio.NativeAbi;
+import com.benesquivelmusic.daw.core.audio.NativeLibraryLoader;
 
 import java.lang.foreign.*;
 import java.lang.invoke.MethodHandle;
@@ -32,9 +33,16 @@ import java.util.Optional;
  * </ul>
  *
  * <h2>Native Library Loading</h2>
- * <p>The PortAudio shared library ({@code libportaudio.so}, {@code libportaudio.dylib},
- * or {@code portaudio.dll}) must be on the system library path. Use
- * {@link #isAvailable()} to check before calling any other method.</p>
+ * <p>The library is loaded through {@link NativeLibraryLoader} with base name
+ * {@code portaudio} and SOVERSION 2: first from the directories on
+ * {@code java.library.path} (the bundled build), then from the system loader.
+ * The file names it tries are {@code portaudio.dll} then
+ * {@code libportaudio.dll} on Windows, {@code libportaudio.so.2} then
+ * {@code libportaudio.so} on Linux, and {@code libportaudio.2.dylib} then
+ * {@code libportaudio.dylib} on macOS. When none loads, {@link #isAvailable()}
+ * is {@code false} and {@link #unavailableReason()} carries the loader's
+ * message. Use {@link #isAvailable()} to check before calling any other
+ * method.</p>
  *
  * @see <a href="http://www.portaudio.com/docs/v19-doxydocs/portaudio_8h.html">PortAudio API Reference</a>
  */
@@ -211,10 +219,12 @@ public final class PortAudioBindings {
      * <p>{@code framesPerBuffer} and {@code streamFlags} are both C
      * {@code unsigned long}, hence {@link NativeAbi#C_LONG} rather than
      * {@link ValueLayout#JAVA_LONG}. Package-private, and separated from
-     * {@link #bindFunctions()}, so the ABI can be asserted on a host with no
-     * PortAudio installed: no CI workflow in this repository installs it, so
-     * a descriptor only reachable through a successful symbol lookup would be
-     * a descriptor nothing ever checks.</p>
+     * {@link #bindFunctions()}, so the ABI can be asserted on a host where
+     * PortAudio does not load: a test JVM whose {@code java.library.path}
+     * does not name the native build, or a build run with
+     * {@code -DskipNativeBuild=true}, has none, and a descriptor only
+     * reachable through a successful symbol lookup would be a descriptor
+     * nothing checks there.</p>
      */
     static final FunctionDescriptor PA_OPEN_STREAM_DESCRIPTOR = FunctionDescriptor.of(
             ValueLayout.JAVA_INT,
@@ -250,6 +260,8 @@ public final class PortAudioBindings {
     private final SymbolLookup lookup;
     private final Arena arena;
     private final boolean available;
+    /** Why the library did not load; {@code null} when it did. */
+    private final String unavailableReason;
 
     // Cached method handles for hot-path operations
     private MethodHandle paInitialize;
@@ -272,23 +284,26 @@ public final class PortAudioBindings {
      * Creates bindings for the PortAudio native library.
      *
      * <p>If the native library cannot be loaded, {@link #isAvailable()} returns
-     * {@code false} and no other methods should be called.</p>
+     * {@code false}, {@link #unavailableReason()} says why, and no other
+     * methods should be called.</p>
      */
     public PortAudioBindings() {
         SymbolLookup tempLookup = null;
-        boolean tempAvailable = false;
+        String tempUnavailableReason = null;
         Arena tempArena = Arena.ofAuto();
 
         try {
-            tempLookup = SymbolLookup.libraryLookup(resolveLibraryName(), tempArena);
-            tempAvailable = true;
-        } catch (IllegalArgumentException | UnsatisfiedLinkError _) {
-            // Native library not found — this is expected on systems without PortAudio
+            tempLookup = NativeLibraryLoader.loadLibrary(tempArena, "portaudio", 2);
+        } catch (UnsupportedOperationException | IllegalArgumentException | UnsatisfiedLinkError e) {
+            // The loader's system-library loop catches only IllegalArgumentException,
+            // so an UnsatisfiedLinkError from it arrives here too.
+            tempUnavailableReason = e.getMessage() != null ? e.getMessage() : e.toString();
         }
 
         this.lookup = tempLookup;
         this.arena = tempArena;
-        this.available = tempAvailable;
+        this.available = tempLookup != null;
+        this.unavailableReason = tempUnavailableReason;
 
         if (available) {
             bindFunctions();
@@ -302,6 +317,17 @@ public final class PortAudioBindings {
      */
     public boolean isAvailable() {
         return available;
+    }
+
+    /**
+     * Why the PortAudio library did not load: the loader's message, which
+     * names the file names it tried and the {@code java.library.path} it
+     * searched, so a log can say what was looked for.
+     *
+     * @return the reason, or empty when the library loaded
+     */
+    public Optional<String> unavailableReason() {
+        return Optional.ofNullable(unavailableReason);
     }
 
     /**
@@ -703,16 +729,5 @@ public final class PortAudioBindings {
         return lookup.find(name)
                 .map(symbol -> LINKER.downcallHandle(symbol, descriptor))
                 .orElse(null);
-    }
-
-    private static String resolveLibraryName() {
-        String os = System.getProperty("os.name", "").toLowerCase();
-        if (os.contains("win")) {
-            return "portaudio";
-        } else if (os.contains("mac")) {
-            return "libportaudio.dylib";
-        } else {
-            return "libportaudio.so";
-        }
     }
 }

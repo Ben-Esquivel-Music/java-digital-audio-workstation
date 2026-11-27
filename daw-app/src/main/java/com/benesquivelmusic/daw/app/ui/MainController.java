@@ -2537,6 +2537,10 @@ public final class MainController {
                 inputDevice = settings.getAudioInputDevice();
                 outputDevice = settings.getAudioOutputDevice();
                 controller.applyConfiguration(audioConfigurationRequest(settings, backend));
+                if (settings.getAudioBackend().isBlank()) {
+                    // The blank reached the controller as the provisioned name, so only this caller knows.
+                    controller.onSettingsAppliedWithoutABackend();
+                }
                 controller.applySrcQuality(settings.getSrcQuality());
             } catch (RuntimeException failure) {
                 LOG.log(Level.WARNING,
