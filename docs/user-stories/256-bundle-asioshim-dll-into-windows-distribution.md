@@ -20,6 +20,8 @@ daw-app/target/dist/native/windows-x64/  →  libmp3lame.dll, ogg.dll, portaudio
 target/build/native/                      →  libmp3lame.dll, ogg.dll, portaudio_x64.dll, vorbis.dll, vorbisenc.dll, vorbisfile.dll  (no asioshim.dll)
 ```
 
+> 2026-11-27: `portaudio_x64.dll` was renamed `portaudio.dll` by story 348.
+
 The asioshim CMake target conditionally returns when `ASIO_SDK_DIR` is unset (per Steinberg licence), so on a fresh checkout — including the project's CI runs — `asioshim.dll` is never produced. Story 224's explicit requirement is that the default Windows CI build sets `ASIO_SDK_DIR` so PRs detect breakage early; that step is missing. End users running the packaged Windows build therefore never gain the runtime ASIO control-panel launcher (story 212), driver-reported buffer-size / sample-rate enumeration (story 213), driver-reported channel names (story 215), hardware clock-source selection (story 216), or driver-initiated reset handling (story 218) — every one of those stories falls back to its no-shim degradation path.
 
 ## Goals

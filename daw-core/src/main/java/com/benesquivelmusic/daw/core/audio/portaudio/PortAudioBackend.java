@@ -35,8 +35,11 @@ import java.util.logging.Logger;
  * </ul>
  *
  * <h2>Prerequisites</h2>
- * <p>The PortAudio shared library must be installed on the system and accessible
- * via the standard library path. Use {@link #isAvailable()} to check.</p>
+ * <p>The PortAudio shared library is loaded by {@link PortAudioBindings}
+ * through {@code NativeLibraryLoader}: the bundled build on
+ * {@code java.library.path} first, then a system installation. Use
+ * {@link #isAvailable()} to check, and {@link #unavailableReason()} for what
+ * was searched when it is not.</p>
  */
 public final class PortAudioBackend implements NativeAudioBackend {
 
@@ -193,10 +196,14 @@ public final class PortAudioBackend implements NativeAudioBackend {
         try {
             // Allocate PaStreamParameters structs
             MemorySegment inputParams = config.hasInput()
-                    ? allocateStreamParameters(streamArena, config.inputDeviceIndex(), config.inputChannels())
+                    ? allocateStreamParameters(streamArena, config.inputDeviceIndex(), config.inputChannels(),
+                            suggestedLatencySeconds(bindings.getDeviceInfo(config.inputDeviceIndex()),
+                                    StreamDirection.INPUT))
                     : MemorySegment.NULL;
             MemorySegment outputParams = config.hasOutput()
-                    ? allocateStreamParameters(streamArena, config.outputDeviceIndex(), config.outputChannels())
+                    ? allocateStreamParameters(streamArena, config.outputDeviceIndex(), config.outputChannels(),
+                            suggestedLatencySeconds(bindings.getDeviceInfo(config.outputDeviceIndex()),
+                                    StreamDirection.OUTPUT))
                     : MemorySegment.NULL;
 
             // Allocate pointer to receive the stream handle
@@ -351,6 +358,16 @@ public final class PortAudioBackend implements NativeAudioBackend {
     @Override
     public boolean isAvailable() {
         return bindings.isAvailable();
+    }
+
+    /**
+     * Why the PortAudio library did not load: the loader's message, naming
+     * the file names it tried and the {@code java.library.path} it searched.
+     *
+     * @return the reason, or empty when the library loaded
+     */
+    public Optional<String> unavailableReason() {
+        return bindings.unavailableReason();
     }
 
     @Override
@@ -644,8 +661,13 @@ public final class PortAudioBackend implements NativeAudioBackend {
      * {@link PortAudioBindings#PA_FLOAT32} fits in 32 bits. Both are facts
      * about this struct and this constant, not about the store — so the
      * store is made the right width instead.</p>
+     *
+     * <p>{@code suggestedLatency} comes from
+     * {@link #suggestedLatencySeconds(MemorySegment, StreamDirection)} and is
+     * never 0 (story 348).</p>
      */
-    private MemorySegment allocateStreamParameters(Arena arena, int deviceIndex, int channels) {
+    static MemorySegment allocateStreamParameters(Arena arena, int deviceIndex, int channels,
+                                                  double suggestedLatency) {
         MemoryLayout layout = PortAudioBindings.PA_STREAM_PARAMETERS_LAYOUT;
 
         MemorySegment params = arena.allocate(layout);
@@ -663,11 +685,72 @@ public final class PortAudioBackend implements NativeAudioBackend {
                     PortAudioBindings.PA_FLOAT32);
         }
         params.set(ValueLayout.JAVA_DOUBLE,
-                layout.byteOffset(MemoryLayout.PathElement.groupElement("suggestedLatency")), 0.0);
+                layout.byteOffset(MemoryLayout.PathElement.groupElement("suggestedLatency")),
+                suggestedLatency);
         params.set(ValueLayout.ADDRESS,
                 layout.byteOffset(MemoryLayout.PathElement.groupElement("hostApiSpecificStreamInfo")),
                 MemorySegment.NULL);
         return params;
+    }
+
+    /** The latency asked for when the device reports no usable default of its own. */
+    static final double FALLBACK_SUGGESTED_LATENCY_SECONDS = 0.010;
+
+    /**
+     * The latency, in seconds, a stream asks PortAudio for in one direction:
+     * the device's own low-latency default, else its high-latency default,
+     * else {@link #FALLBACK_SUGGESTED_LATENCY_SECONDS}. A default of 0, below
+     * 0 or not finite is not used.
+     *
+     * <p>Never 0 (story 348): 0 asks the host API for its minimum buffering,
+     * which under MME is two host buffers of the engine period — about 5 ms
+     * at 96 kHz and 256 frames, against PortAudio's own 90 ms MME default — and
+     * plays as clicks and records as gaps.</p>
+     *
+     * @param deviceInfo the device's {@code PaDeviceInfo} as
+     *                   {@code Pa_GetDeviceInfo} returns it, or
+     *                   {@link MemorySegment#NULL} when PortAudio does not
+     *                   describe the device
+     * @param direction  which pair of defaults to read
+     * @return the suggested latency in seconds, always positive and finite
+     */
+    static double suggestedLatencySeconds(MemorySegment deviceInfo, StreamDirection direction) {
+        if (deviceInfo.equals(MemorySegment.NULL)) {
+            return FALLBACK_SUGGESTED_LATENCY_SECONDS;
+        }
+        MemorySegment info = deviceInfo.reinterpret(PortAudioBindings.PA_DEVICE_INFO_LAYOUT.byteSize());
+        double low = latencyMember(info, direction.lowLatencyMember);
+        if (isUsableLatency(low)) {
+            return low;
+        }
+        double high = latencyMember(info, direction.highLatencyMember);
+        if (isUsableLatency(high)) {
+            return high;
+        }
+        return FALLBACK_SUGGESTED_LATENCY_SECONDS;
+    }
+
+    private static double latencyMember(MemorySegment info, String member) {
+        return info.get(ValueLayout.JAVA_DOUBLE, PortAudioBindings.PA_DEVICE_INFO_LAYOUT.byteOffset(
+                MemoryLayout.PathElement.groupElement(member)));
+    }
+
+    private static boolean isUsableLatency(double seconds) {
+        return Double.isFinite(seconds) && seconds > 0.0;
+    }
+
+    /** A stream direction, naming the {@code PaDeviceInfo} latency defaults it reads. */
+    enum StreamDirection {
+        INPUT("defaultLowInputLatency", "defaultHighInputLatency"),
+        OUTPUT("defaultLowOutputLatency", "defaultHighOutputLatency");
+
+        private final String lowLatencyMember;
+        private final String highLatencyMember;
+
+        StreamDirection(String lowLatencyMember, String highLatencyMember) {
+            this.lowLatencyMember = lowLatencyMember;
+            this.highLatencyMember = highLatencyMember;
+        }
     }
 
     /**

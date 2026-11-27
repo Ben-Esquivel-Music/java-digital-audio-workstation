@@ -1,11 +1,15 @@
 package com.benesquivelmusic.daw.core.audio.portaudio;
 
+import com.benesquivelmusic.daw.core.audio.BundledPortAudio;
+import com.benesquivelmusic.daw.core.audio.portaudio.PortAudioBackend.StreamDirection;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.BackendCounterLedger;
 import com.benesquivelmusic.daw.sdk.audio.BackendThreadCounters;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 
 import java.io.IOException;
 import java.lang.classfile.Attributes;
@@ -23,13 +27,17 @@ import java.lang.foreign.ValueLayout;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 class PortAudioBackendTest {
 
@@ -40,10 +48,59 @@ class PortAudioBackendTest {
     }
 
     @Test
-    void shouldReportAvailability() {
+    void anUnavailableLibraryAlwaysCarriesTheReasonAndAnAvailableOneNone() {
         PortAudioBackend backend = new PortAudioBackend();
-        // Just check that it runs without error
-        assertThat(backend.isAvailable()).isIn(true, false);
+
+        assertThat(backend.unavailableReason().isPresent())
+                .as("the loader's message is kept exactly when the library did not load: %s",
+                        backend.unavailableReason().orElse(""))
+                .isEqualTo(!backend.isAvailable());
+        backend.unavailableReason().ifPresent(reason -> assertThat(reason)
+                .as("the message names the file names the loader tried")
+                .contains("tried:"));
+    }
+
+    /**
+     * Story 348, with studio-engineer ruling R5 — the positive half
+     * {@link #shouldThrowOnInitializeWhenUnavailable()} never reaches: with a
+     * PortAudio build on {@code java.library.path}, {@code Pa_Initialize}
+     * succeeds and the devices enumerate. No stream is opened. The native calls
+     * run on a daemon worker and the test waits for them a bounded time, so a
+     * driver that hangs fails the test instead of hanging the build; the worker
+     * is neither interrupted nor reused. A failed {@code Pa_Initialize} fails the
+     * test; only an empty device list skips it.
+     */
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void bundledPortAudioInitializesAndEnumeratesDevicesOnWindows() throws InterruptedException {
+        BundledPortAudio.assumePresent();
+        CompletableFuture<List<AudioDeviceInfo>> enumeration = new CompletableFuture<>();
+        Thread.ofPlatform().daemon().name("portaudio-device-enumeration").start(() -> {
+            try {
+                List<AudioDeviceInfo> devices;
+                try (PortAudioBackend backend = new PortAudioBackend()) {
+                    backend.initialize();
+                    devices = backend.getAvailableDevices();
+                }
+                enumeration.complete(devices);
+            } catch (Throwable failure) {
+                enumeration.completeExceptionally(failure);
+            }
+        });
+
+        List<AudioDeviceInfo> devices;
+        try {
+            devices = enumeration.get(ENUMERATION_BUDGET_SECONDS, TimeUnit.SECONDS);
+        } catch (TimeoutException hung) {
+            throw new AssertionError("Pa_Initialize, the device enumeration or Pa_Terminate did not return"
+                    + " within " + ENUMERATION_BUDGET_SECONDS + " s", hung);
+        } catch (ExecutionException failed) {
+            throw new AssertionError("PortAudio failed to initialize, enumerate or terminate", failed.getCause());
+        }
+
+        assumeFalse(devices.isEmpty(),
+                "PortAudio initialized but enumerated no device: this host has no audio endpoint");
+        assertThat(devices).allSatisfy(device -> assertThat(device.name()).isNotBlank());
     }
 
     @Test
@@ -220,6 +277,7 @@ class PortAudioBackendTest {
 
     private static final String ARENA = "java/lang/foreign/Arena";
     private static final long OWNER_THREAD_BUDGET_SECONDS = 5L;
+    private static final long ENUMERATION_BUDGET_SECONDS = 30L;
 
     /**
      * Pins the allocation in the class file: {@code openStream} calls
@@ -472,6 +530,57 @@ class PortAudioBackendTest {
         }
     }
 
+    // ── Suggested latency (story 348) ──────────────────────────────────────
+
+    /**
+     * Each direction asks PortAudio for the device's own low-latency default,
+     * and the stream parameters carry it: never the 0 that asked a host API for
+     * its minimum buffering, which plays as clicks and records as gaps.
+     */
+    @Test
+    void eachDirectionAsksForTheDevicesOwnLowLatencyDefault() {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment info = paDeviceInfoWithLatencies(arena, 0.0087, 0.0116, 0.087, 0.116);
+
+            MemorySegment output = PortAudioBackend.allocateStreamParameters(arena, 3, 2,
+                    PortAudioBackend.suggestedLatencySeconds(info, StreamDirection.OUTPUT));
+            MemorySegment input = PortAudioBackend.allocateStreamParameters(arena, 3, 2,
+                    PortAudioBackend.suggestedLatencySeconds(info, StreamDirection.INPUT));
+
+            assertThat(suggestedLatencyOf(output)).as("output: defaultLowOutputLatency").isEqualTo(0.0116);
+            assertThat(suggestedLatencyOf(input)).as("input: defaultLowInputLatency").isEqualTo(0.0087);
+        }
+    }
+
+    @Test
+    void anUnusableLowLatencyDefaultFallsBackToTheHighOne() {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment info = paDeviceInfoWithLatencies(arena, 0.0, -0.005, 0.087, 0.116);
+
+            assertThat(PortAudioBackend.suggestedLatencySeconds(info, StreamDirection.OUTPUT))
+                    .as("a negative low default is not used").isEqualTo(0.116);
+            assertThat(PortAudioBackend.suggestedLatencySeconds(info, StreamDirection.INPUT))
+                    .as("a zero low default is not used").isEqualTo(0.087);
+        }
+    }
+
+    @Test
+    void withNoUsableDefaultTheStreamAsksForTenMilliseconds() {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment info = paDeviceInfoWithLatencies(arena,
+                    Double.NaN, Double.POSITIVE_INFINITY, 0.0, Double.NaN);
+
+            assertThat(PortAudioBackend.suggestedLatencySeconds(info, StreamDirection.INPUT))
+                    .isEqualTo(PortAudioBackend.FALLBACK_SUGGESTED_LATENCY_SECONDS);
+            assertThat(PortAudioBackend.suggestedLatencySeconds(info, StreamDirection.OUTPUT))
+                    .isEqualTo(PortAudioBackend.FALLBACK_SUGGESTED_LATENCY_SECONDS);
+            assertThat(PortAudioBackend.suggestedLatencySeconds(MemorySegment.NULL, StreamDirection.OUTPUT))
+                    .as("a device PortAudio does not describe")
+                    .isEqualTo(PortAudioBackend.FALLBACK_SUGGESTED_LATENCY_SECONDS);
+            assertThat(PortAudioBackend.FALLBACK_SUGGESTED_LATENCY_SECONDS).isEqualTo(0.010);
+        }
+    }
+
     // ── Host API naming (story 316 review) ────────────────────────────────
 
     /**
@@ -601,6 +710,23 @@ class PortAudioBackendTest {
         info.set(ValueLayout.JAVA_DOUBLE, offsetOf(layout, "defaultLowOutputLatency"), 0.005);
         info.set(ValueLayout.JAVA_DOUBLE, offsetOf(layout, "defaultSampleRate"), 48_000.0);
         return info;
+    }
+
+    /** A native {@code PaDeviceInfo} struct carrying the four latency defaults, in seconds. */
+    private static MemorySegment paDeviceInfoWithLatencies(Arena arena, double lowInput, double lowOutput,
+                                                           double highInput, double highOutput) {
+        MemoryLayout layout = PortAudioBindings.PA_DEVICE_INFO_LAYOUT;
+        MemorySegment info = paDeviceInfo(arena, "Interface", 2, 2);
+        info.set(ValueLayout.JAVA_DOUBLE, offsetOf(layout, "defaultLowInputLatency"), lowInput);
+        info.set(ValueLayout.JAVA_DOUBLE, offsetOf(layout, "defaultLowOutputLatency"), lowOutput);
+        info.set(ValueLayout.JAVA_DOUBLE, offsetOf(layout, "defaultHighInputLatency"), highInput);
+        info.set(ValueLayout.JAVA_DOUBLE, offsetOf(layout, "defaultHighOutputLatency"), highOutput);
+        return info;
+    }
+
+    private static double suggestedLatencyOf(MemorySegment streamParameters) {
+        return streamParameters.get(ValueLayout.JAVA_DOUBLE,
+                offsetOf(PortAudioBindings.PA_STREAM_PARAMETERS_LAYOUT, "suggestedLatency"));
     }
 
     private static long offsetOf(MemoryLayout layout, String field) {

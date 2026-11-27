@@ -67,7 +67,17 @@ endmacro()
 # ── 1. PortAudio ───────────────────────────────────────────────────
 if(BUILD_PORTAUDIO)
     message(STATUS "── Configuring PortAudio ──")
-    set(PA_BUILD_SHARED_LIBS ON CACHE BOOL "Build PortAudio as shared library" FORCE)
+    # Story 348: the shared library only, named portaudio.dll on MSVC — the name
+    # NativeLibraryLoader asks for. MSVC appends _x64 unless the suffix is off,
+    # and building the static library beside the shared one forces the suffix
+    # back on (portaudio/CMakeLists.txt, "PA_LIBNAME_ADD_SUFFIX was set to ON").
+    set(PA_BUILD_SHARED        ON  CACHE BOOL "Build PortAudio as a shared library" FORCE)
+    set(PA_BUILD_STATIC        OFF CACHE BOOL "Build PortAudio as a static library" FORCE)
+    set(PA_LIBNAME_ADD_SUFFIX  OFF CACHE BOOL "Add an architecture suffix to the library name" FORCE)
+    # Story 348 (studio-engineer ruling R5): never compile PortAudio's ASIO host
+    # API, so neither the tests nor the application's PortAudio rung can load an
+    # ASIO driver, even if an ASIO SDK folder appears under lib/.
+    set(PA_USE_ASIO            OFF CACHE BOOL "Enable support for ASIO" FORCE)
     # Build only the library — skip examples / tests / install targets
     set(PA_BUILD_EXAMPLES  OFF CACHE BOOL "" FORCE)
     set(PA_BUILD_TESTS     OFF CACHE BOOL "" FORCE)

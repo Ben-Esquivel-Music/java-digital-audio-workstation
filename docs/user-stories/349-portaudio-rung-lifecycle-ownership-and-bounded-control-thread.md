@@ -58,3 +58,7 @@ This list is the binding acceptance criterion.
 ## Note from Story 338
 
 Story 338 built no surface for an abandoned control-thread call, so the cross-reference above ("engine health surfaces the abandoned-call state") names nothing that exists. What story 338 built that touches this story: its heartbeat watchdog declares a device whose callbacks stop lost, after max(2 s, 8 buffer periods), and a Reconnect that the engine refuses because the previous stream has not let go says "the previous audio stream has not shut down yet" (story 338, rulings E56 and E112).
+
+## Note from Story 348
+
+Story 348 named the Windows build `portaudio.dll` and moved `PortAudioBindings` onto `NativeLibraryLoader`, so the loader adoption this story waits for has landed. PortAudio still loads only where `java.library.path` names the bundled native folder (today daw-core's test JVM), or from a system installation such as Linux's `libportaudio2`. No launcher names that folder, so the launched application on Windows still runs without its PortAudio rung, and the motivation's "default head on Windows without ASIO" holds only in a run that names it. Future story 491 makes the launchers name it, and lands after this story (story 348, studio-engineer ruling R6).

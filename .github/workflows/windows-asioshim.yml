@@ -48,7 +48,10 @@ name: Windows asioshim Build & Bundle
 #     pair (`daw-sdk` main class plus `AudioBlockRingTest` — the lock-free
 #     hand-off the `bufferSwitch` bridge is built on, so a regression there
 #     is an ASIO streaming regression), and the three env-gated `daw-core`
-#     suites, plus `lib/CMakeLists.txt` and this workflow.
+#     suites, plus `lib/CMakeLists.txt` and this workflow. Story 348 added
+#     the PortAudio name side: `PortAudioBindings`, `NativeLibraryLoader`
+#     and the PortAudio tests, because this lane is the only one that
+#     inspects the Windows artifact names those classes ask for.
 #     They deliberately do NOT list the daw-core production classes the
 #     engine-level streaming proof runs through (`AudioEngine`,
 #     `EngineStreamPump`): those are edited by most daw-core work, and
@@ -56,8 +59,15 @@ name: Windows asioshim Build & Bundle
 #     would skip anyway, so filtering on them would pay a full
 #     SDK-provisioning build for no extra evidence. Their compilation and
 #     non-ASIO behaviour are covered on every PR by `ci.yml`.
-#   * The final `Verify bundled distribution` step asserts the
-#     packaged DLL exists under `daw-app/target/dist/native/windows-x64/`.
+#   * The `Verify bundled distribution contains asioshim.dll` step asserts
+#     the DLL exists in `target/build/native/` and in the packaged
+#     `daw-app/target/dist/native/windows-x64/`.
+#   * The `Verify PortAudio is built as portaudio.dll` step (story 348)
+#     asserts `portaudio.dll` exists in both places — the name
+#     `NativeLibraryLoader` asks for — and fails when a `portaudio_x64.dll`
+#     exists in either: on this fresh checkout that file can only mean the
+#     CMake suffix came back on (`PA_LIBNAME_ADD_SUFFIX`, or a static build
+#     beside the shared one). It does not read `DAW_REQUIRE_ASIOSHIM`.
 
 on:
   push:
@@ -71,6 +81,12 @@ on:
       - 'daw-core/src/test/java/com/benesquivelmusic/daw/core/audio/NativeLibraryDetectorTest.java'
       - 'daw-core/src/test/java/com/benesquivelmusic/daw/core/audio/AsioStreamingIntegrationTest.java'
       - 'daw-core/src/test/java/com/benesquivelmusic/daw/core/audio/AsioEngineStreamingIntegrationTest.java'
+      - 'daw-core/src/main/java/com/benesquivelmusic/daw/core/audio/NativeLibraryLoader.java'
+      - 'daw-core/src/main/java/com/benesquivelmusic/daw/core/audio/portaudio/PortAudioBindings.java'
+      - 'daw-core/src/test/java/com/benesquivelmusic/daw/core/audio/NativeLibraryLoaderTest.java'
+      - 'daw-core/src/test/java/com/benesquivelmusic/daw/core/audio/BundledPortAudio.java'
+      - 'daw-core/src/test/java/com/benesquivelmusic/daw/core/audio/portaudio/PortAudioBindingsTest.java'
+      - 'daw-core/src/test/java/com/benesquivelmusic/daw/core/audio/portaudio/PortAudioBackendTest.java'
       - 'lib/CMakeLists.txt'
       - '.github/workflows/windows-asioshim.yml'
   pull_request:
@@ -84,6 +100,12 @@ on:
       - 'daw-core/src/test/java/com/benesquivelmusic/daw/core/audio/NativeLibraryDetectorTest.java'
       - 'daw-core/src/test/java/com/benesquivelmusic/daw/core/audio/AsioStreamingIntegrationTest.java'
       - 'daw-core/src/test/java/com/benesquivelmusic/daw/core/audio/AsioEngineStreamingIntegrationTest.java'
+      - 'daw-core/src/main/java/com/benesquivelmusic/daw/core/audio/NativeLibraryLoader.java'
+      - 'daw-core/src/main/java/com/benesquivelmusic/daw/core/audio/portaudio/PortAudioBindings.java'
+      - 'daw-core/src/test/java/com/benesquivelmusic/daw/core/audio/NativeLibraryLoaderTest.java'
+      - 'daw-core/src/test/java/com/benesquivelmusic/daw/core/audio/BundledPortAudio.java'
+      - 'daw-core/src/test/java/com/benesquivelmusic/daw/core/audio/portaudio/PortAudioBindingsTest.java'
+      - 'daw-core/src/test/java/com/benesquivelmusic/daw/core/audio/portaudio/PortAudioBackendTest.java'
       - 'lib/CMakeLists.txt'
       - '.github/workflows/windows-asioshim.yml'
   workflow_dispatch: {}
@@ -193,6 +215,36 @@ jobs:
           Write-Host "OK — asioshim.dll present at:"
           Write-Host "  $bundled  ($((Get-Item $bundled).Length) bytes)"
           Write-Host "  $cmakeOut ($((Get-Item $cmakeOut).Length) bytes)"
+
+      - name: Verify PortAudio is built as portaudio.dll
+        if: steps.sdk.outputs.skipped != 'true'
+        shell: pwsh
+        run: |
+          $expected = @("target/build/native/portaudio.dll",
+                        "daw-app/target/dist/native/windows-x64/portaudio.dll")
+          $suffixed = @("target/build/native/portaudio_x64.dll",
+                        "daw-app/target/dist/native/windows-x64/portaudio_x64.dll")
+          $missing = @($expected | Where-Object { -not (Test-Path $_) })
+          $present = @($suffixed | Where-Object { Test-Path $_ })
+          if ($missing.Count -gt 0) {
+              Write-Host "::error::portaudio.dll, the name NativeLibraryLoader asks for, is missing: $($missing -join ', ')"
+          }
+          if ($present.Count -gt 0) {
+              Write-Host "::error::a suffixed PortAudio library was built (PA_LIBNAME_ADD_SUFFIX is back on): $($present -join ', ')"
+          }
+          if ($missing.Count -gt 0 -or $present.Count -gt 0) {
+              foreach ($dir in @("target/build/native", "daw-app/target/dist/native/windows-x64")) {
+                  Write-Host "Contents of ${dir}:"
+                  if (Test-Path $dir) {
+                      Get-ChildItem $dir | ForEach-Object { Write-Host "  $($_.Name)" }
+                  }
+              }
+              exit 1
+          }
+          Write-Host "OK — portaudio.dll present and no portaudio_x64.dll:"
+          foreach ($file in $expected) {
+              Write-Host "  $file ($((Get-Item $file).Length) bytes)"
+          }
 
       - name: Upload bundled native libs (on success)
         if: steps.sdk.outputs.skipped != 'true' && success()

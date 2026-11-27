@@ -108,7 +108,7 @@ set_target_properties(asioshim PROPERTIES
 
 # Place the DLL alongside the other native libs so SymbolLookup finds
 # it via -Djava.library.path=${native.libs.dir} (matches how
-# portaudio_x64.dll is bundled — see lib/CMakeLists.txt).
+# portaudio.dll is bundled — see lib/CMakeLists.txt).
 if(DEFINED NATIVE_LIBS_OUTPUT_DIR)
     set_target_properties(asioshim PROPERTIES
         LIBRARY_OUTPUT_DIRECTORY "${NATIVE_LIBS_OUTPUT_DIR}"

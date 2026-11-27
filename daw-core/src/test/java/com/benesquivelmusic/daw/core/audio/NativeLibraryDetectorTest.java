@@ -131,6 +131,31 @@ class NativeLibraryDetectorTest {
     }
 
     /**
+     * Story 348 — whenever a PortAudio build sits on {@code java.library.path},
+     * the detector the Help dialog's System Capabilities tab renders finds it.
+     * The precondition is a file-name glob ({@link BundledPortAudio}), never the
+     * detector's own answer: a build named {@code portaudio_x64.dll}, which the
+     * loader's {@code portaudio.dll} / {@code libportaudio.dll} names never
+     * match, must fail here rather than skip.
+     */
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void bundledPortAudioShouldBeDetectedOnWindows() {
+        BundledPortAudio.assumePresent();
+
+        NativeLibraryStatus portAudio = NativeLibraryDetector.detectAll().stream()
+                .filter(s -> s.libraryName().equals("libportaudio"))
+                .findFirst()
+                .orElseThrow();
+
+        assertThat(portAudio.available())
+                .as("a file matching %s is on java.library.path, so the detector must find it",
+                        BundledPortAudio.glob())
+                .isTrue();
+        assertThat(portAudio.detectedPath()).isNotEmpty();
+    }
+
+    /**
      * Story 224 — when the bundled {@code asioshim.dll} is present on
      * a Windows build, the key symbols required by
      * {@code AsioFormatChangeShim} must be resolvable via FFM so the

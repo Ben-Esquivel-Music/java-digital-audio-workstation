@@ -130,11 +130,18 @@ are skipped.
 
 ## 3. Verifying the bundled libraries
 
-Once the native build completes, the DAW's in-app **Help → About →
-Native libraries** tab (rendered by `HelpDialog`) lists every
-expected library along with its resolved on-disk path. On Windows
-builds where `asioshim.dll` was produced, the entry should show as
-**available** with a path under `target/dist/native/windows-x64/`.
+Once the native build completes, the DAW's in-app **Help → Help… →
+System Capabilities** tab (rendered by `HelpDialog`) lists every
+expected library along with its resolved on-disk path. A library is
+found only in a directory that `java.library.path` names, or through the
+operating system's own search. No launcher (`mvn javafx:run`, the jlink
+launcher, the jpackage app image) sets `java.library.path` to the bundled
+`native/<os>/` folder yet, so the application as launched lists the bundled
+libraries, PortAudio included, as missing (future story 491). In a run
+that names the folder, for example with
+`JDK_JAVA_OPTIONS=-Djava.library.path=<repository>\target\build\native`,
+the entries show as **available** with a path under that folder
+(`portaudio.dll`, and `asioshim.dll` on Windows builds that produced it).
 
 You can also probe a single library programmatically:
 

@@ -40,6 +40,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
+import java.util.prefs.Preferences;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -2624,30 +2629,71 @@ class DefaultAudioEngineControllerTest {
     }
 
     @Test
-    void blankAndNoneBackendNamesStillYieldTheDefaultLadderSilently(
+    void blankAndNoneBackendNamesYieldTheDefaultLadderAndTellOnceWhenJavaSoundHeadsIt(
             @TempDir Path projectRoot) {
         // Story 316 review: the unknown-name rejection above must not leak
         // into the "no preference" names — a blank or BACKEND_NONE request
-        // is the default ladder, with nothing to notify and no failed hop.
+        // is the default ladder, with no fallback notice and no failed hop.
+        // Story 348 (studio-engineer ruling R1): when PortAudio could not be
+        // built, so Java Sound heads that ladder, the person is told once per
+        // session, however often such a configuration is applied; the log
+        // keeps the loader's full message at WARNING once, then FINE.
+        Logger controllerLog = Logger.getLogger(DefaultAudioEngineController.class.getName());
         for (String noPreference : List.of("", AudioEngineController.BACKEND_NONE)) {
             AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
             List<String> notices = new ArrayList<>();
             DefaultAudioEngineController controller = new DefaultAudioEngineController(
                     engine, null,
                     message -> { synchronized (notices) { notices.add(message); } });
-
-            controller.applyConfiguration(new AudioEngineController.Request(
-                    noPreference, "", "", SampleRate.HZ_44100, 512, 16, 1));
+            List<LogRecord> logged = new java.util.concurrent.CopyOnWriteArrayList<>();
+            Handler capture = capturingHandler(logged);
+            Level levelBefore = controllerLog.getLevel();
+            controllerLog.setLevel(Level.FINE);
+            controllerLog.addHandler(capture);
+            try {
+                controller.applyConfiguration(new AudioEngineController.Request(
+                        noPreference, "", "", SampleRate.HZ_44100, 512, 16, 1));
+                controller.applyConfiguration(new AudioEngineController.Request(
+                        noPreference, "", "Studio Out", SampleRate.HZ_44100, 512, 16, 1));
+            } finally {
+                controllerLog.removeHandler(capture);
+                controllerLog.setLevel(levelBefore);
+            }
 
             StreamingProvision provision = engine.getStreamingProvision();
             assertThat(provision).as(noPreference).isNotNull();
+            String head = provision.firstRung().backend().name();
             assertThat(provision.requestedBackendName())
                     .as("[%s] the default ladder names its own head as the request", noPreference)
                     .isIn("PortAudio", "Java Sound");
+            List<LogRecord> told = logged.stream()
+                    .filter(record -> String.valueOf(record.getMessage())
+                            .startsWith("PortAudio could not be built"))
+                    .toList();
+            List<LogRecord> retold = logged.stream()
+                    .filter(record -> String.valueOf(record.getMessage())
+                            .startsWith("PortAudio is still unavailable"))
+                    .toList();
             synchronized (notices) {
-                assertThat(notices)
-                        .as("[%s] no preference means nothing to fall back from", noPreference)
-                        .isEmpty();
+                if ("Java Sound".equals(head)) {
+                    assertThat(notices)
+                            .as("[%s] two configurations that name no backend, one notice", noPreference)
+                            .containsExactly(DefaultAudioEngineController.PORTAUDIO_UNAVAILABLE_NOTICE);
+                    assertThat(told).as("[%s] the first occasion logs the loader's message", noPreference)
+                            .singleElement()
+                            .satisfies(record -> {
+                                assertThat(record.getLevel()).isEqualTo(Level.WARNING);
+                                assertThat(record.getMessage()).contains("tried:");
+                            });
+                    assertThat(retold).as("[%s] the second occasion logs at FINE", noPreference)
+                            .singleElement()
+                            .satisfies(record -> assertThat(record.getLevel()).isEqualTo(Level.FINE));
+                } else {
+                    assertThat(notices)
+                            .as("[%s] PortAudio heads the ladder: nothing to tell", noPreference)
+                            .isEmpty();
+                    assertThat(told).isEmpty();
+                }
             }
             assertThat(provision.pendingFailedHopCauses())
                     .as("[%s] no rejection, no pending failed hop", noPreference)
@@ -2655,6 +2701,122 @@ class DefaultAudioEngineControllerTest {
             engine.stop();
             controller.shutdown();
         }
+    }
+
+    @Test
+    void aBlankSavedBackendAtStartupIsToldOnceThatPortAudioIsUnavailable() throws Exception {
+        // Story 348 (studio-engineer ruling R1). The window installs the
+        // default provision first, which tells nothing; the saved settings
+        // then reach the controller with the blank backend resolved to the
+        // provisioned name, and the person is told once when Java Sound heads
+        // the ladder. A later Apply that names no backend tells nothing more.
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        List<String> notices = new ArrayList<>();
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null,
+                message -> { synchronized (notices) { notices.add(message); } });
+        Preferences node = Preferences.userRoot().node("blankSavedBackendStartup_" + System.nanoTime());
+        try {
+            controller.installDefaultProvision();
+            synchronized (notices) {
+                assertThat(notices).as("the default provision alone tells nothing").isEmpty();
+            }
+            String head = controller.getProvisionedBackendName();
+            SettingsModel settings = new SettingsModel(node);
+            settings.setAudioBackend("");
+
+            runStartupAudioSettings(settings, controller);
+            synchronized (notices) {
+                if ("Java Sound".equals(head)) {
+                    assertThat(notices)
+                            .as("the saved settings that name no backend tell once at startup")
+                            .filteredOn(DefaultAudioEngineController.PORTAUDIO_UNAVAILABLE_NOTICE::equals)
+                            .hasSize(1);
+                } else {
+                    assertThat(notices).doesNotContain(DefaultAudioEngineController.PORTAUDIO_UNAVAILABLE_NOTICE);
+                }
+            }
+
+            controller.applyConfiguration(new AudioEngineController.Request(
+                    AudioEngineController.BACKEND_NONE, "", "Studio Out", SampleRate.HZ_44100, 512, 16, 1));
+
+            synchronized (notices) {
+                if ("Java Sound".equals(head)) {
+                    assertThat(notices)
+                            .as("a later Apply that names no backend tells nothing more")
+                            .filteredOn(DefaultAudioEngineController.PORTAUDIO_UNAVAILABLE_NOTICE::equals)
+                            .hasSize(1);
+                } else {
+                    assertThat(notices).doesNotContain(DefaultAudioEngineController.PORTAUDIO_UNAVAILABLE_NOTICE);
+                }
+            }
+        } finally {
+            engine.stop();
+            controller.shutdown();
+            node.removeNode();
+        }
+    }
+
+    @Test
+    void aSavedAsioBackendAtStartupIsNotToldAboutPortAudio() throws Exception {
+        // Story 348 (studio-engineer ruling R1): a person on a working ASIO
+        // setup hears ASIO, so a missing PortAudio fallback is not theirs to
+        // hear about, even though the default provision installed before
+        // their settings had Java Sound as its head.
+        AudioBackendSelector selector = new AudioBackendSelector(
+                Map.of("ASIO", () -> new SpyStreamingBackend("ASIO")));
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        List<String> notices = new ArrayList<>();
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null,
+                message -> { synchronized (notices) { notices.add(message); } }, selector);
+        Preferences node = Preferences.userRoot().node("asioSavedBackendStartup_" + System.nanoTime());
+        try {
+            controller.installDefaultProvision();
+            SettingsModel settings = new SettingsModel(node);
+            settings.setAudioBackend("ASIO");
+
+            runStartupAudioSettings(settings, controller);
+
+            assertThat(engine.getStreamingProvision().firstRung().backend().name()).isEqualTo("ASIO");
+            synchronized (notices) {
+                assertThat(notices).doesNotContain(DefaultAudioEngineController.PORTAUDIO_UNAVAILABLE_NOTICE);
+            }
+        } finally {
+            engine.stop();
+            controller.shutdown();
+            node.removeNode();
+        }
+    }
+
+    /** Applies the saved settings the way the window does at startup, and fails on a startup failure. */
+    private static void runStartupAudioSettings(SettingsModel settings, AudioEngineController controller)
+            throws InterruptedException {
+        AtomicReference<String> startupFailure = new AtomicReference<>();
+        Thread startup = MainController.applyStartupAudioSettings(settings, controller,
+                (level, message, actionLabel, action) -> startupFailure.set(message), () -> { });
+        startup.join(TimeUnit.SECONDS.toMillis(30));
+        assertThat(startup.isAlive()).as("the startup configuration finished").isFalse();
+        assertThat(startupFailure.get()).as("the startup configuration applied").isNull();
+    }
+
+    private static Handler capturingHandler(List<LogRecord> into) {
+        Handler handler = new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                into.add(record);
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        handler.setLevel(Level.ALL);
+        return handler;
     }
 
     @Test
