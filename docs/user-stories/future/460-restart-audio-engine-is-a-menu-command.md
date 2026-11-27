@@ -66,6 +66,11 @@ These tests are binding acceptance criteria. They run headless, and none of them
 - daw-app: `MainController.restartAudioEngine()` and `restartAudioEngine(SettingsModel, AudioEngineController, BooleanSupplier, Runnable)`; `AudioHealthDrain` (`restartAction`, `actionOf`, `clearEngineFault()`); `NoticeAction`; `DefaultAudioEngineController.applyConfiguration` and `beginConfigurationChange()`; `RecordCoordinator.requestConfigurationChange()`; `SettingsDialog`, whose Apply runs `applyConfiguration` for an "Engine reconfigure" change; `MenuConstructionService`; `DawAction`.
 - Cross-refs: story 337 (rulings E12, E13, E59, E62, E71 and E87; its Known limits); story 338, whose watchdog's restart offer reuses `MainController.restartAudioEngine()`.
 
+## Note from Story 338
+
+- The Non-Goal "The watchdog's restart offer: story 338" and the cross-reference that story 338's watchdog reuses `MainController.restartAudioEngine()` no longer hold: a device loss offers Reconnect, `DefaultAudioEngineController.reconnectLostDevice`, never Restart Audio Engine (story 338, ruling E6).
+- A second route to the restart a notice offers now exists: the session status strip's Engine cell, while it shows a latched engine fault, runs the fault's own action on a click, Enter or Space, which is Restart Audio Engine where the fault offers it (story 338, rulings E27 and E95). It is still not a menu command.
+
 ## Status
 
 - Deferred

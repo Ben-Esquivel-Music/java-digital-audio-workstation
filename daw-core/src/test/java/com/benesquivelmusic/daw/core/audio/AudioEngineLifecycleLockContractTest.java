@@ -199,10 +199,21 @@ class AudioEngineLifecycleLockContractTest {
             "com/benesquivelmusic/daw/core/audio/EffectsChain",
             "com/benesquivelmusic/daw/core/audio/EngineStreamPump",
             "com/benesquivelmusic/daw/core/audio/MidiTrackRenderer",
+            // Story 338: the record of the stream the engine last opened,
+            // built under the lock before the stream reads as open. The whole
+            // type is admitted: an immutable record of a number, a DeviceId
+            // and a number, with no behaviour beyond its accessors and the
+            // record methods, so no call on it can reach outward under the
+            // lock. See the lock's javadoc.
+            "com/benesquivelmusic/daw/core/audio/OpenedStream",
             "com/benesquivelmusic/daw/core/audio/RenderPipeline",
             "com/benesquivelmusic/daw/core/audio/SampleRateConversionCache",
             "com/benesquivelmusic/daw/core/audio/StreamState",
             "com/benesquivelmusic/daw/core/audio/StreamingProvision",
+            // Story 338: the engine's typed refusal of an open, an
+            // AudioBackendException with a reason field; its constructor runs
+            // no application code.
+            "com/benesquivelmusic/daw/core/audio/StreamOpenRefusedException",
             // Story 337: the engine-owned audio health record. Its backend
             // counter attach/detach run under the lock and take only the
             // record's own private monitors, which nothing waiting on this lock
@@ -216,6 +227,10 @@ class AudioEngineLifecycleLockContractTest {
             // Bounded rather than deferred; see the lock's javadoc.
             "com/benesquivelmusic/daw/sdk/audio/AudioBackend",
             "com/benesquivelmusic/daw/sdk/audio/AudioBackendException",
+            // Story 338: the immutable record AudioBackend.dropoutCounters()
+            // returns; the input-loss count reads one component of it at a
+            // stream's open and close. See the lock's javadoc.
+            "com/benesquivelmusic/daw/sdk/audio/BackendDropoutCounters",
             "com/benesquivelmusic/daw/sdk/audio/AudioDeviceInfo",
             "com/benesquivelmusic/daw/sdk/audio/AudioFormat",
             "com/benesquivelmusic/daw/sdk/audio/DeviceId");

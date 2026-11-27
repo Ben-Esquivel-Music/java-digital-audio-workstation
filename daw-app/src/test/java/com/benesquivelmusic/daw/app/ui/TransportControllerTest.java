@@ -4589,7 +4589,15 @@ class TransportControllerTest {
         stopAndAwaitTheTake(controller);
 
         blockBudget.assertNoBlockBeyondTheAllowanceAndNoneDropped(take);
-        assertThat(shown.getEntries()).as("one ERROR, and no SUCCESS").singleElement().satisfies(entry -> {
+        assertThat(shown.getEntries()).as("no SUCCESS").noneMatch(entry -> entry.level() == NotificationLevel.SUCCESS);
+        assertThat(shown.getEntries().subList(1, shown.getEntries().size()))
+                .as("the capture thread's warnings, after the ERROR and kept in the history only (ruling E284)")
+                .allMatch(entry -> entry.level() == NotificationLevel.WARNING)
+                .anyMatch(entry -> entry.message().endsWith("; the take has ended and its manifest on disk does not"
+                        + " record the seal: take recovery rebuilds it from the segments"));
+        assertThat(notificationBar.getMessage()).as("the ERROR stays on the bar")
+                .isEqualTo(shown.getEntries().getFirst().message());
+        assertThat(shown.getEntries().getFirst()).satisfies(entry -> {
             assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
             assertThat(entry.message())
                     .startsWith("Recording stopped — the take's manifest could not be written (")

@@ -38,7 +38,10 @@ import java.util.OptionalLong;
  * thread whose faults it counts.</p>
  *
  * @param callbackFaults            faults the device-callback guard caught
- *                                  ({@code audio.callback}); {@code >= 0}
+ *                                  ({@code audio.callback}); {@code >= 0}; a
+ *                                  period whose captured block it lost is
+ *                                  also counted by
+ *                                  {@link AudioBackend#failedCallbackInputBlocks()}
  * @param inputBlocksLost           captured input blocks lost on a backend
  *                                  input thread ({@code audio.input}); {@code >= 0}
  * @param inputHalts                backend input threads that ended on a fault

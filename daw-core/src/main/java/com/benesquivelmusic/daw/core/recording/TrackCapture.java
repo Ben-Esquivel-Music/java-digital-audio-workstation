@@ -126,6 +126,27 @@ final class TrackCapture {
         routingFlagged = true;
         return true;
     }
+    boolean isRoutingFlagged() { return routingFlagged; }
+
+    /** Flush thread: this track's route was filled by a block its input delivered (not one the render starved). */
+    private boolean routedDeliveredBlock;
+    /**
+     * Flush thread: the frames the lane {@link #laneAtLastDelivery} had
+     * recorded once that block was applied, the block's end in that lane's
+     * own file.
+     */
+    private long recordedAtLastDelivery;
+    /** Flush thread: the lane that was current when that block was applied; a later wrap does not move it. */
+    private int laneAtLastDelivery;
+    void noteRoutedDeliveredBlock() {
+        routedDeliveredBlock = true;
+        RecordingSession current = session;
+        recordedAtLastDelivery = current == null ? 0L : current.getTotalSamplesRecorded();
+        laneAtLastDelivery = lane;
+    }
+    boolean hasRoutedDeliveredBlock() { return routedDeliveredBlock; }
+    long recordedAtLastDelivery() { return recordedAtLastDelivery; }
+    int laneAtLastDelivery() { return laneAtLastDelivery; }
 
     private final Track track;
     private final String trackId;

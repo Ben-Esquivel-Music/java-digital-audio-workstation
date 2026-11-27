@@ -27,3 +27,19 @@
     -fx-background-color: -ssc-flash;
     -fx-background-radius: 4;
 }
+/* Story 338 — the focus ring of a cell with an action, drawn just outside
+   it so focusing a cell moves nothing; Palette A's -focus-ring as the
+   fallback, which styles.css's forwarded token overrides at author origin.
+   The engine cell's width cap ellipsizes a long device name (ruling E27). */
+.status-strip-cell {
+    -ssc-focus: rgba(92, 140, 255, 1.0);
+}
+.status-strip-cell:focused {
+    -fx-border-color: -ssc-focus;
+    -fx-border-width: 1;
+    -fx-border-insets: -1;
+    -fx-border-radius: 4;
+}
+.status-strip-cell.engine-health-cell {
+    -fx-max-width: 360;
+}

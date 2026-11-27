@@ -1,6 +1,12 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 import com.benesquivelmusic.daw.app.ui.recording.RecordState;
+import com.benesquivelmusic.daw.app.ui.status.EngineHealthStatus;
+import com.benesquivelmusic.daw.app.ui.status.ProjectOperationProgress;
+import com.benesquivelmusic.daw.app.ui.status.SessionStatusStrip;
+import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.BackendStreamRung;
@@ -27,6 +33,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -49,7 +56,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       before any stream opens so the engine's stream-open seam binds it
  *       to the device the Record opens, and an {@link EngineStateBridge}
  *       subscribed to its engine-state events exactly as
- *       {@code MainController} subscribes it. {@link #unplug()} then drives
+ *       {@code MainController} subscribes it, with {@link DeviceLossReactions}
+ *       over {@link #inputMeters()} (and no health drain), then the
+ *       {@link #engineHealth()} model, as its first listener and their
+ *       take-rescued answer as the controller's Reconnect query; a test that
+ *       reads the status strip's cells mounts it with
+ *       {@link #mountTheStatusStrip()}. {@link #unplug()} then drives
  *       {@link MockAudioBackend#simulateDeviceRemoved} and the rescue
  *       reaches the record coordinator through the controller, the
  *       publisher's thread, the bridge and the FX thread.</li>
@@ -96,6 +108,18 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
     private final MockAudioBackend backend = new MockAudioBackend();
     private final NotificationHistoryService shown = new NotificationHistoryService();
     private final List<String> engineNotices = Collections.synchronizedList(new ArrayList<>());
+    /** The action label of each of {@link #engineNotices}, in the same order. */
+    private final List<Optional<String>> engineNoticeActions = Collections.synchronizedList(new ArrayList<>());
+    /** The action of each of {@link #engineNotices} that has one, in order. */
+    private final List<Runnable> engineNoticeRunnables = Collections.synchronizedList(new ArrayList<>());
+    /** The window's input meters, as {@code MainController} hands its registry to the device-loss reactions. */
+    private final InputLevelMonitorRegistry inputMeters = new InputLevelMonitorRegistry();
+    private DeviceLossReactions deviceLossReactions;
+    /**
+     * The window's engine-health model, fed by the bridge after the
+     * device-loss reactions, as {@code MainController} feeds it.
+     */
+    private final EngineHealthStatus engineHealth = new EngineHealthStatus();
     private final AtomicReference<RecordingPipeline> pipeline = new AtomicReference<>();
     /** Caps the blocks a take is handed, for a test that opts in; the latest take is {@link #pipeline()}. */
     private final CaptureBlockBudget blockBudget = new CaptureBlockBudget(() -> Optional.ofNullable(pipeline.get()));
@@ -115,6 +139,11 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
 
     private DeviceLossRecordingFixture(Path projectDirectory, boolean withEngineBridge, CountInMode countIn)
             throws Exception {
+        this(projectDirectory, withEngineBridge, countIn, FxDispatcher.getDefault());
+    }
+
+    private DeviceLossRecordingFixture(Path projectDirectory, boolean withEngineBridge, CountInMode countIn,
+                                       FxDispatcher transportDispatcher) throws Exception {
         project = new DawProject("Demo", new AudioFormat(44_100.0, 2, 24, 256));
         project.setMetadata(project.getMetadata().withPath(projectDirectory));
         guitar = project.createAudioTrack("Guitar");
@@ -124,7 +153,20 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
         runOnFx(() -> {
             engine = new AudioEngine(project.getFormat());
             if (withEngineBridge) {
-                engineController = new DefaultAudioEngineController(engine, null, engineNotices::add);
+                engineController = new DefaultAudioEngineController(engine, null, new NotificationManager() {
+                    @Override
+                    public void notify(String message) {
+                        engineNotices.add(message);
+                        engineNoticeActions.add(Optional.empty());
+                    }
+
+                    @Override
+                    public void notify(String message, String actionLabel, Runnable action) {
+                        engineNotices.add(message);
+                        engineNoticeActions.add(Optional.of(actionLabel));
+                        engineNoticeRunnables.add(action);
+                    }
+                });
             }
             engine.setStreamingProvision(provision);
             notificationBar = new NotificationBar();
@@ -140,11 +182,15 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
                     () -> countIn,
                     track -> { },
                     () -> true,
-                    () -> RoundTripLatency.UNKNOWN);
+                    () -> RoundTripLatency.UNKNOWN,
+                    transportDispatcher);
             controller.setStillWritingDelayForTest(new ManualFxDelay());
             controller.setPipelineSetupForTest(pipeline::set);
             if (withEngineBridge) {
-                bridge = new EngineStateBridge(() -> {
+                deviceLossReactions = new DeviceLossReactions(() -> controller, engineController::lostDriveEpoch,
+                        Optional::empty, inputMeters);
+                engineController.setTakeRescuedQuery(deviceLossReactions::takeRescued);
+                bridge = new EngineStateBridge(deviceLossReactions.andThen(engineHealth::onEngineStateChange), () -> {
                     engineStateDeliveries.incrementAndGet();
                     return controller;
                 }, null);
@@ -168,9 +214,28 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
         return new DeviceLossRecordingFixture(projectDirectory, true, countIn);
     }
 
+    /**
+     * {@link #withEngineBridge(Path, CountInMode)} with the transport
+     * controller on {@code dispatcher}, whose pulse a test runs itself: a
+     * count-in that has fired holds the take in COUNT_IN until that pulse.
+     */
+    static DeviceLossRecordingFixture withEngineBridge(Path projectDirectory, CountInMode countIn,
+                                                       FxDispatcher dispatcher) throws Exception {
+        return new DeviceLossRecordingFixture(projectDirectory, true, countIn, Objects.requireNonNull(dispatcher));
+    }
+
     /** {@link #withoutEngineBridge(Path)} with Record counting in by {@code countIn} (story 328). */
     static DeviceLossRecordingFixture withoutEngineBridge(Path projectDirectory, CountInMode countIn) throws Exception {
         return new DeviceLossRecordingFixture(projectDirectory, false, countIn);
+    }
+
+    /**
+     * {@link #withoutEngineBridge(Path, CountInMode)} with the transport
+     * controller on {@code dispatcher}, whose pulse a test runs itself.
+     */
+    static DeviceLossRecordingFixture withoutEngineBridge(Path projectDirectory, CountInMode countIn,
+                                                          FxDispatcher dispatcher) throws Exception {
+        return new DeviceLossRecordingFixture(projectDirectory, false, countIn, Objects.requireNonNull(dispatcher));
     }
 
     DawProject project() {
@@ -223,6 +288,48 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
         return List.copyOf(engineNotices);
     }
 
+    /** The action label of each of {@link #engineNotices()}, in the same order; empty for a notice with none. */
+    List<Optional<String>> engineNoticeActions() {
+        return List.copyOf(engineNoticeActions);
+    }
+
+    /** The actions of the engine controller's notices that have one, in order. */
+    List<Runnable> engineNoticeRunnables() {
+        return List.copyOf(engineNoticeRunnables);
+    }
+
+    /** The input meters the device-loss reactions of {@link #withEngineBridge} silence. */
+    InputLevelMonitorRegistry inputMeters() {
+        return inputMeters;
+    }
+
+    /** The engine-health model the bridge of {@link #withEngineBridge} feeds after the device-loss reactions. */
+    EngineHealthStatus engineHealth() {
+        return engineHealth;
+    }
+
+    /**
+     * Builds the window's status strip over {@link #engineHealth()}, with the
+     * Engine cell's Reconnect as {@code MainController} wires it, realized in
+     * a scene of its own at a two-row width. FX thread; {@link #withEngineBridge} only.
+     */
+    SessionStatusStrip mountTheStatusStrip() {
+        SessionStatusStrip strip = new SessionStatusStrip(new ProjectOperationProgress(new FxDispatcher()),
+                MotionManager.getDefault(), engineHealth);
+        strip.setOnReconnectAction(MainController.reconnectTheLostDevice(deviceLossReactions()::takeRescued,
+                engineController().orElseThrow()));
+        javafx.scene.layout.VBox root = new javafx.scene.layout.VBox(strip);
+        new javafx.scene.Scene(root, 1400, 120);
+        root.applyCss();
+        root.layout();
+        return strip;
+    }
+
+    /** The bridge's first listener in {@link #withEngineBridge}, wired as {@code MainController} wires it. */
+    DeviceLossReactions deviceLossReactions() {
+        return Objects.requireNonNull(deviceLossReactions, "fixture: built with the engine bridge");
+    }
+
     /**
      * How many engine-state changes the bridge of {@link #withEngineBridge}
      * has delivered on the FX thread so far — counted at the start of each
@@ -246,6 +353,16 @@ final class DeviceLossRecordingFixture implements AutoCloseable {
      */
     DeviceId activeDevice() {
         return DeviceId.defaultFor(backend.name());
+    }
+
+    /**
+     * Binds the project's transport, mixer and tracks to the engine, as the
+     * window's engine binder does, so the render advances the transport —
+     * for a test that needs the playhead to move. Test thread, before the
+     * stream opens.
+     */
+    void bindTheProjectToTheEngine() throws Exception {
+        runOnFx(() -> engine.setGraph(project.getTransport(), project.getMixer(), project.getTracks()));
     }
 
     /** The host reporting that {@link #activeDevice()} is gone. Test thread. */

@@ -40,6 +40,7 @@ import java.util.concurrent.Flow;
 import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -2230,6 +2231,94 @@ class JavaxSoundBackendTest {
         }
     }
 
+    /**
+     * A block the input publisher dropped for a subscriber that could not
+     * keep up is told to that subscriber, on the publishing thread, and is
+     * never counted in the backend's dropout counters (story 338, ruling
+     * E208): Java Sound reports none, and claims no output-starvation signal.
+     */
+    @Test
+    void aBlockThePublisherDropsIsToldToTheSubscriberThatDroppedItAndNotCounted() throws Exception {
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        Field supportField = JavaxSoundBackend.class.getDeclaredField("support");
+        supportField.setAccessible(true);
+        AudioBackendSupport support = (AudioBackendSupport) supportField.get(backend);
+        support.markOpen(new AudioFormat(48_000.0, 2, 16), 64);
+        AtomicLong told = new AtomicLong();
+        support.inputBlocks().subscribe(new NonRequestingListener(told));
+
+        for (int i = 0; i < Flow.defaultBufferSize() * 2; i++) {
+            support.publishInput(support.currentInputPublisher(), AudioBlock.silence(48_000.0, 2, 64));
+        }
+
+        assertThat(told.get()).as("the full buffer's drops were told to the subscriber").isPositive();
+        assertThat(backend.dropoutCounters()).isEqualTo(BackendDropoutCounters.NONE);
+        support.close();
+    }
+
+    /**
+     * A block the capture thread could not build after its stream closed is
+     * teardown and counts nowhere, so it can never reach the next stream's
+     * take figure (story 338, ruling E246). The close releases the parked
+     * read, which then returns more bytes than its buffer holds, so the
+     * block's decode throws.
+     */
+    @Test
+    void aBlockThatCannotBeBuiltAfterItsStreamClosedCountsNothing() throws Exception {
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        markStreamOpen(backend);
+        ScriptedCaptureLine script = new ScriptedCaptureLine(0).returningMoreThanAskedOnceClosed();
+        plantCaptureLine(backend, script.line());
+
+        backend.startCapture(STREAM_FORMAT, STREAM_FRAMES);
+        Thread thread = captureThread(backend);
+        assertThat(script.awaitParkedRead(WAIT_MILLIS)).isTrue();
+
+        backend.close();
+        thread.join(WAIT_MILLIS);
+
+        assertThat(thread.isAlive()).isFalse();
+        assertThat(script.reads()).as("the released read was the last one").isEqualTo(1);
+        assertThat(backend.threadCounters()).isEqualTo(BackendThreadCounters.NONE);
+        markStreamOpen(backend);
+        assertThat(backend.threadCounters().inputBlocksLost())
+                .as("the next stream counts no block lost")
+                .isZero();
+        backend.close();
+    }
+
+    /** A listener that requests nothing and counts the blocks dropped for it. */
+    private static final class NonRequestingListener
+            implements Flow.Subscriber<AudioBlock>, InputBlockLossListener {
+
+        private final AtomicLong told;
+
+        NonRequestingListener(AtomicLong told) {
+            this.told = told;
+        }
+
+        @Override
+        public void inputBlockDropped(AudioBlock block) {
+            told.incrementAndGet();
+        }
+
+        @Override
+        public void onSubscribe(Flow.Subscription subscription) {
+        }
+
+        @Override
+        public void onNext(AudioBlock block) {
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+        }
+
+        @Override
+        public void onComplete() {
+        }
+    }
+
     /** Replaces the open stream's input publisher through the support's own field. */
     private static void replaceInputPublisher(JavaxSoundBackend backend,
                                               SubmissionPublisher<AudioBlock> publisher)
@@ -2271,9 +2360,16 @@ class JavaxSoundBackendTest {
         private boolean blockUntilClosed;
         private boolean endsAtOnce;
         private int emptyResult;
+        private boolean overrunOnceClosed;
 
         ScriptedCaptureLine(int fullReads) {
             this.fullReads = fullReads;
+        }
+
+        /** The read the close releases returns one byte more than it was asked for. */
+        ScriptedCaptureLine returningMoreThanAskedOnceClosed() {
+            this.overrunOnceClosed = true;
+            return this;
         }
 
         ScriptedCaptureLine failingReadsWith(RuntimeException failure) {
@@ -2340,7 +2436,7 @@ class JavaxSoundBackendTest {
                 }
                 parkedRead.countDown();
                 awaitClosedUninterruptibly();
-                return 0;
+                return overrunOnceClosed ? length + 1 : 0;
             }
             java.util.Arrays.fill(buffer, offset, offset + length, (byte) 0x21);
             return length;

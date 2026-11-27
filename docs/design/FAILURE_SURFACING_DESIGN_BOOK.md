@@ -481,6 +481,17 @@ are where richness lives, and both are fed exclusively from non‑RT threads.
 | Settings apply failure (validation, conflict)| FX thread           | D       | Inline/dialog error naming the setting |
 | Dialog cannot close                          | — (prevented)       | —       | Impossible by conformance gate (§6.3) |
 
+*As built in story 338: three rows read differently. A callback stall is declared by the
+heartbeat watchdog on the engine controller's health monitor and ends in DEVICE_LOST
+through the steps a device removal takes; the person sees the Engine cell's "Device lost:
+`<name>`" and a notice whose action is Reconnect, never a restart offer (story 338, rulings
+E4 and E6). An xrun is no longer a late block: the strip's Xruns number counts observed
+gaps only, taken from the health record's callback, render and sink totals and from the
+open backend's drop counters by the xrun feed, off the real‑time thread; a late block is a
+log entry that raises nothing (rulings E17, E38 and E72). A lost clock lock warns and
+marks the take, and never pauses or stops recording (ruling E30); the badge reads a lock
+level on every pulse rather than following a stream of events (§4.4's note).*
+
 ### 3.4 One name per thing
 
 `EngineState` (RUNNING / RECONFIGURING / DEVICE_LOST / STOPPED), `XrunEvent`
@@ -737,6 +748,160 @@ whether or not the device drained the ring. `AudioHealthRecord.renderDriveEpoch(
 the render drives claimed, one per render drive started (every stream open and every
 resume of a paused stream). The watchdog itself is story 338's.*
 
+*As built in story 338: §1.4's critique and Appendix A describe the tree before this
+story. **The watchdog** is `EngineHeartbeatWatchdog`, pure decision logic over a probe,
+ticked every 100 ms by the controller's one daemon scheduler, `daw-engine-health-monitor`
+(normal priority), which `MainController` starts once the engine‑state bridge has
+subscribed; it is not rebuilt on reconfigure, and a new render‑drive epoch re‑baselines
+it. It watches the device‑callback periods where the backend reports them and the render
+drive's beats otherwise, and declares a stall when the watched count has not advanced for
+max(2 s, 8 buffer periods) of the engine's format, at least 5 s until the first advance of
+an epoch, after a clock‑source switch the person made and after a session of the driver's
+own control panel ends, a switch the person may have made there; a tick later than twice
+its interval re‑baselines (story 338, rulings E1, E2, E107 and E228). The controller
+re‑checks the verdict under its monitor (`onHeartbeatStalled`: not shut down, no
+configuration in progress, no driver control panel open, no start‑up allowance asked for
+that the watchdog has not taken up, no driver format change pending, the drive alive in
+the same epoch, the count unchanged), logs it with the slug `audio.watchdog`, and runs
+`declareDeviceLost`, the steps `onDeviceRemoved` takes, with the cause `STALLED` and the
+notice "`<name>` stopped responding — audio stopped. Check that it is connected and
+powered, then choose Reconnect." (rulings E4 and E6). A halted drive reads not alive and
+is never judged. The same watchdog judges each capture input by its own delivery count
+(rulings E11, E12, E15 and E16). The render pump's last‑resort handler logs its SEVERE
+line and then records the drive's halt, so story 337's halt treatment shows the death once
+(ruling E33). **The xrun side**: `XrunDetector.recordTick` stores plain `volatile` fields
+whose only writer is the render drive, which ticks it around `processBlock` for a block
+that rendered; `publishPending()` offers the events off the real‑time thread; `beginTick`,
+`Tick` and `reset()` are gone, and `RealTimeSafeContractTest.theRenderDriveLoopIsGuardClean`
+walks into it. `XrunFeed`, on the same monitor tick, writes `XrunJournal` entries from the
+growth of the record's callback, render and sink totals and of the open backend's
+`BackendDropoutCounters` (output starved, blocks never played, driver overloads, driver
+resyncs), only while the drive is alive in one epoch after its first advance; what grows
+while the watched heartbeat stands still is carried to its next advance, and dropped,
+with a carried resync's take mark, at a stall verdict, which writes one Stall entry
+instead (rulings E17, E19, E38, E73 and E231). Late blocks are logged and never counted;
+the count restarts when a reconfigure rebuilds the
+detector (a Settings apply, Restart Audio Engine or a driver's reopen) and at the log's
+Clear, never at Play, Stop or Reconnect (rulings E22 and E71). Graph overload is not fed
+from the worker counters: the CPU budget enforcer's
+degradations are Budget entries that raise nothing (rulings E21, E42 and E181). **The surfaces**
+are the session status strip's Xruns and Engine cells (`EngineHealthCells` over
+`EngineHealthStatus`) and `XrunLogDialog`. The Engine cell is hidden unless the engine is
+reconfiguring, the device is lost or a fault is latched, and never goes into the overflow;
+during a loss its click is Reconnect (`DefaultAudioEngineController.reconnectLostDevice`),
+otherwise the fault's own action, and a loss never offers Restart Audio Engine (rulings
+E6, E26 to E28 and E98). RECONFIGURING is published on every apply the record guard let
+through, before the stream stops. **The clock badge**, `ClockStatusIndicator`, is mounted
+once in the transport bar immediately before the transport status label, not in the strip
+(ruling E32). On every pulse it reads three levels, with no lock and no driver call:
+whether the device is lost or being declared lost, whether a stream is open, and the open
+stream's `ClockLockStatus` (`AudioBackend.clockLockStatus()` →
+`AudioEngine.openStreamClockLockStatus()` → `AudioEngineController.clockLockStatus()`). It
+notices a new stream only by the serial of the engine's `OpenedStream`
+(`AudioEngine.lastOpenedStream()`), which only a later open replaces, and one pure
+`decide(Facts)` chooses among seven states, HIDDEN, CLOSED, STARTING, CHECKING,
+NOT_MEASURABLE, QUIET and UNLOCKED; its notices and take marks are `ClockLockAnnouncer`'s,
+from the transitions the status carries past the last one the badge applied for that
+serial, with at most one notice a look (the note of PR #994's review 6059273652 below).
+`ClockLockEvent` and `xrunEvents()` stay as SDK and controller API, and nothing in the
+window subscribes to them. On ASIO,
+`AsioClockLockMonitor` derives the lock from a sample‑position poll once a second, through
+the new native export `asioshim_getSamplePosition`, and the driver's resync requests: two
+consecutive bad intervals unlock and three good ones relock, an interval in which the
+device periods stood still judging nothing (rulings E29, E59, E106 and E120 to E122); the
+resyncs around a source switch the person sends are exempt from the send until two polls
+after the driver's answer, accepted or not (rulings E137 and E138), and a session of the
+driver's own control panel is the person's switch too (rulings E227, E248 to E250 and
+E260; the note of PR #994's review 6059273652 below). The stream that answers a driver's
+reset request starts with its first two polls as switch intervals: their resyncs judge
+nothing, while a bad poll answer in an interval with no resync is still judged (ruling
+E271). With the driver's panel open at the request, that stream is the first the backend
+opens once the panel has closed: the waiting reopen's, a Play's that comes before it, or,
+when an Apply of Audio Settings or a Restart Audio Engine ended the wait or the request
+still in its 250 ms window, the first stream opened at the person's settings after the
+close (rulings E278, E288, E289 and E304).
+An unlock is dated at the first bad answer of its run, or no
+later than its measurement's start when no good answer of that measurement came before it
+(rulings E62 and E269). A bad answer that resync requests make is dated at the arrival of
+its interval's first request, or at the interval's start when the backend no longer keeps
+that arrival (ruling E279). A resync never reopens the stream
+(ruling E37). The Java selector constants of `AsioFormatChangeShim` did not
+match the SDK's enum (4 was read as a resync, 5 as the time‑info query and 7 as a
+buffer‑size change, where the SDK has a buffer‑size change, a resync and the time‑info
+query) and now do, pinned by `AsioFormatChangeShimTest.selectorConstantsMatchTheAsioSdkEnum`.
+With an `asioshim.dll` built without the new export, every external source reads "Lock
+cannot be checked on this device" (ruling E100). `CallbackBackendAdapter` forwards no
+clock facts.*
+
+*As built in story 338, PR #994's review: the engine applies no CPU budget policy, so the
+xrun log's Budget entry (kind `SHED`, shown as "Budget") reads, for every policy, "Track
+'T': over the CPU budget (averaging NN % of the block time); its processing was not
+reduced" (ruling E181; future story 480). A track gets a Budget entry at its first
+marking, at its first marking after any 30-second stretch with no CPU budget event for it,
+and at its first marking after each Clear of the log; while its events keep coming less
+than 30 seconds apart, it gets no further entry (rulings E199 and E200). The enforcer tells
+the log's listener of each event its full buffer could not hold; the listener counts the
+markings among them, and the log writes one entry for them, "N CPU budget markings never
+reached the log: it fell behind" (rulings E174, E184, E197 and E199). At a replacement the
+old enforcer is detached from the engine and closed once the block in flight has ended, or
+at once when no stream is running, and its listener stays subscribed until that close
+(`CpuBudgetEnforcerRetirer`, ruling E203). A block uses the enforcer only when the
+enforcer's block time is that of the stream it renders: a render drive built for another
+block time detaches it before its first block, each block compares the two, and
+`AudioEngine.setFormat` refuses while a render pump whose exit a stop could not confirm is
+still alive (ruling E204).*
+
+*As built in story 338, PR #994's review 6059273652: **the clock badge's notices and
+marks** are `ClockLockAnnouncer`'s (daw-app `ui`, package-private). At each measuring look
+it hands the take a clock mark for every transition of the measurement past the last one
+the badge applied for that serial, in order, from the serial's start at its first
+measuring look, and gives at most one notice (rulings E216 to E219 and E223): E31's unlock
+notice when the look finds UNLOCKED where LOCKED was on show; E110's "External clock
+locked again on `<name>` (`<source>`)." when it finds LOCKED where UNLOCKED was on show;
+and, when it finds LOCKED where LOCKED was on show while unlocks came and went, one
+warning, "External clock on `<name>` (`<source>`) was lost and has locked again. Check
+the clock cable and the clock master.", with "was lost `<n>` times" for more than one and
+"was lost `<n>` or more times" when more changes came than the status keeps. That warning
+ends " Recording continues; the take is marked where it was lost." during an audio take
+that is marked unlocked after the look, " Recording continues." during a MIDI-only take
+or an audio take that holds no unlock mark for them, and has no ending when no take
+records or the recording take's capture has been sealed early (rulings E216, E223 and
+E280). Each loss and each close consumes, at its first look, the
+serial the badge last applied, with no notice and no mark, whatever status that look read,
+and the badge reads the lock status before it reads the loss (rulings E220, E252, E259
+and E268); the take's marks are `RECORDING_RELIABILITY_DESIGN_BOOK.md` §3.3's note of this
+review. **The driver's own control panel** is the person's switch (rulings E227, E248 to
+E250 and E260). While it is open nothing is judged: a poll that reads it open sends the
+driver nothing, and a poll judges nothing when it reads the panel open before it sends
+anything or after its answer and evidence, or when a session of the panel closes between
+its two reads of the closed-session count; it reads the panel's level before the count
+each time. The status, its serial and its transitions stay as they were, and the badge
+keeps showing what it last measured. `AsioControlThread` counts every session that ends,
+however short, raising the count before the panel's flag falls. After a close, the source
+is read again by the first poll that sends anything once a poll has found the close
+counted at its first read of the count, and the intervals of the first two polls that
+read the panel closed, find the close counted at their first read of the count and are
+not stopped by their second reads are the person's switch: their resyncs are exempt and a
+bad poll answer is judged (rulings E249 and E260 in consult 49's words). Those resyncs are
+still counted in the Xruns number, logged and, during an audio take, marked `clock=resync`
+(ruling E248). The end of
+a session also asks the heartbeat watchdog for its start-up allowance
+(`DefaultAudioEngineController.releaseOpenControlPanel`, ruling E228). **The badge's
+look** (rulings E232 to E234): every state carries a 1 px border, transparent except in
+the four views that do not check the lock (CLOSED, STARTING, CHECKING and NOT_MEASURABLE),
+which are an outlined chip with no fill, `-text` words in a `-text-mute` outline, so the
+outline never changes the badge's size between states that show the same words; with
+motion allowed, UNLOCKED steps every 0.5 s, the house cadence, between its rest look and a
+two-tone ring over the badge's outer 2 px (`-text-hi` in the outer 1 px, `-text-on-accent`
+in the next), with the `-danger` fill and the words inside it unchanged and no opacity,
+effect or transition; under Reduce Motion it is steady, with no ring. What these surfaces
+still cannot show is in story 338's Known limits, among them a loss of the external clock
+while the driver's control panel is open, shown, notified and marked only from the first
+bad answer to a poll the monitor sends after the panel closes (ruling E250), and a clock
+event the window sees only after the take's Stop, or after the take's capture thread
+sealed it early, which is not marked and whose notice, if it has one, says nothing of the
+take (rulings E229 and E280; future story 482).*
+
 ### 4.5 Production notification injection (story 339)
 
 **Design.** The real toast‑backed sink — the exact lambda shape at
@@ -876,6 +1041,29 @@ The reviewer's tables. A PR touching any failure path is checked against these r
 Row 4 surfaces nothing deliberately: a stop racing a callback is normal teardown, and
 §2.6 cuts both ways — claiming a fault that isn't one is also lying.
 
+*As built in story 338: rows 6 to 9 read differently. Row 6: the verdict is logged at
+WARNING with the slug `audio.watchdog`; the person sees the Engine cell's "Device lost:
+`<name>`" in the warning accent and the notice "`<name>` stopped responding — audio
+stopped. …" with Reconnect, and can then choose Reconnect or another device in Audio
+Settings; there is no restart offer (story 338, ruling E6). Row 7: each gap is an entry of
+the xrun log; the Xruns cell shows the count since its last reset, in the warning accent
+while it grew in the last 30 seconds, and a late block is listed but never counted
+(rulings E17, E22 and E23); a click, Enter or Space opens the log. Row 8: "External clock
+lost on `<name>` (`<source>`). Check the clock cable and the clock master." at WARNING,
+with "Recording continues; the take is marked from this point." during an audio take (not
+from the capture thread's early seal until the take is stopped for it, ruling E280), and
+the badge "⚠ W/C 48k UNLOCKED"; recording never pauses (rulings E30 and E31), and the
+relock notice is at the information level (ruling E110). Row 9: the removal's message
+reads "Audio device disconnected — playback stopped" (ruling E67), and a driver reset whose
+reopen of an open stream fails is a device loss with its own notice and Reconnect (ruling
+E113). A reset whose reopen finds the driver's own control panel, opened from Audio
+Settings, still open waits for the panel to close and then reopens, with the Engine cell
+reconfiguring meanwhile and no loss (ruling E278). An Apply of Audio Settings or a Restart
+Audio Engine ends that wait, and also a driver's request still in its 250 ms window
+whether or not a reopen waits: the person's settings stand, nothing reopens for the
+request, and with the panel open the Apply's open is refused as any open is then (rulings
+E288 and E304). Row 3's fault cell is the strip's Engine cell (§6.2's note).*
+
 ### 5.2 Dialog dismissibility
 
 | Dismiss route              | Required behaviour (every modal `DawgDialog`)                        |
@@ -914,6 +1102,41 @@ until it is closed (rulings E78 and E95). Their consumer is `AudioHealthDrain`, 
 participant. The RT
 generation row has no producer yet: story 340 adds it as one more single‑writer
 `volatile long` on the render drive's lane (story 337, ruling E24).*
+
+*As built in story 338: the callback heartbeat's consumer is the heartbeat watchdog on the
+controller's health monitor, every 100 ms (§4.4's note). The engine state reaches the
+strip through `EngineStateBridge`'s one subscription: in the same FX turn each change goes
+first to `DeviceLossReactions` (at a DEVICE_LOST, the drain's `streamLost`, then the input
+meters falling to the floor with their clip latches kept and held there through the lost
+render drive unless a newer drive was built first, each reaction isolated), then to
+`EngineHealthStatus`, then to the transport; RUNNING and STOPPED with no fault latched
+leave the Engine cell hidden, so the quiet state shows nothing (story 338, rulings E26,
+E35 and E64). The xrun row reaches the UI through no Flow publisher: the xrun feed writes
+`XrunJournal` on the monitor thread, and `EngineHealthFeed`, a pulse participant, drains
+it on the FX thread into the strip's model and the log; `AudioEngineController.xrunEvents()`
+is still fed and has no subscriber in the window. Its quiet state is "Xruns 0" in the
+quiet treatment, never hidden (ruling E22). The clock lock is a level, not a publisher:
+`AsioClockLockMonitor`, on a daemon thread per stream, writes an immutable
+`ClockLockStatus` that the badge reads on every pulse, and the level carries its
+measurement's newest 32 unlocks and relocks (`ClockLockStatus.transitions()`), so a
+change and its reversal between two pulses reach the badge too (story 338, PR #994's
+review 6059273652, rulings E216 to E219); its quiet state is the source's
+short label and rate in the normal treatment ("INT 48k"), and a device that reports no
+clock sources shows no badge (ruling E32).*
+
+*As built in story 338, PR #994's review: the input meters are muted through the lost render
+drive (`InputLevelMonitorRegistry.silenceAll(lostDrive)`), so a block that drive still
+renders shows no level while its clip still latches, and a stream a Reconnect opens on
+another device and closes at once mutes them again (rulings E175 and E185); a loss
+delivered after a newer drive was built changes nothing on them (ruling E202). Each render
+drive the engine builds gives every meter a new per-stream state at the floor, with a
+true-peak history of its own and the clip latch and the routing and physical-input flags
+the old state holds, and lifts the mute when it is newer (`liftAll`). A meter write of an
+input device beside the stream carries the render drive built for its stream and is
+refused once a newer drive was built (ruling E201). Closing those devices waits, 1 s in
+all, for the block each is delivering; when the wait passes with a block still being
+delivered and the close finds it left behind under the graph lock, the meters refuse those
+devices from then on and the log names each device left behind (ruling E205).*
 
 ### 5.4 Notification discipline
 
@@ -1008,6 +1231,28 @@ a resumed one included (ruling E59), with no delta in a restart‑eligible categ
 after the halted one (ruling E71), and for an input halt only a drive on a stream opened
 after it, never a resumed one (ruling E87). Only an occurrence moves a fingerprint in the
 eviction order (ruling E88).*
+
+*As built in story 338: the persistent fault cell is the session status strip's Engine
+cell, bound in `MainController.attachAudioHealthDrain` to
+`AudioHealthDrain.engineFaultProperty()`: "Engine fault: `<words>`" in the critical
+treatment, with the tooltip "`<Words>` failed N times between hh:mm:ss and hh:mm:ss. Click
+to `<action in lower case>`." and the fact's own action on a click, Enter or Space (story
+338, rulings E27 and E95). A device loss outranks it: the cell shows the loss and appends
+only the fault's "failed" sentence to its tooltip, with no second "Click to" (ruling E93).
+The escalation of the device‑side categories, `audio.callback`, `audio.sink`,
+`audio.pacing`, `audio.input` and `audio.device`, is held while the stream's heartbeat has
+not advanced since their run began, because those counts are a stall's symptom (ruling
+E68). At a loss's delivery `AudioHealthDrain.streamLost` drops the held counts, lets no
+reading of the lost drive or an older one escalate them or an input halt again, or join a
+device‑side sustained run, and clears a fact latched for such a drive when every category
+it latched is device‑side, never a halt's and never a newer drive's; a notice already
+shown stays (rulings E69, E70 and E157). The hold ends when either the render beats or the
+device periods advance, so on PortAudio and ASIO, whose render drive keeps cycling through
+a device stall, a fault run that began just before the stall can still raise its ERROR
+before "stopped responding" (ruling E114; future story 468). An input that stops
+delivering raises story 337's input halt, an input that never delivered raises nothing
+(rulings E11 and E52), and the device sentence of that notice now says "1 error" and, with
+no name at all, "from the audio device" (ruling E128).*
 
 ### 6.3 The conformance gates
 
@@ -1251,6 +1496,28 @@ for AUDIO_ENGINE_WIRING_DESIGN_BOOK's wiring stories (a silent Play now points a
 engine state instead of guesswork); dropout evidence for
 RECORDING_RELIABILITY_DESIGN_BOOK's capture work becomes observable.
 
+*As built in story 338, built before story 339 by its manager's decision: the
+controller's notices had reached the window's notification bar at WARNING since story 327,
+and now carry their actions. The proof as it holds: a device callback or render drive that
+stops beating is declared lost after the watchdog window, and the Engine cell shows
+"Device lost: `<name>`" beside a notice whose action is Reconnect, not a restart
+(`EngineStateCellTest.aStalledDeviceShowsTheWarningTreatmentItsNoticeOffersReconnectAndTheCellReconnects`;
+during a take,
+`HeartbeatStallDuringATakeTest.aRecordingDeviceThatStopsCallingBackSealsRegistersAndReportsTheTake`);
+forced‑late blocks populate the log but never raise the counter, which counts observed
+gaps only (story 338, ruling E17;
+`XrunCountAndLogSurfacesTest.aLateBlockIsLoggedButNotCountedAGapIsBothAndClearEmptiesBoth`),
+and graph overloads are Budget entries, never counts (rulings E21, E42 and E181); a clock unlock
+warns and marks the take and never pauses it (ruling E30;
+`ClockBadgeDuringATakeTest.anUnlockDuringATakeIsShownNotifiedAndMarkedTheTakeKeepsRecordingAndARelockClearsIt`);
+and the cell tracks RUNNING→RECONFIGURING→RUNNING through an apply
+(`EngineStateCellTest.theCellTracksRunningReconfiguringRunningThroughASettingsApply`).
+Story 218's notices fold in as the Engine cell's "Engine: reconfiguring…" during its
+reopen, and its resync request reopens nothing any more (ruling E37). The detection half
+stays as the Scope says: no OS device‑change watcher was built (future story 461). The
+manual hardware proof of story 327 is now reachable and is the owner's to run (story 327's
+Note from Story 338).*
+
 ### Stage 6 — Insert‑Chain Concurrency and Fault Eviction (story 340)
 
 **Scope.** §4.7 in full: COW snapshot in `EffectsChain` (volatile immutable array,
@@ -1341,6 +1608,16 @@ Where each construct in this book attaches to today's tree.
 | Real eviction (§4.7) | `PluginInvocationSupervisor.java:445‑457` flag‑only; `:186‑190` id‑reenable no‑op; slot overload `:167` uncalled; `PluginFaultLogDialog.java:156‑161`; toast `PluginFaultUiController.java:97‑101` | Fault → off‑RT swap; slot‑identity re‑enable; truthful copy |
 | Install off FX thread (§4.7) | `PluginInstallPanel.java:166‑174` → `ExternalPluginLoader.java:105` on FX; scan precedent `PluginJarScanner.java:146` | Load/construct on scan thread; marshal registration only |
 | Startup audio failure surface (§5.1 row 14) | `MainController.java:1132‑1134` WARNING‑only catch | ERROR toast naming backend/device + Open Audio Settings action |
+
+*As built in story 338: the Watchdog, Xrun feed + counter, Engine‑state cell and Clock
+surfaces rows describe the tree before this story; each is built as §4.4's note says. The
+watchdog reads story 337's heartbeat counters, not a store in the render guard, and its
+offer is Reconnect, not a restart (story 338, ruling E6). The counter is the strip's Xruns
+cell, with `XrunLogDialog`; the engine‑state cell is the strip's Engine cell, fed through
+`EngineStateBridge`. The clock indicator is mounted in the transport bar and reads
+`AudioEngineController.clockLockStatus()`; its ASIO side is `AsioClockLockMonitor` with
+the native export `asioshim_getSamplePosition`, not a publisher in
+`AsioBufferSwitchShim`.*
 
 ## Appendix B — Cross‑references
 

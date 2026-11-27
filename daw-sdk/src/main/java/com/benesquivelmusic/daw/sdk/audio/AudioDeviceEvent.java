@@ -72,7 +72,7 @@ public sealed interface AudioDeviceEvent
      * Emitted when the driver renegotiates the device's native format
      * mid-session (sample rate change, channel count change, buffer
      * size change). On ASIO this is
-     * {@code kAsioBufferSizeChange} / {@code kAsioResyncRequest}; on
+     * {@code kAsioBufferSizeChange}; on
      * CoreAudio it is the corresponding property listener; on WASAPI
      * shared mode it follows a mixer-format change.
      *
@@ -105,9 +105,8 @@ public sealed interface AudioDeviceEvent
      * <p>Per-OS sources (translated by the native backends):</p>
      * <ul>
      *   <li>ASIO &mdash; {@code kAsioResetRequest} (with a fresh
-     *       {@code ASIOGetSampleRate}), {@code kAsioBufferSizeChange},
-     *       {@code kAsioResyncRequest} from the host-callback set
-     *       installed on driver open.</li>
+     *       {@code ASIOGetSampleRate}) and {@code kAsioBufferSizeChange}
+     *       from the host-callback set installed on driver open.</li>
      *   <li>CoreAudio &mdash; property listeners on
      *       {@code kAudioDevicePropertyNominalSampleRate},
      *       {@code kAudioDevicePropertyBufferFrameSize}, and

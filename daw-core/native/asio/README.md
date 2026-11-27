@@ -6,7 +6,8 @@ talk to a Steinberg ASIO driver.
 
 The Java side lives in `AsioDriverShim.java`, `AsioCapabilityShim.java`,
 `AsioControlThread.java`, `AsioFormatChangeShim.java`,
-`AsioStreamingShim.java`, `AsioBufferSwitchShim.java`, and the public
+`AsioStreamingShim.java`, `AsioBufferSwitchShim.java`,
+`AsioClockLockMonitor.java`, and the public
 `AsioDriverInfo.java` display value under
 `daw-sdk/src/main/java/com/benesquivelmusic/daw/sdk/audio/`.
 
@@ -26,6 +27,7 @@ The Java side lives in `AsioDriverShim.java`, `AsioCapabilityShim.java`,
 | `int asioshim_openControlPanel()` | `ASIOControlPanel` | dialog "Open Driver Control Panel" button (story 212) |
 | `int asioshim_getClockSources(void* outArray, int* outCount)` | `ASIOGetClockSources` | `AsioBackend.clockSources` (story 216) |
 | `int asioshim_setClockSource(int reference)` | `ASIOSetClockSource` | `AsioBackend.selectClockSource` (story 216) |
+| `int asioshim_getSamplePosition(int64_t* outSamplePosition, int64_t* outSystemTimeNanos)` | `ASIOGetSamplePosition` | `AsioClockLockMonitor`'s clock-lock poll, through `AsioCapabilityShim.samplePosition` |
 | `void installAsioMessageCallback(void* callback)` | (host upcall) | `AsioFormatChangeShim` (story 218) |
 | `void uninstallAsioMessageCallback()` | (host upcall) | `AsioFormatChangeShim` close |
 | `long asioshim_messageTrampoline(long selector, long value, void* message, double* opt)` | `ASIOCallbacks::asioMessage` | the vendor driver (story 218; the callbacks table is wired to this exported symbol) |
@@ -39,7 +41,7 @@ The Java side lives in `AsioDriverShim.java`, `AsioCapabilityShim.java`,
 | `void asioshim_bufferSwitchTrampoline(long index, long directProcess)` | `ASIOCallbacks::bufferSwitch` | the vendor driver (story 311; the callbacks table is wired to this exported symbol) |
 
 Most capability functions return `1` (`SHIM_OK`) for `ASE_OK` and `0`
-(`SHIM_FAIL`) otherwise, with two exceptions:
+(`SHIM_FAIL`) otherwise, with three exceptions:
 
 - **`asioshim_openControlPanel`** — returns `1` on `ASE_OK`, `0` when
   `ASE_NotPresent` (no control panel), or `-1` for any other error.
@@ -48,6 +50,16 @@ Most capability functions return `1` (`SHIM_OK`) for `ASE_OK` and `0`
   `ASE_NotPresent`, `ASE_HWMalfunction`, `ASE_InvalidParameter`,
   `ASE_InvalidMode`, …) so the Java side can translate each into a
   mapped `AudioBackendException` message.
+- **`asioshim_getSamplePosition`** — returns the raw `ASIOError` directly
+  (0 on `ASE_OK`), so the clock-lock poll can tell `ASE_SPNotAdvancing`
+  (-996) and `ASE_NoClock` (-995) apart from "no driver". A null output
+  pointer returns `ASE_InvalidParameter`; no loaded driver, or a driver that
+  is not started, returns `ASE_NotPresent` without entering the SDK, because
+  a stopped driver answers "not advancing". Both outputs are written 0 first;
+  on `ASE_OK` they hold the sample position and its system time in
+  nanoseconds, converted natively to `int64_t` from `ASIOSamples` /
+  `ASIOTimeStamp`. The Java binding is optional: a build without this export
+  polls nothing and publishes no clock-lock events.
 
 `asioshim_stop` and `asioshim_disposeBuffers` (story 311) follow the normal
 convention with one carve-out: they return `1` when there was **nothing to

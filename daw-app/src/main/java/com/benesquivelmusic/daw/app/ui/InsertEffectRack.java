@@ -417,13 +417,13 @@ public final class InsertEffectRack extends VBox {
 
         // Right-click context menu for remove
         ContextMenu contextMenu = new ContextMenu();
-        // Story 129 (UI) — toggle the per-insert "expensive" flag so
-        // the BypassExpensive degradation policy can pick this insert
-        // for selective bypass when the per-track CPU budget trips.
-        // CheckMenuItem renders a tick when the slot is currently
-        // marked expensive; the change is undoable via UndoManager.
+        // Story 129 (UI) — toggle the per-insert "expensive" flag, which the
+        // project saves. No CPU budget policy is applied yet, so nothing
+        // bypasses an insert for its budget (story 338, ruling E195; story
+        // 480 applies the policies). CheckMenuItem renders a tick when the
+        // slot is marked expensive; the change is undoable via UndoManager.
         javafx.scene.control.CheckMenuItem expensiveItem =
-                new javafx.scene.control.CheckMenuItem("Expensive (eligible for bypass)");
+                new javafx.scene.control.CheckMenuItem("Expensive (no CPU budget policy bypasses it)");
         expensiveItem.setSelected(slot.isExpensive());
         expensiveItem.setOnAction(_ -> {
             if (!projectActionsAllowed.getAsBoolean()) {

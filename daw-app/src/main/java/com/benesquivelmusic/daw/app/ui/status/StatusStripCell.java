@@ -1,12 +1,20 @@
 package com.benesquivelmusic.daw.app.ui.status;
 
 import javafx.beans.property.ObjectProperty;
+import javafx.beans.property.ObjectPropertyBase;
 import javafx.beans.property.SimpleObjectProperty;
 import javafx.beans.property.SimpleStringProperty;
 import javafx.beans.property.StringProperty;
+import javafx.event.ActionEvent;
+import javafx.event.EventHandler;
+import javafx.scene.AccessibleAction;
 import javafx.scene.AccessibleRole;
 import javafx.scene.control.Control;
 import javafx.scene.control.Skin;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyEvent;
+import javafx.scene.input.MouseButton;
+import javafx.scene.input.MouseEvent;
 
 import java.util.Objects;
 
@@ -43,6 +51,14 @@ import java.util.Objects;
  * {@link Severity#WARN} adds {@link #SEVERITY_WARN_CLASS}; and
  * {@link Severity#CRITICAL} adds {@link #SEVERITY_CRITICAL_CLASS}. The
  * matching {@code -fx-text-fill} rules live in {@code status-strip-cell.css}.
+ *
+ * <h2>Action</h2>
+ *
+ * <p>A cell is text unless it has an {@linkplain #onActionProperty() action}
+ * (story 338): then it is a button that a primary click, Enter, Space or the
+ * accessible FIRE action fires, in the focus order while it has the action,
+ * with a focus ring drawn from the {@code -ssc-focus} token
+ * ({@code javafx-application-design} §12 and §14).</p>
  *
  * @see StatusStripCellSkin
  */
@@ -121,11 +137,48 @@ public final class StatusStripCell extends Control {
                 }
             };
 
+    /**
+     * The cell's action (story 338): while one is set the cell is a button —
+     * focus-traversable, read as {@link AccessibleRole#BUTTON}, and fired by a
+     * primary click, Enter, Space or the accessible FIRE action; with none it
+     * is plain text again, out of the focus order.
+     */
+    private final ObjectProperty<EventHandler<ActionEvent>> onAction = new ObjectPropertyBase<>() {
+        @Override
+        protected void invalidated() {
+            EventHandler<ActionEvent> handler = get();
+            setEventHandler(ActionEvent.ACTION, handler);
+            setFocusTraversable(handler != null);
+            setAccessibleRole(handler != null ? AccessibleRole.BUTTON : AccessibleRole.TEXT);
+        }
+
+        @Override
+        public Object getBean() {
+            return StatusStripCell.this;
+        }
+
+        @Override
+        public String getName() {
+            return "onAction";
+        }
+    };
+
     /** Creates an empty cell ({@link Severity#NORMAL}, blank text). */
     public StatusStripCell() {
         getStyleClass().add(DEFAULT_STYLE_CLASS);
         setAccessibleRole(AccessibleRole.TEXT);
         setFocusTraversable(false);
+        addEventHandler(KeyEvent.KEY_PRESSED, key -> {
+            if ((key.getCode() == KeyCode.ENTER || key.getCode() == KeyCode.SPACE) && getOnAction() != null) {
+                fire();
+                key.consume();
+            }
+        });
+        addEventHandler(MouseEvent.MOUSE_CLICKED, click -> {
+            if (click.getButton() == MouseButton.PRIMARY && click.isStillSincePress() && getOnAction() != null) {
+                fire();
+            }
+        });
     }
 
     /**
@@ -196,5 +249,38 @@ public final class StatusStripCell extends Control {
      */
     public final void setSeverity(Severity severity) {
         this.severity.set(severity);
+    }
+
+    // ── action ────────────────────────────────────────────────────────────
+
+    /** @return the action property; a cell with an action is a button (see the field note) */
+    public final ObjectProperty<EventHandler<ActionEvent>> onActionProperty() {
+        return onAction;
+    }
+
+    /** @return the cell's action, or {@code null} when it has none */
+    public final EventHandler<ActionEvent> getOnAction() {
+        return onAction.get();
+    }
+
+    /** @param handler the cell's action; {@code null} makes the cell plain text */
+    public final void setOnAction(EventHandler<ActionEvent> handler) {
+        onAction.set(handler);
+    }
+
+    /** Fires the cell's action, if it has one, as a click, Enter or Space does. */
+    public void fire() {
+        if (getOnAction() != null) {
+            fireEvent(new ActionEvent());
+        }
+    }
+
+    @Override
+    public void executeAccessibleAction(AccessibleAction action, Object... parameters) {
+        if (action == AccessibleAction.FIRE) {
+            fire();
+        } else {
+            super.executeAccessibleAction(action, parameters);
+        }
     }
 }

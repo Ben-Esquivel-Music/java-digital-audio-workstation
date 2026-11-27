@@ -66,9 +66,8 @@ class TrackBudgetUiBindingTest {
 
         assertThat(binding.isDegraded("vox")).isTrue();
         assertThat(latestDegraded.get()).contains("vox");
-        assertThat(notifications)
-                .hasSize(1)
-                .first().asString().contains("Lead Vocal").contains("CPU over budget");
+        assertThat(notifications).as("ruling E181: no reduction is claimed; the engine applies none yet")
+                .containsExactly("Track 'Lead Vocal' went over the CPU budget; its processing was not reduced");
         enforcer.close();
     }
 

@@ -74,6 +74,7 @@ class DiskExhaustionSealsCleanlyContractTest {
         pipeline.setWarningSink(warnings::add);
         pipeline.setNanoClock(clock::get);
         startRecording(pipeline);
+        boolean sealedWhileRecording = pipeline.isCaptureSealed();
         CaptureFlushService service = pipeline.getCaptureFlushService();
 
         int fed = exhaustedAfter + 4;
@@ -84,6 +85,9 @@ class DiskExhaustionSealsCleanlyContractTest {
                 .as("exactly one LOW warning").isEqualTo(1);
         assertThat(warnings.stream().filter(w -> w.contains("exhausted")).count()).isEqualTo(1);
         assertThat(service.isSealed()).isTrue();
+        assertThat(sealedWhileRecording).as("premise: the take records unsealed").isFalse();
+        assertThat(pipeline.isCaptureSealed())
+                .as("the pipeline reads its capture as sealed from the early seal on (ruling E280)").isTrue();
         assertThat(service.sealReason()).contains(TakeManifest.SealedBy.DISK_EXHAUSTION);
         assertThat(service.isRunning()).as("the flush thread is still alive and healthy").isTrue();
         assertThat(service.thread().isAlive()).isTrue();
@@ -114,6 +118,7 @@ class DiskExhaustionSealsCleanlyContractTest {
         pipeline.setSegmentLimits(Duration.ofHours(1), 2 * BLOCK_BYTES);
         pipeline.setWarningSink(warnings::add);
         startRecording(pipeline);
+        boolean sealedWhileRecording = pipeline.isCaptureSealed();
         CaptureFlushService service = pipeline.getCaptureFlushService();
         int good = 3;
         long frame = feedRamp(engine, transport, pipeline, 0, good, 1);
@@ -123,6 +128,9 @@ class DiskExhaustionSealsCleanlyContractTest {
         feedRamp(engine, transport, pipeline, frame, 2, 1);           // discarded
 
         assertThat(service.isSealed()).isTrue();
+        assertThat(sealedWhileRecording).as("premise: the take records unsealed").isFalse();
+        assertThat(pipeline.isCaptureSealed())
+                .as("the pipeline reads its capture as sealed from the early seal on (ruling E280)").isTrue();
         assertThat(service.sealReason()).contains(TakeManifest.SealedBy.WRITE_FAILURE);
         assertThat(service.lastFailure()).isPresent().get().isInstanceOf(UncheckedIOException.class);
         assertThat(service.isRunning()).isTrue();

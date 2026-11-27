@@ -15,6 +15,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.logging.Handler;
@@ -522,6 +524,37 @@ class AsioBackendStreamingTest {
                 "uninstallBufferSwitchCallback", "close");
         assertThat(driver.unloaded).isTrue();
         assertThat(backend.activeBufferSwitchShim()).isNull();
+    }
+
+    /**
+     * A failed open whose buffer-switch bridge had started its drain completes
+     * the stream's input publisher, as a close does, so no later stream can
+     * receive that drain's blocks; the next open hands out a fresh publisher
+     * (story 338, ruling E215).
+     */
+    @Test
+    void aFailedOpenCompletesItsInputPublisherAndTheNextOpenHandsOutAFreshOne() throws Exception {
+        startSucceeds = false;
+        assertThatThrownBy(() -> backend.open(DRIVER_A, FORMAT, FRAMES))
+                .hasMessageContaining("ASIOStart failed");
+        Flow.Publisher<AudioBlock> failedStreams = backend.inputBlocks();
+        CountDownLatch completed = new CountDownLatch(1);
+        failedStreams.subscribe(new Flow.Subscriber<>() {
+            @Override public void onSubscribe(Flow.Subscription subscription) { }
+            @Override public void onNext(AudioBlock block) { }
+            @Override public void onError(Throwable throwable) { }
+            @Override public void onComplete() {
+                completed.countDown();
+            }
+        });
+
+        assertThat(completed.await(AWAIT_SECONDS, TimeUnit.SECONDS))
+                .as("a subscriber of the failed stream's publisher is completed at once")
+                .isTrue();
+
+        startSucceeds = true;
+        backend.open(DRIVER_A, FORMAT, FRAMES);
+        assertThat(backend.inputBlocks()).isNotSameAs(failedStreams);
     }
 
     /**

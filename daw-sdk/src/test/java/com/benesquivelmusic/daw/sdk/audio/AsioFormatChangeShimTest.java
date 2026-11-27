@@ -253,17 +253,78 @@ class AsioFormatChangeShimTest {
         assertThat(fc.device()).isEqualTo(DEVICE);
     }
 
+    /**
+     * The numbers of the ASIO SDK's selector enum, which is implicit from
+     * {@code kAsioSelectorSupported = 1} ({@code kAsioOverload} counts on to
+     * 15). The shim's constants used to give 4, 5 and 7 to the wrong
+     * selectors, so a real driver's {@code kAsioSupportsTimeInfo} (7) ran the
+     * buffer-size-change teardown.
+     */
     @Test
-    void resyncRequestSelectorEmitsClockSourceChange() throws Exception {
+    void selectorConstantsMatchTheAsioSdkEnum() {
+        assertThat(new int[] {
+                AsioFormatChangeShim.kAsioSelectorSupported,
+                AsioFormatChangeShim.kAsioEngineVersion,
+                AsioFormatChangeShim.kAsioResetRequest,
+                AsioFormatChangeShim.kAsioBufferSizeChange,
+                AsioFormatChangeShim.kAsioResyncRequest,
+                AsioFormatChangeShim.kAsioLatenciesChanged,
+                AsioFormatChangeShim.kAsioSupportsTimeInfo,
+                AsioFormatChangeShim.kAsioOverload})
+                .containsExactly(1, 2, 3, 4, 5, 6, 7, 15);
+    }
+
+    /**
+     * A resync request is handled in place: answered "supported", counted
+     * once per message on the backend, and nothing is published, so no
+     * consumer stops or reopens the stream.
+     */
+    @Test
+    void resyncRequestIsCountedOncePerMessageAndPublishesNothing() throws Exception {
         AsioBackend backend = new AsioBackend();
         AudioBackendSupport support = new AudioBackendSupport();
-        AudioDeviceEvent received = subscribeAndDispatch(backend, support,
-                shim -> shim.dispatch(AsioFormatChangeShim.kAsioResyncRequest, 0L));
-        assertThat(received).isInstanceOf(AudioDeviceEvent.FormatChangeRequested.class);
-        AudioDeviceEvent.FormatChangeRequested fc =
-                (AudioDeviceEvent.FormatChangeRequested) received;
-        assertThat(fc.reason()).isInstanceOf(FormatChangeReason.ClockSourceChange.class);
-        assertThat(fc.proposedFormat()).isEmpty();
+        AtomicReference<AudioDeviceEvent> ref = new AtomicReference<>();
+        backend.deviceEvents().subscribe(new CapturingSubscriber(ref, new CountDownLatch(1)));
+        Thread.sleep(50);
+        try (AsioFormatChangeShim shim = new AsioFormatChangeShim(backend, support, DEVICE)) {
+            assertThat(shim.dispatch(AsioFormatChangeShim.kAsioResyncRequest, 0L)).isEqualTo(1L);
+            assertThat(shim.dispatch(AsioFormatChangeShim.kAsioResyncRequest, 0L)).isEqualTo(1L);
+        }
+        Thread.sleep(200);
+        assertThat(ref.get()).as("a resync publishes no device event").isNull();
+        BackendDropoutCounters counters = backend.dropoutCounters();
+        assertThat(counters.driverResyncs()).isEqualTo(2L);
+        assertThat(counters.driverOverloads()).isZero();
+    }
+
+    /**
+     * {@code kAsioOverload} is advertised, answered 1, counted on the BACKEND
+     * (the shim is rebuilt on every open, so a count held there would reset),
+     * and publishes nothing.
+     */
+    @Test
+    void overloadIsAnsweredCountedOnTheBackendAcrossShimsAndPublishesNothing()
+            throws Exception {
+        AsioBackend backend = new AsioBackend();
+        AudioBackendSupport support = new AudioBackendSupport();
+        AtomicReference<AudioDeviceEvent> ref = new AtomicReference<>();
+        backend.deviceEvents().subscribe(new CapturingSubscriber(ref, new CountDownLatch(1)));
+        Thread.sleep(50);
+        try (AsioFormatChangeShim first = new AsioFormatChangeShim(backend, support, DEVICE)) {
+            assertThat(first.dispatch(AsioFormatChangeShim.kAsioSelectorSupported,
+                    AsioFormatChangeShim.kAsioOverload)).isEqualTo(1L);
+            assertThat(first.dispatch(AsioFormatChangeShim.kAsioOverload, 0L)).isEqualTo(1L);
+        }
+        try (AsioFormatChangeShim second = new AsioFormatChangeShim(backend, support, DEVICE)) {
+            assertThat(second.asioMessageUpcall(AsioFormatChangeShim.kAsioOverload, 0,
+                    MemorySegment.NULL, MemorySegment.NULL)).isEqualTo(1);
+        }
+        Thread.sleep(200);
+        assertThat(ref.get()).as("an overload publishes no device event").isNull();
+        BackendDropoutCounters counters = backend.dropoutCounters();
+        assertThat(counters.driverOverloads()).isEqualTo(2L);
+        assertThat(counters.driverResyncs()).isZero();
+        assertThat(backend.threadCounters().deviceNotificationFaults()).isZero();
     }
 
     @Test
@@ -319,7 +380,8 @@ class AsioFormatChangeShimTest {
                     AsioFormatChangeShim.kAsioResyncRequest,
                     AsioFormatChangeShim.kAsioSupportsTimeInfo,
                     AsioFormatChangeShim.kAsioLatenciesChanged,
-                    AsioFormatChangeShim.kAsioBufferSizeChange};
+                    AsioFormatChangeShim.kAsioBufferSizeChange,
+                    AsioFormatChangeShim.kAsioOverload};
             for (int selector : handled) {
                 assertThat(shim.dispatch(
                         AsioFormatChangeShim.kAsioSelectorSupported, selector))
@@ -403,39 +465,57 @@ class AsioFormatChangeShimTest {
         assertThat(outcome.driverTornDown()).isTrue();
     }
 
+    /**
+     * A resync request never stops or reopens the stream: the bridge keeps
+     * streaming, no teardown is scheduled, no format-change event is
+     * announced, and each message adds exactly one to the backend's resync
+     * count.
+     */
     @Test
     void resyncRequestLeavesTheStreamingBridgeRunning() throws Exception {
         DispatchOutcome outcome = dispatchAgainstOpenBackend(
-                AsioFormatChangeShim.kAsioResyncRequest, 0L);
+                AsioFormatChangeShim.kAsioResyncRequest, 0L, 2);
 
         assertThat(outcome.streamingAfterDispatch())
                 .as("a resync does not invalidate the driver's buffers")
                 .isTrue();
-        assertThat(outcome.eventAnnounced()).isTrue();
+        assertThat(outcome.eventAnnounced())
+                .as("a resync is handled in place: no format-change request, no reopen")
+                .isFalse();
         assertThat(outcome.driverTornDown())
                 .as("a resync must not schedule ASIOStop / ASIODisposeBuffers — the "
                         + "inline quiesce above proves the reset path was not taken")
                 .isFalse();
+        assertThat(outcome.driverResyncs())
+                .as("one count per resync message")
+                .isEqualTo(2L);
     }
 
     /**
-     * Outcome of one {@code dispatch} against a fully opened backend.
+     * Outcome of a {@code dispatch} against a fully opened backend.
      *
      * @param streamingAfterDispatch the bridge's flag sampled synchronously
      *                               once {@code dispatch} returned
      * @param eventAnnounced         whether the device event was delivered
      * @param driverTornDown         whether the asynchronous teardown reached
      *                               {@code stop()} + {@code disposeBuffers()}
+     * @param driverResyncs          the backend's resync count afterwards
      */
     private record DispatchOutcome(boolean streamingAfterDispatch,
-                                   boolean eventAnnounced, boolean driverTornDown) {
+                                   boolean eventAnnounced, boolean driverTornDown,
+                                   long driverResyncs) {
+    }
+
+    private static DispatchOutcome dispatchAgainstOpenBackend(int selector, long value)
+            throws Exception {
+        return dispatchAgainstOpenBackend(selector, value, 1);
     }
 
     /**
      * Opens a backend against stub driver / streaming shims, dispatches the
-     * selector, and reports what the dispatch did.
+     * selector {@code times} times, and reports what the dispatch did.
      */
-    private static DispatchOutcome dispatchAgainstOpenBackend(int selector, long value)
+    private static DispatchOutcome dispatchAgainstOpenBackend(int selector, long value, int times)
             throws Exception {
         AudioFormat format = new AudioFormat(48_000.0, 2, 32);
         List<String> driverCalls = Collections.synchronizedList(new ArrayList<>());
@@ -468,13 +548,19 @@ class AsioFormatChangeShimTest {
                 boolean streamingAfterDispatch;
                 try (AsioFormatChangeShim shim =
                              new AsioFormatChangeShim(backend, support, DEVICE)) {
-                    shim.dispatch(selector, value);
+                    for (int i = 0; i < times; i++) {
+                        shim.dispatch(selector, value);
+                    }
                     AsioBufferSwitchShim bridge = backend.activeBufferSwitchShim();
                     streamingAfterDispatch = bridge != null && bridge.isStreaming();
                 }
-                boolean announced = latch.await(10, TimeUnit.SECONDS);
+                // A still-streaming bridge took no reset path, so a short
+                // bounded wait is enough to assert that nothing was announced.
+                boolean announced = latch.await(streamingAfterDispatch ? 500 : 10_000,
+                        TimeUnit.MILLISECONDS);
                 boolean tornDown = awaitTeardown(driverCalls, streamingAfterDispatch);
-                return new DispatchOutcome(streamingAfterDispatch, announced, tornDown);
+                return new DispatchOutcome(streamingAfterDispatch, announced, tornDown,
+                        backend.dropoutCounters().driverResyncs());
             } finally {
                 backend.close();
                 AsioBackend.resetDriverShimFactory();
@@ -574,7 +660,8 @@ class AsioFormatChangeShimTest {
      * {@code ASE_NotPresent} — on this target the message carries driver
      * reset requests, and a reset swallowed uncounted is a missed reconfigure.
      * The backend's device-event publisher is replaced by one whose
-     * {@code offer} fails, so the dispatch throws for real.
+     * {@code offer} fails, so the dispatch of a reset request, which
+     * publishes, throws for real.
      */
     @Test
     void aThrowingDispatchIsCountedOnTheBackendAndAnswersNotPresent() throws Exception {
@@ -590,7 +677,7 @@ class AsioFormatChangeShimTest {
         });
         AudioBackendSupport support = new AudioBackendSupport();
         try (AsioFormatChangeShim shim = new AsioFormatChangeShim(backend, support, DEVICE)) {
-            int answer = shim.asioMessageUpcall(AsioFormatChangeShim.kAsioResyncRequest, 0,
+            int answer = shim.asioMessageUpcall(AsioFormatChangeShim.kAsioResetRequest, 0,
                     MemorySegment.NULL, MemorySegment.NULL);
 
             assertThat(answer).as("ASE_NotPresent").isZero();

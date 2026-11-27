@@ -102,8 +102,8 @@ class SessionStatusStripUiScaleTest {
     }
 
     private static Layout layout(SessionStatusStrip strip) {
-        List<StatusStripCell> collapsible = List.of(strip.workspaceCell(), strip.schemaCell(), strip.lockCell(),
-                strip.diskCell(), strip.journalCell());
+        List<StatusStripCell> collapsible = List.of(strip.workspaceCell(), strip.xrunCell(), strip.schemaCell(),
+                strip.lockCell(), strip.diskCell(), strip.journalCell());
         return new Layout(strip.isOverflowButtonVisible(), List.copyOf(strip.overflowCells()), collapsible.size());
     }
 }

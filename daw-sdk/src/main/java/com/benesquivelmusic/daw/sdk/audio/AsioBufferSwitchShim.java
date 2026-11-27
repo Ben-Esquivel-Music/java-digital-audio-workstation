@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.locks.LockSupport;
 
 /**
@@ -51,7 +52,9 @@ import java.util.concurrent.locks.LockSupport;
  * publishes: it de-interleaves into {@code inputRing} and hands off to the
  * dedicated {@code asio-input-drain} daemon platform thread, which allocates a
  * fresh {@link AudioBlock} per drained slot and calls
- * {@link AudioBackendSupport#publishInput(AudioBlock)}. Because each published
+ * {@link AudioBackendSupport#publishInput(SubmissionPublisher, AudioBlock)}
+ * with the publisher of this shim's own stream, pinned when the shim is built
+ * (story 338, ruling E215). Because each published
  * block owns a private sample array, {@link AudioBlock}'s documented
  * immutability holds and subscribers need not copy.</p>
  *
@@ -133,6 +136,15 @@ final class AsioBufferSwitchShim implements AutoCloseable {
             FunctionDescriptor.ofVoid(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT);
 
     private final AudioBackendSupport support;
+
+    /**
+     * The input publisher of this shim's stream, pinned when the shim is
+     * built, after the backend marked the stream open. The drain publishes
+     * only into it, so a drain that outlives its stream's close can never
+     * publish into a later stream (story 338, ruling E215).
+     */
+    private final SubmissionPublisher<AudioBlock> inputPublisher;
+
     private final double sampleRate;
     private final int channels;
     private final int bufferFrames;
@@ -234,13 +246,57 @@ final class AsioBufferSwitchShim implements AutoCloseable {
     /**
      * The device-callback heartbeat (story 337, ruling E5): bumped once at the
      * entry of every {@link #bufferSwitchUpcall(int, int)}, before the guard's
-     * {@code try}, whatever the callback then does. A watchdog compares it
-     * with the periods it expected to see a stalled or half-rate driver.
+     * {@code try}, whatever the callback then does. The heartbeat watchdog
+     * reads whether it advanced: a count that stands still is a stalled
+     * driver.
      * Single writer — the driver's callback thread — so the plain
      * {@code volatile long ++} idiom of {@link #renderedBlocksConsumed}
      * applies unchanged.
      */
     private volatile long deviceCallbackPeriods;
+
+    /**
+     * Whether a callback has played a rendered block yet. Until then an empty
+     * output ring is the stream starting up ({@code ASIOStart} precedes the
+     * render pump's first block), not starvation. Written and read only by
+     * the driver's callback thread.
+     */
+    private boolean outputPrimed;
+
+    /**
+     * Callback periods that found the output ring empty once
+     * {@link #outputPrimed} was set, and so played silence: the device
+     * starved of rendered audio. Never counted on the early returns of
+     * {@link #bufferSwitch(int, int)} (a quiesced bridge, a bad half index).
+     * Single writer — the driver's callback thread — so the plain
+     * {@code volatile long ++} idiom of {@link #renderedBlocksConsumed}
+     * applies unchanged.
+     */
+    private volatile long outputStarvedPeriods;
+
+    /**
+     * Captured blocks {@link #bufferSwitch(int, int)} could not queue because
+     * the capture ring was full: lost before the {@code asio-input-drain}
+     * thread ever saw them. Single writer — the driver's callback thread.
+     */
+    private volatile long inputRingOverflows;
+
+    /**
+     * Rendered blocks {@link #write(AudioBlock)} could not queue because the
+     * output ring was full, counted only while streaming and once a callback
+     * has played a rendered block (before that a full ring is the pump
+     * running ahead of {@code ASIOStart}). Single writer — the render thread,
+     * the ring's only producer — so the {@code volatile long ++} idiom of
+     * {@link #renderedBlocksConsumed} applies.
+     */
+    private volatile long outputRingRefusedBlocks;
+
+    /**
+     * Older rendered blocks a callback's drain consumed unheard to play the
+     * newest one, counted once {@link #outputPrimed} was set. Single writer —
+     * the driver's callback thread.
+     */
+    private volatile long outputSkippedBlocks;
 
     /**
      * Faults the upcall guard caught (story 337, ruling E16): bumped in
@@ -264,6 +320,27 @@ final class AsioBufferSwitchShim implements AutoCloseable {
 
     /** The newest fault behind {@link #publishDrops}; written by the drain thread. */
     private volatile Throwable lastPublishFault;
+
+    /**
+     * 1 when this stream has a bound input channel, else 0: what each period
+     * starts owing in captured input.
+     */
+    private final long inputBlockPerPeriod;
+
+    /**
+     * The period's captured block not yet queued: {@link #inputBlockPerPeriod}
+     * from the upcall's entry until {@link #bufferSwitch} has written it to
+     * the capture ring or counted its overflow. Driver callback thread only.
+     */
+    private long periodInputPending;
+
+    /**
+     * Upcall faults whose period's captured block never reached the capture
+     * ring (story 338, ruling E211). Single writer: the driver's callback
+     * thread, with the plain {@code volatile long} load-add-store of
+     * {@link #renderedBlocksConsumed}.
+     */
+    private volatile long failedPeriodInputBlocks;
 
     /**
      * Pre-allocates every buffer, view and staging array the callback needs,
@@ -310,6 +387,7 @@ final class AsioBufferSwitchShim implements AutoCloseable {
         // catch (RuntimeException | Error) rolls back with bridge == null.
         bindDriverBuffers(bufferInfos);
         this.boundInputChannels = countBoundChannels(inputTypes);
+        this.inputBlockPerPeriod = boundInputChannels > 0 ? 1L : 0L;
 
         int samplesPerBlock = channels * bufferFrames;
         this.inputScratch = new float[samplesPerBlock];
@@ -325,6 +403,7 @@ final class AsioBufferSwitchShim implements AutoCloseable {
         this.arena = Arena.ofShared();
         this.upcallStub = buildUpcallStub();
 
+        this.inputPublisher = support.currentInputPublisher();
         this.drainThread = Thread.ofPlatform()
                 .name(DRAIN_THREAD_NAME)
                 .daemon(true)
@@ -484,7 +563,9 @@ final class AsioBufferSwitchShim implements AutoCloseable {
      * the output half is silenced first, because {@link #bufferSwitch} writes
      * the outputs last and a half left holding the previous cycle's samples
      * would replay as a buzz at the buffer rate; then the fault's reference is
-     * stored and it is counted, in that order (story 337, ruling E82). Nothing
+     * stored and it is counted, in that order (story 337, ruling E82), with the
+     * period's captured block when the fault came before the input half had
+     * queued it (story 338, ruling E211). Nothing
      * here logs, locks or allocates beyond the
      * already-thrown object (failure-surfacing book §2.3, §4.3); the call made
      * from the handler sits in a nested catch-all so the count still lands.</p>
@@ -495,18 +576,20 @@ final class AsioBufferSwitchShim implements AutoCloseable {
     @RealTimeSafe
     void bufferSwitchUpcall(int bufferIndex, int directProcess) {
         deviceCallbackPeriods++;
+        periodInputPending = inputBlockPerPeriod;
         try {
             bufferSwitch(bufferIndex, directProcess);
         } catch (Throwable fault) {
             try {
                 silenceOutputHalf(bufferIndex);
             } catch (Throwable ignored) {
-                // The count below still lands; nothing may escape to native code.
+                // The counts below still land; nothing may escape to native code.
             }
-            // The fault first, then its count: a reader that sees the count
+            // The fault first, then its counts: a reader that sees a count
             // sees this fault or a newer one (story 337, ruling E82).
             lastUpcallFault = fault;
             upcallFaults++;
+            failedPeriodInputBlocks = failedPeriodInputBlocks + periodInputPending;
         }
     }
 
@@ -534,6 +617,13 @@ final class AsioBufferSwitchShim implements AutoCloseable {
      * The story's real-time bridge: de-interleave the driver's input half into
      * the capture ring and wake the drain thread, then interleave the most
      * recent {@code sink(...)} block into the driver's output half.
+     *
+     * <p>A failure of the wake is contained here: the period's block is
+     * already in the ring, which the drain's next wake publishes, at the
+     * latest at its own {@code DRAIN_PARK_NANOS} backstop, or, with the ring
+     * full, already counted as its overflow, and the output half is still
+     * written, so the upcall's guard neither silences it nor counts a fault
+     * (story 338, ruling E272).</p>
      *
      * <p>Package-private so unit tests can drive synthetic callbacks directly,
      * exactly the way {@link AsioFormatChangeShim#dispatch(long, long)} is
@@ -568,16 +658,33 @@ final class AsioBufferSwitchShim implements AutoCloseable {
         }
         // Drop-on-full rather than block: a stalled drain thread must never
         // hold up the driver. The unpark is non-blocking and allocation-free.
-        inputRing.write(incoming, incoming.length);
-        LockSupport.unpark(drainThread);
+        if (!inputRing.write(incoming, incoming.length)) {
+            inputRingOverflows++;
+        }
+        periodInputPending = 0L;
+        try {
+            LockSupport.unpark(drainThread);
+        } catch (Throwable ignored) {
+            // Only an error of the JVM itself fails this wake. The period's block is already in the ring, or with
+            // the ring full already counted as its overflow, and the output half below is still written: nothing
+            // is lost and the callback has not failed (ruling E272).
+        }
 
-        if (outputRing.drainLatestInto(outputScratch)) {
-            // Single-writer counter; the driver thread is the only mutator.
+        int consumed = outputRing.drainLatestCountingInto(outputScratch);
+        if (consumed > 0) {
+            // Single-writer counters; the driver thread is the only mutator.
             renderedBlocksConsumed++;
+            if (outputPrimed && consumed > 1) {
+                outputSkippedBlocks += consumed - 1;
+            }
+            outputPrimed = true;
         } else {
             // Nothing rendered yet this cycle — emit silence rather than
             // repeating the previous block.
             Arrays.fill(outputScratch, 0f);
+            if (outputPrimed) {
+                outputStarvedPeriods++;
+            }
         }
         MemorySegment[] outputs = outputBuffers[bufferIndex];
         for (int channel = 0; channel < channelCount; channel++) {
@@ -673,12 +780,12 @@ final class AsioBufferSwitchShim implements AutoCloseable {
 
     private void publishDrained(float[] scratch) {
         try {
-            support.publishInput(new AudioBlock(
+            support.publishInput(inputPublisher, new AudioBlock(
                     sampleRate, channels, bufferFrames, scratch.clone()));
         } catch (Throwable lost) {
-            // A publisher closed concurrently with this drain, or a
-            // misbehaving drop handler, must never kill the drain thread —
-            // the next callback still has to be delivered. The lost block is
+            // An open publisher's IllegalStateException or its executor's
+            // rejection must never kill the drain thread — the next callback
+            // still has to be delivered. The lost block is
             // counted, never silent (story 337, ruling E16): this drain
             // thread is the counter's only writer. The fault is stored
             // before its count (story 337, ruling E82).
@@ -704,7 +811,9 @@ final class AsioBufferSwitchShim implements AutoCloseable {
         // A frame-count mismatch is rejected by AsioBackend#sink before it
         // reaches here; the ring's own clamp is the last-resort guard so the
         // render thread never takes an exception.
-        outputRing.write(samples, samples.length);
+        if (!outputRing.write(samples, samples.length) && streaming && renderedBlocksConsumed > 0) {
+            outputRingRefusedBlocks++;
+        }
     }
 
     /**
@@ -802,9 +911,39 @@ final class AsioBufferSwitchShim implements AutoCloseable {
         return deviceCallbackPeriods;
     }
 
+    /**
+     * Callback periods that played silence because the output ring was empty
+     * after the first rendered block had been played. A volatile read.
+     */
+    long outputStarvedPeriods() {
+        return outputStarvedPeriods;
+    }
+
+    /** Captured blocks lost because the capture ring was full. A volatile read. */
+    long inputRingOverflows() {
+        return inputRingOverflows;
+    }
+
+    /**
+     * Rendered blocks discarded unplayed once the bridge had played its first
+     * one: refused by a full output ring plus skipped by a callback's drain
+     * to play the newest. Two volatile reads.
+     */
+    long outputDiscardedBlocks() {
+        return outputRingRefusedBlocks + outputSkippedBlocks;
+    }
+
     /** Faults the upcall guard caught (story 337, ruling E16). A volatile read. */
     long upcallFaults() {
         return upcallFaults;
+    }
+
+    /**
+     * Upcall faults that lost their period's captured block (story 338,
+     * ruling E211). A volatile read.
+     */
+    long failedPeriodInputBlocks() {
+        return failedPeriodInputBlocks;
     }
 
     /** The newest fault the upcall guard caught, if any. */

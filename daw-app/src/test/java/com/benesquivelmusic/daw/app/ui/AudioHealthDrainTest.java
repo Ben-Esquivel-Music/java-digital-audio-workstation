@@ -122,6 +122,11 @@ class AudioHealthDrainTest {
             + " automation.";
     private static final String HALT_NOTICE = "The audio engine stopped because audio processing failed for a full"
             + " second without recovering: the mixer lost its master bus. Restart the audio engine to continue.";
+    /** The input's lost-block warning with an input halt's reason (story 338, ruling E155). */
+    private static final String HALT_AS_LOST_INPUT = "Input from “" + DEVICE + "” was lost for a block: the input line"
+            + " closed. If you are recording, the take has a gap there.";
+    private static final String LOST_BLOCK_WARNING = "Input from “" + DEVICE + "” was lost for a block: a captured"
+            + " block was dropped. If you are recording, the take has a gap there.";
 
     private final AtomicLong nanos = new AtomicLong(Duration.ofSeconds(100).toNanos());
     private final Instant noon = LocalDate.now(ZONE).atTime(LocalTime.NOON).atZone(ZONE).toInstant();
@@ -131,6 +136,8 @@ class AudioHealthDrainTest {
     private final AudioHealthRecord record = new AudioHealthRecord();
     private final ScriptedHaltResponse halt = new ScriptedHaltResponse();
     private final IllegalStateException shortBuffer = new IllegalStateException("the driver returned a short buffer");
+    private final IllegalStateException lineClosed = new IllegalStateException("the input line closed");
+    private final IllegalStateException blockDropped = new IllegalStateException("a captured block was dropped");
 
     @Test
     void theFirstCallbackFailureSurfacesAWarningAtOnce(@TempDir Path settings) throws Exception {
@@ -238,6 +245,26 @@ class AudioHealthDrainTest {
                 assertThat(fact.lastSeen()).isEqualTo(noon.plusSeconds(33));
             });
             assertThat(spine.funnel().occurrenceTotals()).containsEntry(CALLBACK.key(), 7L);
+        }
+    }
+
+    @Test
+    void aNegativeMonotonicClockEscalatesAtItsThirdConsecutiveSecond(@TempDir Path settings) throws Exception {
+        nanos.set(Duration.ofSeconds(-4).toNanos());
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+
+            sustainCallbackFaults(drain);
+
+            assertThat(entries(spine, "Audio engine fault")).as("buckets -4, -3 and -2 are consecutive")
+                    .singleElement().satisfies(entry -> {
+                        assertThat(entry.message()).startsWith("Audio engine fault — 3 callback errors since "
+                                + clock(noon) + ":");
+                        assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
+                    });
+            assertThat(onFx(drain::engineFault)).hasValueSatisfying(fact ->
+                    assertThat(fact.category()).isEqualTo(AudioFailureCategory.CALLBACK));
+            assertThat(spine.funnel().isEscalated(CALLBACK)).isTrue();
         }
     }
 
@@ -602,7 +629,7 @@ class AudioHealthDrainTest {
             pulse(drain);
 
             assertThat(entries(spine, "Audio device fault")).singleElement().satisfies(entry -> {
-                assertThat(entry.message()).isEqualTo("Audio device fault — 1 errors from “" + DEVICE + "” since "
+                assertThat(entry.message()).isEqualTo("Audio device fault — 1 error from “" + DEVICE + "” since "
                         + clock(noon) + ": the input line closed. Audio may stay silent or broken until you restart"
                         + " the audio engine.");
                 assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
@@ -1066,7 +1093,7 @@ class AudioHealthDrainTest {
             pulse(drain);
 
             assertThat(entries(spine, "Audio device fault")).singleElement().extracting(NotificationEntry::message)
-                    .isEqualTo("Audio device fault — 1 errors from “" + DEVICE + "” since " + clock(noon) + ": the"
+                    .isEqualTo("Audio device fault — 1 error from “" + DEVICE + "” since " + clock(noon) + ": the"
                             + " input line closed. Audio may stay silent or broken until you restart the audio"
                             + " engine.");
             assertThat(onFx(drain::engineFault)).as("one input halt is one count (ruling E82)")
@@ -1244,6 +1271,722 @@ class AudioHealthDrainTest {
                     "A plugin failed while processing, so a block passed through it unprocessed or without its"
                             + " parameter changes: the event queue was full. Audio continues.");
         }
+    }
+
+    // ── a stalled or lost stream (story 338, amendment A14; rulings E68 to E70) ──
+
+    @Test
+    void aDeviceSideFaultOnEveryBlockWithAStandingHeartbeatNeverEscalatesNorLatchesBeforeTheLoss(
+            @TempDir Path settings) throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+            record.claimLane(LaneRole.RENDER_DRIVE);
+
+            for (long second = 1; second <= 5; second++) {
+                callbackFaultsWithAStandingHeartbeat(second);
+                pulse(drain);
+                advance(Duration.ofSeconds(1));
+            }
+
+            assertThat(entries(spine, CALLBACK_FIRST)).as("the first WARNING arrives and is true (ruling E8)")
+                    .hasSize(1);
+            assertThat(entries(spine, "Audio engine fault")).as("held: the stall is the likelier cause (ruling E68)")
+                    .isEmpty();
+            assertThat(onFx(drain::engineFault)).isEmpty();
+
+            runOnFx(() -> drain.streamLost(record.renderDriveEpoch()));
+            for (long second = 6; second <= 9; second++) {
+                callbackFaultsWithAStandingHeartbeat(second);
+                pulse(drain);
+                advance(Duration.ofSeconds(1));
+            }
+
+            assertThat(entries(spine, "Audio engine fault")).as("never after the loss either (ruling E8)").isEmpty();
+            assertThat(onFx(drain::engineFault)).isEmpty();
+        }
+    }
+
+    @Test
+    void aHeldRunEscalatesAsBeforeOnceTheHeartbeatAdvancesAgain(@TempDir Path settings) throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+            AudioHealthLane drive = record.claimLane(LaneRole.RENDER_DRIVE);
+            for (long second = 1; second <= 3; second++) {
+                callbackFaultsWithAStandingHeartbeat(second);
+                pulse(drain);
+                advance(Duration.ofSeconds(1));
+            }
+            assertThat(entries(spine, "Audio engine fault")).as("fixture: held while the heartbeat stood").isEmpty();
+
+            drive.beat();
+            callbackFaultsWithAStandingHeartbeat(4);
+            pulse(drain);
+
+            assertThat(entries(spine, "Audio engine fault")).as("the drive beat again: the held run proceeds (E68)")
+                    .singleElement()
+                    .satisfies(entry -> assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR));
+            assertThat(onFx(drain::engineFault)).hasValueSatisfying(fact ->
+                    assertThat(fact.category()).isEqualTo(AudioFailureCategory.CALLBACK));
+        }
+    }
+
+    @Test
+    void theLossDropsTheHeldRunSoALaterDriveCountsAfresh(@TempDir Path settings) throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+            record.claimLane(LaneRole.RENDER_DRIVE);
+            for (long second = 1; second <= 3; second++) {
+                callbackFaultsWithAStandingHeartbeat(second);
+                pulse(drain);
+                advance(Duration.ofSeconds(1));
+            }
+            runOnFx(() -> drain.streamLost(record.renderDriveEpoch()));
+
+            AudioHealthLane reopened = record.claimLane(LaneRole.RENDER_DRIVE);
+            reopened.beat();
+            callbackFaults(4);
+            pulse(drain);
+
+            assertThat(entries(spine, "Audio engine fault")).as("the lost stream's held counts were discarded (E68)")
+                    .isEmpty();
+            for (long total = 5; total <= 6; total++) {
+                advance(Duration.ofSeconds(1));
+                reopened.beat();
+                callbackFaults(total);
+                pulse(drain);
+            }
+            assertThat(entries(spine, "Audio engine fault")).as("three buckets of the reopened stream's own")
+                    .hasSize(1);
+        }
+    }
+
+    @Test
+    void theLossClearsADeviceSideFactLatchedOnTheLostDrive(@TempDir Path settings) throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+            record.claimLane(LaneRole.RENDER_DRIVE);
+            sustainCallbackFaults(drain);
+            assertThat(onFx(drain::engineFault)).as("fixture: latched on the drive the loss closes").isPresent();
+
+            runOnFx(() -> drain.streamLost(record.renderDriveEpoch()));
+
+            assertThat(onFx(drain::engineFault)).as("the cell shows only the loss (ruling E69)").isEmpty();
+            assertThat(spine.funnel().isEscalated(CALLBACK)).isFalse();
+            assertThat(entries(spine, "Audio engine fault")).as("the notice already shown stays").hasSize(1);
+        }
+    }
+
+    /**
+     * The window's device-loss reactions hand the drain the epoch the engine
+     * controller read as it declared the loss (before the close, for a
+     * removal or a stall), at the DEVICE_LOST delivery only, even once a
+     * newer drive has started (story 338, amendment A14).
+     */
+    @Test
+    void theDeviceLossReactionsHandTheDrainTheEpochTheControllerReadBeforeTheClose(@TempDir Path settings)
+            throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+            record.claimLane(LaneRole.RENDER_DRIVE);
+            sustainCallbackFaults(drain);
+            long lostDrive = record.renderDriveEpoch();
+            record.claimLane(LaneRole.RENDER_DRIVE);
+            DeviceLossReactions reactions = new DeviceLossReactions(() -> null, () -> lostDrive,
+                    () -> Optional.of(drain), null);
+            assertThat(onFx(drain::engineFault)).as("fixture: latched on the drive the loss closed").isPresent();
+
+            runOnFx(() -> reactions.accept(new EngineStateChange(EngineState.STOPPED, Optional.empty())));
+            assertThat(onFx(drain::engineFault)).as("negative control: no loss, no clear").isPresent();
+
+            runOnFx(() -> reactions.accept(new EngineStateChange(EngineState.DEVICE_LOST, Optional.empty(),
+                    EngineStateChange.LossCause.STALLED)));
+
+            assertThat(onFx(drain::engineFault)).as("the cell shows only the loss (ruling E69)").isEmpty();
+        }
+    }
+
+    @Test
+    void theLossClearsNeitherAHaltNorANewerDrivesFact(@TempDir Path settings) throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+            AudioHealthLane halted = record.claimLane(LaneRole.RENDER_DRIVE);
+            halted.record(AudioFailureCodes.RENDER_HALTED, new IllegalStateException("the mixer lost its master bus"),
+                    new Object(), 375);
+            pulse(drain);
+            runOnFx(() -> drain.streamLost(record.renderDriveEpoch()));
+            assertThat(onFx(drain::engineFault)).as("a halt latch is never the loss's (ruling E69)")
+                    .hasValueSatisfying(fact -> assertThat(fact.category())
+                            .isEqualTo(AudioFailureCategory.RENDER_HALTED));
+            runOnFx(drain::clearEngineFault);
+
+            long lost = record.renderDriveEpoch();
+            record.claimLane(LaneRole.RENDER_DRIVE);
+            sustainCallbackFaults(drain);
+            assertThat(onFx(drain::engineFault)).as("fixture: latched on a drive newer than the lost one")
+                    .isPresent();
+            runOnFx(() -> drain.streamLost(lost));
+
+            assertThat(onFx(drain::engineFault)).as("a fault from a stream opened after the loss stays (ruling E69)")
+                    .hasValueSatisfying(fact -> assertThat(fact.category()).isEqualTo(AudioFailureCategory.CALLBACK));
+        }
+    }
+
+    @Test
+    void readingsOfTheLostDriveNeverEscalateAndANewerDriveEscalatesAgain(@TempDir Path settings) throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+            record.claimLane(LaneRole.RENDER_DRIVE);
+            runOnFx(() -> drain.streamLost(record.renderDriveEpoch()));
+
+            sustainCallbackFaults(drain);
+            assertThat(entries(spine, "Audio engine fault")).as("the lost drive's counts, heartbeat advancing")
+                    .isEmpty();
+
+            record.claimLane(LaneRole.RENDER_DRIVE);
+            advance(Duration.ofSeconds(1));
+            for (long total = 4; total <= 6; total++) {
+                callbackFaults(total);
+                pulse(drain);
+                advance(Duration.ofSeconds(1));
+            }
+
+            assertThat(entries(spine, "Audio engine fault")).as("a drive started after the loss escalates as ever")
+                    .hasSize(1);
+            assertThat(onFx(drain::engineFault)).isPresent();
+        }
+    }
+
+    @Test
+    void anInputHaltOfTheLostStreamRaisesNothingAndOneOfALaterStreamDoes(@TempDir Path settings) throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+            record.claimLane(LaneRole.RENDER_DRIVE);
+            runOnFx(() -> drain.streamLost(record.renderDriveEpoch()));
+
+            counters.set(new BackendThreadCounters(0, 0, 1, 0, OptionalLong.empty(), Optional.empty(),
+                    Optional.of(new IllegalStateException("the input line closed")), Optional.empty()));
+            pulse(drain);
+
+            assertThat(entries(spine, "Audio device fault")).as("part of the loss: no ERROR (ruling E70)").isEmpty();
+            assertThat(onFx(drain::engineFault)).as("and no latch").isEmpty();
+
+            record.claimLane(LaneRole.RENDER_DRIVE);
+            advance(Duration.ofSeconds(31));
+            counters.set(new BackendThreadCounters(0, 0, 2, 0, OptionalLong.empty(), Optional.empty(),
+                    Optional.of(new IllegalStateException("the input line closed again")), Optional.empty()));
+            pulse(drain);
+
+            assertThat(entries(spine, "Audio device fault")).as("negative control: a later stream's input halt")
+                    .hasSize(1);
+            assertThat(onFx(drain::engineFault)).isPresent();
+        }
+    }
+
+    /**
+     * The record of an input halt folded at the loss says what happened: it is part of the device loss, with no
+     * toast of its own (story 338, ruling E156, case (i)).
+     */
+    @Test
+    void anInputHaltFoldedAtTheLossWritesARecordThatSaysItIsPartOfTheDeviceLoss(@TempDir Path settings)
+            throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+            record.claimLane(LaneRole.RENDER_DRIVE);
+            runOnFx(() -> drain.streamLost(record.renderDriveEpoch()));
+
+            inputFailures(0, 1, lineClosed);
+            pulse(drain);
+
+            assertThat(records(spine, Fingerprint.ofSite("audio.input", "input-capture"))).singleElement()
+                    .satisfies(logged -> {
+                        assertThat(logged.getLevel()).isEqualTo(Level.WARNING);
+                        assertThat(logged.getMessage()).isEqualTo("Failure audio.input (WARNING) at \"input-capture\","
+                                        + " occurrence 1, fingerprint audio.input|input-capture, part of the device"
+                                        + " loss; no toast of its own (story 338, ruling E70)")
+                                .doesNotContain("notice of the same frame", "ruling E65");
+                        assertThat(logged.getThrown()).isSameAs(lineClosed);
+                    });
+            assertThat(spine.history().getEntries()).as("no toast of its own").isEmpty();
+        }
+    }
+
+    /**
+     * An input halt folded at the loss, with no input notice before it, is summed up with the lost block counted
+     * after it in the words of the input's lost-block warning, never as an audio device fault (story 338, ruling
+     * E155, case (i)).
+     */
+    @Test
+    void aFoldedHaltAndALostBlockOfTheLostDriveAreSummedUpAsLostInput(@TempDir Path settings) throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+            record.claimLane(LaneRole.RENDER_DRIVE);
+            runOnFx(() -> drain.streamLost(record.renderDriveEpoch()));
+            inputFailures(0, 1, lineClosed);
+            pulse(drain);
+
+            advance(Duration.ofSeconds(5));
+            Instant lostBlock = wall.get();
+            inputFailures(1, 1, blockDropped);
+            pulse(drain);
+            advance(Duration.ofSeconds(30));
+            spine.pulse();
+            runOnFx(() -> { });
+
+            assertTheFoldIsSummedUpAsLostInput(spine, drain, lostBlock);
+        }
+    }
+
+    /**
+     * As the case above, with the lost block read on a stream opened after the loss (story 338, ruling E155, case
+     * (ii)).
+     */
+    @Test
+    void aFoldedHaltAndALostBlockOfALaterStreamAreSummedUpAsLostInput(@TempDir Path settings) throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+            record.claimLane(LaneRole.RENDER_DRIVE);
+            runOnFx(() -> drain.streamLost(record.renderDriveEpoch()));
+            inputFailures(0, 1, lineClosed);
+            pulse(drain);
+
+            reopenTheStream();
+            advance(Duration.ofSeconds(5));
+            Instant lostBlock = wall.get();
+            inputFailures(1, 1, blockDropped);
+            pulse(drain);
+            advance(Duration.ofSeconds(30));
+            spine.pulse();
+            runOnFx(() -> { });
+
+            assertTheFoldIsSummedUpAsLostInput(spine, drain, lostBlock);
+        }
+    }
+
+    /**
+     * Control: a halt folded at the loss inside the window of a lost-block warning the person was shown is summed
+     * up in that warning's words, with no new toast and no latch (story 338, ruling E155, case (iii)).
+     */
+    @Test
+    void aHaltFoldedInsideTheWindowOfAShownWarningIsSummedUpInThatWarningsWords(@TempDir Path settings)
+            throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+            record.claimLane(LaneRole.RENDER_DRIVE);
+            inputFailures(1, 0, blockDropped);
+            pulse(drain);
+            assertThat(spine.history().getEntries()).as("fixture: the lost-block warning's toast")
+                    .extracting(NotificationEntry::message).containsExactly(LOST_BLOCK_WARNING);
+
+            advance(Duration.ofSeconds(2));
+            Instant folded = wall.get();
+            runOnFx(() -> drain.streamLost(record.renderDriveEpoch()));
+            inputFailures(1, 1, lineClosed);
+            pulse(drain);
+            advance(Duration.ofSeconds(30));
+            spine.pulse();
+            runOnFx(() -> { });
+
+            String summary = LOST_BLOCK_WARNING + " It happened once more after that notice, the last time at "
+                    + clock(folded) + ".";
+            assertThat(spine.history().getEntries()).as("no new toast: the warning, then its tail")
+                    .extracting(NotificationEntry::message).containsExactly(LOST_BLOCK_WARNING, summary);
+            assertThat(spine.history().getEntries()).last().satisfies(tail -> {
+                assertThat(tail.level()).isEqualTo(NotificationLevel.WARNING);
+                assertThat(tail.actionLabel()).hasValue(RESTART);
+            });
+            assertThat(onFx(drain::engineFault)).as("no latch").isEmpty();
+        }
+    }
+
+    /**
+     * A halt folded at the loss starts no sustained run: a stream opened after the loss escalates on its own three
+     * consecutive seconds of failures, never one second sooner (story 338, ruling E157, case (i)).
+     */
+    @Test
+    void anInputHaltFoldedAtTheLossStartsNoRunThatALaterStreamCompletes(@TempDir Path settings) throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+            record.claimLane(LaneRole.RENDER_DRIVE);
+            runOnFx(() -> drain.streamLost(record.renderDriveEpoch()));
+            inputFailures(0, 1, lineClosed);
+            pulse(drain);
+
+            AudioHealthLane reopened = reopenTheStream();
+            oneSecondLater(drain, reopened, () -> inputFailures(1, 1, blockDropped));
+            oneSecondLater(drain, reopened, () -> inputFailures(2, 1, blockDropped));
+
+            assertThat(entries(spine, "Audio device fault")).as("two seconds of the later stream's own").isEmpty();
+            assertThat(onFx(drain::engineFault)).as("and no latch").isEmpty();
+
+            oneSecondLater(drain, reopened, () -> inputFailures(3, 1, blockDropped));
+
+            assertTheInputEscalatedAtItsThirdSecond(spine, drain);
+        }
+    }
+
+    /**
+     * As the case above, with a lost input block of the lost drive in place of the halt (story 338, ruling E157, case
+     * (ii)).
+     */
+    @Test
+    void aLostBlockOfTheLostDriveStartsNoRunThatALaterStreamCompletes(@TempDir Path settings) throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+            record.claimLane(LaneRole.RENDER_DRIVE);
+            runOnFx(() -> drain.streamLost(record.renderDriveEpoch()));
+            inputFailures(1, 0, blockDropped);
+            pulse(drain);
+
+            AudioHealthLane reopened = reopenTheStream();
+            oneSecondLater(drain, reopened, () -> inputFailures(2, 0, blockDropped));
+            oneSecondLater(drain, reopened, () -> inputFailures(3, 0, blockDropped));
+
+            assertThat(entries(spine, "Audio device fault")).as("two seconds of the later stream's own").isEmpty();
+            assertThat(onFx(drain::engineFault)).as("and no latch").isEmpty();
+
+            oneSecondLater(drain, reopened, () -> inputFailures(4, 0, blockDropped));
+
+            assertTheInputEscalatedAtItsThirdSecond(spine, drain);
+        }
+    }
+
+    /**
+     * Pins the newer-drive Known limit as built: a lost input block of the lost stream that the drain first reads on
+     * a stream opened after the loss begins that drive's run, so the new stream's own lost blocks in the next two
+     * seconds raise its ERROR, one second sooner than its own three (story 338, rulings E151 and E159; future story
+     * 473 reverses it).
+     */
+    @Test
+    void aLostBlockOfTheLostStreamFirstReadOnANewerDriveJoinsThatDrivesRun(@TempDir Path settings) throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+            record.claimLane(LaneRole.RENDER_DRIVE);
+            runOnFx(() -> drain.streamLost(record.renderDriveEpoch()));
+            inputFailures(1, 0, blockDropped);
+            AudioHealthLane reopened = reopenTheStream();
+            Instant firstFrame = wall.get();
+            pulse(drain);
+
+            assertThat(spine.history().getEntries()).as("the lost stream's block, first read on the newer drive")
+                    .singleElement().satisfies(entry -> {
+                        assertThat(entry.message()).isEqualTo(LOST_BLOCK_WARNING);
+                        assertThat(entry.level()).isEqualTo(NotificationLevel.WARNING);
+                        assertThat(entry.actionLabel()).hasValue(RESTART);
+                    });
+            assertThat(onFx(() -> spine.bar().getMessage())).as("the input's warning toast")
+                    .isEqualTo(LOST_BLOCK_WARNING);
+            assertThat(entries(spine, "Audio device fault")).as("with no ERROR").isEmpty();
+
+            oneSecondLater(drain, reopened, () -> inputFailures(2, 0, blockDropped));
+            assertThat(entries(spine, "Audio device fault")).as("nor at the first second after it").isEmpty();
+            oneSecondLater(drain, reopened, () -> inputFailures(3, 0, blockDropped));
+
+            assertThat(entries(spine, "Audio device fault")).as("the block began the newer drive's run")
+                    .singleElement().satisfies(entry -> {
+                        assertThat(entry.message()).isEqualTo("Audio device fault — 3 errors from “" + DEVICE + "”"
+                                + " since " + clock(firstFrame) + ": a captured block was dropped. Audio may stay"
+                                + " silent or broken until you restart the audio engine.");
+                        assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
+                        assertThat(entry.actionLabel()).hasValue(RESTART);
+                    });
+            assertThat(onFx(drain::engineFault)).as("and the input's engine fault latched")
+                    .hasValueSatisfying(fact -> assertThat(fact.category()).isEqualTo(AudioFailureCategory.INPUT));
+        }
+    }
+
+    /** As the case above, with callback faults in place of input failures (story 338, ruling E157, case (iii)). */
+    @Test
+    void aCallbackFaultOfTheLostDriveStartsNoRunThatALaterStreamCompletes(@TempDir Path settings) throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+            record.claimLane(LaneRole.RENDER_DRIVE);
+            runOnFx(() -> drain.streamLost(record.renderDriveEpoch()));
+            callbackFaults(1);
+            pulse(drain);
+
+            AudioHealthLane reopened = reopenTheStream();
+            oneSecondLater(drain, reopened, () -> callbackFaults(2));
+            oneSecondLater(drain, reopened, () -> callbackFaults(3));
+
+            assertThat(entries(spine, "Audio engine fault")).as("two seconds of the later stream's own").isEmpty();
+            assertThat(onFx(drain::engineFault)).as("and no latch").isEmpty();
+
+            oneSecondLater(drain, reopened, () -> callbackFaults(4));
+
+            assertThat(entries(spine, "Audio engine fault")).as("negative control: its third second escalates")
+                    .singleElement().satisfies(entry -> {
+                        assertThat(entry.message()).isEqualTo("Audio engine fault — 4 callback errors since "
+                                + clock(noon) + ": the driver returned a short buffer. Audio may stay silent or"
+                                + " broken until you restart the audio engine.");
+                        assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
+                    });
+            assertThat(onFx(drain::engineFault)).hasValueSatisfying(fact ->
+                    assertThat(fact.category()).isEqualTo(AudioFailureCategory.CALLBACK));
+        }
+    }
+
+    /**
+     * Pins the before-delivery Known limit's warning as built: a callback fault read on the lost drive after the loss
+     * reached the drain, its kind never shown before, still shows its kind's warning with Restart Audio Engine, with
+     * no ERROR, no latch and no escalation (story 338, rulings E159 and E160).
+     */
+    @Test
+    void aDeviceSideCountReadOnTheLostDriveAfterTheLossStillShowsItsWarning(@TempDir Path settings) throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+            record.claimLane(LaneRole.RENDER_DRIVE);
+            runOnFx(() -> drain.streamLost(record.renderDriveEpoch()));
+
+            callbackFaults(1);
+            pulse(drain);
+
+            assertThat(spine.history().getEntries()).as("one history entry: the callback's first-occurrence warning")
+                    .singleElement().satisfies(entry -> {
+                        assertThat(entry.message()).isEqualTo(CALLBACK_FIRST);
+                        assertThat(entry.level()).isEqualTo(NotificationLevel.WARNING);
+                        assertThat(entry.actionLabel()).hasValue(RESTART);
+                    });
+            assertThat(onFx(() -> spine.bar().getMessage())).as("and its toast").isEqualTo(CALLBACK_FIRST);
+            assertThat(records(spine, CALLBACK)).as("and its WARNING record").singleElement()
+                    .satisfies(logged -> assertThat(logged.getLevel()).isEqualTo(Level.WARNING));
+            assertThat(entries(spine, "Audio engine fault")).as("no ERROR").isEmpty();
+            assertThat(onFx(drain::engineFault)).as("no engine fault").isEmpty();
+            assertThat(spine.funnel().isEscalated(CALLBACK)).as("the callback fingerprint is not escalated").isFalse();
+        }
+    }
+
+    /**
+     * Control: a category that is not device-side keeps its run across a loss that clears no latched fault, so a
+     * processing fault that keeps failing on the lost drive escalates as before (story 338, rulings E157 and E158).
+     */
+    @Test
+    void aProcessingFaultKeepsItsRunAcrossTheLoss(@TempDir Path settings) throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+            record.claimLane(LaneRole.RENDER_DRIVE);
+            AudioHealthLane worker = record.claimLane(LaneRole.WORKER);
+            IllegalStateException chain = new IllegalStateException("an insert chain threw");
+            worker.record(AudioFailureCodes.WORKER, chain, null, 0);
+            pulse(drain);
+            runOnFx(() -> drain.streamLost(record.renderDriveEpoch()));
+
+            for (int second = 1; second <= 2; second++) {
+                advance(Duration.ofSeconds(1));
+                worker.record(AudioFailureCodes.WORKER, chain, null, second);
+                pulse(drain);
+            }
+
+            assertThat(entries(spine, "Multi-core processing keeps failing")).as("its third second escalates")
+                    .singleElement().satisfies(entry -> assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR));
+            assertThat(onFx(drain::engineFault)).hasValueSatisfying(fact ->
+                    assertThat(fact.category()).isEqualTo(AudioFailureCategory.WORKER));
+        }
+    }
+
+    /**
+     * A loss that clears a device-side fault latched on the lost drive restarts a processing failure's run too: a
+     * worker that keeps failing escalates on its third consecutive second read after the loss, its count and "since"
+     * time including its failures from before the loss (story 338, ruling E158).
+     */
+    @Test
+    void aLossThatClearsALatchedDeviceFaultRestartsAProcessingRun(@TempDir Path settings) throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+            record.claimLane(LaneRole.RENDER_DRIVE);
+            AudioHealthLane worker = record.claimLane(LaneRole.WORKER);
+            IllegalStateException chain = new IllegalStateException("an insert chain threw");
+            String workerFault = "Multi-core processing keeps failing";
+            sustainCallbackFaults(drain);
+            assertThat(onFx(drain::engineFault)).as("fixture: a callback fault latched on the drive the loss closes")
+                    .hasValueSatisfying(fact -> assertThat(fact.category()).isEqualTo(AudioFailureCategory.CALLBACK));
+
+            advance(Duration.ofSeconds(1));
+            Instant firstWorkerFailure = wall.get();
+            worker.record(AudioFailureCodes.WORKER, chain, null, 1);
+            pulse(drain);
+            advance(Duration.ofSeconds(1));
+            worker.record(AudioFailureCodes.WORKER, chain, null, 2);
+            pulse(drain);
+            assertThat(entries(spine, workerFault)).as("fixture: two seconds of the worker's, no ERROR yet").isEmpty();
+            assertThat(onFx(drain::engineFault)).as("fixture: the callback's latch stands until the loss")
+                    .hasValueSatisfying(fact -> assertThat(fact.category()).isEqualTo(AudioFailureCategory.CALLBACK));
+
+            runOnFx(() -> drain.streamLost(record.renderDriveEpoch()));
+            assertThat(onFx(drain::engineFault)).as("the loss clears the callback's latch (ruling E69)").isEmpty();
+
+            advance(Duration.ofSeconds(1));
+            worker.record(AudioFailureCodes.WORKER, chain, null, 3);
+            pulse(drain);
+
+            assertThat(entries(spine, workerFault))
+                    .as("the clear restarted the worker's run: no ERROR at its first second after the loss").isEmpty();
+            assertThat(onFx(drain::engineFault)).as("and the cell has no fact").isEmpty();
+
+            advance(Duration.ofSeconds(1));
+            worker.record(AudioFailureCodes.WORKER, chain, null, 4);
+            pulse(drain);
+            assertThat(entries(spine, workerFault)).as("nor at its second").isEmpty();
+
+            advance(Duration.ofSeconds(1));
+            worker.record(AudioFailureCodes.WORKER, chain, null, 5);
+            pulse(drain);
+
+            String sustained = workerFault + " — 5 errors since " + clock(firstWorkerFailure) + ": an insert chain"
+                    + " threw. The affected tracks are processed again on one core, which costs processor time; check"
+                    + " the inserts on your tracks.";
+            assertThat(entries(spine, workerFault)).as("its third consecutive second read after the loss escalates")
+                    .singleElement().satisfies(entry -> {
+                        assertThat(entry.message()).as("5 errors (two seconds before the loss, three after it), since"
+                                + " the first one, before the loss").isEqualTo(sustained);
+                        assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
+                    });
+            assertThat(onFx(drain::engineFault)).hasValueSatisfying(fact ->
+                    assertThat(fact.category()).isEqualTo(AudioFailureCategory.WORKER));
+        }
+    }
+
+    /**
+     * Pins the clear sentence of E114's amended Known limit as built: a loss clears nothing while a processing fault
+     * is latched, so a callback fault latched on the lost drive after a worker's stays on the cell, escalated, until
+     * one fault-free second on a drive started after the latch (story 338, rulings E69, E154 and E161).
+     */
+    @Test
+    void theLossClearsNoFactWhileAProcessingFaultIsLatched(@TempDir Path settings) throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+            AudioHealthLane drive = record.claimLane(LaneRole.RENDER_DRIVE);
+            AudioHealthLane worker = record.claimLane(LaneRole.WORKER);
+            IllegalStateException chain = new IllegalStateException("an insert chain threw");
+            oneSecondLater(drain, drive, () -> worker.record(AudioFailureCodes.WORKER, chain, null, 1));
+            oneSecondLater(drain, drive, () -> worker.record(AudioFailureCodes.WORKER, chain, null, 2));
+            oneSecondLater(drain, drive, () -> worker.record(AudioFailureCodes.WORKER, chain, null, 3));
+            assertThat(entries(spine, "Multi-core processing keeps failing")).as("fixture: the worker's ERROR")
+                    .singleElement().satisfies(entry -> assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR));
+            assertThat(onFx(drain::engineFault)).as("fixture: and its latch")
+                    .hasValueSatisfying(fact -> assertThat(fact.category()).isEqualTo(AudioFailureCategory.WORKER));
+            oneSecondLater(drain, drive, () -> callbackFaults(1));
+            oneSecondLater(drain, drive, () -> callbackFaults(2));
+            oneSecondLater(drain, drive, () -> callbackFaults(3));
+            assertThat(entries(spine, "Audio engine fault")).as("fixture: the callback's ERROR")
+                    .singleElement().satisfies(entry -> assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR));
+            assertThat(onFx(drain::engineFault)).as("fixture: after which the latch is the callback's")
+                    .hasValueSatisfying(fact -> assertThat(fact.category()).isEqualTo(AudioFailureCategory.CALLBACK));
+
+            runOnFx(() -> drain.streamLost(record.renderDriveEpoch()));
+
+            assertThat(onFx(drain::engineFault)).as("the loss clears nothing while a processing fault is latched")
+                    .hasValueSatisfying(fact -> assertThat(fact.category()).isEqualTo(AudioFailureCategory.CALLBACK));
+            assertThat(spine.funnel().isEscalated(CALLBACK)).as("and the callback fingerprint stays escalated")
+                    .isTrue();
+
+            beatOneFaultFreeSecond(drain, reopenTheStream());
+
+            assertThat(onFx(drain::engineFault)).as("one fault-free second on a newer render drive clears it")
+                    .isEmpty();
+        }
+    }
+
+    /**
+     * As the case above, with a worker failure in each frame of that second: the processing fault that keeps failing
+     * keeps the fact the loss did not clear (story 338, rulings E69, E154 and E161).
+     */
+    @Test
+    void aProcessingFaultThatKeepsFailingKeepsTheFactTheLossDidNotClear(@TempDir Path settings) throws Exception {
+        try (FailureSpineFixture spine = armed(settings)) {
+            AudioHealthDrain drain = drain(spine);
+            AudioHealthLane drive = record.claimLane(LaneRole.RENDER_DRIVE);
+            AudioHealthLane worker = record.claimLane(LaneRole.WORKER);
+            IllegalStateException chain = new IllegalStateException("an insert chain threw");
+            oneSecondLater(drain, drive, () -> worker.record(AudioFailureCodes.WORKER, chain, null, 1));
+            oneSecondLater(drain, drive, () -> worker.record(AudioFailureCodes.WORKER, chain, null, 2));
+            oneSecondLater(drain, drive, () -> worker.record(AudioFailureCodes.WORKER, chain, null, 3));
+            oneSecondLater(drain, drive, () -> callbackFaults(1));
+            oneSecondLater(drain, drive, () -> callbackFaults(2));
+            oneSecondLater(drain, drive, () -> callbackFaults(3));
+            runOnFx(() -> drain.streamLost(record.renderDriveEpoch()));
+            assertThat(onFx(drain::engineFault)).as("fixture: the loss cleared nothing")
+                    .hasValueSatisfying(fact -> assertThat(fact.category()).isEqualTo(AudioFailureCategory.CALLBACK));
+
+            AudioHealthLane reopened = reopenTheStream();
+            reopened.beat();
+            worker.record(AudioFailureCodes.WORKER, chain, null, 4);
+            pulse(drain);
+            reopened.beat();
+            advance(Duration.ofMillis(600));
+            worker.record(AudioFailureCodes.WORKER, chain, null, 5);
+            pulse(drain);
+            reopened.beat();
+            advance(Duration.ofMillis(400));
+            worker.record(AudioFailureCodes.WORKER, chain, null, 6);
+            pulse(drain);
+
+            assertThat(onFx(drain::engineFault)).as("a worker failure in each frame of that second keeps the fact")
+                    .hasValueSatisfying(fact -> assertThat(fact.category()).isEqualTo(AudioFailureCategory.CALLBACK));
+            assertThat(spine.funnel().isEscalated(CALLBACK)).as("and the callback fingerprint stays escalated")
+                    .isTrue();
+        }
+    }
+
+    /**
+     * The history of a halt folded at the loss and one lost block counted after it: one tail entry, history only, at
+     * the warning level with Restart, in the words of the input's lost-block warning with the halt's reason; no
+     * entry reads as an audio device fault, and no fault is latched (story 338, ruling E155).
+     */
+    private static void assertTheFoldIsSummedUpAsLostInput(FailureSpineFixture spine, AudioHealthDrain drain,
+                                                           Instant lostBlock) throws Exception {
+        String summary = HALT_AS_LOST_INPUT + " It happened once more after that notice, the last time at "
+                + clock(lostBlock) + ".";
+        assertThat(spine.history().getEntries()).as("every toast has its history entry: no toast, one tail")
+                .singleElement().satisfies(entry -> {
+                    assertThat(entry.message()).isEqualTo(summary);
+                    assertThat(entry.level()).isEqualTo(NotificationLevel.WARNING);
+                    assertThat(entry.actionLabel()).hasValue(RESTART);
+                });
+        assertThat(spine.history().getEntries()).extracting(NotificationEntry::message)
+                .noneMatch(message -> message.contains("Audio device fault")
+                        || message.contains("until you restart the audio engine"));
+        assertThat(onFx(drain::engineFault)).as("no engine fault latched").isEmpty();
+    }
+
+    /** The one ERROR of the later stream's third second: the device-fault sentence, Restart, and the latch. */
+    private void assertTheInputEscalatedAtItsThirdSecond(FailureSpineFixture spine, AudioHealthDrain drain)
+            throws Exception {
+        assertThat(entries(spine, "Audio device fault")).as("negative control: its third second escalates")
+                .singleElement().satisfies(entry -> {
+                    assertThat(entry.message()).isEqualTo("Audio device fault — 4 errors from “" + DEVICE + "”"
+                            + " since " + clock(noon) + ": a captured block was dropped. Audio may stay silent or"
+                            + " broken until you restart the audio engine.");
+                    assertThat(entry.level()).isEqualTo(NotificationLevel.ERROR);
+                    assertThat(entry.actionLabel()).hasValue(RESTART);
+                });
+        assertThat(onFx(drain::engineFault)).hasValueSatisfying(fact ->
+                assertThat(fact.category()).isEqualTo(AudioFailureCategory.INPUT));
+    }
+
+    /** Sets the backend's input counts, {@code fault} the newest input fault; it reports no device periods. */
+    private void inputFailures(long blocksLost, long halts, IllegalStateException fault) {
+        counters.set(new BackendThreadCounters(0, blocksLost, halts, 0, OptionalLong.empty(), Optional.empty(),
+                Optional.of(fault), Optional.empty()));
+    }
+
+    /** A stream opened after the loss: the backend attached again, then its render drive, which is returned. */
+    private AudioHealthLane reopenTheStream() {
+        record.attachBackendCounters(() -> DEVICE, counters::get);
+        return record.claimLane(LaneRole.RENDER_DRIVE);
+    }
+
+    /** One second later: {@code drive} beats, {@code counts} sets the backend's counts, and one drain frame runs. */
+    private void oneSecondLater(AudioHealthDrain drain, AudioHealthLane drive, Runnable counts) throws Exception {
+        advance(Duration.ofSeconds(1));
+        drive.beat();
+        counts.run();
+        pulse(drain);
+    }
+
+    /** Sets the backend's callback fault count while its device periods stand still and the drive does not beat. */
+    private void callbackFaultsWithAStandingHeartbeat(long total) {
+        counters.set(new BackendThreadCounters(total, 0, 0, 0, OptionalLong.of(10), Optional.of(shortBuffer),
+                Optional.empty(), Optional.empty()));
     }
 
     /** Beats {@code lane} for one fault-free second of frames: a stamp, 600 ms later another, 400 ms later a third. */

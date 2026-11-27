@@ -31,3 +31,10 @@ Story 214 covers device-loss; this story covers driver-initiated format change w
 - Persisting the driver-initiated change as the new DAW default — settings the user made in the driver panel apply only to that session unless they confirm "save as default" in the audio settings dialog.
 - Recovering plugin internal state across the reopen for plugins that are not real-time-state-safe; lookahead buffers and reverb tails are flushed.
 - Exposing a "block driver-initiated changes" mode; the driver always wins, the DAW always reconciles.
+
+## Note from Story 338
+
+- **`kAsioResyncRequest` is no longer a `FormatChangeRequested`.** A resync is answered as supported and handled in place: it is counted in the xrun log ("Resync") and judged as one bad answer of the clock-lock poll, and it never closes or reopens the stream (story 338, rulings E37 to E39). The Java selector constants did not match the ASIO SDK's enum, so a real buffer-size change was read as a resync; they now match it (`AsioFormatChangeShimTest.selectorConstantsMatchTheAsioSdkEnum`). A reset request and a buffer-size change keep this story's reopen.
+- **While the reopen runs**, the session status strip's Engine cell reads "Engine: reconfiguring…" beside the existing "Reconfiguring audio engine…" notice (ruling E26).
+- **A reopen of a stream that was open, and that fails, no longer ends `STOPPED` with "Audio engine reconfigured".** The device is declared lost: `EngineState.DEVICE_LOST`, the notice "`<name>` asked to be reset and could not be reopened — audio stopped. Check that it is connected and powered, then choose Reconnect." with a Reconnect action, and a take in flight sealed as a device loss under the lead "`<name>` could not be reopened after a driver reset during recording" (rulings E113 and E134). A request while no stream is open still reopens nothing and ends "Audio engine reconfigured" (ruling E134). A request that arrives while the device is lost is dropped.
+- **The recording bullet above** (a reset while a take records) is not built: a reset during a take is future story [464](future/464-a-driver-reset-during-a-take-seals-the-take-before-the-reopen.md) (ruling E41).

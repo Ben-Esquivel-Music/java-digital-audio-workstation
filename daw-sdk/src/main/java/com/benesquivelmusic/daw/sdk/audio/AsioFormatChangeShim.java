@@ -60,14 +60,19 @@ final class AsioFormatChangeShim implements AutoCloseable {
     static final int kAsioEngineVersion = 2;
     /** ASIO selector: a generic reset request from the driver. */
     static final int kAsioResetRequest = 3;
-    /** ASIO selector: the driver wants the host to resync the device clock. */
-    static final int kAsioResyncRequest = 4;
-    /** ASIO selector: does the host implement {@code bufferSwitchTimeInfo}? */
-    static final int kAsioSupportsTimeInfo = 5;
+    /** ASIO selector: the driver renegotiated the buffer size to {@code value} frames. */
+    static final int kAsioBufferSizeChange = 4;
+    /**
+     * ASIO selector: the driver lost sync and resynchronized, losing some
+     * audio on the way; the SDK documents it as non-fatal data loss.
+     */
+    static final int kAsioResyncRequest = 5;
     /** ASIO selector: the driver's reported latencies changed. */
     static final int kAsioLatenciesChanged = 6;
-    /** ASIO selector: the driver renegotiated the buffer size to {@code value} frames. */
-    static final int kAsioBufferSizeChange = 7;
+    /** ASIO selector: does the host implement {@code bufferSwitchTimeInfo}? */
+    static final int kAsioSupportsTimeInfo = 7;
+    /** ASIO selector: the driver detected an overload (a processing deadline missed). */
+    static final int kAsioOverload = 15;
 
     /** ASE_OK — selector handled successfully. */
     private static final int ASE_OK = 1;
@@ -316,9 +321,6 @@ final class AsioFormatChangeShim implements AutoCloseable {
      *       {@code value} is the new frame count and is carried as
      *       {@link FormatChangeReason.BufferSizeChange#newBufferFrames()}
      *       so consumers can apply it during reopen.</li>
-     *   <li>{@link #kAsioResyncRequest} &rarr;
-     *       {@link FormatChangeReason.ClockSourceChange}; proposed
-     *       format is empty.</li>
      *   <li>{@link #kAsioResetRequest} &rarr;
      *       {@link FormatChangeReason.DriverReset}; proposed format
      *       is empty. Sample-rate-driven resets cannot be distinguished
@@ -341,11 +343,24 @@ final class AsioFormatChangeShim implements AutoCloseable {
      *       <em>reporting</em> belongs to story 217, so nothing is published.</li>
      * </ul>
      *
+     * <p>Two driver messages are counted on the backend and answered 1, with
+     * nothing published, no host downcall, no lock and no allocation on the
+     * driver's thread (the counters are the backend's, because this shim is
+     * rebuilt on every open):</p>
+     * <ul>
+     *   <li>{@link #kAsioOverload} &rarr;
+     *       {@link AsioBackend#noteDriverOverload()}.</li>
+     *   <li>{@link #kAsioResyncRequest} &rarr;
+     *       {@link AsioBackend#noteDriverResync()}. A resync is handled in
+     *       place: the stream is neither stopped nor reopened, and the
+     *       clock-lock poll reads the count as one bad clock answer while the
+     *       current source is external.</li>
+     * </ul>
+     *
      * <p>{@link #kAsioBufferSizeChange} and {@link #kAsioResetRequest}
      * invalidate the driver's buffers, so they quiesce the streaming bridge
      * via {@link AsioBackend#stopStreamingForDriverReset()} <em>before</em>
-     * announcing the event (story 311). {@link #kAsioResyncRequest} does not
-     * invalidate the buffers and is left alone.</p>
+     * announcing the event (story 311).</p>
      *
      * <p>Because story 311 installs this shim <em>before</em>
      * {@code ASIOCreateBuffers} — drivers issue the handshake selectors
@@ -389,9 +404,10 @@ final class AsioFormatChangeShim implements AutoCloseable {
                 return ASE_OK;
             }
             case kAsioResyncRequest:
-                backend.publishFormatChangeRequested(
-                        device, Optional.empty(),
-                        new FormatChangeReason.ClockSourceChange());
+                backend.noteDriverResync();
+                return ASE_OK;
+            case kAsioOverload:
+                backend.noteDriverOverload();
                 return ASE_OK;
             case kAsioResetRequest:
                 backend.stopStreamingForDriverReset();
@@ -412,7 +428,7 @@ final class AsioFormatChangeShim implements AutoCloseable {
         return switch (selector) {
             case kAsioSelectorSupported, kAsioEngineVersion, kAsioResetRequest,
                  kAsioResyncRequest, kAsioSupportsTimeInfo,
-                 kAsioLatenciesChanged, kAsioBufferSizeChange -> true;
+                 kAsioLatenciesChanged, kAsioBufferSizeChange, kAsioOverload -> true;
             default -> false;
         };
     }

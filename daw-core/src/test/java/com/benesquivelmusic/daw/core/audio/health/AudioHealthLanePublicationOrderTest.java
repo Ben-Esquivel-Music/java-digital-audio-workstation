@@ -3,6 +3,8 @@ package com.benesquivelmusic.daw.core.audio.health;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -41,6 +43,7 @@ class AudioHealthLanePublicationOrderTest {
         AudioHealthLane lane = new AudioHealthRecord().claimLane(LaneRole.RENDER_DRIVE);
         AtomicBoolean stop = new AtomicBoolean();
         AtomicLong drained = new AtomicLong();
+        CountDownLatch enoughDrained = new CountDownLatch(1);
         AtomicLong torn = new AtomicLong();
         AtomicReference<AudioFailureSample> firstTorn = new AtomicReference<>();
 
@@ -48,14 +51,21 @@ class AudioHealthLanePublicationOrderTest {
             int detail = 0;
             while (!stop.get()) {
                 int index = detail % DISTINCT;
+                long lost = lane.lostRecords();
                 lane.record(AudioFailureCodes.RENDER, failures[index], subjects[index], detail);
                 detail = (detail + 1) & Integer.MAX_VALUE;
+                // On a shared CPU a full ring would otherwise hold the drain off for the writer's whole time slice.
+                if (lane.lostRecords() != lost) {
+                    Thread.yield();
+                }
             }
         });
         Thread drain = Thread.ofPlatform().name("lane-drain").daemon(true).start(() -> {
             while (!stop.get()) {
-                lane.poll(sample -> {
-                    drained.incrementAndGet();
+                boolean took = lane.poll(sample -> {
+                    if (drained.incrementAndGet() == MIN_DRAINED) {
+                        enoughDrained.countDown();
+                    }
                     int index = Math.floorMod(sample.detail(), DISTINCT);
                     boolean whole = sample.failure().filter(failure -> failure == failures[index]).isPresent()
                             && sample.subject().filter(subject -> subject == subjects[index]).isPresent();
@@ -63,18 +73,23 @@ class AudioHealthLanePublicationOrderTest {
                         firstTorn.set(sample);
                     }
                 });
+                if (!took) {
+                    Thread.yield();
+                }
             }
         });
 
         try {
             Thread.sleep(RACE_MILLIS);
+            assertThat(enoughDrained.await(JOIN_BUDGET.toMillis(), TimeUnit.MILLISECONDS))
+                    .as("the drain took %d samples from the writer", MIN_DRAINED)
+                    .isTrue();
         } finally {
             stop.set(true);
         }
 
         assertThat(writer.join(JOIN_BUDGET)).as("the writer stopped").isTrue();
         assertThat(drain.join(JOIN_BUDGET)).as("the drain stopped").isTrue();
-        assertThat(drained.get()).as("the drain raced the writer").isGreaterThanOrEqualTo(MIN_DRAINED);
         assertThat(torn.get())
                 .as("samples whose throwable or subject is not their record's; the first: %s", firstTorn.get())
                 .isZero();

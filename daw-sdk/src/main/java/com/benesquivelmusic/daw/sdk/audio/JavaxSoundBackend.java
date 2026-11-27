@@ -187,8 +187,10 @@ public final class JavaxSoundBackend implements AudioBackend {
 
     /**
      * Captured blocks the {@code javax-sound-capture} thread lost to a throw
-     * from {@code decode} or {@code publishInput} (story 337, ruling E17) —
-     * {@code audio.input}. The loop counts the block and continues, so one bad
+     * from {@code decode} or {@code publishInput} (story 337, ruling E17) while
+     * its stream was live; after its close such a throw is teardown (story 338,
+     * ruling E246) — {@code audio.input}. The loop counts the block and
+     * continues, so one bad
      * block is a counted one-block gap instead of a dead capture thread under
      * a stream that still answers {@code isOpen()}. Single writer: the capture
      * thread of the stream currently open ({@link #releaseInputLine()} joins it
@@ -1465,8 +1467,13 @@ public final class JavaxSoundBackend implements AudioBackend {
                         // Story 337, ruling E17: one lost block, counted; the
                         // loop continues with the next read. The fault is
                         // stored before its count (story 337, ruling E82).
-                        lastInputFault = lostBlock;
-                        inputBlocksLost++;
+                        // Counted only while its stream is live: a block it
+                        // could not build or publish after its close is
+                        // teardown (story 338, ruling E246).
+                        if (captureStreamLive(stream)) {
+                            lastInputFault = lostBlock;
+                            inputBlocksLost++;
+                        }
                     }
                 }
             } catch (Throwable terminal) {
@@ -1556,10 +1563,11 @@ public final class JavaxSoundBackend implements AudioBackend {
      * {@inheritDoc}
      *
      * <p>Java Sound counts the blocks its {@code javax-sound-capture} thread
-     * lost and the capture threads that ended on a fault or an empty read
-     * while their stream was open ({@code audio.input}; story 337, rulings E17
-     * and E83). It reports no device heartbeat: the engine's render drive is
-     * this backend's only clock (story 337, ruling E5).</p>
+     * lost while its stream was live (story 338, ruling E246) and the capture
+     * threads that ended on a fault or an empty read while their stream was
+     * open ({@code audio.input}; story 337, rulings E17 and E83). It reports no
+     * device heartbeat: the engine's render drive is this backend's only clock
+     * (story 337, ruling E5).</p>
      */
     @Override
     public BackendThreadCounters threadCounters() {

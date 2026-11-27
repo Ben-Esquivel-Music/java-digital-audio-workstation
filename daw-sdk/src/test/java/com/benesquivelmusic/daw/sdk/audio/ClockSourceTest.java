@@ -11,6 +11,7 @@ import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -125,6 +126,102 @@ class ClockSourceTest {
             assertSame(device, event.device());
             assertEquals(1, event.sourceId());
             assertFalse(event.locked());
+        }
+    }
+
+    /**
+     * The clock publisher belongs to the backend, not to one stream, like the
+     * device-event publisher: a subscriber still receives events after
+     * {@code close()}, and every event carries the evidence time.
+     */
+    @Test
+    void mockClockLockPublisherOutlivesCloseAndStampsTheEvidenceTime() throws InterruptedException {
+        MockAudioBackend backend = new MockAudioBackend();
+        DeviceId device = new DeviceId(MockAudioBackend.NAME, "Mock Device");
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<ClockLockEvent> received = new AtomicReference<>();
+        backend.clockLockEvents().subscribe(new Flow.Subscriber<>() {
+            @Override public void onSubscribe(Flow.Subscription s) { s.request(Long.MAX_VALUE); }
+            @Override public void onNext(ClockLockEvent e) {
+                received.set(e);
+                latch.countDown();
+            }
+            @Override public void onError(Throwable t) { /* unused */ }
+            @Override public void onComplete() { /* unused */ }
+        });
+
+        backend.close();
+        long before = System.nanoTime();
+        backend.simulateClockLock(device, 1, false);
+        long after = System.nanoTime();
+
+        assertTrue(latch.await(2, TimeUnit.SECONDS), "the event published after close() arrives");
+        ClockLockEvent event = received.get();
+        assertFalse(event.locked());
+        assertTrue(event.evidenceNanos() - before >= 0 && after - event.evidenceNanos() >= 0,
+                "the mock stamps the event with the time it was simulated");
+    }
+
+    @Test
+    void aClockLockEventBuiltWithoutEvidenceReadsUnknown() {
+        ClockLockEvent event = new ClockLockEvent(new DeviceId("ASIO", "Driver"), 2, true);
+
+        assertEquals(0L, event.evidenceNanos());
+        assertEquals(new ClockLockEvent(new DeviceId("ASIO", "Driver"), 2, true, 0L), event);
+    }
+
+    /**
+     * A block the mock's input publisher dropped for a subscriber that never
+     * requests is told to that subscriber and never counted in the mock's
+     * dropout counters, which report nothing and claim no output-starvation
+     * signal (story 338, ruling E208).
+     */
+    @Test
+    void aBlockTheMockDropsIsToldToTheSubscriberThatDroppedItAndNotCounted() {
+        try (MockAudioBackend backend = new MockAudioBackend()) {
+            backend.open(new DeviceId(MockAudioBackend.NAME, "Mock Device"),
+                    new AudioFormat(48_000.0, 2, 16), 64);
+            AtomicLong told = new AtomicLong();
+            backend.inputBlocks().subscribe(new NonRequestingListener(told));
+
+            for (int i = 0; i < Flow.defaultBufferSize() * 2; i++) {
+                backend.pumpInput(64);
+            }
+
+            assertTrue(told.get() > 0, "blocks past the subscriber's buffer were told to it");
+            assertEquals(BackendDropoutCounters.NONE, backend.dropoutCounters());
+        }
+    }
+
+    /** A listener that requests nothing and counts the blocks dropped for it. */
+    private static final class NonRequestingListener
+            implements Flow.Subscriber<AudioBlock>, InputBlockLossListener {
+
+        private final AtomicLong told;
+
+        NonRequestingListener(AtomicLong told) {
+            this.told = told;
+        }
+
+        @Override
+        public void inputBlockDropped(AudioBlock block) {
+            told.incrementAndGet();
+        }
+
+        @Override
+        public void onSubscribe(Flow.Subscription subscription) {
+        }
+
+        @Override
+        public void onNext(AudioBlock block) {
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+        }
+
+        @Override
+        public void onComplete() {
         }
     }
 

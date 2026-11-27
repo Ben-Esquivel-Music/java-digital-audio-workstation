@@ -62,7 +62,7 @@ class FailureCopyTest {
             }
         }
 
-        assertThat(family).hasSize(51).containsExactlyInAnyOrderElementsOf(FailureCopy.KEYS);
+        assertThat(family).hasSize(52).containsExactlyInAnyOrderElementsOf(FailureCopy.KEYS);
         assertThat(FailureCopy.KEYS).allSatisfy(key -> assertThat(bundle.getString(key)).doesNotContain("'"));
     }
 
@@ -373,6 +373,30 @@ class FailureCopyTest {
     void aTimeIsHoursMinutesAndSecondsTodayAndCarriesTheDateOtherwise() {
         assertThat(copy.clock(EARLIER_TODAY)).isEqualTo("14:32:05");
         assertThat(copy.clock(YESTERDAY)).isEqualTo("2026-11-11 23:59:59");
+    }
+
+    /**
+     * Ruling E128: "1 error" for one, "{N} errors" for 0 and for more, and
+     * "from the audio device" with no device or backend name at all — for
+     * every category that takes the device's sentence.
+     */
+    @Test
+    void theDeviceFaultCountsOneErrorAndSaysTheAudioDeviceWithNoNameAtAll() {
+        String tail = " since 14:32:05: " + REASON + ". Audio may stay silent or broken until you restart the audio"
+                + " engine.";
+        for (AudioFailureCategory device : new AudioFailureCategory[] {AudioFailureCategory.SINK,
+                AudioFailureCategory.PACING, AudioFailureCategory.INPUT, AudioFailureCategory.DEVICE}) {
+            assertThat(sustained(device, Optional.empty(), 1)).as("%s", device)
+                    .isEqualTo("Audio device fault — 1 error from “" + DEVICE + "”" + tail);
+            assertThat(sustained(device, Optional.empty(), 2)).as("%s", device)
+                    .isEqualTo("Audio device fault — 2 errors from “" + DEVICE + "”" + tail);
+            assertThat(sustained(device, Optional.empty(), 0)).as("%s", device)
+                    .isEqualTo("Audio device fault — 0 errors from “" + DEVICE + "”" + tail);
+            assertThat(copy.audioSustained(device, Optional.empty(), "", 1, EARLIER_TODAY, REASON)).as("%s", device)
+                    .isEqualTo("Audio device fault — 1 error from the audio device" + tail);
+            assertThat(copy.audioSustained(device, Optional.empty(), "", 3, EARLIER_TODAY, REASON)).as("%s", device)
+                    .isEqualTo("Audio device fault — 3 errors from the audio device" + tail);
+        }
     }
 
     private String first(AudioFailureCategory category, Optional<String> name) {

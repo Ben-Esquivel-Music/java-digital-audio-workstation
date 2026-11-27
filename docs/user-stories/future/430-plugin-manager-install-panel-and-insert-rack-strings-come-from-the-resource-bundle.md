@@ -11,7 +11,7 @@ The `javafx-application-design` skill's §14 "Accessibility, internationalizatio
 
 - `PluginManagerDialog`: the title `Manage Plugins`, `Install from JAR…`, `Remove Selected`, `Please select a plugin to remove.`, the drop hint, the file chooser's title and the `Plugin Error` title.
 - `PluginInstallPanel`: the `Install plugin` titles and header.
-- `InsertEffectRack`'s working rows: `INSERTS`, the `Bypass` tooltip, the `Remove` and `Expensive (eligible for bypass)` menu items, the empty slot's `Click to add effect` and the `Sidechain source` tooltip.
+- `InsertEffectRack`'s working rows: `INSERTS`, the `Bypass` tooltip, the `Remove` and `Expensive (no CPU budget policy bypasses it)` menu items, the empty slot's `Click to add effect` and the `Sidechain source` tooltip.
 - `PluginBrowser`, the insert rack's plugin browser: the `Add plugin` titles, `Search plugins…`, `Manage…`, `+ Install from JAR…`, `+ Install from folder…` and their choosers' titles, the busy row's `Scanning <name>…` and the `Install plugins` summary of the JARs it skipped.
 - `PluginViewController`, the plugin menu: the status bar's `Opening plugin manager...`, `Plugin manager closed`, `Opened editor for <name>` and `Failed to activate <name>`, and the error notification `Failed to activate <name>: <reason>`.
 - `TrackStripController`'s badge suffix ` (bypassed)` and `InsertsSection`'s `Edit <name>` accessible text.

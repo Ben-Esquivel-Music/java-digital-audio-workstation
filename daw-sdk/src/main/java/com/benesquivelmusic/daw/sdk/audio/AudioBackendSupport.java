@@ -25,14 +25,16 @@ final class AudioBackendSupport implements AutoCloseable {
     /**
      * Drop handler shared by every
      * {@link #publishInput(SubmissionPublisher, AudioBlock)} call — and so by
-     * {@link #publishInput(AudioBlock)}, which delegates there. Hoisted into a
-     * constant so no lambda is allocated per published block
-     * (story 311). Returning {@code false} tells
+     * {@link #publishInput(AudioBlock)}, which delegates there:
+     * {@link InputBlockLossListener#reportDrop}. It tells the subscriber that
+     * dropped the block, when that subscriber is a listener (story 338, ruling
+     * E208), and never asks
      * {@link SubmissionPublisher#offer(Object, java.util.function.BiPredicate)}
-     * to drop the item rather than retry.
+     * to retry. Hoisted as a non-capturing method reference, so no handler is
+     * allocated per published block (story 311).
      */
     private static final BiPredicate<Flow.Subscriber<? super AudioBlock>, AudioBlock>
-            DROP_INPUT_BLOCK = (subscriber, droppedBlock) -> false;
+            DROP_INPUT_BLOCK = InputBlockLossListener::reportDrop;
 
     /**
      * Drop handler shared by every {@link #publishDeviceEvent(AudioDeviceEvent)}
@@ -96,7 +98,11 @@ final class AudioBackendSupport implements AutoCloseable {
         return bufferFrames;
     }
 
-    /** Clears stream state after a native open rolled back. */
+    /**
+     * Clears stream state and keeps the input publisher, for a rollback that
+     * started no thread publishing into it (Java Sound's). A rollback that did
+     * must {@link #close()} instead (story 338, ruling E215).
+     */
     void markClosed() {
         open = false;
         format = null;
@@ -154,22 +160,17 @@ final class AudioBackendSupport implements AutoCloseable {
      *
      * <p>Publishes into whatever the CURRENT publisher is, read exactly once:
      * {@link #markOpen} may replace it concurrently after a close-then-open
-     * cycle. That is the right target for a caller that its own stream's
-     * teardown stops and joins before this support's {@link #close()} runs.
-     * The ASIO drain thread is one: it is per-stream, not per-backend —
-     * {@code AsioBackend.open} constructs the {@code AsioBufferSwitchShim}
-     * whose constructor starts {@code asio-input-drain}, and
-     * {@code AsioBackend.close()} calls {@code bridge.close()}, whose
-     * {@code shutDown} unparks and joins that thread (bounded by
-     * {@code DRAIN_SHUTDOWN_TIMEOUT_MILLIS}), BEFORE it calls
-     * {@code support.close()}. The overload's other production caller,
-     * {@code MockAudioBackend.pumpInput}, needs no such guarantee: it
-     * publishes synchronously on its caller's thread, guarded by
-     * {@link #isOpen()}. A thread that may still be publishing after its
-     * stream's close has completed — {@link JavaxSoundBackend}'s capture
-     * thread, blocked in a non-interruptible read — must instead pin that
-     * stream's publisher and go through
-     * {@link #publishInput(SubmissionPublisher, AudioBlock)}; see there.</p>
+     * cycle. Only a caller that publishes synchronously on its own thread,
+     * guarded by {@link #isOpen()}, may use it: {@code MockAudioBackend.pumpInput}
+     * is the one. Every capture or drain thread can outlive its stream's close
+     * when the bounded join of that close times out —
+     * {@link JavaxSoundBackend}'s capture thread, blocked in a
+     * non-interruptible read, and ASIO's {@code asio-input-drain}, whose
+     * {@code shutDown} join is bounded by
+     * {@code DRAIN_SHUTDOWN_TIMEOUT_MILLIS} — so each pins its stream's
+     * publisher before it starts and publishes through
+     * {@link #publishInput(SubmissionPublisher, AudioBlock)} (story 338,
+     * ruling E215); see there.</p>
      *
      * @param block the captured block; must not be null
      */
@@ -184,8 +185,11 @@ final class AudioBackendSupport implements AutoCloseable {
      * its life (story 316 review).
      *
      * <p>Meant to be read between {@link #markOpen} and the start of the
-     * thread that will publish for that stream. Read at any other time it may
-     * name a publisher {@link #close()} has already completed.</p>
+     * thread that will publish for that stream, as {@link JavaxSoundBackend}
+     * does before it starts its capture thread and the
+     * {@code AsioBufferSwitchShim} constructor does before it starts its
+     * drain. Read at any other time it may name a publisher {@link #close()}
+     * has already completed.</p>
      *
      * @return the publisher {@link #inputBlocks()} currently hands out
      */
@@ -226,7 +230,9 @@ final class AudioBackendSupport implements AutoCloseable {
      * dispatch to its executor, exactly as on the pre-existing
      * single-argument path — which is why publishing
      * already lives on a drain thread rather than in the real-time
-     * callback.</p>
+     * callback. The offer also runs the drop handler under that lock, and so
+     * the {@link InputBlockLossListener#inputBlockDropped} of each subscriber
+     * that dropped the block.</p>
      *
      * <p>Same drop-instead-of-block {@code offer} and the same open-flag guard
      * as {@link #publishInput(AudioBlock)}, which delegates here with the
@@ -255,17 +261,22 @@ final class AudioBackendSupport implements AutoCloseable {
      * the close race is handled at the non-blocking operation itself. An
      * {@code IllegalStateException} from an open publisher is rethrown rather
      * than hidden.</p>
+     *
+     * @return what {@link SubmissionPublisher#offer} returned (negative when
+     *         at least one subscriber dropped the item), or {@code 0} when a
+     *         concurrent close won and nothing was offered
      */
-    private static <T> void offerUnlessClosed(
+    private static <T> int offerUnlessClosed(
             SubmissionPublisher<T> publisher,
             T item,
             BiPredicate<Flow.Subscriber<? super T>, T> dropHandler) {
         try {
-            publisher.offer(item, dropHandler);
+            return publisher.offer(item, dropHandler);
         } catch (IllegalStateException closedRace) {
             if (!publisher.isClosed()) {
                 throw closedRace;
             }
+            return 0;
         }
     }
 

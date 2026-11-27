@@ -6,8 +6,10 @@ import com.benesquivelmusic.daw.core.audio.health.AudioHealthLane;
 import com.benesquivelmusic.daw.core.audio.health.AudioHealthRecord;
 import com.benesquivelmusic.daw.core.audio.health.LaneRole;
 import com.benesquivelmusic.daw.core.audio.health.RenderThread;
+import com.benesquivelmusic.daw.core.audio.performance.XrunDetector;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioBlock;
+import com.benesquivelmusic.daw.sdk.audio.InputBlockLossListener;
 
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -119,7 +121,9 @@ import java.util.logging.Logger;
  *       the fault.</li>
  *   <li>The installed uncaught-exception handler stays as a last-resort
  *       backstop: only a throwable the outer catch-all itself cannot handle
- *       (an error raised while handling one) can still kill the thread.</li>
+ *       (an error raised while handling one) can still kill the thread. It
+ *       logs that death, then records it through the honest exit's halt, so
+ *       the drive reads halted rather than silently dead.</li>
  *   <li>Input blocks arriving faster than the loop consumes them are dropped
  *       (bounded queue) and counted; both sides of that queue are non-RT
  *       threads, so the queue's internal lock is fine here.</li>
@@ -168,6 +172,23 @@ final class EngineStreamPump {
      * render thread, so it stays a shared atomic rather than a lane counter.
      */
     private final AtomicLong droppedInputBlocks = new AtomicLong();
+    /** Captured blocks the backend handed this pump, counted on arrival: the input's heartbeat. */
+    private final AtomicLong deliveredInputBlocks = new AtomicLong();
+    /** Set once by {@link #declareInputStalled()}; the declaration acts at most once. */
+    private final AtomicBoolean inputStallDeclared = new AtomicBoolean();
+    /**
+     * Whether the stream has an input of its own whose missing blocks are
+     * stamped as starved: only an opened input can starve.
+     */
+    private final boolean ownInputOpened;
+
+    /**
+     * The engine's detector when this pump was built, or {@code null}: every
+     * rendered block's processing time goes to its {@code recordTick}. This
+     * pump's render thread is its only tick writer, because the engine starts
+     * a new pump only after the previous one's stop was confirmed.
+     */
+    private final XrunDetector xrunDetector;
 
     /** This pump's render-drive lane: its only writer is {@link #thread}. */
     private final AudioHealthLane lane;
@@ -189,6 +210,8 @@ final class EngineStreamPump {
      * need re-zeroing when no capture arrives.
      */
     private boolean inputPlanesDirty;
+    /** Pump thread only: the render passed the ended input's first zero-width block (ruling E276). */
+    private boolean inputEnded;
 
     /**
      * Pre-allocates every buffer the render loop needs and claims the render
@@ -244,11 +267,13 @@ final class EngineStreamPump {
         this.inputViews = new float[input.length + 1][][];
         for (int width = 0; width <= input.length; width++) inputViews[width] = java.util.Arrays.copyOf(input, width);
         availableInputChannels = backend.openedInputChannels();
+        this.ownInputOpened = availableInputChannels > 0;
         this.output = new float[channels][bufferFrames];
         this.interleaved = new float[channels * bufferFrames];
         this.reusableBlock = new AudioBlock(
                 openedFormat.sampleRate(), channels, bufferFrames, interleaved);
         this.streamGeneration = engine.getStreamGeneration();
+        this.xrunDetector = engine.getXrunDetector();
         // Claimed last, once nothing above can throw, so a failed construction
         // never leaves a lane registered (story 337, ruling E18). A RenderThread
         // is a daemon platform thread at MAX_PRIORITY that carries the lane.
@@ -257,14 +282,21 @@ final class EngineStreamPump {
         // The loop's outer catch-all turns every throwable into a counted
         // fault or the recorded honest exit (story 337, ruling E9), so only a
         // throwable the catch-all itself cannot handle can still kill the
-        // thread. Keep that last-resort death loud — a silently dead pump
-        // leaves the engine RUNNING with the RT clock claimed and nothing
-        // driving it (surfacing this handler's record is story 338's).
-        this.thread.setUncaughtExceptionHandler((deadThread, failure) ->
-                LOG.log(Level.SEVERE,
-                        "engine-render-pump thread died; audio output is dead until"
-                                + " the stream is stopped and reopened",
-                        failure));
+        // thread. A silently dead pump leaves the engine RUNNING with the RT
+        // clock claimed and nothing driving it, so the death is logged, then
+        // recorded as the drive's halt, which the drain surfaces once. The
+        // handler runs on the dying thread, which is the lane's one writer.
+        this.thread.setUncaughtExceptionHandler((deadThread, failure) -> {
+            LOG.log(Level.SEVERE,
+                    "engine-render-pump thread died; audio output is dead until"
+                            + " the stream is stopped and reopened",
+                    failure);
+            try {
+                halt(failure);
+            } catch (Throwable ignored) {
+                // Nothing is left to report it with: the SEVERE line above is the record.
+            }
+        });
     }
 
     /**
@@ -370,6 +402,51 @@ final class EngineStreamPump {
     }
 
     /**
+     * Number of captured blocks the backend has handed this pump, whatever
+     * their content and whether or not they could be queued (story 338,
+     * ruling E53). Any thread; lock-free.
+     */
+    long deliveredInputBlocks() {
+        return deliveredInputBlocks.get();
+    }
+
+    /**
+     * Whether the stream's own input still feeds this pump: it is running
+     * and the input neither ended nor was declared stalled.
+     */
+    boolean inputLive() {
+        return running && !inputStreamTerminated;
+    }
+
+    /** Whether the stream was opened with an input of its own. */
+    boolean hasOwnInput() {
+        return ownInputOpened;
+    }
+
+    /** Whether {@code candidate} is the engine this pump renders for. */
+    boolean belongsTo(AudioEngine candidate) {
+        return engine == candidate;
+    }
+
+    /**
+     * Ends this pump's input as a stall (story 338): from the next block that polls no captured block, the
+     * render passes zero-width input to the end of the stream, so the take flags the input's tracks; blocks
+     * already queued are still rendered first (ruling E47), and a block a delivery already past its gate adds
+     * after that block is discarded unrendered (ruling E276). Acts on this pump only, so a declaration that
+     * arrives after the stream was reopened cannot end the new stream's input. Any non-real-time thread;
+     * lock-free.
+     *
+     * @return {@code true} only for the call that ended a live input
+     */
+    boolean declareInputStalled() {
+        if (!inputLive() || !inputStallDeclared.compareAndSet(false, true)) {
+            return false;
+        }
+        inputStreamTerminated = true;
+        return true;
+    }
+
+    /**
      * Returns {@code true} once this pump ended itself through the honest
      * exit — its terminal {@code audio.render.halted} record is counted in
      * its own lane (story 337, rulings E10 and E69); never after a plain
@@ -457,8 +534,8 @@ final class EngineStreamPump {
     private void renderLoop() {
         try {
             while (running) {
-                fillInputPlanes();
-                if (!renderOneBlock()) {
+                boolean polled = fillInputPlanes();
+                if (!renderOneBlock(polled)) {
                     return;
                 }
                 // A fault below owes this iteration a FLOOR of one block
@@ -520,17 +597,46 @@ final class EngineStreamPump {
     /**
      * Renders one block into the output planes and the interleave buffer.
      *
+     * <p>Input of an ended stream (its publisher closed, or the engine declared it stalled) is passed at zero
+     * width, so the take flags it — but only once the blocks it delivered before it ended are rendered (story
+     * 338, ruling E47) — and from its first zero-width block to the end of the stream (ruling E276). A block
+     * rendered with no captured block while the input is live is stamped as input-starved for the duration of
+     * {@code processBlock}, so the take's capture callback, which runs on this thread inside it, marks its
+     * slot (amendment A6).</p>
+     *
+     * @param polled whether {@link #fillInputPlanes()} filled the input planes
+     *               from a captured block this iteration
      * @return {@code false} when the loop must end — the engine stopped (story
      *         337, rulings E6 and E7), or the drive halted (rulings E8 and E9)
      */
-    private boolean renderOneBlock() {
+    private boolean renderOneBlock(boolean polled) {
         try {
-            // A terminal publisher cannot regain availability through queued input.
-            if (!engine.processBlock(inputViews[inputStreamTerminated ? 0 : availableInputChannels],
-                    output, bufferFrames, interleaved)) {
+            long renderStartNanos = System.nanoTime();
+            boolean terminated = inputStreamTerminated;
+            int inputWidth = terminated && !polled ? 0 : availableInputChannels;
+            inputEnded |= terminated && !polled;
+            boolean starved = ownInputOpened && !polled && !terminated;
+            if (starved) {
+                engine.setCapturedInputStarved(true);
+            }
+            boolean rendered;
+            try {
+                rendered = engine.processBlock(inputViews[inputWidth], output, bufferFrames, interleaved);
+            } finally {
+                if (starved) {
+                    engine.setCapturedInputStarved(false);
+                }
+            }
+            if (!rendered) {
                 // Story 337, ruling E6: a stopped engine wrote silence and
                 // recorded nothing; the lifecycle thread owns the teardown.
                 return false;
+            }
+            // Only a rendered block ticks: a faulted one is already counted
+            // as a render fault, and a tick would count it twice.
+            XrunDetector detector = this.xrunDetector;
+            if (detector != null) {
+                detector.recordTick(System.nanoTime() - renderStartNanos);
             }
             renderFaultStreak = 0;
             return true;
@@ -659,19 +765,21 @@ final class EngineStreamPump {
     }
 
     /**
-     * De-interleaves the oldest queued captured block into the input planes,
-     * or zeroes them when no capture arrived this period.
+     * De-interleaves the oldest queued captured block into the input planes, or zeroes them when no capture
+     * arrived this period or the input ended; a block polled after that is discarded unrendered (ruling E276).
+     *
+     * @return whether the planes hold a captured block
      */
-    private void fillInputPlanes() {
+    private boolean fillInputPlanes() {
         AudioBlock block = inputQueue.poll();
-        if (block == null) {
+        if (block == null || inputEnded) {
             if (inputPlanesDirty) {
                 for (int ch = 0; ch < input.length; ch++) {
                     java.util.Arrays.fill(input[ch], 0f);
                 }
                 inputPlanesDirty = false;
             }
-            return;
+            return false;
         }
         int blockChannels = block.channels();
         int usableChannels = Math.min(blockChannels, input.length);
@@ -691,15 +799,17 @@ final class EngineStreamPump {
             java.util.Arrays.fill(input[ch], 0f);
         }
         inputPlanesDirty = true;
+        return true;
     }
 
     /**
-     * Non-RT subscriber feeding the bounded input queue. The backend delivers
-     * blocks on its own (non-RT) marshalling thread — the ASIO backend's
-     * {@code asio-input-drain}, the adapter's {@code native-input-drain} —
-     * so offering into a lock-based queue is fine here.
+     * Non-RT subscriber feeding the bounded input queue. A publisher delivers
+     * on its own thread, never a driver's real-time one, so offering into a
+     * lock-based queue is fine here; a block the publisher drops for this
+     * subscriber is reported to {@link #inputBlockDropped} on the publishing
+     * thread, under the publisher's lock.
      */
-    private final class InputSubscriber implements Flow.Subscriber<AudioBlock> {
+    private final class InputSubscriber implements Flow.Subscriber<AudioBlock>, InputBlockLossListener {
 
         /**
          * Stores the capture subscription and opens the flow — unless the
@@ -755,11 +865,21 @@ final class EngineStreamPump {
 
         @Override
         public void onNext(AudioBlock item) {
+            deliveredInputBlocks.incrementAndGet();
             if (!running || inputStreamTerminated) {
                 return;
             }
             if (!inputQueue.offer(item)) {
                 droppedInputBlocks.incrementAndGet();
+                engine.noteCapturedInputBlockLost();
+            }
+        }
+
+        /** A block the publisher dropped for this subscriber, counted under {@link #onNext}'s own gate. */
+        @Override
+        public void inputBlockDropped(AudioBlock block) {
+            if (running && !inputStreamTerminated) {
+                engine.noteCapturedInputBlockLost();
             }
         }
 

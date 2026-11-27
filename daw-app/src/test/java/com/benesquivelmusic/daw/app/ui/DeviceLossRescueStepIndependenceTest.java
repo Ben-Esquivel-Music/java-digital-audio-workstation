@@ -156,9 +156,16 @@ class DeviceLossRescueStepIndependenceTest {
         String report = "Recording stopped — finishing the take on disk failed (sealed segment already exists;"
                 + " a segment is never overwritten); one or more segment files that could not be finished are"
                 + " left under audio/takes/" + takeDirectory.getFileName() + " (1 clip created)";
-        assertThat(fixture.entriesSince(before)).as("one ERROR, no WARNING, no SUCCESS")
+        String sealWarning = "Could not seal a segment of track Guitar; the streaming file is left under "
+                + takeDirectory.resolve(fixture.guitar().getId());
+        assertThat(fixture.entriesSince(before))
+                .as("one ERROR, no SUCCESS, then the failed seal's WARNING, kept in the history (ruling E284)")
                 .extracting(NotificationEntry::level, NotificationEntry::message, NotificationEntry::actionLabel)
-                .containsExactly(tuple(NotificationLevel.ERROR, report, Optional.empty()));
+                .containsExactly(tuple(NotificationLevel.ERROR, report, Optional.empty()),
+                        tuple(NotificationLevel.WARNING, sealWarning, Optional.empty()));
+        assertThat(onFx(() -> fixture.notificationBar().getMessage())).as("the ERROR stays on the bar")
+                .isEqualTo(report);
+        assertThat(onFx(() -> fixture.notificationBar().getCurrentLevel())).isEqualTo(NotificationLevel.ERROR);
         assertThat(report).doesNotContainIgnoringCase("saved").doesNotContainIgnoringCase("preserved");
         assertThat(onFx(() -> fixture.statusBar().getText())).isEqualTo(report);
         List<RecordState> seen = onFx(() -> List.copyOf(states));
@@ -284,12 +291,19 @@ class DeviceLossRescueStepIndependenceTest {
 
         fixture.assertNoBlockBeyondTheAllowanceAndNoneDropped();
         List<NotificationEntry> entries = fixture.entriesSince(before);
-        assertThat(entries).as("one ERROR, no WARNING, no SUCCESS").hasSize(1);
+        assertThat(entries).as("no SUCCESS: the ERROR, then the capture thread's warnings kept in the history only")
+                .isNotEmpty().noneMatch(entry -> entry.level() == NotificationLevel.SUCCESS);
+        assertThat(entries.subList(1, entries.size())).as("after a device loss, ruling E284")
+                .allMatch(entry -> entry.level() == NotificationLevel.WARNING)
+                .anyMatch(entry -> entry.message().endsWith("; the take has ended and its manifest on disk does not"
+                        + " record the seal: take recovery rebuilds it from the segments"));
         NotificationEntry report = entries.getFirst();
+        assertThat(onFx(() -> fixture.notificationBar().getMessage())).as("the ERROR stays on the bar")
+                .isEqualTo(report.message());
         assertThat(report.level()).isEqualTo(NotificationLevel.ERROR);
         assertThat(report.actionLabel()).as("no Review: there is no rescued take to review").isEmpty();
         assertThat(report.message())
-                .startsWith(lost.name() + " disconnected during recording. The audio was saved up to the dropout"
+                .startsWith(lost.name() + " was disconnected during recording. The audio was saved up to the dropout"
                         + " (1 clip on 1 track), but the take's manifest could not be written (")
                 .endsWith("); take recovery rebuilds it from the segments")
                 .doesNotContain("next project open")
@@ -342,13 +356,13 @@ class DeviceLossRescueStepIndependenceTest {
         fixture.awaitPublished();
 
         fixture.assertNoBlockBeyondTheAllowanceAndNoneDropped();
-        String report = lost.name() + " disconnected during recording. The audio was saved up to the dropout"
+        String report = lost.name() + " was disconnected during recording. The audio was saved up to the dropout"
                 + " (1 clip on 1 track), but the take's manifest could not be written (IllegalStateException:"
                 + " manifest build failed); take recovery rebuilds it from the segments";
         assertThat(RecordCoordinator.rescuedTakeManifestNotWrittenMessage(lost, notWritten, 1, 1)).isEqualTo(report);
         assertThat(RecordCoordinator.rescuedTakeManifestNotWrittenMessage(lost, notWritten, 0, 0))
                 .as("with no clip, nothing had reached disk, and no rebuild is promised")
-                .isEqualTo(lost.name() + " disconnected during recording; nothing had reached disk yet, and the"
+                .isEqualTo(lost.name() + " was disconnected during recording; nothing had reached disk yet, and the"
                         + " take's manifest could not be written (IllegalStateException: manifest build failed)")
                 .doesNotContain("rebuilds");
         assertThat(fixture.entriesSince(before)).as("one ERROR, no WARNING, no SUCCESS")
@@ -399,7 +413,7 @@ class DeviceLossRescueStepIndependenceTest {
         fixture.assertNoBlockBeyondTheAllowanceAndNoneDropped();
         String report = RecordCoordinator.rescuedTakeSealedEarlyMessage(lost, seal, 1, takeDirectory);
         assertThat(report)
-                .isEqualTo(lost.name() + " disconnected during recording. Saving the take ended early — writing the"
+                .isEqualTo(lost.name() + " was disconnected during recording. Saving the take ended early — writing the"
                         + " take to disk failed (injected lane write failure); one or more segment files that could"
                         + " not be finished are left under audio/takes/" + takeDirectory.getFileName()
                         + " (1 clip created)")

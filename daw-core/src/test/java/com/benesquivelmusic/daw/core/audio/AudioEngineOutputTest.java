@@ -904,7 +904,8 @@ class AudioEngineOutputTest {
 
         assertThatThrownBy(engine::startAudioOutput)
                 .as("a second pump into the shared render pipeline is a hard failure")
-                .isInstanceOf(AudioBackendException.class)
+                .isInstanceOfSatisfying(StreamOpenRefusedException.class, refused -> assertThat(refused.reason())
+                        .isEqualTo(StreamOpenRefusedException.Reason.PREVIOUS_STREAM_NOT_RELEASED))
                 .hasMessageContaining("previous render pump has not exited yet");
         assertThat(backend.openCount.get())
                 .as("no second open — the refusal happens before the ladder is walked")
@@ -921,6 +922,51 @@ class AudioEngineOutputTest {
         assertThat(engine.isStreamOpen()).isTrue();
         assertThat(backend.openCount.get()).isEqualTo(2);
         assertThat(backend.closeCount.get()).isEqualTo(1);
+    }
+
+    /**
+     * Story 338, ruling E204: no render thread is alive across a format
+     * change. A stop whose bounded join of the wedged pump timed out leaves
+     * the engine stopped with that pump kept, and a format change is refused
+     * until the pump exits: the format stays the same object. Once the wedge
+     * clears, the change goes through. The wedge holds the pump until the
+     * test clears it, so both joins time out whatever the machine's speed; the
+     * guard budget bounds only the test thread's wait for the retried change.
+     */
+    @Test
+    void aFormatChangeIsRefusedWhileAStopCouldNotConfirmThePumpExited() {
+        backend.blockAwait = true;
+        try {
+            engine.startAudioOutput();
+            awaitCondition(() -> backend.blockedAwaitEntries.get() >= 1,
+                    "the pump is wedged inside awaitSinkCapacity");
+            engine.stop(); // the quiesce's bounded join times out; the pump is KEPT
+            AudioFormat before = engine.getFormat();
+            AudioFormat larger = new AudioFormat(before.sampleRate(), before.channels(), before.bitDepth(),
+                    before.bufferSize() * 8);
+
+            assertThat(engine.isRunning()).as("premise: the stop cleared the running flag").isFalse();
+            assertThatThrownBy(() -> engine.setFormat(larger))
+                    .as("the format of a stream a live render thread may still be rendering stays")
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("render pump");
+            assertThat(engine.getFormat()).as("nothing was stored").isSameAs(before);
+
+            backend.blockAwait = false; // the wedge clears; the loop exits on its flag
+            awaitCondition(() -> formatChanged(engine, larger), "the change goes through once the pump has exited");
+            assertThat(engine.getFormat()).isSameAs(larger);
+        } finally {
+            backend.blockAwait = false;
+        }
+    }
+
+    private static boolean formatChanged(AudioEngine engine, AudioFormat format) {
+        try {
+            engine.setFormat(format);
+            return true;
+        } catch (IllegalStateException pumpNotYetExited) {
+            return false;
+        }
     }
 
     /**
@@ -979,7 +1025,8 @@ class AudioEngineOutputTest {
             Throwable refusal = catchThrowable(engine::startAudioOutput);
             assertThat(refusal)
                     .as("the reap's join timed out too, so the start refuses to open over the stream")
-                    .isInstanceOf(AudioBackendException.class)
+                    .isInstanceOfSatisfying(StreamOpenRefusedException.class, refused -> assertThat(refused.reason())
+                        .isEqualTo(StreamOpenRefusedException.Reason.PREVIOUS_STREAM_NOT_RELEASED))
                     .hasMessageContaining("its stream could not be closed");
             assertThat(engine.takeFailedStreamStart(refusal))
                     .as("the refusal names the requested endpoint, like every refusal of a start")
@@ -1701,7 +1748,8 @@ class AudioEngineOutputTest {
 
             assertThatThrownBy(engine::startAudioOutput)
                     .as("the walk is abandoned, and the refusal says why")
-                    .isInstanceOf(AudioBackendException.class)
+                    .isInstanceOfSatisfying(StreamOpenRefusedException.class, refused -> assertThat(refused.reason())
+                        .isEqualTo(StreamOpenRefusedException.Reason.PREVIOUS_STREAM_NOT_RELEASED))
                     .hasMessageContaining("First")
                     .hasMessageContaining("could not be released")
                     .hasMessageContaining("two backends on one device")
@@ -1818,7 +1866,8 @@ class AudioEngineOutputTest {
         assertThatThrownBy(engine::startAudioOutput)
                 .as("opening now would put a second stream on the device the panel's"
                         + " backend still holds")
-                .isInstanceOf(AudioBackendException.class)
+                .isInstanceOfSatisfying(StreamOpenRefusedException.class, refused -> assertThat(refused.reason())
+                        .isEqualTo(StreamOpenRefusedException.Reason.PREVIOUS_STREAM_NOT_RELEASED))
                 .hasMessageContaining("control panel");
         assertThat(backend.openCount.get())
                 .as("no second open reached the device")
@@ -2045,7 +2094,8 @@ class AudioEngineOutputTest {
                         + " before a fresh open and refuses the open while the release is"
                         + " still outstanding — opening now would put a second backend on"
                         + " the device this one has not let go of")
-                .isInstanceOf(AudioBackendException.class)
+                .isInstanceOfSatisfying(StreamOpenRefusedException.class, refused -> assertThat(refused.reason())
+                        .isEqualTo(StreamOpenRefusedException.Reason.PREVIOUS_STREAM_NOT_RELEASED))
                 .hasMessageContaining("still")
                 .hasMessageContaining("DEFERRED");
         assertThat(backend.openCount.get())
@@ -2671,6 +2721,24 @@ class AudioEngineOutputTest {
         public BackendThreadCounters threadCounters() {
             Supplier<BackendThreadCounters> script = counterReport;
             return script == null ? BackendThreadCounters.NONE : script.get();
+        }
+
+        /** What {@link #dropoutCounters()} answers; {@code null} reports the interface default. */
+        volatile Supplier<com.benesquivelmusic.daw.sdk.audio.BackendDropoutCounters> dropoutReport;
+
+        @Override
+        public com.benesquivelmusic.daw.sdk.audio.BackendDropoutCounters dropoutCounters() {
+            Supplier<com.benesquivelmusic.daw.sdk.audio.BackendDropoutCounters> script = dropoutReport;
+            return script == null ? AudioBackend.super.dropoutCounters() : script.get();
+        }
+
+        /** What {@link #takeDriverResyncArrivals()} answers; {@code null} reports the interface default. */
+        volatile Supplier<com.benesquivelmusic.daw.sdk.audio.DriverResyncArrivals> resyncArrivalsReport;
+
+        @Override
+        public com.benesquivelmusic.daw.sdk.audio.DriverResyncArrivals takeDriverResyncArrivals() {
+            Supplier<com.benesquivelmusic.daw.sdk.audio.DriverResyncArrivals> script = resyncArrivalsReport;
+            return script == null ? AudioBackend.super.takeDriverResyncArrivals() : script.get();
         }
 
         @Override

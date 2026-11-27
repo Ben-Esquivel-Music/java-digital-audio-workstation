@@ -186,7 +186,7 @@ public final class TrackBudgetUiBinding implements Flow.Subscriber<TrackPerforma
             lastNotificationNanos.put(d.trackId(), now);
             String name = safeTrackName(d.trackId());
             notifications.notify(
-                    "Track '" + name + "' was reduced — CPU over budget");
+                    "Track '" + name + "' went over the CPU budget; its processing was not reduced");
         }
         if (newlyDegraded) {
             dispatchDegradedSet();

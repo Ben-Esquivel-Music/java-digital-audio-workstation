@@ -35,6 +35,8 @@ final class ObservedFileChannel extends FileChannel {
         private final AtomicInteger forcesToFail = new AtomicInteger();
         private final AtomicInteger closesToFail = new AtomicInteger();
         private volatile Runnable beforeForce;
+        private volatile Runnable beforeWrite;
+        private volatile Runnable beforeClose;
 
         /** Returns an opener that wraps whatever {@code real} opens. */
         SegmentWriter.ChannelOpener opener(SegmentWriter.ChannelOpener real) {
@@ -72,6 +74,16 @@ final class ObservedFileChannel extends FileChannel {
             beforeForce = hook;
         }
 
+        /** Runs {@code hook} on the writing thread before every write, a refused one included. */
+        void beforeWrite(Runnable hook) {
+            beforeWrite = hook;
+        }
+
+        /** Runs {@code hook} on the closing thread before every close of a channel opened through {@link #opener}. */
+        void beforeClose(Runnable hook) {
+            beforeClose = hook;
+        }
+
         /** Every journalled call: {@code force(false)}, {@code force(true)}, {@code write@<position>}, {@code write}, {@code close}. */
         List<String> events() {
             return List.copyOf(events);
@@ -105,6 +117,10 @@ final class ObservedFileChannel extends FileChannel {
     }
 
     private void failIfAsked() throws IOException {
+        Runnable hook = journal.beforeWrite;
+        if (hook != null) {
+            hook.run();
+        }
         if (claimFault(journal.writesToFail)) {
             throw new IOException("injected write failure (test double)");
         }
@@ -161,6 +177,10 @@ final class ObservedFileChannel extends FileChannel {
 
     @Override
     protected void implCloseChannel() throws IOException {
+        Runnable hook = journal.beforeClose;
+        if (hook != null) {
+            hook.run();
+        }
         delegate.close();
         journal.events.add("close");
         if (claimFault(journal.closesToFail)) {

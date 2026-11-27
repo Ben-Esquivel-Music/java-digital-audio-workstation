@@ -431,16 +431,13 @@ class StopFenceTailIntegrityContractTest {
                         .contains(CaptureFlushService.PRODUCER_QUIESCENCE_BOUND.toMillis() + " ms"));
     }
 
-    @Test
-    void aBlockPublishedBehindTheFinalSweepIsRecordedAsAGapWithAWarning() throws Exception {
-        AudioEngine engine = new AudioEngine(MONO_16);
-        Transport transport = new Transport();
-        Track track = RampCaptureTestSupport.armedMonoTrack("Audio 1");
-        RecordingPipeline pipeline = newPipeline(engine, transport, tempDir, track);
-        // The seal's force(true) holds the flush thread once it is armed; no
-        // cadence force can happen, so the next force is the seal's.
+    /**
+     * Once {@code holdNextForce} is set, the next force of the take's writers
+     * holds the flush thread until {@link #release}; no cadence force can
+     * happen, so that force is the seal's {@code force(true)}.
+     */
+    private CountDownLatch holdTheSealsForceOnceArmed(RecordingPipeline pipeline, AtomicBoolean holdNextForce) {
         ObservedFileChannel.Journal journal = new ObservedFileChannel.Journal();
-        AtomicBoolean holdNextForce = new AtomicBoolean();
         CountDownLatch held = new CountDownLatch(1);
         journal.beforeForce(() -> {
             if (holdNextForce.compareAndSet(true, false)) {
@@ -454,6 +451,17 @@ class StopFenceTailIntegrityContractTest {
         });
         pipeline.setChannelOpener(journal.opener(SegmentWriter.CREATE_NEW_CHANNEL));
         pipeline.setForceCadence(Duration.ofHours(1));
+        return held;
+    }
+
+    @Test
+    void aBlockPublishedBehindTheFinalSweepIsRecordedAsAGapWithAWarning() throws Exception {
+        AudioEngine engine = new AudioEngine(MONO_16);
+        Transport transport = new Transport();
+        Track track = RampCaptureTestSupport.armedMonoTrack("Audio 1");
+        RecordingPipeline pipeline = newPipeline(engine, transport, tempDir, track);
+        AtomicBoolean holdNextForce = new AtomicBoolean();
+        CountDownLatch held = holdTheSealsForceOnceArmed(pipeline, holdNextForce);
         TakeWithACallbackInFlight take = takeWithACallbackInFlight(pipeline, engine, transport, track);
 
         // The wait gives up at its first look, sweeps, and is held sealing.
@@ -478,10 +486,72 @@ class StopFenceTailIntegrityContractTest {
         assertThat(manifest.sealStatus()).isEqualTo(TakeManifest.SealStatus.SEALED);
         assertThat(manifest.gaps()).as("the block the take does not hold is on the record")
                 .containsExactly(new TakeManifest.GapEntry(TakeManifest.GapEntry.ALL_TRACKS, 3L * BLOCK_FRAMES, 1));
+        assertThat(pipeline.getFileOverflowBlocks()).as("and counted in the take's dropouts (ruling E213)")
+                .isEqualTo(1);
+        assertThat(manifest.overflowBlocks()).as("a block left behind is no ring drop").isZero();
         assertThat(warnings).hasSize(2);
         assertThat(warnings.get(0)).contains("had not left the capture ring");
         assertThat(warnings.get(1)).contains("1 capture block(s) were published after the final sweep")
                 .contains("frame " + 3L * BLOCK_FRAMES);
+    }
+
+    /**
+     * Ruling E242: callbacks that read the gate open before the stop fill
+     * the ring behind the final sweep and then have two blocks dropped. The
+     * blocks left behind get their line at the end of the last block
+     * applied, the drops theirs right after them, and each kind is recorded
+     * and counted once.
+     */
+    @Test
+    void aRingThatOverflowsBehindTheFinalSweepRecordsTheBlocksLeftBehindAndTheDropsOnceEach() throws Exception {
+        AudioEngine engine = new AudioEngine(MONO_16);
+        Transport transport = new Transport();
+        Track track = RampCaptureTestSupport.armedMonoTrack("Audio 1");
+        RecordingPipeline pipeline = newPipeline(engine, transport, tempDir, track);
+        AtomicBoolean holdNextForce = new AtomicBoolean();
+        CountDownLatch held = holdTheSealsForceOnceArmed(pipeline, holdNextForce);
+        TakeWithACallbackInFlight take = takeWithACallbackInFlight(pipeline, engine, transport, track);
+        CaptureRing ring = take.ring();
+        int capacity = ring.capacity();
+
+        take.service().setProducerQuiescenceBound(Duration.ZERO);
+        holdNextForce.set(true);
+        CompletionStage<Void> termination = pipeline.requestStop();
+        assertThat(held.await(HANG_GUARD.toMillis(), TimeUnit.MILLISECONDS))
+                .as("the flush thread swept without the callback and is sealing").isTrue();
+
+        ring.publish();
+        for (int block = 1; block < capacity; block++) {
+            CaptureRing.Slot behind = ring.claim(CaptureRing.DELIVERED);
+            assertThat(behind).as("fixture: the ring has room for block %d behind the sweep", block).isNotNull();
+            behind.copySource(0, new float[1][BLOCK_FRAMES], 1, BLOCK_FRAMES);
+            ring.publish();
+        }
+        assertThat(ring.claim(CaptureRing.DELIVERED)).as("fixture: the ring is full").isNull();
+        assertThat(ring.claim(CaptureRing.DELIVERED)).isNull();
+        ring.exitProducer();
+        inFlight = null;
+        release.countDown();
+        awaitWithinTheGuard(termination, "the capture-flush thread's termination");
+        pipeline.completeStop();
+
+        long dropStart = (3L + capacity) * BLOCK_FRAMES;
+        assertTheTakeIsTheRampPrefix(pipeline, track, 3);
+        TakeManifest manifest = TakeManifest.read(pipeline.getTakeManifestPath());
+        assertThat(manifest.sealStatus()).isEqualTo(TakeManifest.SealStatus.SEALED);
+        assertThat(manifest.gaps()).as("the missing stretch, once: the blocks left behind, then the drops")
+                .containsExactly(
+                        new TakeManifest.GapEntry(TakeManifest.GapEntry.ALL_TRACKS, 3L * BLOCK_FRAMES, capacity),
+                        new TakeManifest.GapEntry(TakeManifest.GapEntry.ALL_TRACKS, dropStart, 2));
+        assertThat(manifest.overflowBlocks()).as("the drops join overflow-blocks").isEqualTo(2);
+        assertThat(pipeline.getOverflowCount()).isEqualTo(2);
+        assertThat(pipeline.getFileOverflowBlocks()).as("with no punch region every block of both lines counts")
+                .isEqualTo(capacity + 2L);
+        assertThat(warnings).hasSize(3);
+        assertThat(warnings.get(1)).contains(capacity + " capture block(s) were published after the final sweep");
+        assertThat(warnings.getLast()).as("the ring-overflow warning, with no new words (ruling E242)")
+                .isEqualTo("Capture ring overflow: 2 block(s) dropped at frame " + dropStart
+                        + " (2 dropped in total); the take manifest records the gap");
     }
 
     @Test

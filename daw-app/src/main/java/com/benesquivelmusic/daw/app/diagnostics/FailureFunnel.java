@@ -164,6 +164,10 @@ public final class FailureFunnel {
     private static final String FOLDED_DETAIL = "folded into the notice of the same frame; no toast of its own (story 337,"
             + " ruling E65)";
 
+    /** The record header's detail of a real-time occurrence that is part of a device loss (story 338, ruling E156). */
+    private static final String DEVICE_LOSS_DETAIL = "part of the device loss; no toast of its own"
+            + " (story 338, ruling E70)";
+
     private final LogSink sink;
     private final FingerprintRateLimiter limiter;
     private final FailureCopy copy;
@@ -430,7 +434,28 @@ public final class FailureFunnel {
      */
     public void foldRealTime(RealTimeReport report) {
         Objects.requireNonNull(report, "report must not be null");
-        handleRealTimeGuarded(report, "counting a folded real-time failure", () -> realTimeFolded(report));
+        handleRealTimeGuarded(report, "counting a folded real-time failure",
+                () -> realTimeFolded(report, FOLDED_DETAIL));
+    }
+
+    /**
+     * Counts a real-time report that is part of a device loss (story 338,
+     * rulings E70, E155 and E156): an input halt the audio health drain first
+     * reads on a lost render drive or an older one. As in
+     * {@link #foldRealTime}, its occurrences are counted, weighted, and no
+     * toast is shown; when they would surface, it writes its own record at
+     * its severity, which says it is part of the device loss, and keeps the
+     * report's base sentence, severity and action as the fingerprint's last
+     * notice, so the history entry of a tail of the fingerprint taken before
+     * its next notice repeats that sentence at that level with that action.
+     * Never throws.
+     *
+     * @param report the drain's report of the input fingerprint
+     */
+    public void foldIntoDeviceLoss(RealTimeReport report) {
+        Objects.requireNonNull(report, "report must not be null");
+        handleRealTimeGuarded(report, "counting a real-time failure that is part of a device loss",
+                () -> realTimeFolded(report, DEVICE_LOSS_DETAIL));
     }
 
     /**
@@ -964,7 +989,7 @@ public final class FailureFunnel {
                 report.weight()), true);
     }
 
-    private void realTimeFolded(RealTimeReport report) {
+    private void realTimeFolded(RealTimeReport report, String foldDetail) {
         FingerprintRateLimiter.Verdict verdict =
                 limiter.occur(report.fingerprint(), guardedMessageOf(report), report.weight());
         if (verdict instanceof FingerprintRateLimiter.Verdict.Surface surface) {
@@ -975,7 +1000,7 @@ public final class FailureFunnel {
             // so only this record accounts for it (story 337, ruling E65).
             FailureFact fact = realTimeFact(report, surface);
             List<String> details = new ArrayList<>(sampledAnchorDetails(report));
-            details.add(FOLDED_DETAIL);
+            details.add(foldDetail);
             try {
                 logFact(fact, "at \"" + report.site() + "\"", surface.notLoggedSinceNotice(), details);
             } catch (Throwable unloggable) {

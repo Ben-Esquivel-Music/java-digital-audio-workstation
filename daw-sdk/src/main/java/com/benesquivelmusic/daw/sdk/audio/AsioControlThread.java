@@ -8,6 +8,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 
@@ -183,8 +184,12 @@ final class AsioControlThread {
 
     /**
      * True while {@link #callUnbounded(Operation)} is executing — i.e. while
-     * the driver's modal control panel owns the control thread. Read only to
-     * make a timeout message truthful about WHY the thread was busy.
+     * the driver's modal control panel owns the control thread. Read to make
+     * a timeout message truthful about WHY the thread was busy, and by the
+     * clock-lock poll, which sends nothing while the panel is open
+     * ({@link #isControlPanelOpen()}). The poll also reads
+     * {@link #CLOSED_CONTROL_PANEL_SESSIONS}, so a session that opens and
+     * closes between two polls is not missed (ruling E227).
      *
      * <p>It is cleared only once the native call has REALLY returned (story
      * 316 re-review). That is a property of the uninterruptible wait behind
@@ -194,6 +199,9 @@ final class AsioControlThread {
      * state every reader of it treats as "the panel is closed".</p>
      */
     private static volatile boolean controlPanelOpen;
+
+    /** How many calls of {@link #callUnbounded(Operation)} have returned or thrown, for the process. */
+    private static final AtomicLong CLOSED_CONTROL_PANEL_SESSIONS = new AtomicLong();
 
     private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor(task ->
             Thread.ofPlatform()
@@ -251,7 +259,9 @@ final class AsioControlThread {
      * thread to stop — can be reported truthfully at once.</p>
      *
      * <p>{@code controlPanelOpen} consequently goes false only after the
-     * native call has really returned.</p>
+     * native call has really returned, and only after the closed-session
+     * count was raised, so a poll that reads the panel closed also sees the
+     * session that closed it (ruling E249).</p>
      *
      * @param operation the modal downcall to serialize onto the control thread
      * @param <T>       the operation's result type
@@ -263,8 +273,31 @@ final class AsioControlThread {
         try {
             return call(operation, null);
         } finally {
+            CLOSED_CONTROL_PANEL_SESSIONS.incrementAndGet();
             controlPanelOpen = false;
         }
+    }
+
+    /**
+     * Whether a driver's modal control panel owns the control thread: a call
+     * through {@link #callUnbounded(Operation)} has not returned. One volatile
+     * read; any thread.
+     *
+     * @return {@code true} while the panel's downcall runs
+     */
+    static boolean isControlPanelOpen() {
+        return controlPanelOpen;
+    }
+
+    /**
+     * How many calls of {@link #callUnbounded(Operation)} have returned or
+     * thrown, for the process; raised before {@link #isControlPanelOpen()}
+     * reads false for that call. One read; any thread.
+     *
+     * @return the closed control-panel sessions, monotonic
+     */
+    static long closedControlPanelSessions() {
+        return CLOSED_CONTROL_PANEL_SESSIONS.get();
     }
 
     /**

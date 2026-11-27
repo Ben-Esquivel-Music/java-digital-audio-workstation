@@ -8,6 +8,7 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -15,6 +16,7 @@ import java.util.concurrent.Flow;
 import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.LockSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -316,6 +318,49 @@ class AsioBufferSwitchShimTest {
                 .isFalse();
     }
 
+    /**
+     * A wake the callback never delivers loses no block: a block written into
+     * the capture ring while the drain is parked on it empty, with no
+     * {@code bufferSwitch} and so no unpark, is published by the drain's own
+     * timed park (story 338, ruling E272). The bound is the class's
+     * {@code AWAIT_SECONDS}, far above that park's {@code DRAIN_PARK_NANOS}.
+     */
+    @Test
+    void aBlockThatReachesTheCaptureRingWithNoWakeIsStillPublished() throws Exception {
+        buildShim(FLOAT32_LSB);
+        CapturingSubscriber subscriber = subscribe();
+        AudioBlockRing captureRing = shimField("inputRing", AudioBlockRing.class);
+        float[] block = new float[channels * frames];
+        Arrays.fill(block, 0.5f);
+
+        assertThat(awaitParkedInItsDrainLoop(shim.drainThread()))
+                .as("fixture: the drain thread is parked on the empty capture ring")
+                .isTrue();
+        assertThat(captureRing.write(block, block.length)).as("fixture: the ring took the block").isTrue();
+
+        assertThat(subscriber.await(1))
+                .as("the drain published the block it was never woken for, within %d s", AWAIT_SECONDS)
+                .isTrue();
+        assertThat(subscriber.blocks().getFirst().samples()).containsOnly(0.5f);
+    }
+
+    /**
+     * Waits, bounded, until {@code drain} is parked in its loop's park, the
+     * only park whose blocker is the shim.
+     */
+    private boolean awaitParkedInItsDrainLoop(Thread drain) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(AWAIT_SECONDS);
+        while (System.nanoTime() - deadline < 0L) {
+            Thread.State state = drain.getState();
+            boolean parked = state == Thread.State.WAITING || state == Thread.State.TIMED_WAITING;
+            if (parked && LockSupport.getBlocker(drain) == shim) {
+                return true;
+            }
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+        }
+        return false;
+    }
+
     // ------------------------------------------------------------------
     // Playback (engine -> driver)
     // ------------------------------------------------------------------
@@ -520,9 +565,13 @@ class AsioBufferSwitchShimTest {
     }
 
     private MemorySegment[][] shimArray(String field) throws ReflectiveOperationException {
+        return shimField(field, MemorySegment[][].class);
+    }
+
+    private <T> T shimField(String field, Class<T> type) throws ReflectiveOperationException {
         java.lang.reflect.Field declared = AsioBufferSwitchShim.class.getDeclaredField(field);
         declared.setAccessible(true);
-        return (MemorySegment[][]) declared.get(shim);
+        return type.cast(declared.get(shim));
     }
 
     // ------------------------------------------------------------------
@@ -571,6 +620,416 @@ class AsioBufferSwitchShimTest {
         assertThat(shim.renderedBlocksConsumed())
                 .as("a second callback with no new write emitted silence, not output")
                 .isEqualTo(1L);
+    }
+
+    // ------------------------------------------------------------------
+    // Observed dropouts: output starvation and capture-ring overflow
+    // ------------------------------------------------------------------
+
+    @Test
+    void anEmptyRingAfterTheFirstPlayedBlockCountsOneStarvedPeriod() {
+        buildShim(FLOAT32_LSB);
+        writeRenderedBlock();
+
+        shim.bufferSwitch(0, 1);
+        shim.bufferSwitch(1, 1);
+
+        assertThat(shim.outputStarvedPeriods())
+                .as("the second callback found nothing rendered and played silence")
+                .isEqualTo(1L);
+    }
+
+    @Test
+    void aCallbackThatPlaysARenderedBlockIsNotStarved() {
+        buildShim(FLOAT32_LSB);
+        writeRenderedBlock();
+        shim.bufferSwitch(0, 1);
+        writeRenderedBlock();
+
+        shim.bufferSwitch(1, 1);
+
+        assertThat(shim.outputStarvedPeriods()).isZero();
+    }
+
+    @Test
+    void emptyCallbacksBeforeTheFirstRenderedBlockAreStartUpNotStarvation() {
+        buildShim(FLOAT32_LSB);
+
+        shim.bufferSwitch(0, 1);
+        shim.bufferSwitch(1, 1);
+
+        assertThat(shim.outputStarvedPeriods())
+                .as("ASIOStart precedes the pump's first block, so these periods are start-up")
+                .isZero();
+    }
+
+    /**
+     * The early returns (a bad half, a quiesced bridge) never count as
+     * starvation although the device heartbeat still advances, which is why
+     * the starved count cannot be derived from the heartbeat.
+     */
+    @Test
+    void earlyReturnsCountNoStarvationWhileTheHeartbeatAdvances() {
+        buildShim(FLOAT32_LSB);
+        writeRenderedBlock();
+        shim.bufferSwitchUpcall(0, 1);
+
+        shim.bufferSwitchUpcall(-1, 1);
+        shim.bufferSwitchUpcall(2, 1);
+        shim.stopStreaming();
+        shim.bufferSwitchUpcall(1, 1);
+
+        assertThat(shim.deviceCallbackPeriods()).isEqualTo(4L);
+        assertThat(shim.outputStarvedPeriods()).isZero();
+    }
+
+    /**
+     * A drain thread held inside its publish leaves the capture ring to fill;
+     * each callback past its capacity loses its block and counts it.
+     */
+    @Test
+    void aFullCaptureRingCountsEachBlockItLoses() throws Exception {
+        CountDownLatch drainBlocked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        support.close();
+        support = new AudioBackendSupport(holdingPublisher(drainBlocked, release), new SubmissionPublisher<>());
+        support.markOpen(format, frames);
+        buildShim(FLOAT32_LSB);
+        try {
+            shim.bufferSwitch(0, 1);
+            assertThat(drainBlocked.await(AWAIT_SECONDS, TimeUnit.SECONDS))
+                    .as("the drain thread took the first block and is held in its publish")
+                    .isTrue();
+            for (int i = 0; i < 32; i++) {
+                shim.bufferSwitch(i & 1, 1);
+            }
+            assertThat(shim.inputRingOverflows())
+                    .as("32 blocks fit the empty 32-slot ring")
+                    .isZero();
+
+            shim.bufferSwitch(0, 1);
+            shim.bufferSwitch(1, 1);
+            shim.bufferSwitch(0, 1);
+
+            assertThat(shim.inputRingOverflows()).isEqualTo(3L);
+        } finally {
+            release.countDown();
+        }
+    }
+
+    /**
+     * A period whose captured block the full capture ring refused, and whose
+     * output half then faults, lost that block once: as a ring overflow,
+     * never also as a failed callback's (story 338, ruling E211).
+     */
+    @Test
+    void aBlockTheFullRingRefusedIsNotCountedAgainWhenItsOutputHalfFaults() throws Exception {
+        CountDownLatch drainBlocked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        support.close();
+        support = new AudioBackendSupport(holdingPublisher(drainBlocked, release), new SubmissionPublisher<>());
+        support.markOpen(format, frames);
+        buildShim(FLOAT32_LSB);
+        try {
+            shim.bufferSwitch(0, 1);
+            assertThat(drainBlocked.await(AWAIT_SECONDS, TimeUnit.SECONDS))
+                    .as("the drain thread took the first block and is held in its publish")
+                    .isTrue();
+            for (int i = 0; i < 32; i++) {
+                shim.bufferSwitch(i & 1, 1);
+            }
+            assertThat(shim.inputRingOverflows()).as("fixture: the 32-slot ring is full").isZero();
+            shimArray("outputBuffers")[0][0] = arena.allocate(1);
+
+            shim.bufferSwitchUpcall(0, 1);
+
+            assertThat(shim.inputRingOverflows()).isEqualTo(1L);
+            assertThat(shim.upcallFaults()).isEqualTo(1L);
+            assertThat(shim.failedPeriodInputBlocks()).as("the refused block is the ring's overflow alone").isZero();
+        } finally {
+            release.countDown();
+        }
+    }
+
+    /**
+     * Every period owes its own captured block: a fault while copying the
+     * input of a period after a healthy one, which took its block, loses the
+     * faulting period's (story 338, ruling E211).
+     */
+    @Test
+    void aFaultInTheInputHalfAfterAHealthyPeriodCountsThatPeriodsBlock() throws Exception {
+        buildShim(FLOAT32_LSB);
+        shimArray("inputBuffers")[1][0] = arena.allocate(1);
+
+        shim.bufferSwitchUpcall(0, 1);
+        assertThat(shim.upcallFaults()).as("fixture: the first period was healthy").isZero();
+        shim.bufferSwitchUpcall(1, 1);
+
+        assertThat(shim.upcallFaults()).isEqualTo(1L);
+        assertThat(shim.failedPeriodInputBlocks()).isEqualTo(1L);
+    }
+
+    /** A publisher whose every offer counts {@code drainBlocked} down and then waits for {@code release}. */
+    private static SubmissionPublisher<AudioBlock> holdingPublisher(CountDownLatch drainBlocked,
+                                                                    CountDownLatch release) {
+        return new SubmissionPublisher<>() {
+            @Override
+            public int offer(AudioBlock item,
+                             java.util.function.BiPredicate<Flow.Subscriber<? super AudioBlock>,
+                                     ? super AudioBlock> onDrop) {
+                drainBlocked.countDown();
+                try {
+                    release.await(AWAIT_SECONDS, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+                return super.offer(item, onDrop);
+            }
+        };
+    }
+
+    /**
+     * A drain whose close's join gave up (here: an interrupted closer) still
+     * holds its stream's blocks: the one it was publishing and one left in the
+     * ring. Neither may reach the next stream (story 338, ruling E215), and an
+     * offer its closed publisher refuses is teardown, not a lost block. The
+     * next stream's publisher delivers on the offering thread, so a block
+     * offered into it has been received by the time the drain has ended.
+     */
+    @Test
+    void aDrainThatOutlivesItsCloseCannotPublishIntoTheNextStream() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        support.close();
+        support = new AudioBackendSupport(new GatedPublisher(entered, release), new SubmissionPublisher<>());
+        support.markOpen(format, frames);
+        buildShim(FLOAT32_LSB);
+        Thread drain = shim.drainThread();
+        try {
+            shim.bufferSwitch(0, 1);
+            shim.bufferSwitch(1, 1);
+            assertThat(entered.await(AWAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+
+            Thread.currentThread().interrupt();
+            shim.close();
+            assertThat(Thread.interrupted()).as("the close's join gave up on the interrupt").isTrue();
+            assertThat(drain.isAlive()).as("the drain outlived its close").isTrue();
+
+            support.close();
+            support.markOpen(format, frames);
+            replaceSupportPublisher(new SubmissionPublisher<>(Runnable::run, Flow.defaultBufferSize()));
+            CapturingSubscriber nextStream = subscribe();
+            release.countDown();
+            drain.join(TimeUnit.SECONDS.toMillis(AWAIT_SECONDS));
+
+            assertThat(drain.isAlive()).isFalse();
+            assertThat(nextStream.blocks()).as("no block of the closed stream reached the next one").isEmpty();
+            assertThat(shim.publishDrops()).as("the closed publisher's refusal is teardown").isZero();
+        } finally {
+            release.countDown();
+        }
+    }
+
+    /**
+     * A fault while the period's input is copied loses that period's captured
+     * block: one block lost, beside the one callback fault (story 338, ruling
+     * E211). A healthy period after it counts nothing more.
+     */
+    @Test
+    void aFaultWhileCopyingThePeriodsInputCountsItsBlockLostAndOneCallbackFault() throws Exception {
+        buildShim(FLOAT32_LSB);
+        shimArray("inputBuffers")[0][0] = arena.allocate(1);
+
+        shim.bufferSwitchUpcall(0, 1);
+
+        assertThat(shim.failedPeriodInputBlocks()).isEqualTo(1L);
+        assertThat(shim.upcallFaults()).isEqualTo(1L);
+        assertThat(shim.counters().callbackFaults()).isEqualTo(1L);
+        assertThat(shim.counters().inputBlocksLost())
+                .as("a failed callback's block is not one the drain lost")
+                .isZero();
+
+        shim.bufferSwitchUpcall(1, 1);
+
+        assertThat(shim.failedPeriodInputBlocks()).isEqualTo(1L);
+    }
+
+    /**
+     * A fault in the output half comes after the period's input reached the
+     * capture ring, so the take lost nothing: no block lost, one callback
+     * fault, and the period's block is published (story 338, ruling E211).
+     */
+    @Test
+    void aFaultInTheOutputHalfCountsNoBlockLost() throws Exception {
+        buildShim(FLOAT32_LSB);
+        CapturingSubscriber subscriber = subscribe();
+        shimArray("outputBuffers")[0][0] = arena.allocate(1);
+
+        shim.bufferSwitchUpcall(0, 1);
+
+        assertThat(shim.failedPeriodInputBlocks()).isZero();
+        assertThat(shim.upcallFaults()).isEqualTo(1L);
+        flushAndPublishSentinel();
+        assertThat(subscriber.await(2)).isTrue();
+        assertThat(subscriber.blocks()).as("the period's block, then the sentinel").hasSize(2);
+    }
+
+    /**
+     * A stream with no bound input channel owes no captured block, so its
+     * failed callback loses none (story 338, ruling E211). The fault is
+     * forced in the input half by planting a converter and a one-byte view
+     * into the shim's arrays.
+     */
+    @Test
+    void anOutputOnlyStreamsFaultCountsNoBlockLost() throws Exception {
+        List<AsioStreamingShim.BufferInfo> outputsOnly = new ArrayList<>();
+        for (int channel = 0; channel < channels; channel++) {
+            outputsOnly.add(new AsioStreamingShim.BufferInfo(channel, false, FLOAT32_LSB,
+                    driverOutputs[0][channel].address(), driverOutputs[1][channel].address()));
+        }
+        shim = new AsioBufferSwitchShim(support, format, frames, outputsOnly);
+        assertThat(shim.boundInputChannels()).isZero();
+        java.lang.reflect.Field typesField = AsioBufferSwitchShim.class.getDeclaredField("inputTypes");
+        typesField.setAccessible(true);
+        ((AsioSampleType[]) typesField.get(shim))[0] = AsioSampleType.FLOAT32_LSB;
+        shimArray("inputBuffers")[0][0] = arena.allocate(1);
+
+        shim.bufferSwitchUpcall(0, 1);
+
+        assertThat(shim.upcallFaults()).isEqualTo(1L);
+        assertThat(shim.failedPeriodInputBlocks()).isZero();
+    }
+
+    private void replaceSupportPublisher(SubmissionPublisher<AudioBlock> publisher)
+            throws ReflectiveOperationException {
+        java.lang.reflect.Field declared = AudioBackendSupport.class.getDeclaredField("publisher");
+        declared.setAccessible(true);
+        declared.set(support, publisher);
+    }
+
+    /**
+     * Holds the first offer until released, uninterruptibly, then offers;
+     * every later offer passes straight through.
+     */
+    private static final class GatedPublisher extends SubmissionPublisher<AudioBlock> {
+
+        private final CountDownLatch entered;
+        private final CountDownLatch release;
+
+        GatedPublisher(CountDownLatch entered, CountDownLatch release) {
+            this.entered = entered;
+            this.release = release;
+        }
+
+        @Override
+        public int offer(AudioBlock item,
+                         java.util.function.BiPredicate<Flow.Subscriber<? super AudioBlock>,
+                                 ? super AudioBlock> onDrop) {
+            entered.countDown();
+            boolean interrupted = false;
+            while (true) {
+                try {
+                    release.await();
+                    break;
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            return super.offer(item, onDrop);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Observed dropouts: rendered blocks discarded unplayed
+    // ------------------------------------------------------------------
+
+    /** Once playing, every block a full four-slot output ring refuses counts. */
+    @Test
+    void aFullOutputRingCountsEachRefusedBlockOnceTheBridgeHasPlayed() {
+        buildShim(FLOAT32_LSB);
+        writeRenderedBlock();
+        shim.bufferSwitch(0, 1);
+        for (int i = 0; i < 4; i++) {
+            writeRenderedBlock();
+        }
+        assertThat(shim.outputDiscardedBlocks()).as("four blocks fit the empty ring").isZero();
+
+        writeRenderedBlock();
+        writeRenderedBlock();
+
+        assertThat(shim.outputDiscardedBlocks()).isEqualTo(2L);
+    }
+
+    /** A late callback plays the newest queued block; the older ones it consumed count. */
+    @Test
+    void olderBlocksACallbackSkipsToPlayTheNewestAreCounted() {
+        buildShim(FLOAT32_LSB);
+        writeRenderedBlock();
+        shim.bufferSwitch(0, 1);
+        writeRenderedBlock();
+        writeRenderedBlock();
+        writeRenderedBlock();
+
+        shim.bufferSwitch(1, 1);
+
+        assertThat(shim.outputDiscardedBlocks())
+                .as("three queued, the newest played, two discarded unheard")
+                .isEqualTo(2L);
+        assertThat(shim.renderedBlocksConsumed()).isEqualTo(2L);
+    }
+
+    /**
+     * The pump runs ahead of {@code ASIOStart}: before the first played block
+     * neither the refused blocks nor the ones the first callback skips are a
+     * gap.
+     */
+    @Test
+    void blocksQueuedBeforeTheFirstPlayedBlockAreStartUpNotDiscards() {
+        buildShim(FLOAT32_LSB);
+        for (int i = 0; i < 6; i++) {
+            writeRenderedBlock();
+        }
+        assertThat(shim.outputDiscardedBlocks()).as("two refused before priming").isZero();
+
+        shim.bufferSwitch(0, 1);
+
+        assertThat(shim.outputDiscardedBlocks()).as("three skipped by the priming callback").isZero();
+    }
+
+    @Test
+    void aQuiescedBridgeCountsNoDiscardedBlocks() {
+        buildShim(FLOAT32_LSB);
+        writeRenderedBlock();
+        shim.bufferSwitch(0, 1);
+        shim.stopStreaming();
+
+        for (int i = 0; i < 6; i++) {
+            writeRenderedBlock();
+        }
+        shim.bufferSwitch(1, 1);
+
+        assertThat(shim.outputDiscardedBlocks()).isZero();
+    }
+
+    /** Negative control: one block per callback, the paced steady state, discards nothing. */
+    @Test
+    void aStreamThatPlaysEveryBlockItRendersDiscardsNothing() {
+        buildShim(FLOAT32_LSB);
+        for (int i = 0; i < 16; i++) {
+            writeRenderedBlock();
+            shim.bufferSwitch(i & 1, 1);
+        }
+
+        assertThat(shim.outputDiscardedBlocks()).isZero();
+        assertThat(shim.renderedBlocksConsumed()).isEqualTo(16L);
+    }
+
+    private void writeRenderedBlock() {
+        shim.write(new AudioBlock(format.sampleRate(), channels, frames, new float[] {
+                1f, 2f, 1f, 2f, 1f, 2f, 1f, 2f}));
     }
 
     // ------------------------------------------------------------------

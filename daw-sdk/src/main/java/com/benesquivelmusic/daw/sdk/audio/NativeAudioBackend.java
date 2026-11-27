@@ -190,6 +190,17 @@ public interface NativeAudioBackend extends AutoCloseable {
     }
 
     /**
+     * As {@link AudioBackend#failedCallbackInputBlocks()}, for this backend's
+     * device callback, so an adapter that presents it as an
+     * {@link AudioBackend} can report it (story 338, ruling E211).
+     *
+     * @return the count; {@code >= 0}. The default is {@code 0}
+     */
+    default long failedCallbackInputBlocks() {
+        return 0L;
+    }
+
+    /**
      * Terminates the backend and releases all resources.
      */
     @Override

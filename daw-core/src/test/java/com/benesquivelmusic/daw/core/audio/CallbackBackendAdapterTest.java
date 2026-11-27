@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioStreamCallback;
 import com.benesquivelmusic.daw.sdk.audio.AudioStreamConfig;
 import com.benesquivelmusic.daw.sdk.audio.CaptureRequirement;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
+import com.benesquivelmusic.daw.sdk.audio.InputBlockLossListener;
 import com.benesquivelmusic.daw.sdk.audio.LatencyInfo;
 import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
@@ -19,6 +20,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 
@@ -750,19 +754,16 @@ class CallbackBackendAdapterTest {
     /**
      * Story 337, ruling E17: a block the {@code native-input-drain} thread
      * cannot publish is counted as lost and the drain keeps draining — it
-     * ends only on its stop flag. The stream's publisher is swapped for one
-     * whose {@code offer} fails, so the publish throws for real.
+     * ends only on its stream's end. The stream's publisher is swapped, before
+     * the open whose drain pins it, for one whose {@code offer} fails while it
+     * stays open, so the publish throws for real.
      */
     @Test
     void aPublishFailureOnTheNativeInputDrainIsCountedAndTheDrainContinues() throws Exception {
         FakeNativeBackend fake = new FakeNativeBackend();
         CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
-        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
         IllegalStateException publishFailure = new IllegalStateException("subscriber pipeline failed");
-        java.lang.reflect.Field publisherField =
-                CallbackBackendAdapter.class.getDeclaredField("inputPublisher");
-        publisherField.setAccessible(true);
-        publisherField.set(adapter, new java.util.concurrent.SubmissionPublisher<AudioBlock>() {
+        replaceInputPublisher(adapter, new java.util.concurrent.SubmissionPublisher<AudioBlock>() {
             @Override
             public int offer(AudioBlock item,
                              java.util.function.BiPredicate<Flow.Subscriber<? super AudioBlock>,
@@ -770,6 +771,7 @@ class CallbackBackendAdapterTest {
                 throw publishFailure;
             }
         });
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
         float[][] in = new float[2][FRAMES];
         float[][] out = new float[2][FRAMES];
 
@@ -852,6 +854,40 @@ class CallbackBackendAdapterTest {
         adapter.close();
     }
 
+    /**
+     * Story 338, ruling E272: the premise of the contained wake. With no wake of the device callback ever reaching
+     * the drain, its own backstop publishes every block the callback wrote, in order, and nothing is counted.
+     */
+    @Test
+    void aDrainNoWakeReachesStillPublishesEveryBlockInOrder() throws Exception {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+        List<AudioBlock> received = new CopyOnWriteArrayList<>();
+        CountDownLatch last = new CountDownLatch(1);
+        adapter.inputBlocks().subscribe(new CollectingSubscriber(received, last, 8f));
+        Thread drain = drainThreadOf(adapter);
+        pointTheDrainWakeAt(adapter, Thread.ofPlatform().unstarted(() -> { }));
+        try {
+            awaitCondition(() -> drain.getState() == Thread.State.WAITING
+                            || drain.getState() == Thread.State.TIMED_WAITING,
+                    "premise: the drain is parked before the first block is written");
+            for (int block = 1; block <= 8; block++) {
+                fake.callback.process(planesOf(block), new float[2][FRAMES], FRAMES);
+            }
+
+            assertThat(last.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                    .as("the drain published the last block with no wake").isTrue();
+            assertThat(received.stream().map(published -> published.samples()[0]).toList())
+                    .containsExactly(1f, 2f, 3f, 4f, 5f, 6f, 7f, 8f);
+            assertThat(adapter.droppedInputBlocks()).isZero();
+            assertThat(adapter.threadCounters().inputBlocksLost()).isZero();
+        } finally {
+            pointTheDrainWakeAt(adapter, drain);
+            adapter.close();
+        }
+    }
+
     @Test
     void inputRingOverflowDropsAndCounts() {
         FakeNativeBackend fake = new FakeNativeBackend();
@@ -880,6 +916,552 @@ class CallbackBackendAdapterTest {
 
         assertThat(adapter.droppedInputBlocks()).isGreaterThan(0);
         adapter.close();
+    }
+
+    // ── Observed drops: dropoutCounters() ────────────────────────────────
+
+    /**
+     * A device period that finds the output ring empty counts as starved
+     * only once the stream has played a rendered block: the empty periods of
+     * the start-up are not starvation.
+     */
+    @Test
+    void emptyPeriodsCountAsStarvedOnlyAfterTheFirstPlayedBlock() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+        float[][] in = new float[2][FRAMES];
+        float[][] out = new float[2][FRAMES];
+
+        fake.callback.process(in, out, FRAMES);
+        fake.callback.process(in, out, FRAMES);
+        assertThat(adapter.dropoutCounters().outputStarvedPeriods())
+                .as("empty periods before the first rendered block are the start-up")
+                .isZero();
+
+        adapter.sink(constantBlock(0.25f));
+        fake.callback.process(in, out, FRAMES);
+        assertThat(adapter.dropoutCounters().outputStarvedPeriods())
+                .as("a period that played a rendered block is not starved")
+                .isZero();
+        fake.callback.process(in, out, FRAMES);
+        fake.callback.process(in, out, FRAMES);
+
+        assertThat(adapter.dropoutCounters().outputStarvedPeriods()).isEqualTo(2);
+        assertThat(adapter.dropoutCounters().reportsOutputStarvation()).isTrue();
+        adapter.close();
+    }
+
+    /**
+     * Each open starts unprimed, and a callback that arrives with no output
+     * ring (after the close) counts nothing; the count survives the close.
+     */
+    @Test
+    void aReopenStartsUnprimedAndACallbackWithoutARingCountsNothing() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+        float[][] in = new float[2][FRAMES];
+        float[][] out = new float[2][FRAMES];
+        adapter.sink(constantBlock(0.25f));
+        fake.callback.process(in, out, FRAMES);
+        fake.callback.process(in, out, FRAMES);
+        assertThat(adapter.dropoutCounters().outputStarvedPeriods()).isEqualTo(1);
+        com.benesquivelmusic.daw.sdk.audio.AudioStreamCallback firstStreamCallback = fake.callback;
+
+        adapter.close();
+        firstStreamCallback.process(in, out, FRAMES);
+        assertThat(adapter.dropoutCounters().outputStarvedPeriods())
+                .as("a callback after the close finds no ring and counts nothing")
+                .isEqualTo(1);
+
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+        fake.callback.process(in, out, FRAMES);
+        fake.callback.process(in, out, FRAMES);
+        assertThat(adapter.dropoutCounters().outputStarvedPeriods())
+                .as("the reopened stream's start-up periods are not starvation")
+                .isEqualTo(1);
+        adapter.close();
+    }
+
+    /**
+     * Rendered blocks the full output ring refused are the discarded count,
+     * and captured blocks the full input ring lost join the dropped input
+     * blocks.
+     */
+    @Test
+    void ringOverflowsReachTheDiscardedAndDroppedInputCounts() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+        for (int i = 0; i < 10; i++) {
+            adapter.sink(constantBlock(0.1f));
+        }
+        float[][] in = new float[2][FRAMES];
+        float[][] out = new float[2][FRAMES];
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(GUARD_BUDGET_MILLIS);
+        while (adapter.droppedInputBlocks() == 0) {
+            if (System.nanoTime() > deadline) {
+                fail("Timed out after " + GUARD_BUDGET_MILLIS + " ms awaiting an input ring overflow");
+            }
+            for (int i = 0; i < 100; i++) {
+                fake.callback.process(in, out, FRAMES);
+            }
+        }
+
+        com.benesquivelmusic.daw.sdk.audio.BackendDropoutCounters counters = adapter.dropoutCounters();
+        assertThat(counters.outputDiscardedBlocks()).isEqualTo(adapter.droppedOutputBlocks()).isPositive();
+        assertThat(counters.inputBlocksDropped())
+                .as("the dropped input blocks are the ring's own overflows")
+                .isEqualTo(adapter.droppedInputBlocks());
+        assertThat(counters.driverOverloads()).isZero();
+        assertThat(counters.driverResyncs()).isZero();
+        adapter.close();
+    }
+
+    /**
+     * A captured block that a subscriber's full buffer dropped at publish is
+     * told to that subscriber and counted nowhere in the adapter: not among
+     * the dropped input blocks, which are the ring's own, and not as a block
+     * the drain failed to publish (story 338, ruling E208). The stream's
+     * publisher never runs a delivery and holds one block per subscriber, so
+     * the second block is dropped for it.
+     */
+    @Test
+    void aBlockDroppedAtPublishIsToldToTheSubscriberThatDroppedItAndNotCounted() throws Exception {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        replaceInputPublisher(adapter, new java.util.concurrent.SubmissionPublisher<>(task -> { }, 1));
+        CountDownLatch told = new CountDownLatch(1);
+        AtomicInteger drops = new AtomicInteger();
+        adapter.inputBlocks().subscribe(new DropCountingListener(drops, told));
+        adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+        float[][] in = new float[2][FRAMES];
+        float[][] out = new float[2][FRAMES];
+
+        fake.callback.process(in, out, FRAMES);
+        fake.callback.process(in, out, FRAMES);
+
+        assertThat(told.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                .as("the drop was told to the subscriber whose buffer was full")
+                .isTrue();
+        assertThat(drops).hasValue(1);
+        assertThat(adapter.dropoutCounters().inputBlocksDropped()).isEqualTo(adapter.droppedInputBlocks());
+        assertThat(adapter.threadCounters().inputBlocksLost())
+                .as("a dropped block is not a block the drain failed to publish")
+                .isZero();
+        adapter.close();
+    }
+
+    /**
+     * A drain whose close's join gave up (here: an interrupted closer) still
+     * holds the block it was publishing and one in its ring. After a reopen
+     * neither reaches the new stream, and the offer its closed publisher
+     * refuses is teardown, not a lost block (story 338, ruling E215). The
+     * new stream's one block, distinct in content, arrives alone: the
+     * publisher keeps each subscriber's order, so a stale block offered into
+     * it would have arrived first.
+     */
+    @Test
+    void aDrainThatOutlivesCloseCannotPublishIntoTheNextStreamOrCountItsTeardown() throws Exception {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        GatedPublisher gated = new GatedPublisher();
+        replaceInputPublisher(adapter, gated);
+        try {
+            adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+            fake.callback.process(planesOf(0.25f), new float[2][FRAMES], FRAMES);
+            fake.callback.process(planesOf(0.25f), new float[2][FRAMES], FRAMES);
+            assertThat(gated.entered.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS)).isTrue();
+            Thread oldDrain = drainThreadOf(adapter);
+
+            Thread.currentThread().interrupt();
+            adapter.close();
+            assertThat(Thread.interrupted()).as("the close's join gave up on the interrupt").isTrue();
+            assertThat(oldDrain.isAlive()).as("the drain outlived its close").isTrue();
+
+            adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+            List<AudioBlock> received = new CopyOnWriteArrayList<>();
+            CountDownLatch newBlock = new CountDownLatch(1);
+            adapter.inputBlocks().subscribe(new CollectingSubscriber(received, newBlock, 0.75f));
+            gated.release.countDown();
+            oldDrain.join(GUARD_BUDGET_MILLIS);
+            assertThat(oldDrain.isAlive()).as("the drain ended after its block").isFalse();
+            assertThat(adapter.threadCounters().inputBlocksLost())
+                    .as("the closed publisher's refusal is teardown")
+                    .isZero();
+
+            fake.callback.process(planesOf(0.75f), new float[2][FRAMES], FRAMES);
+            assertThat(newBlock.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS)).isTrue();
+            assertThat(received).as("the new stream received its own block and nothing before it").hasSize(1);
+            assertThat(received.getFirst().samples()[0]).isEqualTo(0.75f);
+        } finally {
+            gated.release.countDown();
+            adapter.close();
+        }
+    }
+
+    /**
+     * The drain publishes into the publisher it started with, whatever the
+     * adapter's field holds later (story 338, ruling E215). Both publishers
+     * deliver on the offering thread, so once the first has received both
+     * blocks the drain has made every offer it will make.
+     */
+    @Test
+    void theDrainPublishesEveryBlockIntoThePublisherItStartedWith() throws Exception {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        GatedPublisher first = new GatedPublisher(Runnable::run);
+        List<AudioBlock> firstReceived = new CopyOnWriteArrayList<>();
+        CountDownLatch bothBlocks = new CountDownLatch(2);
+        first.subscribe(new CollectingSubscriber(firstReceived, bothBlocks, 0.25f));
+        replaceInputPublisher(adapter, first);
+        java.util.concurrent.SubmissionPublisher<AudioBlock> second =
+                new java.util.concurrent.SubmissionPublisher<>(Runnable::run, Flow.defaultBufferSize());
+        List<AudioBlock> secondReceived = new CopyOnWriteArrayList<>();
+        second.subscribe(new CollectingSubscriber(secondReceived, new CountDownLatch(1), 0.25f));
+        try {
+            adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+            fake.callback.process(planesOf(0.25f), new float[2][FRAMES], FRAMES);
+            fake.callback.process(planesOf(0.25f), new float[2][FRAMES], FRAMES);
+            assertThat(first.entered.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS)).isTrue();
+
+            replaceInputPublisher(adapter, second);
+            first.release.countDown();
+
+            assertThat(bothBlocks.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS))
+                    .as("both blocks reached the publisher the drain started with")
+                    .isTrue();
+            assertThat(firstReceived).hasSize(2);
+            assertThat(secondReceived).isEmpty();
+        } finally {
+            first.release.countDown();
+            adapter.close();
+            first.close();
+        }
+    }
+
+    /**
+     * A failed open stops its drain and then completes and replaces its
+     * publisher, as close() does, and a reopen sets the shared stop flag
+     * again: a drain left behind by that open's interrupted join makes the
+     * offer of the block it was holding, which its closed publisher refuses,
+     * and stops, never draining the rest of its ring (story 338, ruling
+     * E215).
+     */
+    @Test
+    void aDrainLeftBehindByAFailedOpenStopsAfterTheBlockItWasPublishingWhenTheAdapterReopens() throws Exception {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        GatedPublisher gated = new GatedPublisher();
+        replaceInputPublisher(adapter, gated);
+        try {
+            Thread oldDrain = failAnOpenLeavingItsDrainBehind(fake, adapter, gated);
+
+            fake.failStartStream = false;
+            adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+            gated.release.countDown();
+            oldDrain.join(GUARD_BUDGET_MILLIS);
+
+            assertThat(oldDrain.isAlive()).as("the drain left behind stopped").isFalse();
+            assertThat(gated.watchedOffers).as("it offered only the block it was holding").hasValue(1);
+            assertThat(gated.isClosed()).as("the failed open completed the publisher it pinned").isTrue();
+            assertThat(adapter.inputBlocks()).as("and the reopen hands out another").isNotSameAs(gated);
+        } finally {
+            gated.release.countDown();
+            adapter.close();
+        }
+    }
+
+    /**
+     * A drain left behind by a failed open whose held block then cannot be
+     * published counts nothing: the failed open completed its publisher, so
+     * its stream is no longer live, the failure is teardown and it can never
+     * reach a later stream's take figure (story 338, rulings E214, E215 and
+     * E246).
+     */
+    @Test
+    void aBlockADrainLeftBehindByAFailedOpenCouldNotPublishCountsNothing() throws Exception {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        GatedPublisher gated = new GatedPublisher();
+        gated.failure = new IllegalStateException("the subscriber pipeline failed");
+        replaceInputPublisher(adapter, gated);
+        try {
+            Thread oldDrain = failAnOpenLeavingItsDrainBehind(fake, adapter, gated);
+
+            fake.failStartStream = false;
+            adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+            gated.release.countDown();
+            oldDrain.join(GUARD_BUDGET_MILLIS);
+
+            assertThat(oldDrain.isAlive()).as("the drain left behind ended").isFalse();
+            assertThat(gated.isClosed()).as("the failed open completed its publisher").isTrue();
+            assertThat(adapter.threadCounters().inputBlocksLost()).isZero();
+        } finally {
+            gated.release.countDown();
+            adapter.close();
+        }
+    }
+
+    /**
+     * A failed open completes and replaces its publisher after stopping its
+     * drain, as close() does: the block a drain left behind by that open was
+     * publishing never reaches a stream reopened on the adapter, whose own
+     * block arrives alone (story 338, ruling E215).
+     */
+    @Test
+    void aBlockADrainLeftBehindByAFailedOpenNeverReachesTheReopenedStream() throws Exception {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        GatedPublisher gated = new GatedPublisher();
+        replaceInputPublisher(adapter, gated);
+        try {
+            Thread oldDrain = failAnOpenLeavingItsDrainBehind(fake, adapter, gated);
+            fake.failStartStream = false;
+            adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+            List<AudioBlock> received = new CopyOnWriteArrayList<>();
+            CountDownLatch newBlock = new CountDownLatch(1);
+            adapter.inputBlocks().subscribe(new CollectingSubscriber(received, newBlock, 0.75f));
+
+            gated.release.countDown();
+            oldDrain.join(GUARD_BUDGET_MILLIS);
+
+            assertThat(oldDrain.isAlive()).as("the drain left behind stopped").isFalse();
+            fake.callback.process(planesOf(0.75f), new float[2][FRAMES], FRAMES);
+            assertThat(newBlock.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS)).isTrue();
+            assertThat(received).as("the reopened stream received its own block and nothing before it").hasSize(1);
+            assertThat(received.getFirst().samples()[0]).isEqualTo(0.75f);
+        } finally {
+            gated.release.countDown();
+            adapter.close();
+        }
+    }
+
+    /**
+     * The drain's interrupt clause: a drain left behind by a failed open whose pinned publisher is still open when
+     * the adapter reopens, which for the adapter's own publisher only an error of the JVM while building its
+     * replacement can cause, is stopped by its interrupt alone once the reopen sets the shared flag again: after the
+     * block it was holding, never draining the rest of its ring. A publisher that refuses its close stands in for
+     * that error (story 338, ruling E215).
+     */
+    @Test
+    void aDrainLeftBehindWhosePublisherStayedOpenStopsOnItsInterruptWhenTheAdapterReopens() throws Exception {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+        GatedPublisher gated = new GatedPublisher();
+        gated.closeRefusal = new IllegalStateException("injected: the publisher refused its close");
+        replaceInputPublisher(adapter, gated);
+        try {
+            Thread oldDrain = failAnOpenLeavingItsDrainBehind(fake, adapter, gated);
+
+            fake.failStartStream = false;
+            adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES);
+            gated.release.countDown();
+            oldDrain.join(GUARD_BUDGET_MILLIS);
+
+            assertThat(gated.isClosed()).as("premise: the drain's pinned publisher is still open").isFalse();
+            assertThat(oldDrain.isAlive()).as("the drain left behind stopped on its interrupt").isFalse();
+            assertThat(gated.watchedOffers).as("it offered only the block it was holding").hasValue(1);
+        } finally {
+            gated.release.countDown();
+            adapter.close();
+            gated.closeRefusal = null;
+            gated.close();
+        }
+    }
+
+    /** The adapter's device callback is the wrapped backend's, so its failed-callback count is too. */
+    @Test
+    void theFailedCallbackCountIsTheWrappedBackends() {
+        FakeNativeBackend fake = new FakeNativeBackend();
+        fake.failedCallbackInputBlocks = 3L;
+        CallbackBackendAdapter adapter = new CallbackBackendAdapter(fake);
+
+        assertThat(adapter.failedCallbackInputBlocks()).isEqualTo(3L);
+        adapter.close();
+    }
+
+    /**
+     * Fails an open in its start, after the drain took the first of two
+     * captured blocks into its publish, with the opening thread interrupted so
+     * the failed open's join of that drain gives up at once.
+     *
+     * @return the drain the failed open left behind, held in its publish
+     */
+    private static Thread failAnOpenLeavingItsDrainBehind(FakeNativeBackend fake, CallbackBackendAdapter adapter,
+                                                          GatedPublisher gated) {
+        AtomicBoolean drainHeld = new AtomicBoolean();
+        fake.failStartStream = true;
+        fake.beforeStartRefusal = () -> {
+            fake.callback.process(planesOf(0.25f), new float[2][FRAMES], FRAMES);
+            fake.callback.process(planesOf(0.25f), new float[2][FRAMES], FRAMES);
+            try {
+                drainHeld.set(gated.entered.await(GUARD_BUDGET_MILLIS, TimeUnit.MILLISECONDS));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            gated.watched.set(drainThreadOf(adapter));
+            Thread.currentThread().interrupt();
+        };
+
+        assertThatThrownBy(() -> adapter.open(DeviceId.defaultFor("Fake"), FORMAT, FRAMES))
+                .isSameAs(fake.startRefusal);
+        assertThat(Thread.interrupted()).as("the failed open's join gave up on the interrupt").isTrue();
+        assertThat(drainHeld).as("the drain took the first block into its publish").isTrue();
+        Thread oldDrain = gated.watched.get();
+        assertThat(oldDrain.isAlive()).as("the drain outlived the failed open").isTrue();
+        fake.beforeStartRefusal = null;
+        return oldDrain;
+    }
+
+    private static void replaceInputPublisher(CallbackBackendAdapter adapter,
+                                              java.util.concurrent.SubmissionPublisher<AudioBlock> publisher)
+            throws ReflectiveOperationException {
+        java.lang.reflect.Field publisherField =
+                CallbackBackendAdapter.class.getDeclaredField("inputPublisher");
+        publisherField.setAccessible(true);
+        publisherField.set(adapter, publisher);
+    }
+
+    private static Thread drainThreadOf(CallbackBackendAdapter adapter) {
+        try {
+            java.lang.reflect.Field drainField = CallbackBackendAdapter.class.getDeclaredField("drainThread");
+            drainField.setAccessible(true);
+            return (Thread) drainField.get(adapter);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("CallbackBackendAdapter.drainThread must exist", e);
+        }
+    }
+
+    /** Points the device callback's wake at {@code target}, so no wake reaches the drain itself. */
+    private static void pointTheDrainWakeAt(CallbackBackendAdapter adapter, Thread target) {
+        try {
+            java.lang.reflect.Field drainField = CallbackBackendAdapter.class.getDeclaredField("drainThread");
+            drainField.setAccessible(true);
+            drainField.set(adapter, target);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("CallbackBackendAdapter.drainThread must exist", e);
+        }
+    }
+
+    private static float[][] planesOf(float value) {
+        float[][] planes = new float[2][FRAMES];
+        for (float[] plane : planes) {
+            java.util.Arrays.fill(plane, value);
+        }
+        return planes;
+    }
+
+    /**
+     * Holds each offer until released, uninterruptibly: an interrupt that
+     * arrives while it is held is re-asserted once it is released. Then counts
+     * the offer when the thread in {@link #watched} made it, and offers, or
+     * throws {@link #failure} when one is set. While {@link #closeRefusal} is
+     * set, its close throws that and leaves it open.
+     */
+    private static final class GatedPublisher extends java.util.concurrent.SubmissionPublisher<AudioBlock> {
+
+        final CountDownLatch entered = new CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
+        final AtomicReference<Thread> watched = new AtomicReference<>();
+        final AtomicInteger watchedOffers = new AtomicInteger();
+        volatile RuntimeException failure;
+        volatile RuntimeException closeRefusal;
+
+        GatedPublisher() {
+        }
+
+        GatedPublisher(java.util.concurrent.Executor executor) {
+            super(executor, Flow.defaultBufferSize());
+        }
+
+        @Override
+        public int offer(AudioBlock item,
+                         java.util.function.BiPredicate<Flow.Subscriber<? super AudioBlock>,
+                                 ? super AudioBlock> onDrop) {
+            entered.countDown();
+            boolean interrupted = false;
+            while (true) {
+                try {
+                    release.await();
+                    break;
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            if (Thread.currentThread() == watched.get()) {
+                watchedOffers.incrementAndGet();
+            }
+            RuntimeException thrown = failure;
+            if (thrown != null) {
+                throw thrown;
+            }
+            return super.offer(item, onDrop);
+        }
+
+        @Override
+        public void close() {
+            RuntimeException refused = closeRefusal;
+            if (refused != null) {
+                throw refused;
+            }
+            super.close();
+        }
+    }
+
+    /** Requests everything, keeps each block, and counts down when one starts with {@code marker}. */
+    private static final class CollectingSubscriber implements Flow.Subscriber<AudioBlock> {
+
+        private final List<AudioBlock> received;
+        private final CountDownLatch marked;
+        private final float marker;
+
+        CollectingSubscriber(List<AudioBlock> received, CountDownLatch marked, float marker) {
+            this.received = received;
+            this.marked = marked;
+            this.marker = marker;
+        }
+
+        @Override public void onSubscribe(Flow.Subscription subscription) {
+            subscription.request(Long.MAX_VALUE);
+        }
+
+        @Override public void onNext(AudioBlock item) {
+            received.add(item);
+            if (item.samples()[0] == marker) {
+                marked.countDown();
+            }
+        }
+
+        @Override public void onError(Throwable throwable) { }
+        @Override public void onComplete() { }
+    }
+
+    /** Requests nothing and counts the blocks dropped for it. */
+    private static final class DropCountingListener
+            implements Flow.Subscriber<AudioBlock>, InputBlockLossListener {
+
+        private final AtomicInteger drops;
+        private final CountDownLatch told;
+
+        DropCountingListener(AtomicInteger drops, CountDownLatch told) {
+            this.drops = drops;
+            this.told = told;
+        }
+
+        @Override public void inputBlockDropped(AudioBlock block) {
+            drops.incrementAndGet();
+            told.countDown();
+        }
+
+        @Override public void onSubscribe(Flow.Subscription subscription) { }
+        @Override public void onNext(AudioBlock item) { }
+        @Override public void onError(Throwable throwable) { }
+        @Override public void onComplete() { }
     }
 
     // ── Oversized driver blocks (story 316 review) ───────────────────────
@@ -1341,6 +1923,17 @@ class CallbackBackendAdapterTest {
             return counters;
         }
 
+        /** Story 338: what this delegate reports from {@link #failedCallbackInputBlocks()}. */
+        volatile long failedCallbackInputBlocks;
+
+        @Override
+        public long failedCallbackInputBlocks() {
+            return failedCallbackInputBlocks;
+        }
+
+        /** Story 338: run by {@link #startStream()} just before it throws {@link #startRefusal}. */
+        volatile Runnable beforeStartRefusal;
+
         int initializeCount;
         int enumerationCount;
         int openStreamCount;
@@ -1413,6 +2006,10 @@ class CallbackBackendAdapterTest {
         @Override
         public void startStream() {
             if (failStartStream) {
+                Runnable hook = beforeStartRefusal;
+                if (hook != null) {
+                    hook.run();
+                }
                 throw startRefusal;
             }
             // otherwise a no-op — the test drives the callback by hand

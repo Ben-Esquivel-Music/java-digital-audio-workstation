@@ -140,7 +140,33 @@ handle throws, the JVM terminates abruptly. Every target in the tree is guarded
   first, then the count, on every path, so a report that reads the count first
   carries that fault or a newer one (story 337, ruling E82; pinned by
   `RealTimeSafeContractTest.everyBackendCounterWriterStoresItsFaultBeforeItsCount`).
-  The backend reports them through `AudioBackend.threadCounters()`, folding each
+  One count is not a `++`: the failed-period input count (story 338, ruling E211)
+  adds 0 or 1 with a plain `volatile` load-add-store by the same single writer.
+  Before its `try` the upcall stores the period's pending captured block in its own
+  field (1 when the stream has a bound input channel, else 0), the body clears it
+  once the period's input is handed on (written to the capture ring or counted as
+  that ring's overflow on ASIO, taken by the Java callback on PortAudio), and the
+  catch adds it after the fault and its fault count
+  (`AsioBufferSwitchShim.bufferSwitchUpcall`, `PortAudioBackend.CallbackInvoker.invoke`;
+  the same test pins its order). The backend reports it through
+  `AudioBackend.failedCallbackInputBlocks()`, never through `threadCounters()` or
+  `dropoutCounters()`, folding each stream's count when that stream's bridge or
+  invoker is retired in an immutable record it swaps whole in one volatile write,
+  and the engine reads it for the open stream's backend only, never for an input
+  device opened beside the stream, as one of the take's input losses
+  (`AudioEngine.CapturedInputLoss`). A failure of a bridge's wake of its input drain,
+  which comes once the period's block is written to the input ring or, with the ring
+  full, counted as its overflow, is no failed callback:
+  `CallbackBackendAdapter.deviceCallback` (PortAudio) and
+  `AsioBufferSwitchShim.bufferSwitch` (ASIO) each wrap the `LockSupport.unpark` alone in
+  a `catch (Throwable ignored)` whose handler is empty, so nothing is counted, the
+  period's output is still written, and the drain's next wake or its own 20 ms backstop
+  publishes what the ring holds (story 338, ruling E272, and on ASIO consult 50's note
+  beside it; the extent is pinned from the bytecode by
+  `RealTimeSafeContractTest.theNativeCallbackBridgeContainsItsDrainWakeAndNothingElse`
+  and `theAsioBridgeContainsItsDrainWakeAndNothingElse`). The backend reports the other
+  counts through
+  `AudioBackend.threadCounters()`, folding each
   per-stream helper's counts at its close in daw-sdk's shared
   `BackendCounterLedger` (ruling E90), and the engine's health record pulls them
   through the same ledger, for the open stream's backend and for every input device
@@ -157,7 +183,12 @@ handle throws, the JVM terminates abruptly. Every target in the tree is guarded
   `bufferSwitchUpcall`) the body is held to the same rule, PortAudio's per-period
   `reinterpret` view excepted (accepted as built). The device-notification upcalls
   run on the driver's notification thread and publish a `FormatChangeRequested`
-  event from their body; only their handler is held to this rule.
+  event from their body; only their handler is held to this rule. The ASIO resync
+  branch is held to the stricter rule in its body: `AsioBackend.noteDriverResync`
+  counts the request and keeps its arrival in `ResyncArrivalRing` with a clock read,
+  atomic claims and stores and the count last, no lock, no allocation and nothing
+  logged (`RealTimeSafeContractTest.theDriversResyncPathTakesNoLockAllocatesNothingAndLogsNothing`;
+  story 338, ruling E279).
   Every call a handler makes — the silencing reinterpret,
   `noteDeviceNotificationFault`, the lane record — sits inline in a nested
   `try { … } catch (Throwable ignored) { }`, never in a helper method, whose invoke

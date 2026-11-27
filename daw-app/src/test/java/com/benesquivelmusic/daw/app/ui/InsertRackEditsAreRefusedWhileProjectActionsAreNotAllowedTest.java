@@ -200,7 +200,7 @@ class InsertRackEditsAreRefusedWhileProjectActionsAreNotAllowedTest {
     }
 
     private void expensive() throws Exception {
-        String text = "Expensive (eligible for bypass)";
+        String text = "Expensive (no CPU budget policy bypasses it)";
         CheckMenuItem expensive = onFx(() -> (CheckMenuItem) fireThroughTheMenu(text));
         assertThat(slot.isExpensive()).as("refused: the flag is unchanged").isFalse();
         assertThat(onFx(expensive::isSelected)).as("the same item the menu toggled shows the slot again").isFalse();

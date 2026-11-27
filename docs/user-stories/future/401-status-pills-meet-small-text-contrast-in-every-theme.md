@@ -57,7 +57,7 @@ These tests are binding acceptance criteria. They run headless, and none of them
   So today only Atelier's `-ok` and `-warn` pairs fall short, and every focus-ring pair passes.
 - The studio engineer's rulings in story 333: the category and its owner (the ruling on app fix pass 1, N5, which also corrects an earlier owner: story 339 does not cover theme contrast), and the focus ring's token values with their contrast under this story (the ruling on app fix pass 2's Java items, §2, which added the step line's ring itself in story 333).
 - Design references: UI Design Book §3.1 (colour tokens, the three palettes), §2.2 (information hierarchy via tone, not hue).
-- Cross-refs: story 333 (the lock indicator's token pattern; the closing-progress focus ring), story 339 (dialog conformance, which does not own this).
+- Cross-refs: story 333 (the lock indicator's token pattern; the closing-progress focus ring), story 339 (dialog conformance, which does not own this), story 483 (the same palettes' warning, success and muted tokens used as text on surfaces; it can change the same token, Atelier's `-warn`, and whichever of the two lands second keeps the other's pairs at their thresholds and runs the other's tests unchanged).
 
 ## Status
 

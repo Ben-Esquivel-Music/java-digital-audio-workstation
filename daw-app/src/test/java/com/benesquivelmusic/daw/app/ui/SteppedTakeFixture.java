@@ -149,6 +149,11 @@ final class SteppedTakeFixture {
         return undoManager;
     }
 
+    /** The notification bar the controller shows its notices on. */
+    NotificationBar notificationBar() {
+        return notificationBar;
+    }
+
     /** The status bar's text, read on the FX thread. */
     String statusText() throws Exception {
         return get(statusBarLabel::getText);

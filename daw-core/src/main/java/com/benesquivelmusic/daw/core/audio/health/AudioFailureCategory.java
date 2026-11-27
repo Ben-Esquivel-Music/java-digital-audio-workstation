@@ -7,8 +7,8 @@ package com.benesquivelmusic.daw.core.audio.health;
  *
  * <p>Never referenced from a real-time method — a real-time site records with
  * the {@code int} constants of {@link AudioFailureCodes} (story 337, ruling
- * E22). {@code audio.watchdog} and {@code audio.xrun} are reserved for story
- * 338 and are not categories of this record.</p>
+ * E22). {@code audio.watchdog} and {@code audio.xrun} are log slugs of the
+ * heartbeat watchdog and the xrun feed, not categories of this record.</p>
  */
 public enum AudioFailureCategory {
 

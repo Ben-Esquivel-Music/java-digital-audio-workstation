@@ -20,11 +20,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Story 295 — the §4.4 priority-overflow contract of the
  * {@link SessionStatusStrip} skin. As the strip narrows, collapsible cells are
- * hidden into the {@code ⋯} overflow popover in the fixed order Workspace →
- * Schema → Lock → Disk → Journal; Session, Saved and Checkpoint never collapse.
+ * hidden into the {@code ⋯} overflow popover in the fixed order Workspace → Xruns →
+ * Schema → Lock → Disk → Journal; Session, Saved, Checkpoint and Engine never
+ * collapse (story 338, ruling E28).
  *
  * <p>Thresholds (a collapsible cell is hidden when strip width &lt; threshold):
- * Workspace &lt; 1200, Schema &lt; 1140, Lock &lt; 1080, Disk &lt; 1020,
+ * Workspace &lt; 1200, Xruns &lt; 1170, Schema &lt; 1140, Lock &lt; 1080, Disk &lt; 1020,
  * Journal &lt; 960. At &ge; 1200 all cells are visible across two rows and the
  * overflow button is hidden.</p>
  */
@@ -54,22 +55,42 @@ class StatusStripOverflowPriorityTest {
             assertThat(strip.lockCell().isManaged()).as("lock cell present").isTrue();
             assertThat(strip.schemaCell().isManaged()).as("schema cell present").isTrue();
             assertThat(strip.workspaceCell().isManaged()).as("workspace cell present").isTrue();
+            assertThat(strip.xrunCell().isManaged()).as("xruns cell present, \"Xruns 0\" (ruling E22)").isTrue();
         });
     }
 
     /**
-     * Between 1140 and 1200 only the lowest-priority cell (Workspace) collapses;
+     * Between 1170 and 1200 only the lowest-priority cell (Workspace) collapses;
      * the overflow button appears and the never-collapse cells stay inline.
      */
     @Test
-    void betweenSchemaAndWorkspaceOnlyWorkspaceCollapses() throws Exception {
+    void betweenXrunsAndWorkspaceOnlyWorkspaceCollapses() throws Exception {
+        runOnFx(() -> {
+            SessionStatusStrip strip = realizedStrip();
+            resizeTo(strip, 1185.0);
+
+            assertThat(strip.overflowCells())
+                    .as("at width 1185 only Workspace is collapsed (first in the priority order)")
+                    .containsExactly(strip.workspaceCell());
+            assertThat(strip.isOverflowButtonVisible())
+                    .as("overflow button is shown once any cell is collapsed")
+                    .isTrue();
+        });
+    }
+
+    /**
+     * Story 338 (ruling E22): between 1140 and 1170 the Xruns cell — always
+     * shown, "Xruns 0" at zero — is the second to collapse, after Workspace.
+     */
+    @Test
+    void betweenSchemaAndXrunsWorkspaceAndXrunsCollapse() throws Exception {
         runOnFx(() -> {
             SessionStatusStrip strip = realizedStrip();
             resizeTo(strip, 1160.0);
 
             assertThat(strip.overflowCells())
-                    .as("at width 1160 only Workspace is collapsed (first in the priority order)")
-                    .containsExactly(strip.workspaceCell());
+                    .as("at width 1160 Workspace and Xruns are collapsed, in the priority order")
+                    .containsExactly(strip.workspaceCell(), strip.xrunCell());
             assertThat(strip.isOverflowButtonVisible())
                     .as("overflow button is shown once any cell is collapsed")
                     .isTrue();
@@ -82,7 +103,7 @@ class StatusStripOverflowPriorityTest {
     }
 
     /**
-     * Below every threshold (and below the 900 px single-row mark) all five
+     * Below every threshold (and below the 900 px single-row mark) all six
      * collapsible cells are hidden, in collapse order; the never-collapse cells
      * stay inline.
      */
@@ -93,9 +114,10 @@ class StatusStripOverflowPriorityTest {
             resizeTo(strip, 850.0);
 
             assertThat(strip.overflowCells())
-                    .as("at width 850 all five collapsibles overflow in collapse order")
+                    .as("at width 850 all six collapsibles overflow in collapse order")
                     .containsExactly(
                             strip.workspaceCell(),
+                            strip.xrunCell(),
                             strip.schemaCell(),
                             strip.lockCell(),
                             strip.diskCell(),

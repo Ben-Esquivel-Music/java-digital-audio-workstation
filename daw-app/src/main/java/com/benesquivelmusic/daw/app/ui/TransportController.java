@@ -985,7 +985,8 @@ final class TransportController implements TransportIntentHandler {
     }
 
     /**
-     * Story 327 — the tail of {@link #stop()} for a take the record
+     * Story 327 — the tail of {@link #stop()} for a transport a device loss
+     * stopped, first written for a take the record
      * coordinator rescued on device loss ({@link RecordCoordinator#onDeviceLost}),
      * which stopped the transport through the pipeline's own stop: the
      * Stopped announce when the transport was rolling (the pipeline's stop
@@ -997,14 +998,17 @@ final class TransportController implements TransportIntentHandler {
      * a post-loss reopen: the publisher of the loss closed the stream before
      * publishing it — the precondition this tail rests on, stated as the
      * publisher contract on {@link EngineState#DEVICE_LOST}
-     * ({@code onDeviceRemoved} calls {@code stopAudioOutput()}, then
-     * {@code stop()}, before it publishes DEVICE_LOST; a
-     * {@code stopAudioOutput()} whose pump did not join keeps the stream
-     * RUNNING, but the engine's {@code stop()} that follows it then marks
+     * ({@code declareDeviceLost}, for every cause of a loss, calls
+     * {@code stopAudioOutput()}, then {@code stop()}, before it publishes
+     * DEVICE_LOST; a {@code stopAudioOutput()} whose pump did not join keeps
+     * the stream RUNNING, but the engine's {@code stop()} that follows it then marks
      * it RELEASE_PENDING, which {@code isStreamOpen()} reports as closed) —
-     * the coordinator was RECORDING until this turn (its only call site is the
-     * RECORDING branch of {@code onDeviceLost}), and nothing the transport
-     * drives opens a stream in that state — {@link #start()} and
+     * for the rescue's call, the coordinator was RECORDING until this turn,
+     * and nothing the transport drives opens a stream in that state (the
+     * count-in abort of {@code onDeviceLost} and the stop in place of a
+     * playback-only loss, {@link #stopInPlaceAfterTheDeviceLoss}, call it on
+     * the same delivery turn and, by the same test, leave open any stream
+     * reopened since the loss) — {@link #start()} and
      * {@link #playWithPreRoll()} return early while RECORDING, Record
      * pressed while RECORDING is the Stop, and a driver's format-change
      * reopen restores only a stream that was open ({@code wasOpen} is false
@@ -1041,7 +1045,10 @@ final class TransportController implements TransportIntentHandler {
      * (captured together there, never looked up at delivery — PR #982
      * review). {@link EngineState#DEVICE_LOST} is the loss of the device it
      * carries ({@link RecordCoordinator#onDeviceLost}) and latches
-     * {@link #deviceLost}. The lost device's return is the first
+     * {@link #deviceLost}; when the coordinator rescued no take, a transport
+     * still rolling is then stopped in place
+     * ({@link #stopInPlaceAfterTheDeviceLoss}; story 338, ruling E65). The
+     * lost device's return is the first
      * {@link EngineState#STOPPED} or {@link EngineState#RUNNING} delivered
      * after that <em>with the stream open</em>
      * ({@link AudioEngine#isStreamOpen()}, read here at delivery): the
@@ -1066,12 +1073,11 @@ final class TransportController implements TransportIntentHandler {
      * on another device (no seek), or the lost device itself if it is
      * physically back and the ladder, which honours the configured
      * {@code DeviceId}, lands on it, which is the return. A
-     * {@code FormatChangeRequested} while DEVICE_LOST publishes
-     * RECONFIGURING and then a closed-stream STOPPED
-     * ({@code performFormatChangeReopen} restores only a stream that was
-     * open; the loss closed it) and is ignored here; a Settings apply
-     * leaves DEVICE_LOST through FINALIZING before its own STOPPED is
-     * published, so that STOPPED meets an IDLE coordinator. The return
+     * {@code FormatChangeRequested} publishes nothing while the device is
+     * lost ({@code performFormatChangeReopen} drops any request it runs
+     * then); a Settings apply leaves DEVICE_LOST through FINALIZING before its
+     * own RECONFIGURING and then its STOPPED are published, so that STOPPED
+     * meets an IDLE coordinator. The return
      * clears the latch and is handed, with the device it carries, to
      * {@link RecordCoordinator#onLostDeviceReturned}, which ignores it in
      * any state but DEVICE_LOST and identity-matches it. A STOPPED
@@ -1086,17 +1092,78 @@ final class TransportController implements TransportIntentHandler {
      */
     void onEngineState(EngineState state, Optional<DeviceId> watched) {
         Objects.requireNonNull(state, "state must not be null");
+        onEngineState(state, watched, EngineStateChange.defaultCause(state));
+    }
+
+    /**
+     * {@link #onEngineState(EngineState, Optional)} with how a
+     * {@link EngineState#DEVICE_LOST} came about, handed on to the record
+     * coordinator with the loss (story 338, ruling E5). FX thread.
+     *
+     * @param state   the engine state just published
+     * @param watched the device the engine controller watched at that
+     *                transition, if any
+     * @param cause   the loss cause the change carried
+     */
+    void onEngineState(EngineState state, Optional<DeviceId> watched, EngineStateChange.LossCause cause) {
+        Objects.requireNonNull(state, "state must not be null");
         Objects.requireNonNull(watched, "watched must not be null");
+        Objects.requireNonNull(cause, "cause must not be null");
         DeviceId device = watched.orElse(UNKNOWN_DEVICE);
         if (state == EngineState.DEVICE_LOST) {
             deviceLost = true;
-            recordCoordinator.onDeviceLost(device);
+            boolean startAbortedByTheLoss = recordCoordinator.isPreparingTake() || recordCoordinator.isCountingIn();
+            recordCoordinator.onDeviceLost(device, cause);
+            if (recordCoordinator.getState() != RecordState.DEVICE_LOST) {
+                stopInPlaceAfterTheDeviceLoss(!startAbortedByTheLoss);
+            }
             return;
         }
         boolean reopened = state == EngineState.STOPPED || state == EngineState.RUNNING;
         if (deviceLost && reopened && audioEngine.isStreamOpen()) {
             deviceLost = false;
             recordCoordinator.onLostDeviceReturned(device);
+        }
+    }
+
+    /**
+     * Story 338, rulings E36 and E65 — the transport's reaction to a device
+     * loss that rescued no take: a transport still rolling (PLAYING, a
+     * post-roll tail included, or PAUSED) over the lost stream is
+     * stopped where the audio stopped. The playhead is not rewound by
+     * return-to-start; one {@link TransportEvent.Stopped} carries that
+     * position; the post-roll timer is cancelled; the status and the Record
+     * button read stopped ({@link #finishDeviceLossStop}), and the status bar
+     * says "Stopped" unless it reports a take's outcome, among them the abort
+     * of a take the loss caught preparing or counting in. It never runs the
+     * Stop gesture ({@code stopTransport}), whose {@code requestStop()} could
+     * enter a post-roll over a dead stream, and, like
+     * {@code finishDeviceLossStop}, it never closes a stream opened again
+     * since the loss. A stopped transport is left alone. Not run for a loss
+     * that rescued a take: the rescue stopped the transport already. FX
+     * thread.
+     *
+     * @param sayStopped whether the status bar may say "Stopped": false when
+     *                   the loss aborted a take's start, whose message stays
+     */
+    private void stopInPlaceAfterTheDeviceLoss(boolean sayStopped) {
+        Transport transport = project.getTransport();
+        if (transport.getState() == TransportState.STOPPED) {
+            return;
+        }
+        if (postRollTimer != null) {
+            postRollTimer.stop();
+            postRollTimer = null;
+        }
+        double stoppedAt = transport.getPositionInBeats();
+        transport.stop();
+        if (transport.getPositionInBeats() != stoppedAt) {
+            transport.setPositionInBeats(stoppedAt);
+        }
+        finishDeviceLossStop(true, core.beatsToFrames(stoppedAt));
+        if (sayStopped && !statusShowsARecordingOutcome()) {
+            statusBarLabel.setText("Stopped");
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.POWER, 12));
         }
     }
 
@@ -1885,8 +1952,9 @@ final class TransportController implements TransportIntentHandler {
                 "status-recording", "status-playing", "status-stopped", "status-paused", "status-device-lost");
         if (recordState == RecordState.DEVICE_LOST) {
             // Story 327 (book §6.5): DEVICE_LOST renders the record state, not
-            // the stopped transport — the §6.5 strip cell (story 338) binds
-            // to the same stateProperty().
+            // the stopped transport. Only this label shows the record state's
+            // "Device lost"; the status strip's Engine cell shows the
+            // engine's loss (story 338, ruling E26).
             statusLabel.setText("Device lost");
             statusLabel.getStyleClass().add("status-device-lost");
             statusLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));

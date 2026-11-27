@@ -54,3 +54,7 @@ This list is the binding acceptance criterion.
 ## Status
 
 - Open
+
+## Note from Story 338
+
+Story 338 built no surface for an abandoned control-thread call, so the cross-reference above ("engine health surfaces the abandoned-call state") names nothing that exists. What story 338 built that touches this story: its heartbeat watchdog declares a device whose callbacks stop lost, after max(2 s, 8 buffer periods), and a Reconnect that the engine refuses because the previous stream has not let go says "the previous audio stream has not shut down yet" (story 338, rulings E56 and E112).

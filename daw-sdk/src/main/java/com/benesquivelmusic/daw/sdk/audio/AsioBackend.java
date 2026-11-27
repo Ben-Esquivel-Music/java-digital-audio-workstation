@@ -14,6 +14,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Flow;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -83,6 +84,12 @@ public final class AsioBackend implements AudioBackend {
      */
     private static volatile Supplier<AsioStreamingShim> streamingShimFactory =
             AsioStreamingShim::new;
+
+    /**
+     * The clock-lock poll interval a backend constructed from now on uses.
+     * Tests shorten it through {@link #setClockPollInterval(Duration)}.
+     */
+    private static volatile Duration clockPollInterval = AsioClockLockMonitor.POLL_INTERVAL;
 
     /** Serializes the Steinberg SDK's process-wide single-driver lifecycle. */
     private static final Object DRIVER_LIFECYCLE_LOCK = new Object();
@@ -189,6 +196,38 @@ public final class AsioBackend implements AudioBackend {
     private volatile Throwable lastDeviceNotificationFault;
 
     /**
+     * {@code kAsioOverload} messages the driver sent. Counted here rather
+     * than on the {@code asioMessage} shim, which is rebuilt on every open, and
+     * an {@link AtomicLong} because the driver may call from more than one
+     * thread.
+     */
+    private final AtomicLong driverOverloads = new AtomicLong();
+
+    /**
+     * {@code kAsioResyncRequest} messages the driver sent, and the arrival of
+     * each (story 338, rulings E270 and E279); see {@link #driverOverloads}.
+     */
+    private final ResyncArrivalRing resyncArrivals = new ResyncArrivalRing(System.nanoTime());
+
+    /**
+     * The buffer-switch bridges' dropout counts, accumulated across this
+     * backend's opens: the live bridge is attached at open and folded in at
+     * its teardown, swapped in one volatile write of an immutable value so a
+     * reader never sees a bridge counted twice or not at all.
+     */
+    private volatile BridgeDropouts bridgeDropouts = BridgeDropouts.EMPTY;
+
+    /**
+     * The backend's clock-lock publisher: never completed, because lock events
+     * are a feed of the backend rather than of one stream.
+     */
+    private final SubmissionPublisher<ClockLockEvent> clockLockPublisher =
+            new SubmissionPublisher<>();
+
+    /** Polls the clock while a stream runs; see {@link #clockLockEvents()}. */
+    private final AsioClockLockMonitor clockLockMonitor;
+
+    /**
      * Name of the driver {@code ASIOInit} succeeded for, or {@code null} while
      * no driver is loaded. Held so a teardown the driver refuses can name it in
      * the diagnostic without issuing a downcall from the teardown path.
@@ -227,6 +266,42 @@ public final class AsioBackend implements AudioBackend {
                 resetTeardownExecutor, "resetTeardownExecutor");
         this.driverReleaseBudget = Objects.requireNonNull(
                 driverReleaseBudget, "driverReleaseBudget");
+        this.clockLockMonitor = new AsioClockLockMonitor(clockProbe(), System::nanoTime,
+                clockLockPublisher, clockPollInterval, AsioClockLockMonitor::daemonThread);
+    }
+
+    /** What the clock-lock monitor reads from this backend; never on a driver thread. */
+    private AsioClockLockMonitor.Probe clockProbe() {
+        return new AsioClockLockMonitor.Probe() {
+            @Override public List<ClockSource> clockSources(DeviceId device) {
+                return AsioBackend.this.clockSources(device);
+            }
+            @Override public boolean samplePositionAvailable() {
+                try (AsioCapabilityShim shim = capabilityShimFactory.get()) {
+                    return shim.isSamplePositionAvailable();
+                }
+            }
+            @Override public AsioCapabilityShim.SamplePosition samplePosition() {
+                try (AsioCapabilityShim shim = capabilityShimFactory.get()) {
+                    return shim.samplePosition();
+                }
+            }
+            @Override public long deviceCallbackPeriods() {
+                return threadCounters().deviceCallbackPeriods().orElse(0L);
+            }
+            @Override public long driverResyncs() {
+                return resyncArrivals.requests();
+            }
+            @Override public boolean controlPanelOpen() {
+                return AsioControlThread.isControlPanelOpen();
+            }
+            @Override public long closedControlPanelSessions() {
+                return AsioControlThread.closedControlPanelSessions();
+            }
+            @Override public OptionalLong driverResyncArrivalNanos(long request) {
+                return resyncArrivals.arrivalOf(request);
+            }
+        };
     }
 
     @Override public double openedInputSampleRate() {
@@ -589,6 +664,7 @@ public final class AsioBackend implements AudioBackend {
                     bufferSwitchShim = bridge;
                     shimCounters = shimCounters.attached(
                             this, bridge::counters, BackendThreadCounters.NONE);
+                    bridgeDropouts = bridgeDropouts.attached(bridge);
                     if (!streaming.start()) {
                         throw new AudioBackendException(
                                 "ASIOStart failed for driver: " + driverName);
@@ -609,6 +685,15 @@ public final class AsioBackend implements AudioBackend {
                 // shim was published yet; both are live now, so run the real
                 // teardown before handing a "running" stream back to the caller.
                 stopStreamingForDriverReset();
+            } else {
+                clockLockMonitor.start(new DeviceId(NAME, driverName));
+                if (driverResetRequested) {
+                    // A reset that landed between the check and the start had
+                    // its pause undone by the start; the driver's answers mean
+                    // nothing until the reopen, and this pause also gives the
+                    // reopen's stream its switch window (ruling E271).
+                    clockLockMonitor.pause();
+                }
             }
         }
     }
@@ -814,6 +899,10 @@ public final class AsioBackend implements AudioBackend {
      * as a rung whose handle is RETAINED rather than as an ordinary refusal
      * (story 316 re-review).
      *
+     * <p>It completes the stream's input publisher as {@link #close()} does,
+     * so a drain that outlived its bounded join can publish into no later
+     * stream (story 338, ruling E215).</p>
+     *
      * <p>When the uninstall could not be CONFIRMED — the call could not be
      * made, was refused on arrival, did not complete within its budget, was
      * interrupted, or failed at the FFM boundary; see
@@ -849,6 +938,7 @@ public final class AsioBackend implements AudioBackend {
         // its close has joined asio-input-drain, whose final sweep can still
         // count a lost block.
         shimCounters = shimCounters.detached(this);
+        bridgeDropouts = bridgeDropouts.detached();
         if (streaming != null) {
             streaming.close();
         }
@@ -856,7 +946,7 @@ public final class AsioBackend implements AudioBackend {
             callback.close();
         }
         if (marked) {
-            support.markClosed();
+            support.close();
         }
         activeDriverName = null;
         releaseDriverShim(candidate);
@@ -1188,9 +1278,11 @@ public final class AsioBackend implements AudioBackend {
 
     /**
      * Exposes {@link AudioDeviceEvent}s derived from ASIO's
-     * {@code kAsioResetRequest} (driver-initiated drop),
-     * {@code kAsioBufferSizeChange}, and {@code kAsioResyncRequest}
-     * callbacks installed on driver open.
+     * {@code kAsioResetRequest} (driver-initiated drop) and
+     * {@code kAsioBufferSizeChange} callbacks installed on driver open. A
+     * {@code kAsioResyncRequest} publishes nothing here: it is counted in
+     * {@link #dropoutCounters()} and read by the clock-lock poll behind
+     * {@link #clockLockEvents()}, and the stream keeps running.
      *
      * <p>The native shim translates those driver notifications into
      * {@link AudioDeviceEvent}s; delivery semantics are defined by the
@@ -1240,10 +1332,6 @@ public final class AsioBackend implements AudioBackend {
      *       {@code ASIOSetSampleRate(newRate)} &rarr;
      *       {@code reason = }{@link FormatChangeReason.SampleRateChange};
      *       the new format carries the new sample rate.</li>
-     *   <li>{@code kAsioResyncRequest} &rarr;
-     *       {@code reason = }{@link FormatChangeReason.ClockSourceChange};
-     *       the proposed format is typically empty since the rate /
-     *       buffer size do not necessarily change.</li>
      *   <li>any other {@code kAsioResetRequest} (USB streaming-mode
      *       change, USB hub cycle, vendor utility "reset") &rarr;
      *       {@code reason = }{@link FormatChangeReason.DriverReset}.</li>
@@ -1443,6 +1531,113 @@ public final class AsioBackend implements AudioBackend {
     }
 
     /**
+     * Counts one {@code kAsioOverload} message. Called from
+     * {@link AsioFormatChangeShim#dispatch(long, long)} on a driver thread: an
+     * {@link AtomicLong} increment, nothing else.
+     */
+    void noteDriverOverload() {
+        driverOverloads.incrementAndGet();
+    }
+
+    /**
+     * Counts one {@code kAsioResyncRequest} message and keeps its arrival
+     * (story 338, rulings E270 and E279). Called from
+     * {@link AsioFormatChangeShim#dispatch(long, long)} on a driver thread: a
+     * clock read, then {@link ResyncArrivalRing#record(long)}'s atomic claim,
+     * array stores and count. No downcall, no lock, no allocation, no publish;
+     * the clock-lock poll and the xrun feed pick the count and the arrival up
+     * on their own threads.
+     */
+    void noteDriverResync() {
+        resyncArrivals.record(System.nanoTime());
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>ASIO reports the periods its buffer-switch callback played silence
+     * because no rendered block was waiting (once the stream had played its
+     * first one), the driver's {@code kAsioOverload} and
+     * {@code kAsioResyncRequest} messages, and the captured blocks its capture
+     * ring refused on the driver's thread; a block its input publisher dropped
+     * for a subscriber is told to that subscriber, not counted here (story
+     * 338, ruling E208). Its discarded blocks are the rendered blocks a full
+     * output ring refused plus the older ones a callback skipped to play the
+     * newest, both counted only once the stream had played its first block.
+     * Each bridge's counts are folded in at its teardown, so every count only
+     * grows.</p>
+     */
+    @Override
+    public BackendDropoutCounters dropoutCounters() {
+        BridgeDropouts bridges = bridgeDropouts;
+        return new BackendDropoutCounters(
+                bridges.outputStarvedPeriods(),
+                bridges.outputDiscardedBlocks(),
+                driverOverloads.get(),
+                resyncArrivals.requests(),
+                bridges.inputRingOverflows(),
+                true);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The buffer-switch upcall faults that came before the period's input
+     * reached the capture ring, every bridge's folded in at its teardown
+     * (story 338, ruling E211).</p>
+     */
+    @Override
+    public long failedCallbackInputBlocks() {
+        return bridgeDropouts.failedPeriodInputBlocks();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The arrivals {@link #noteDriverResync()} kept on the driver's message
+     * thread: the first 256 since the last take, but for one whose record is
+     * under way as a take of 256 or more ends, each other in the run of the
+     * last arrival kept before it ({@link ResyncArrivalRing#take()}).</p>
+     */
+    @Override
+    public DriverResyncArrivals takeDriverResyncArrivals() {
+        return resyncArrivals.take();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>ASIO's public API has no lock query, so the state is derived while a
+     * stream runs: a daemon thread polls {@code ASIOGetSamplePosition} through
+     * {@link AsioControlThread} once a second, and the driver's
+     * {@code kAsioResyncRequest} messages count as bad answers; see
+     * {@link AudioBackend#clockLockEvents()} for the rule. Nothing is polled
+     * when the current source is internal, when the driver reports a single
+     * source, or when the native build lacks
+     * {@code asioshim_getSamplePosition}, and no call is sent to the driver
+     * while its control panel is open. Each event names
+     * {@code new DeviceId("ASIO", driverName)}, as the device events do.</p>
+     */
+    @Override
+    public Flow.Publisher<ClockLockEvent> clockLockEvents() {
+        return clockLockPublisher;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The poll's own volatile field, read without
+     * {@code DRIVER_LIFECYCLE_LOCK} and without the control thread. Its
+     * device is {@code new DeviceId("ASIO", driverName)}: the driver the
+     * stream really opened, also when it was asked for the default device.
+     * Empty while no stream runs.</p>
+     */
+    @Override
+    public Optional<ClockLockStatus> clockLockStatus() {
+        return clockLockMonitor.status();
+    }
+
+    /**
      * {@inheritDoc}
      *
      * <p>The number of input channels {@code ASIOCreateBuffers} really handed
@@ -1618,6 +1813,9 @@ public final class AsioBackend implements AudioBackend {
     @Override
     public void close() {
         synchronized (DRIVER_LIFECYCLE_LOCK) {
+            // First, and never by interrupt: a poll inside AsioControlThread.call
+            // finishes there and publishes nothing (see AsioClockLockMonitor).
+            clockLockMonitor.stop();
             AsioStreamingShim streaming = streamingShim;
             streamingShim = null;
             AsioBufferSwitchShim bridge = bufferSwitchShim;
@@ -1643,6 +1841,7 @@ public final class AsioBackend implements AudioBackend {
             // once its close has joined asio-input-drain, whose final sweep
             // can still count a lost block.
             shimCounters = shimCounters.detached(this);
+            bridgeDropouts = bridgeDropouts.detached();
             if (streaming != null) {
                 streaming.close();
             }
@@ -1901,6 +2100,11 @@ public final class AsioBackend implements AudioBackend {
      * {@link #close()} and then {@code open(...)} again, which re-creates the
      * driver's buffers at the new size.</p>
      *
+     * <p>It also pauses the clock-lock poll until the next open, and the next
+     * open's monitor starts with the switch window (ruling E271), with a
+     * single volatile write: a driver that asked to be reset answers "not
+     * advancing", which must not read as a lost clock.</p>
+     *
      * <p>Idempotent, and a no-op when nothing is streaming. The request is
      * latched unconditionally so a reset arriving from inside
      * {@code ASIOCreateBuffers} — before either shim is published — is re-run
@@ -1908,6 +2112,7 @@ public final class AsioBackend implements AudioBackend {
      */
     void stopStreamingForDriverReset() {
         driverResetRequested = true;
+        clockLockMonitor.pause();
         AsioBufferSwitchShim bridge = bufferSwitchShim;
         if (bridge != null) {
             bridge.stopStreaming();
@@ -2108,6 +2313,26 @@ public final class AsioBackend implements AudioBackend {
     }
 
     /**
+     * Test seam: the clock-lock poll interval of every backend constructed
+     * after this call, so a test need not wait a second per poll.
+     *
+     * @param interval a positive interval
+     */
+    static void setClockPollInterval(Duration interval) {
+        clockPollInterval = Objects.requireNonNull(interval, "interval");
+    }
+
+    /** Restores the production clock-lock poll interval. */
+    static void resetClockPollInterval() {
+        clockPollInterval = AsioClockLockMonitor.POLL_INTERVAL;
+    }
+
+    /** Test seam: this backend's clock-lock monitor. */
+    AsioClockLockMonitor clockLockMonitor() {
+        return clockLockMonitor;
+    }
+
+    /**
      * Returns display metadata captured from {@code ASIOInit} for the active
      * driver, or empty while this backend has no initialized driver.
      */
@@ -2206,6 +2431,10 @@ public final class AsioBackend implements AudioBackend {
      *   <li>{@code ASE_NoClock} (-995) → "no clock available".</li>
      *   <li>{@code ASE_NoMemory} (-994) → "out of memory".</li>
      * </ul>
+     *
+     * <p>The clock-lock poll is told before the driver call and after it on
+     * every exit, accepted, refused or thrown, so the resyncs the person's
+     * switch causes are never judged as a lost clock (rulings E137, E138).</p>
      */
     @Override
     public void selectClockSource(DeviceId device, int sourceId) {
@@ -2214,6 +2443,17 @@ public final class AsioBackend implements AudioBackend {
             throw new IllegalArgumentException(
                     "sourceId must not be negative: " + sourceId);
         }
+        clockLockMonitor.switchSent();
+        boolean accepted = false;
+        try {
+            sendClockSource(sourceId);
+            accepted = true;
+        } finally {
+            clockLockMonitor.switchAnswered(accepted);
+        }
+    }
+
+    private void sendClockSource(int sourceId) {
         CompletableFuture<Void> result = new CompletableFuture<>();
         Thread.ofPlatform()
                 .name("asio-set-clock-source")
@@ -2461,4 +2701,56 @@ public final class AsioBackend implements AudioBackend {
         };
     }
 
+    /**
+     * The dropout counts of every buffer-switch bridge already torn down,
+     * plus the live bridge, if any. Immutable: its holder swaps the whole
+     * value in one volatile write.
+     */
+    private record BridgeDropouts(long foldedOutputStarvedPeriods,
+                                  long foldedOutputDiscardedBlocks,
+                                  long foldedInputRingOverflows,
+                                  long foldedFailedPeriodInputBlocks,
+                                  AsioBufferSwitchShim live) {
+
+        static final BridgeDropouts EMPTY = new BridgeDropouts(0L, 0L, 0L, 0L, null);
+
+        BridgeDropouts attached(AsioBufferSwitchShim bridge) {
+            BridgeDropouts folded = detached();
+            return new BridgeDropouts(folded.foldedOutputStarvedPeriods,
+                    folded.foldedOutputDiscardedBlocks, folded.foldedInputRingOverflows,
+                    folded.foldedFailedPeriodInputBlocks, bridge);
+        }
+
+        BridgeDropouts detached() {
+            if (live == null) {
+                return this;
+            }
+            return new BridgeDropouts(outputStarvedPeriods(), outputDiscardedBlocks(),
+                    inputRingOverflows(), failedPeriodInputBlocks(), null);
+        }
+
+        long failedPeriodInputBlocks() {
+            AsioBufferSwitchShim bridge = live;
+            return foldedFailedPeriodInputBlocks
+                    + (bridge == null ? 0L : bridge.failedPeriodInputBlocks());
+        }
+
+        long outputStarvedPeriods() {
+            AsioBufferSwitchShim bridge = live;
+            return foldedOutputStarvedPeriods
+                    + (bridge == null ? 0L : bridge.outputStarvedPeriods());
+        }
+
+        long outputDiscardedBlocks() {
+            AsioBufferSwitchShim bridge = live;
+            return foldedOutputDiscardedBlocks
+                    + (bridge == null ? 0L : bridge.outputDiscardedBlocks());
+        }
+
+        long inputRingOverflows() {
+            AsioBufferSwitchShim bridge = live;
+            return foldedInputRingOverflows
+                    + (bridge == null ? 0L : bridge.inputRingOverflows());
+        }
+    }
 }

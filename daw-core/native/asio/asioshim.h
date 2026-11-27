@@ -22,13 +22,22 @@
 // Return-code conventions
 // ──────────────────────────────────────────────────────────────────
 // Most functions return `1` (`SHIM_OK`) for `ASE_OK` and `0`
-// (`SHIM_FAIL`) otherwise. Two exceptions:
+// (`SHIM_FAIL`) otherwise. Three exceptions:
 //
 //   - `asioshim_openControlPanel` returns `1` on `ASE_OK`,
 //     `0` on `ASE_NotPresent` (driver has no control panel),
 //     `-1` for any other ASIO error.
 //   - `asioshim_setClockSource` returns the raw `ASIOError` directly
 //     (0 on `ASE_OK`, negative on the SDK's standard error codes).
+//   - `asioshim_getSamplePosition` returns the raw `ASIOError` directly
+//     (0 on `ASE_OK`), so the caller can tell `ASE_SPNotAdvancing` (-996)
+//     and `ASE_NoClock` (-995) apart from "no driver": a null output pointer
+//     returns `ASE_InvalidParameter`, and no loaded driver, or a driver that
+//     is not started, returns `ASE_NotPresent` without entering the SDK.
+//     Both outputs are written 0 before anything else; on `ASE_OK` they hold
+//     the sample position and its system time in nanoseconds, converted
+//     natively to `int64_t` from the SDK's `ASIOSamples` / `ASIOTimeStamp`
+//     (so the Java side reads `JAVA_LONG`, which is exact for `int64_t`).
 //
 // `asioshim_stop` and `asioshim_disposeBuffers` (story 311) are idempotent
 // teardown steps the Java `close()` path calls unconditionally, so they
@@ -188,6 +197,11 @@ ASIOSHIM_API int  asioshim_openControlPanel(void);
 // ── Hardware clock source (story 216) ─────────────────────────────
 ASIOSHIM_API int  asioshim_getClockSources(void* outArray, int* outCount);
 ASIOSHIM_API int  asioshim_setClockSource(int reference);
+// Wraps ASIOGetSamplePosition for the host's clock-lock poll; see
+// "Return-code conventions". Called on the `asio-control` thread, never on a
+// driver thread.
+ASIOSHIM_API int  asioshim_getSamplePosition(int64_t* outSamplePosition,
+                                              int64_t* outSystemTimeNanos);
 
 // ── Channel info (story 215) ──────────────────────────────────────
 ASIOSHIM_API int  asioshim_getChannelCount(int* outInputs, int* outOutputs);

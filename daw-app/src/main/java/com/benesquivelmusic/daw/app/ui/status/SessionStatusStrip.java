@@ -20,27 +20,31 @@ import java.util.Objects;
  * migration path). This single strip <em>is</em> the §2.2 "state is always
  * visible" principle.
  *
- * <h2>Binds only to {@link ProjectOperationProgress}</h2>
+ * <h2>Binds only to its two models</h2>
  *
- * <p>The strip's cells {@code bind(...)} to the single §5.5
- * {@link ProjectOperationProgress} model and nothing else — no controller
+ * <p>The strip's cells {@code bind(...)} to its two models and nothing else:
+ * the project's facts to the single §5.5 {@link ProjectOperationProgress}
+ * model, the engine's — its state, its latched fault, the xrun count and the
+ * take's dropouts (story 338) — to {@link EngineHealthStatus}. No controller
  * pokes {@code Label.setText} (the §8 rejection of "status text in
  * {@code Label.setText}"). Each fact is its own small {@link StatusStripCell}
  * (so a theme can restyle a cell without touching the strip), except the
  * checkpoint countdown, which is a {@link CheckpointCountdownCanvas}
  * ({@code Canvas} + 1&nbsp;Hz {@code AnimationTimer}, §6).</p>
  *
- * <h2>Eight cells, two rows, priority overflow (§4.4)</h2>
+ * <h2>Ten cells, two rows, priority overflow (§4.4)</h2>
  *
- * <p>Row 1: Session · Saved · Checkpoint · Journal. Row 2: Disk · Lock ·
- * Schema · Workspace. Below 1200&nbsp;px the strip collapses to a single row,
- * hiding collapsible cells in the fixed priority order Workspace → Schema →
- * Lock → Disk → Journal; the Session, Saved and Checkpoint cells never
- * collapse. A trailing {@code ⋯} overflow button reveals the hidden cells in a
- * popover ({@code javafx-application-design} §10). All layout/overflow logic
- * lives in {@link SessionStatusStripSkin}; this control only holds the model,
- * the {@link MotionManager} (the §279 reduce-motion gate of the countdown and
- * of the Saved cell's flash), and the public API.</p>
+ * <p>Row 1: Session · Saved · Checkpoint · Engine · Journal. Row 2: Disk ·
+ * Lock · Schema · Xruns · Workspace. The Engine cell takes no space while it
+ * has nothing to say. Below 1200&nbsp;px the strip collapses to a single row,
+ * hiding collapsible cells in the fixed priority order Workspace → Xruns →
+ * Schema → Lock → Disk → Journal; the Session, Saved, Checkpoint and Engine
+ * cells never collapse (ruling E28). A trailing {@code ⋯} overflow button
+ * reveals the hidden cells in a popover ({@code javafx-application-design}
+ * §10). All layout/overflow logic lives in {@link SessionStatusStripSkin};
+ * this control only holds the two models, the {@link MotionManager} (the
+ * §279 reduce-motion gate of the countdown and of the Saved cell's flash),
+ * the cells' actions and the public API.</p>
  *
  * <p>Control/Skin split per {@code javafx-application-design} §3: the skin
  * builds and binds the cells. The cell accessors below delegate to the
@@ -77,8 +81,13 @@ public final class SessionStatusStrip extends Control {
 
     private final ProjectOperationProgress progress;
     private final MotionManager motionManager;
+    private final EngineHealthStatus engineHealth;
     private final ObjectProperty<Runnable> schemaAction =
             new SimpleObjectProperty<>(this, "schemaAction", () -> {});
+    private final ObjectProperty<Runnable> reconnectAction =
+            new SimpleObjectProperty<>(this, "reconnectAction", () -> {});
+    private final ObjectProperty<Runnable> xrunLogAction =
+            new SimpleObjectProperty<>(this, "xrunLogAction", () -> {});
 
     /**
      * Creates a strip bound to {@code progress}, using the app-wide
@@ -92,14 +101,30 @@ public final class SessionStatusStrip extends Control {
 
     /**
      * Creates a strip bound to {@code progress}, gating the countdown
-     * animation on {@code motionManager} (story 279).
+     * animation on {@code motionManager} (story 279), whose engine-health
+     * cells show a model nothing feeds.
      *
      * @param progress      the single status model; must not be {@code null}
      * @param motionManager the reduce-motion source; must not be {@code null}
      */
     public SessionStatusStrip(ProjectOperationProgress progress, MotionManager motionManager) {
+        this(progress, motionManager, new EngineHealthStatus());
+    }
+
+    /**
+     * Creates a strip bound to {@code progress} for the project's facts and to
+     * {@code engineHealth} for the engine's (story 338), gating the countdown
+     * animation on {@code motionManager}.
+     *
+     * @param progress      the project-status model; must not be {@code null}
+     * @param motionManager the reduce-motion source; must not be {@code null}
+     * @param engineHealth  the engine-health model; must not be {@code null}
+     */
+    public SessionStatusStrip(ProjectOperationProgress progress, MotionManager motionManager,
+                              EngineHealthStatus engineHealth) {
         this.progress = Objects.requireNonNull(progress, "progress must not be null");
         this.motionManager = Objects.requireNonNull(motionManager, "motionManager must not be null");
+        this.engineHealth = Objects.requireNonNull(engineHealth, "engineHealth must not be null");
         getStyleClass().add(DEFAULT_STYLE_CLASS);
         setAccessibleRole(AccessibleRole.PARENT);
         setAccessibleRoleDescription("Session status strip");
@@ -109,6 +134,11 @@ public final class SessionStatusStrip extends Control {
     /** @return the bound status model (read by the skin). */
     public ProjectOperationProgress progress() {
         return progress;
+    }
+
+    /** @return the bound engine-health model (read by the skin). */
+    public EngineHealthStatus engineHealth() {
+        return engineHealth;
     }
 
     /** @return the reduce-motion source (read by the skin to gate the countdown and the Saved cell's flash). */
@@ -129,6 +159,36 @@ public final class SessionStatusStrip extends Control {
     /** @return the current Schema-cell activation action. */
     public Runnable getOnSchemaAction() {
         return schemaAction.get();
+    }
+
+    /** @return action run when the Engine cell is activated while the device is lost (ruling E6). */
+    public ObjectProperty<Runnable> reconnectActionProperty() {
+        return reconnectAction;
+    }
+
+    /** Sets the action run when the Engine cell is activated while the device is lost. */
+    public void setOnReconnectAction(Runnable action) {
+        reconnectAction.set(action == null ? () -> {} : action);
+    }
+
+    /** @return the Engine cell's Reconnect action. */
+    public Runnable getOnReconnectAction() {
+        return reconnectAction.get();
+    }
+
+    /** @return action run when the Xruns cell is activated: it opens the xrun log (ruling E23). */
+    public ObjectProperty<Runnable> xrunLogActionProperty() {
+        return xrunLogAction;
+    }
+
+    /** Sets the action run when the Xruns cell is activated. */
+    public void setOnXrunLogAction(Runnable action) {
+        xrunLogAction.set(action == null ? () -> {} : action);
+    }
+
+    /** @return the Xruns cell's action. */
+    public Runnable getOnXrunLogAction() {
+        return xrunLogAction.get();
     }
 
     @Override
@@ -164,6 +224,10 @@ public final class SessionStatusStrip extends Control {
     public StatusStripCell schemaCell() { return skin().schemaCell(); }
     /** @return the Workspace cell. */
     public StatusStripCell workspaceCell() { return skin().workspaceCell(); }
+    /** @return the Engine cell (reconfiguring, device lost or engine fault; hidden otherwise). */
+    public StatusStripCell engineCell() { return skin().engineCell(); }
+    /** @return the Xruns cell (the dropout count; opens the xrun log). */
+    public StatusStripCell xrunCell() { return skin().xrunCell(); }
 
     // ── Overflow diagnostics (for the §4.4 overflow tests) ────────────────────
 
@@ -173,9 +237,12 @@ public final class SessionStatusStrip extends Control {
     /** @return whether the overflow button is currently shown (a cell is hidden). */
     public boolean isOverflowButtonVisible() { return skin().overflowButton().isVisible(); }
 
+    /** @return whether the overflow popover is open. */
+    public boolean isOverflowPopoverShowing() { return skin().isOverflowPopoverShowing(); }
+
     /**
      * @return the cells currently collapsed into the overflow popover, in the
-     *         §4.4 collapse order (Workspace, Schema, Lock, Disk, Journal)
+     *         §4.4 collapse order (Workspace, Xruns, Schema, Lock, Disk, Journal)
      */
     public List<StatusStripCell> overflowCells() { return skin().overflowCells(); }
 }

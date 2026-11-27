@@ -103,6 +103,39 @@ class EngineStateBridgeTest {
     }
 
     /**
+     * Story 338: the listener of the three-argument constructor gets each
+     * change whole, in the same FX turn as the transport controller's
+     * delivery and before it; a listener that throws does not keep the change
+     * from the transport controller.
+     */
+    @Test
+    void theFirstListenerReceivesTheWholeChangeBeforeTheTransportInTheSameTurn() throws Exception {
+        List<String> order = new CopyOnWriteArrayList<>();
+        List<EngineStateChange> heard = new CopyOnWriteArrayList<>();
+        EngineStateBridge bridge = new EngineStateBridge(change -> {
+            heard.add(change);
+            order.add("listener:" + Platform.isFxApplicationThread());
+            if (change.state() == EngineState.RECONFIGURING) {
+                throw new IllegalStateException("a listener that throws");
+            }
+        }, () -> {
+            order.add("transport:" + Platform.isFxApplicationThread());
+            return null;
+        }, new FxDispatcher());
+        bridge.onSubscribe(new RecordingSubscription());
+        EngineStateChange stall = new EngineStateChange(EngineState.DEVICE_LOST,
+                Optional.of(new com.benesquivelmusic.daw.sdk.audio.DeviceId("Spy", "Interface A")),
+                EngineStateChange.LossCause.STALLED);
+
+        bridge.onNext(stall);
+        bridge.onNext(new EngineStateChange(EngineState.RECONFIGURING, Optional.empty()));
+        anFxTurn();
+
+        assertThat(heard).first().isSameAs(stall);
+        assertThat(order).containsExactly("listener:true", "transport:true", "listener:true", "transport:true");
+    }
+
+    /**
      * The finding's interleaving against the real publisher: its consumer
      * task — the one that delivers {@code onSubscribe} — is held on the
      * executor while the bridge is cancelled, then released; the publisher

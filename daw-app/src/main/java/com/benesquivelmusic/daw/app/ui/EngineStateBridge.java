@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import java.util.Objects;
 import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -13,11 +14,11 @@ import java.util.logging.Logger;
  * Story 327 — the bridge from the engine's lifecycle to the record state
  * machine (Recording Reliability book §6.5): the one subscription to
  * {@link AudioEngineController#engineStateEvents()}. Each
- * {@link EngineStateChange} — the state and the device the controller
- * watched at that transition, captured together under the controller's
- * monitor — is delivered on the publisher's executor and posted to the FX
- * thread, where the transport controller current at delivery time receives
- * exactly that pair through {@link TransportController#onEngineState}:
+ * {@link EngineStateChange} — the state, the device the controller
+ * watched at that transition and the loss cause, captured together under the
+ * controller's monitor — is delivered on the publisher's executor and posted
+ * to the FX thread, where the transport controller current at delivery time
+ * receives exactly those through {@link TransportController#onEngineState}:
  * {@link EngineState#DEVICE_LOST} is the loss of the device it carries, and
  * the first {@link EngineState#STOPPED} or {@link EngineState#RUNNING}
  * delivered after it with the engine's stream open is the end of the loss,
@@ -54,6 +55,14 @@ import java.util.logging.Logger;
  * cancellation is dropped, never posted. A test over a real
  * {@link DefaultAudioEngineController} and {@link TransportController}
  * wires the same object.</p>
+ *
+ * <p>Story 338: the same subscription also hands each change, in the same FX
+ * turn and before the transport controller, to a first listener —
+ * {@code MainController}'s device-loss reactions followed by its
+ * engine-health model, which the status strip's Engine cell shows. A
+ * delivery only ever starts the input meters' device-loss mute; none ends
+ * it: the engine lifts it where it builds a newer render drive, because a
+ * stream can open with no state published (ruling E175).</p>
  */
 final class EngineStateBridge implements Flow.Subscriber<EngineStateChange> {
 
@@ -73,6 +82,7 @@ final class EngineStateBridge implements Flow.Subscriber<EngineStateChange> {
     };
 
     private final Supplier<TransportController> currentTransport;
+    private final Consumer<EngineStateChange> firstListener;
     private final FxDispatcher dispatcher;
     /**
      * {@code null} until a subscription arrives or {@link #cancel()} runs,
@@ -89,6 +99,26 @@ final class EngineStateBridge implements Flow.Subscriber<EngineStateChange> {
      *                         app-scoped default
      */
     EngineStateBridge(Supplier<TransportController> currentTransport, FxDispatcher dispatcher) {
+        this(change -> { }, currentTransport, dispatcher);
+    }
+
+    /**
+     * A bridge that also hands every change, whole, to {@code firstListener}
+     * on the FX thread (story 338): in the same FX turn as the transport
+     * controller's delivery and before it, so a listener that reads the
+     * change — the window's engine-health surfaces — has seen it by the time
+     * the record state machine acts on it. A listener that throws is logged
+     * and does not keep the change from the transport controller.
+     *
+     * @param firstListener    receives each change first, on the FX thread
+     * @param currentTransport the transport controller current when a state
+     *                         is delivered; {@code null} drops the state
+     * @param dispatcher       where FX work is posted; {@code null} uses the
+     *                         app-scoped default
+     */
+    EngineStateBridge(Consumer<EngineStateChange> firstListener, Supplier<TransportController> currentTransport,
+                      FxDispatcher dispatcher) {
+        this.firstListener = Objects.requireNonNull(firstListener, "firstListener must not be null");
         this.currentTransport = Objects.requireNonNull(currentTransport, "currentTransport must not be null");
         this.dispatcher = dispatcher;
     }
@@ -114,9 +144,9 @@ final class EngineStateBridge implements Flow.Subscriber<EngineStateChange> {
     }
 
     /**
-     * Publisher's executor: posts the snapshot — state and device as
-     * captured at the transition — to the FX thread and returns; a state
-     * delivered after {@link #cancel()} is dropped.
+     * Publisher's executor: posts the snapshot — state, device and loss
+     * cause as captured at the transition — to the FX thread and returns; a
+     * state delivered after {@link #cancel()} is dropped.
      */
     @Override
     public void onNext(EngineStateChange change) {
@@ -124,9 +154,14 @@ final class EngineStateBridge implements Flow.Subscriber<EngineStateChange> {
             return;
         }
         FxDispatcher.runOnFx(dispatcher, () -> {
+            try {
+                firstListener.accept(change);
+            } catch (RuntimeException e) {
+                LOG.log(Level.WARNING, "An engine-state listener failed on " + change.state(), e);
+            }
             TransportController current = currentTransport.get();
             if (current != null) {
-                current.onEngineState(change.state(), change.device());
+                current.onEngineState(change.state(), change.device(), change.cause());
             }
         });
     }

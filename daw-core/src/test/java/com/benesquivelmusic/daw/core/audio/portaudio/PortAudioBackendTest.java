@@ -11,8 +11,10 @@ import java.io.IOException;
 import java.lang.classfile.Attributes;
 import java.lang.classfile.ClassFile;
 import java.lang.classfile.ClassModel;
+import java.lang.classfile.CodeElement;
 import java.lang.classfile.MethodModel;
 import java.lang.classfile.attribute.CodeAttribute;
+import java.lang.classfile.instruction.FieldInstruction;
 import java.lang.classfile.instruction.InvokeInstruction;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemoryLayout;
@@ -116,6 +118,40 @@ class PortAudioBackendTest {
             assertThat(reopened.view().callbackFaults()).isEqualTo(1L);
             assertThat(reopened.view().deviceCallbackPeriods()).as("folded plus the live invoker").hasValue(3L);
             assertThat(reopened.view().lastCallbackFault()).containsSame(fault);
+        }
+    }
+
+    /**
+     * Story 338, ruling E211: the input blocks the failed periods of a stream's
+     * invoker lost are folded in when it retires, so a reopen never loses
+     * them, and the retired invoker is no longer read.
+     */
+    @Test
+    void aRetiredInvokersLostInputBlocksAreKept() {
+        PortAudioBackend.CallbackInvoker first = PortAudioBackend.CallbackInvoker.forStream(
+                (in, out, frames) -> {
+                    throw new IllegalStateException("callback failed");
+                }, 1, 1, 16);
+        PortAudioBackend.CallbackInvoker second = PortAudioBackend.CallbackInvoker.forStream(
+                (in, out, frames) -> {
+                    throw new IllegalStateException("callback failed");
+                }, 1, 1, 16);
+
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment input = arena.allocate(16L * Float.BYTES, Float.BYTES);
+            MemorySegment output = arena.allocate(16L * Float.BYTES, Float.BYTES);
+            PortAudioBackend.InvokerInputLoss loss = PortAudioBackend.InvokerInputLoss.EMPTY.attached(first);
+            first.invoke(input, output, 16, MemorySegment.NULL, 0L, MemorySegment.NULL);
+            assertThat(loss.total()).isEqualTo(1L);
+
+            PortAudioBackend.InvokerInputLoss retired = loss.detached();
+            assertThat(retired.total()).as("the retired invoker's count is kept").isEqualTo(1L);
+            first.invoke(input, output, 16, MemorySegment.NULL, 0L, MemorySegment.NULL);
+            assertThat(retired.total()).as("a retired invoker is no longer read").isEqualTo(1L);
+
+            PortAudioBackend.InvokerInputLoss reopened = retired.attached(second);
+            second.invoke(input, output, 16, MemorySegment.NULL, 0L, MemorySegment.NULL);
+            assertThat(reopened.total()).as("folded plus the live invoker").isEqualTo(2L);
         }
     }
 
@@ -343,6 +379,38 @@ class PortAudioBackendTest {
         try (var in = type.getResourceAsStream(resource)) {
             return in == null ? null : in.readAllBytes();
         }
+    }
+
+    /**
+     * Story 338, ruling E211: building the callback stub attaches its invoker
+     * to the failed-period ledger. PortAudioBindings is final, so no stream
+     * opens here; the class file pins the store.
+     */
+    @Test
+    void theCallbackStubAttachesItsInvokerToTheFailedPeriodLedger() throws IOException {
+        byte[] bytes = readClassBytes(PortAudioBackend.class);
+        assertThat(bytes).as("the PortAudioBackend class file must be readable").isNotNull();
+        ClassModel model = ClassFile.of().parse(bytes);
+        List<MethodModel> stubs = model.methods().stream()
+                .filter(method -> method.methodName().stringValue().equals("createCallbackStub")).toList();
+        assertThat(stubs).as("createCallbackStub is declared once").hasSize(1);
+        CodeAttribute code = stubs.getFirst().findAttribute(Attributes.code())
+                .map(CodeAttribute.class::cast)
+                .orElseThrow();
+
+        List<String> sequence = new ArrayList<>();
+        for (CodeElement element : code) {
+            if (element instanceof FieldInstruction field) {
+                sequence.add(field.opcode() + " " + field.name().stringValue());
+            } else if (element instanceof InvokeInstruction invoke) {
+                sequence.add(invoke.owner().asInternalName() + "#" + invoke.name().stringValue());
+            }
+        }
+
+        assertThat(sequence).as("the stub stores the ledger that attached its invoker")
+                .containsSequence("GETFIELD invokerInputLoss",
+                        "com/benesquivelmusic/daw/core/audio/portaudio/PortAudioBackend$InvokerInputLoss#attached",
+                        "PUTFIELD invokerInputLoss");
     }
 
     // ── Native boundary: garbage channel counts (story 316 re-review) ──────

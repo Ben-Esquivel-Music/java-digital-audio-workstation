@@ -44,6 +44,10 @@ These tests are binding acceptance criteria. They run headless, and none of them
 - With the studio engineer, this story rules which generation the drain uses when the halt's sample was lost to a full lane ring, which counts the record without a sample.
 - Cross-refs: story 337 (rulings E11, E62, E66 and E68; its Known limits); story 338, whose watchdog's restart offer reuses `MainController.restartAudioEngine()`.
 
+## Note from Story 338
+
+The cross-reference above to story 338's restart offer no longer holds: a device loss offers Reconnect, `DefaultAudioEngineController.reconnectLostDevice`, on a virtual thread named `daw-audio-device-reconnect`, never Restart Audio Engine (story 338, ruling E6). Story 338 adds no caller of `MainController.restartAudioEngine()`; the session status strip's Engine cell runs a latched fault's own action, which is that restart where the fault offers it.
+
 ## Status
 
 - Resolved in story 337's code review round (story 337, ruling E69).

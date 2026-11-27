@@ -13,6 +13,8 @@ import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -47,10 +49,12 @@ class AudioHealthRecordTest {
     /** Guard budget for a render thread's join — generous, never inner-inflated. */
     private static final long GUARD_BUDGET_MILLIS = 5_000L;
 
-    /** How long the writer and the reader race in the probabilistic test. */
+    /** How long the writer and the reader race at least in the probabilistic test. */
     private static final long RACE_MILLIS = 1_000L;
     private static final Duration JOIN_BUDGET = Duration.ofSeconds(10);
     private static final long MIN_READINGS = 1_000L;
+    /** The writer's records between two readings: more than a ring holds, so a burst also loses samples. */
+    private static final int BURST = 4 * AudioHealthLane.SLOTS;
 
     private final AudioHealthRecord record = new AudioHealthRecord();
 
@@ -325,6 +329,11 @@ class AudioHealthRecordTest {
      * the writer and the reader race for a bounded time: a probabilistic
      * guard, not a proof — the bytecode pin of the lane's commit order in
      * {@code RealTimeSafeContractTest} is the deterministic one.
+     *
+     * <p>A reading drains a ring until it finds it empty, so a writer that
+     * never paused would keep one reading open until the writer happened to
+     * be descheduled. The writer therefore records a burst and starts the next
+     * only once a reading has ended since the last one.</p>
      */
     @Test
     void aWriterRacingTheReaderNeverLeavesACountWithoutItsSample() throws Exception {
@@ -333,20 +342,28 @@ class AudioHealthRecordTest {
         AtomicBoolean stop = new AtomicBoolean();
         AtomicLong delivered = new AtomicLong();
         AtomicLong readings = new AtomicLong();
+        CountDownLatch enoughReadings = new CountDownLatch(1);
         AtomicReference<String> firstShortfall = new AtomicReference<>();
 
         Thread writer = Thread.ofPlatform().name("lane-writer").daemon(true).start(() -> {
             int detail = 0;
+            long readingsAtBurst = 0L;
             while (!stop.get()) {
-                int category = (detail & 1) == 0 ? AudioFailureCodes.RENDER : AudioFailureCodes.AUTOMATION;
-                lane.record(category, failure, null, detail);
-                detail = (detail + 1) & Integer.MAX_VALUE;
+                for (int i = 0; i < BURST; i++) {
+                    int category = (detail & 1) == 0 ? AudioFailureCodes.RENDER : AudioFailureCodes.AUTOMATION;
+                    lane.record(category, failure, null, detail);
+                    detail = (detail + 1) & Integer.MAX_VALUE;
+                }
+                // On a shared CPU a spinning writer would hold the reader off for its whole time slice.
+                while (readings.get() == readingsAtBurst && !stop.get()) {
+                    Thread.yield();
+                }
+                readingsAtBurst = readings.get();
             }
         });
         Thread reader = Thread.ofPlatform().name("health-reader").daemon(true).start(() -> {
             while (!stop.get()) {
                 AudioHealthReading reading = record.read(sample -> delivered.incrementAndGet());
-                readings.incrementAndGet();
                 long counted = 0L;
                 for (AudioFailureCategory category : AudioFailureCategory.values()) {
                     counted += reading.total(category);
@@ -357,18 +374,28 @@ class AudioHealthRecordTest {
                             "counted " + counted + ", sampled " + delivered.get() + ", lost "
                                     + reading.lostSamples());
                 }
+                if (readings.incrementAndGet() == MIN_READINGS) {
+                    enoughReadings.countDown();
+                }
             }
         });
 
         try {
             Thread.sleep(RACE_MILLIS);
+            assertThat(enoughReadings.await(JOIN_BUDGET.toMillis(), TimeUnit.MILLISECONDS))
+                    .as("the reader finished %d readings against the writer", MIN_READINGS)
+                    .isTrue();
         } finally {
             stop.set(true);
         }
 
         assertThat(writer.join(JOIN_BUDGET)).as("the writer stopped").isTrue();
         assertThat(reader.join(JOIN_BUDGET)).as("the reader stopped").isTrue();
-        assertThat(readings.get()).as("the reader raced the writer").isGreaterThanOrEqualTo(MIN_READINGS);
+        AudioHealthReading last = record.read(sample -> { });
+        assertThat(last.total(AudioFailureCategory.RENDER) + last.total(AudioFailureCategory.AUTOMATION))
+                .as("the writer recorded a second burst, which starts only once a reading has ended, so the"
+                        + " readings raced a live writer")
+                .isGreaterThanOrEqualTo(2L * BURST);
         assertThat(firstShortfall.get()).as("a reading that counted a failure it had no sample of").isNull();
     }
 

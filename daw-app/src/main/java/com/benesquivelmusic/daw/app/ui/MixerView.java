@@ -2224,7 +2224,7 @@ public final class MixerView extends VBox implements Dockable {
             degradedBadge.setStyle("-fx-text-fill: #ff9100; -fx-font-size: 12px;"
                     + " -fx-padding: 0 2 0 2;");
             Tooltip.install(degradedBadge,
-                    new Tooltip("Track exceeded CPU budget; degradation policy active"));
+                    new Tooltip("Track went over the CPU budget; its processing was not reduced"));
         }
 
         // Column order: the status badges (L/R, frozen, degraded) lead - they

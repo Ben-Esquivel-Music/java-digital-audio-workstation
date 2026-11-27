@@ -206,6 +206,7 @@ public final class RecordingPipeline {
     private boolean allInputsMuted;
     private double recordingStartBeat;
     private long recordingStartFrame;
+    private boolean recordingStartIsAPunchIn;
     /**
      * The transport's position when {@link #prepare(long)} read the anchor;
      * {@link #beginCapture()} puts the transport back there if it moved while
@@ -584,6 +585,7 @@ public final class RecordingPipeline {
         PunchRegion transportPunch = transport.isPunchEnabled()
                 ? transport.getPunchRegion()
                 : null;
+        recordingStartIsAPunchIn = transportPunch != null || punchRange != null;
         if (transportPunch != null) {
             double startSeconds = transportPunch.startFrames() / projectSampleRate;
             recordingStartBeat = startSeconds * (tempo / 60.0);
@@ -763,8 +765,8 @@ public final class RecordingPipeline {
      *
      * <p><strong>The device-loss fence</strong> (story 327, PR #982 review
      * r4297840180). A start that overlaps the engine's capture halt
-     * ({@link AudioEngine#haltRecordingCapture()}, run on the device-event
-     * thread when the device is lost) fails that same way, with an
+     * ({@link AudioEngine#haltRecordingCapture()}, run on the thread that
+     * declares a device loss) fails that same way, with an
      * {@link IllegalStateException} whose message — "the audio device was
      * lost while the take was starting" — the caller can show as it is:
      * the halt reaches only the callbacks it reads, and a stream reopened
@@ -1227,21 +1229,33 @@ public final class RecordingPipeline {
      * stamped before the transport stop here moved the playhead. If the
      * callback has not left when that bound elapses — an audio thread that
      * died or hangs inside it — the flush thread warns, sweeps and seals
-     * all the same, and a block published behind that sweep is recorded in
-     * the manifest as a gap if it is in the ring once the lanes have been
-     * sealed.</p>
+     * all the same, and a block published behind that sweep that carried
+     * audio a track records is recorded in the manifest as a gap if it is in
+     * the ring once the lanes have been sealed, and counted in the take's
+     * dropouts, in a punch take only when its gap reaches into the punch
+     * region (ruling E256); one dropped behind it is recorded and counted
+     * the same way, an input-starved one only where an applied starved block
+     * would count, and the silence after an input's declared stop is
+     * neither (rulings E275, E277 and E281). In a take the flush thread had
+     * already sealed early, nothing behind the final sweep is recorded or
+     * counted: the take ended at that seal (rulings E263 and E274).</p>
      *
      * <p>On a device loss the gate is already closed and the callback
      * already removed when this runs: the engine controller's loss path
-     * calls {@link AudioEngine#haltRecordingCapture()} on the device-event
-     * thread, before it closes the lost stream (story 327, PR #982 review),
-     * so that a stream reopened before this FX turn cannot publish into the
-     * take. The closing of the gate and the removal of the callback here are
-     * then idempotent repeats — {@link CaptureRing#closeProducer()} twice is
+     * calls {@link AudioEngine#haltRecordingCapture()} on the thread that
+     * declares the loss, before it publishes the loss — for a removal or a
+     * stall also before it closes the lost stream (story 327, PR #982
+     * review), so that a stream reopened before this FX turn cannot publish
+     * into the take; for a driver reset whose reopen failed (story 338),
+     * after the reset had closed it. The closing of the gate and the removal
+     * of the callback here are then idempotent repeats —
+     * {@link CaptureRing#closeProducer()} twice is
      * one more volatile store of {@code true}, {@code setRecordingCallback(null)}
      * twice one more store of {@code null} — and no step here presumes the
      * callback is still installed; the flags, the transport stop and the
-     * seal request are this method's alone, as before.</p>
+     * seal request are this method's alone, as before. A block published or
+     * dropped behind the final sweep of a device-loss seal is part of the
+     * loss: nothing records or counts it (ruling E264).</p>
      *
      * @return the flush thread's termination ({@link CaptureFlushService#termination()}):
      *         once it has completed, {@link #completeStop()} builds the
@@ -1934,6 +1948,33 @@ public final class RecordingPipeline {
         return recordingStartFrame;
     }
 
+    /**
+     * Whether {@link #getRecordingStartFrame()} is a punch-in: the start of
+     * the transport's enabled punch region, or of this pipeline's punch
+     * range, which {@link #prepare(long)} read as the take's anchor. Such a
+     * take is recording while the transport plays its pre-roll, the frames
+     * before the punch-in; any other take's start-frame is the transport's
+     * position when {@link #prepare(long)} ran. Like the start-frame, only
+     * the next {@link #prepare(long)} replaces it.
+     *
+     * @return whether the take's start-frame is a punch-in
+     */
+    public boolean isRecordingStartAPunchIn() {
+        return recordingStartIsAPunchIn;
+    }
+
+    /**
+     * Returns the transport frame of {@code beats} at the take's tempo and
+     * rate — the unit of the manifest's frames, as {@link #noteClockEvent}
+     * takes them. Meaningful once {@link #prepare(long)} ran. Caller thread.
+     *
+     * @param beats a transport position in beats
+     * @return that position in the take's transport frames
+     */
+    public long transportFrameOf(double beats) {
+        return beatsToFrames(beats, takeTempoBpm);
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // Take directory, flush seams and limits
     // ─────────────────────────────────────────────────────────────────────
@@ -2018,6 +2059,111 @@ public final class RecordingPipeline {
         long total = 0;
         for (CaptureRing input : inputRings) total += input.truncatedFrames();
         return total;
+    }
+
+    /**
+     * Returns how many truncation episodes — runs of blocks longer than a
+     * ring slot, each one {@code gap=…|0} entry — the current take opened, or
+     * the last one until the next {@link #prepare(long)}; {@code 0} while the
+     * pipeline holds no take. Any thread.
+     */
+    public long getTruncationEpisodes() {
+        CaptureFlushService service = flush;
+        return service == null ? 0L : service.truncationEpisodes();
+    }
+
+    /**
+     * Returns how many blocks the stream rendered into the current take's
+     * files (or the last take's until the next {@link #prepare(long)}) with
+     * no captured input behind them while its input was live: the blocks of
+     * the take's {@code input-silence} entries, one per block with frames
+     * inside the punch region, whatever the lap. Silence the input's stop
+     * covers is not in it, nor the tail of a take a device loss sealed; the
+     * tail of any other seal is (story 338, rulings E24, E48, E49, E76, E79
+     * and E90). {@code 0} while the pipeline holds no take. Any thread.
+     */
+    public long getStarvedInputBlocks() {
+        CaptureFlushService service = flush;
+        return service == null ? 0L : service.starvedInputBlocks();
+    }
+
+    /** Returns the frames inside the punch region of the blocks {@link #getStarvedInputBlocks()} counts. Any thread. */
+    public long getStarvedInputFrames() {
+        CaptureFlushService service = flush;
+        return service == null ? 0L : service.starvedInputFrames();
+    }
+
+    /**
+     * Returns the ring-overflow blocks of the current take (or the last one
+     * until the next {@link #prepare(long)}) that have a {@code gap=} line and
+     * whose run reaches into the punch region, all of them with no punch
+     * region: blocks that carried audio a track records, and input-starved
+     * blocks where an applied starved block in their place would count; and,
+     * at a stop that is not a device loss's in a take not sealed early, the
+     * blocks a ring received after the take's final sweep that carried such
+     * audio (story 338, rulings E86, E213 and E273 to E287). A run of dropped
+     * blocks is counted once the block after it is applied, once the input's
+     * starved run it leads into has ended, or at the seal when none follows.
+     * {@code 0} while the pipeline holds no take. Any thread.
+     */
+    public long getFileOverflowBlocks() {
+        CaptureFlushService service = flush;
+        return service == null ? 0L : service.fileOverflowBlocks();
+    }
+
+    /**
+     * Returns the frames {@link #getTruncatedFrames()} counts that lie inside
+     * the punch region, after the kept frames of their block (story 338,
+     * ruling E86). {@code 0} while the pipeline holds no take. Any thread.
+     */
+    public long getFileTruncatedFrames() {
+        CaptureFlushService service = flush;
+        return service == null ? 0L : service.fileTruncatedFrames();
+    }
+
+    /**
+     * Returns the truncation episodes {@link #getTruncationEpisodes()} counts
+     * that have at least one truncated frame inside the punch region (story
+     * 338, ruling E86). {@code 0} while the pipeline holds no take. Any thread.
+     */
+    public long getFileTruncationEpisodes() {
+        CaptureFlushService service = flush;
+        return service == null ? 0L : service.fileTruncationEpisodes();
+    }
+
+    /**
+     * Returns whether the current take's capture takes no clock event any
+     * more: its {@code capture-flush} thread has sealed it, early or for a
+     * stop, or has terminated, so {@link #noteClockEvent} ignores what it is
+     * handed ({@link CaptureFlushService#ignoresClockEvents()}; story 338,
+     * ruling E280). Volatile reads only and no allocation, so a caller may
+     * ask on every display frame. {@code false} while no prepare has created
+     * a take's flush service. Any thread.
+     *
+     * @return whether the take's capture has been sealed or its thread has ended
+     */
+    public boolean isCaptureSealed() {
+        CaptureFlushService service = flush;
+        return service != null && service.ignoresClockEvents();
+    }
+
+    /**
+     * Hands a clock event to the current take, dated at {@code frame}, a
+     * transport frame at the take's rate: the flush thread writes it into
+     * {@code take.manifest} as a {@code clock} entry on its next pass, or at
+     * the seal (story 338, rulings E30, E40 and E62). Any thread; never
+     * blocks. Ignored while no take is prepared and once the take is sealed
+     * or its thread has ended ({@link #isCaptureSealed()}).
+     *
+     * @param event what the clock did; not {@code null}
+     * @param frame the transport frame the event is dated at
+     */
+    public void noteClockEvent(TakeManifest.ClockEvent event, long frame) {
+        Objects.requireNonNull(event, "event must not be null");
+        CaptureFlushService service = flush;
+        if (service != null) {
+            service.noteClockEvent(event, frame);
+        }
     }
 
     /**

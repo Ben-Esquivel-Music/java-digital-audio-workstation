@@ -640,6 +640,17 @@ switches to a single scrollable row. A "⋯" overflow button at the trailing edg
 opens a popover showing all hidden cells. This mirrors the priority‑based
 toolbar overflow pattern in `javafx-application-design` §10.
 
+*As built in story 338: the strip has two more cells, Engine and Xruns
+(`FAILURE_SURFACING_DESIGN_BOOK.md` §4.4's note). Below 1200 px the collapse
+order is Workspace, Xruns, Schema, Lock, Disk, Journal, at 1200, 1170, 1140,
+1080, 1020 and 960 px, compared in 100 % pixels. The Engine cell never
+collapses, and takes no space while it has nothing to say; the Xruns cell does
+not collapse while it carries the warning accent, and the cells after it then
+go one step earlier (story 338, rulings E28, E98 and E103). The "⋯" button is
+reachable by keyboard: Tab focuses it, Space or Enter opens the popover with
+its first actionable cell focused, Enter or Space fires that cell, and Escape
+closes it; its tooltip reads "More status" (rulings E23 and E132).*
+
 ### 4.5 Save / Autosave HUD
 
 > Inline, non‑modal feedback for save events. Replaces "Project saved"

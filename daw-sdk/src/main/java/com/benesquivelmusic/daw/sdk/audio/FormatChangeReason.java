@@ -22,8 +22,8 @@ package com.benesquivelmusic.daw.sdk.audio;
  *       {@code IMMNotificationClient::OnPropertyValueChanged} fires
  *       after the driver renegotiates the device clock to a new rate
  *       (typically 48&nbsp;kHz &harr; 44.1&nbsp;kHz).</li>
- *   <li>{@link ClockSourceChange} — ASIO's {@code kAsioResyncRequest}
- *       or CoreAudio's {@code kAudioDevicePropertyClockSource} listener
+ *   <li>{@link ClockSourceChange} — CoreAudio's
+ *       {@code kAudioDevicePropertyClockSource} listener
  *       fires when the user re-targets the device to a different word-
  *       clock / S/PDIF / ADAT lock source (see story "Hardware Clock
  *       Source Selection").</li>
@@ -95,9 +95,9 @@ public sealed interface FormatChangeReason
 
     /**
      * The user re-targeted the device's clock to a different external
-     * source (word clock, S/PDIF, ADAT). ASIO source:
-     * {@code kAsioResyncRequest}. CoreAudio source:
-     * {@code kAudioDevicePropertyClockSource}.
+     * source (word clock, S/PDIF, ADAT). CoreAudio source:
+     * {@code kAudioDevicePropertyClockSource}. ASIO never raises it: its
+     * {@code kAsioResyncRequest} is handled in place, never by a reopen.
      */
     record ClockSourceChange() implements FormatChangeReason {}
 

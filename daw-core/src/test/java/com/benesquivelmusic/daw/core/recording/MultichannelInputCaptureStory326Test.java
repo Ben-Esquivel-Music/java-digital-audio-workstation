@@ -448,10 +448,17 @@ class MultichannelInputCaptureStory326Test {
             assertThat(warnings).isEmpty();
 
             Flow.Subscriber<? super AudioBlock> subscriber = backend.subscribers.getFirst();
-            backend.emit(256); // Queued audio must not restore availability after termination.
+            // Queued before the input ended: real audio, rendered before the silence takes over
+            // (story 338, ruling E47). A block that arrives after the end is refused.
+            backend.emit(256);
             termination.signal(subscriber);
             subscriber.onNext(new AudioBlock(48000, 8, 256, filled(.4f, 8 * 256)));
-            for (int block = 0; block < 3; block++) {
+            backend.renderGate.advance();
+            backend.sibling.emit(256);
+            pipeline.awaitFlushed();
+            assertThat(meters.get(primary.getId()).isRoutingUnavailable())
+                    .as("the block queued before the end is rendered at its delivered width").isFalse();
+            for (int block = 0; block < 2; block++) {
                 backend.renderGate.advance();
                 backend.sibling.emit(256);
                 pipeline.awaitFlushed();
@@ -465,11 +472,14 @@ class MultichannelInputCaptureStory326Test {
             float[][] recorded = audioOnDisk(pipeline.getSession(primary));
             assertThat(recorded.length).isEqualTo(2);
             assertThat(pipeline.getSession(primary).getTotalSamplesRecorded()).isEqualTo(5 * 256);
-            assertThat(Arrays.copyOfRange(recorded[0], 0, 256)).containsOnly(decoded16(.7f));
-            assertThat(Arrays.copyOfRange(recorded[1], 0, 256)).containsOnly(decoded16(.8f));
+            for (int queued : new int[]{0, 2 * 256}) {
+                assertThat(Arrays.copyOfRange(recorded[0], queued, queued + 256)).containsOnly(decoded16(.7f));
+                assertThat(Arrays.copyOfRange(recorded[1], queued, queued + 256)).containsOnly(decoded16(.8f));
+            }
             for (float[] row : recorded) {
                 assertThat(row).hasSize(5 * 256);
-                assertThat(Arrays.copyOfRange(row, 256, row.length)).containsOnly(0f);
+                assertThat(Arrays.copyOfRange(row, 256, 2 * 256)).as("the starved block").containsOnly(0f);
+                assertThat(Arrays.copyOfRange(row, 3 * 256, row.length)).as("after the end").containsOnly(0f);
             }
             assertThat(pipeline.getSession(sibling).getTotalSamplesRecorded()).isEqualTo(5 * 256);
             assertThat(audioOnDisk(pipeline.getSession(sibling))[0]).hasSize(5 * 256)
@@ -483,7 +493,8 @@ class MultichannelInputCaptureStory326Test {
                 finally { engine.shutdown(); }
             }
         }
-        assertThat(TakeManifest.read(directory.resolve(TakeManifest.FILE_NAME)).routingFlags()).singleElement()
+        TakeManifest manifest = TakeManifest.read(directory.resolve(TakeManifest.FILE_NAME));
+        assertThat(manifest.routingFlags()).singleElement()
                 .satisfies(flag -> {
                     assertThat(flag.trackId()).isEqualTo(primary.getId());
                     assertThat(flag.device()).contains("Interface A");
@@ -491,6 +502,11 @@ class MultichannelInputCaptureStory326Test {
                     assertThat(flag.channelCount()).isEqualTo(2);
                     assertThat(flag.availableChannels()).isZero();
                 });
+        long start = manifest.startFrame();
+        assertThat(manifest.inputStops()).as("the input stopped after the queued block (story 338, E13 and E47)")
+                .containsExactly(new TakeManifest.InputStopped(primary.getId(), start + 3 * 256, start + 3 * 256));
+        assertThat(manifest.inputSilences()).as("the starved block the queued block ended (E34)")
+                .containsExactly(new TakeManifest.InputSilence(primary.getId(), start + 256, 256));
     }
 
     @ParameterizedTest
@@ -931,6 +947,7 @@ class MultichannelInputCaptureStory326Test {
             assertThat(held.await(5,TimeUnit.SECONDS)).isTrue();
             for(int block=0;block<12;block++)backend.sibling.emit(256);
             release.countDown();pipeline.awaitFlushed();
+            backend.sibling.emit(256);pipeline.awaitFlushed();
             TakeManifest manifest=TakeManifest.read(directory.resolve(TakeManifest.FILE_NAME));
             assertThat(manifest.overflowBlocks()).isEqualTo(4);
             assertThat(manifest.gaps()).isNotEmpty().allSatisfy(gap->assertThat(gap.trackId()).isEqualTo(b.getId()));
@@ -1082,7 +1099,7 @@ class MultichannelInputCaptureStory326Test {
 
     private static float[] filled(float value,int count) { float[] result=new float[count]; Arrays.fill(result,value); return result; }
 
-    private static final class RenderGate {
+    static final class RenderGate {
         private final Semaphore permits = new Semaphore(0);
         private final Semaphore rendered = new Semaphore(0);
         private volatile float[] lastOutput;
@@ -1119,6 +1136,14 @@ class MultichannelInputCaptureStory326Test {
         volatile BackendThreadCounters counters = BackendThreadCounters.NONE, siblingCounters = BackendThreadCounters.NONE;
         /** What {@link #threadCounters()} throws on every call instead, while set. */
         volatile Error reportFailure;
+        /** What {@link #dropoutCounters()} reports. */
+        volatile BackendDropoutCounters dropouts = BackendDropoutCounters.NONE;
+        @Override public BackendDropoutCounters dropoutCounters(){return dropouts;}
+        /** What {@link #failedCallbackInputBlocks()} reports. */
+        volatile long failedCallbackInputBlocks;
+        @Override public long failedCallbackInputBlocks(){return failedCallbackInputBlocks;}
+        /** While set, {@link #inputBlocks()} hands it out and {@link #emit} offers into it through the shared drop handler. */
+        volatile SubmissionPublisher<AudioBlock> publisher;
         RenderGate renderGate;
         final List<Flow.Subscriber<? super AudioBlock>> subscribers=new CopyOnWriteArrayList<>();
         String name="Pattern ASIO";
@@ -1153,7 +1178,8 @@ class MultichannelInputCaptureStory326Test {
         @Override public int openedInputChannels(){return open?openedWidth:0;}
         @Override public double openedInputSampleRate(){return openedRate;}
         @Override public RoundTripLatency reportedLatency(){return input.contains("B")?new RoundTripLatency(12,0,0):primaryLatency;}
-        @Override public Flow.Publisher<AudioBlock> inputBlocks(){return subscriber->{subscribers.add(subscriber);subscriber.onSubscribe(new Flow.Subscription(){
+        @Override public Flow.Publisher<AudioBlock> inputBlocks(){SubmissionPublisher<AudioBlock> shared=publisher;if(shared!=null)return shared;
+            return subscriber->{subscribers.add(subscriber);subscriber.onSubscribe(new Flow.Subscription(){
             public void request(long n){} public void cancel(){subscribers.remove(subscriber);}
         });if(terminatesOnSubscribe!=null)terminatesOnSubscribe.signal(subscriber);};}
         @Override public void sink(AudioBlock block){if(renderGate != null)renderGate.rendered(block);}
@@ -1163,6 +1189,8 @@ class MultichannelInputCaptureStory326Test {
         @Override public void close(){if(failClose)throw new AudioBackendException("held sibling");open=false;}
         void emit(int frames){float[] samples=new float[frames*openedWidth];for(int f=0;f<frames;f++)for(int c=0;c<openedWidth;c++)
             samples[f*openedWidth+c]=input.contains("B")?.9f:(c+1)/10f;
-            AudioBlock block=new AudioBlock(48000,openedWidth,frames,samples);subscribers.forEach(subscriber->subscriber.onNext(block));}
+            AudioBlock block=new AudioBlock(48000,openedWidth,frames,samples);
+            SubmissionPublisher<AudioBlock> shared=publisher;
+            if(shared!=null)shared.offer(block,InputBlockLossListener::reportDrop);else subscribers.forEach(subscriber->subscriber.onNext(block));}
     }
 }
