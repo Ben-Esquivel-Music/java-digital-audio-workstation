@@ -152,6 +152,8 @@ Linux (WSL Ubuntu, a mirror under the WSL home with its own native build; Temuri
 
 Gate of record: `mvn -B -o -DskipNativeBuild=true verify` at the root, after the last code change: exit 0, BUILD SUCCESS, 22:52 min, finished 2026-11-27 13:13:59. 17,553 tests, 0 failures, 0 errors, 45 skipped: daw-sdk 1,555 (2 skipped), daw-acoustics 106, daw-core 9,820 (40), daw-fx 29, daw-app 6,043 (3). The Windows PortAudio positives ran, none skipped. `PortAudioBackendTest` took 0.21 s for 27 tests, its enumeration test 0.104 s (0.39–0.49 s for the class in the targeted runs); no new test class comes near 5 s.
 
+After the first push, the ubuntu CI run failed in `ExitWaitsForTheWritesTest.aRegisteredPendingWriterIsAwaitedWithinTheSameDeadline`, a story 334 test this story did not touch: it released the held save before the wait at exit had sampled it, so on a slow machine the wait logged no line. The test now waits for that line first, as its sibling does; production code is unchanged. A 500 ms delay in the exit thread reproduced the failure before the correction and passed after it. The gate was run again after that change: exit 0, BUILD SUCCESS, 22:38 min, finished 2026-11-27 14:46:20, 17,553 tests, 0 failures, 0 errors, 45 skipped.
+
 Not verified: no test runs `MainController.initialize()` (the startup tests call `installDefaultProvision()` and the static `MainController.applyStartupAudioSettings(...)`; the order inside `initialize()` is pinned only by the source scan in `FailureSpineWiringSourceTest`); the PortAudio branch of the startup assertion never ran, because no daw-app test JVM loads PortAudio; macOS has no runner; the ASIO integration tests skipped themselves without `asioshim.dll`.
 
 Left for the owner:

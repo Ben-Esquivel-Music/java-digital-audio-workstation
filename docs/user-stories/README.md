@@ -473,6 +473,7 @@ Operationalises [`INTERACTION_COMPLETENESS_DESIGN_BOOK.md`](../design/INTERACTIO
 | 208 | [JavaFX Snapshot / Visual Regression Testing](208-javafx-snapshot-visual-regression-testing.md) | 🟡 Medium | Testing |
 | 209 | [Long-Running Render Test Profile for End-to-End Exports](209-long-running-render-test-profile.md) | 🟡 Medium | Testing |
 | 210 | [Plugin DSP Regression Test Framework (Golden-File Audio)](210-plugin-dsp-regression-test-framework.md) | 🟠 High | Testing |
+| 492 | [Slow Test Classes Run on CI, Not in the Default Local Build](492-slow-test-classes-run-on-ci-not-in-the-default-local-build.md) | 🟠 High | Testing |
 
 ## Audio Processing
 

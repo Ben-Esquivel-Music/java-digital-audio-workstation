@@ -126,6 +126,8 @@ class ExitWaitsForTheWritesTest {
         headHeld.awaitReached();
 
         CompletableFuture<Boolean> exit = exitWait(Duration.ofSeconds(TIMEOUT_SECONDS));
+        assertThat(waitAnnounced.await(TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                .as("the wait began while the save writer still ran").isTrue();
         assertThat(stillWaitingAfter(exit, Duration.ofMillis(300))).as("the held head is waited for").isTrue();
 
         headHeld.release();
@@ -174,6 +176,8 @@ class ExitWaitsForTheWritesTest {
         checkpointHeld.awaitReached();
 
         CompletableFuture<Boolean> exit = exitWait(Duration.ofSeconds(TIMEOUT_SECONDS));
+        assertThat(waitAnnounced.await(TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                .as("the wait began while the checkpoint was still being written").isTrue();
         assertThat(stillWaitingAfter(exit, Duration.ofMillis(300))).as("the held checkpoint is waited for").isTrue();
 
         checkpointHeld.release();
@@ -237,6 +241,8 @@ class ExitWaitsForTheWritesTest {
         headHeld.awaitReached();
 
         CompletableFuture<Boolean> exit = exitWait(Duration.ofSeconds(TIMEOUT_SECONDS));
+        assertThat(waitAnnounced.await(TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                .as("the wait began while the save writer still ran").isTrue();
         headHeld.release();
         assertThat(await(save)).isInstanceOf(SaveOutcome.Saved.class);
         assertThat(stillWaitingAfter(exit, Duration.ofMillis(300)))
