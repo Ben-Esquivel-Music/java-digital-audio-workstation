@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.sdk.audio;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.lang.foreign.Arena;
@@ -33,6 +34,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * backend's own never-completed publisher. Stub driver, streaming and
  * capability shims stand in for the native library.
  */
+@Tag("slow")
 class AsioBackendClockLockTest {
 
     private static final DeviceId DEVICE = new DeviceId(AsioBackend.NAME, "Clocked Driver");

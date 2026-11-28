@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.sdk.audio;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.lang.foreign.Arena;
@@ -33,6 +34,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Stub driver and streaming shims stand in for the native library; the test
  * drives the bridge's callback directly.
  */
+@Tag("slow")
 class AsioBackendDropoutCountersTest {
 
     private static final DeviceId DEVICE = new DeviceId(AsioBackend.NAME, "Dropout Driver");

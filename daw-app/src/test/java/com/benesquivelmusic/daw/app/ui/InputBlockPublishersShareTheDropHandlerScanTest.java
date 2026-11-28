@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -30,6 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * and reached through no call of that getter — is outside what it can see;
  * none exists in the sources today.
  */
+@Tag("slow")
 class InputBlockPublishersShareTheDropHandlerScanTest {
 
     private static final List<String> MODULES =

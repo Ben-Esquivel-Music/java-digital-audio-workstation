@@ -9,6 +9,7 @@ import javafx.scene.control.ButtonBar;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -35,6 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * atomic head write, the canonical save of story 331, then exits.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class CloseGuardPromptTest {
 
     @TempDir

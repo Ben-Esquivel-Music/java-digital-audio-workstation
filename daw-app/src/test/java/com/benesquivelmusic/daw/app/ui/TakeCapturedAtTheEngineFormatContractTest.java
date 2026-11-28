@@ -11,6 +11,7 @@ import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 import com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -33,6 +34,7 @@ import static org.assertj.core.api.Assertions.within;
  * so each take holds exactly the blocks fed here.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class TakeCapturedAtTheEngineFormatContractTest {
 
     private static final double BPM = 120.0;

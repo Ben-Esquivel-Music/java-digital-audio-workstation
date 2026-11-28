@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.persistence.CheckpointOrigin;
 import com.benesquivelmusic.daw.core.snapshot.SnapshotEntry;
 import com.benesquivelmusic.daw.core.snapshot.SnapshotKind;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -25,6 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * ordinary checkpoint, listed as one when its folder is browsed.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class ClosingCheckpointHasNoBrowserEntryTest {
 
     @TempDir

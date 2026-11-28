@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -39,6 +40,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * ruling 3 Q1): the copy is installed under the lost lock — the stolen-lock
  * state, end to end — and the result reports the check.
  */
+@Tag("slow")
 class AdoptPublishedCopyTest {
 
     @TempDir

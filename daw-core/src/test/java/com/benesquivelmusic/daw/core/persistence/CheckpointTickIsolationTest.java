@@ -16,6 +16,7 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -46,6 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * owner is never waited for, and a tick whose revision is already
  * checkpointed writes nothing.
  */
+@Tag("slow")
 class CheckpointTickIsolationTest {
 
     /** Short enough that a test sees several ticks; every wait is on an event, bounded. */

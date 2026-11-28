@@ -10,6 +10,7 @@ import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -52,6 +53,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * extend the fixture family until the guard stops naming the literal, and
  * declare any new writer or reader file below.</p>
  */
+@Tag("slow")
 class ProjectSchemaParityContractTest {
 
     /**

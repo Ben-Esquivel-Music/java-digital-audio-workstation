@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audioimport.AudioFileImporter;
 import com.benesquivelmusic.daw.core.project.DawProject;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -27,6 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code ProjectRelativePersistenceContractTest} and
  * {@code ProjectManagerTest.saveWritesARecordedTakeProjectRelativeAndOpenProjectResolvesItAbsoluteAgain}.
  */
+@Tag("slow")
 class ClipReferencePathNormalizationTest {
 
     private static final AudioFormat FORMAT = new AudioFormat(48_000, 2, 16, 512);

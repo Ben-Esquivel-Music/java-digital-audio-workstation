@@ -7,12 +7,15 @@
 # for the `long-tests` golden artefacts (story 209).
 # ─────────────────────────────────────────────────────────────────────
 
-.PHONY: help build test long-tests rebaseline-long-tests clean
+.PHONY: help build test slow-tests all-tests long-tests rebaseline-long-tests clean
 
 help:
 	@echo "Targets:"
 	@echo "  build                    Compile and package all modules"
-	@echo "  test                     Run the fast unit-test suite"
+	@echo "  test                     Run the fast unit-test suite (leaves out"
+	@echo "                           the classes tagged slow)"
+	@echo "  slow-tests               Run only the test classes tagged slow"
+	@echo "  all-tests                Run every test, as CI does"
 	@echo "  long-tests               Run the long-running render/export tests"
 	@echo "  rebaseline-long-tests    Re-record golden files for the long-tests"
 	@echo "                           suite (writes to daw-app/src/test/long/"
@@ -24,6 +27,12 @@ build:
 
 test:
 	xvfb-run --auto-servernum mvn -B verify
+
+slow-tests:
+	xvfb-run --auto-servernum mvn -B -Pslow-tests verify
+
+all-tests:
+	xvfb-run --auto-servernum mvn -B -Pall-tests verify
 
 long-tests:
 	xvfb-run --auto-servernum mvn -B -Plong-tests verify

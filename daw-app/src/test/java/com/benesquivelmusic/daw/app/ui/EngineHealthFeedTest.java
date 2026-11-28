@@ -12,6 +12,7 @@ import com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget;
 import com.benesquivelmusic.daw.sdk.audio.performance.TrackPerformanceEvent;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -47,6 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * E24). The feed runs on the FX thread; the tests assert off it.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class EngineHealthFeedTest {
 
     private static final Instant ARRIVED = Instant.parse("2026-11-16T10:00:01.250Z");

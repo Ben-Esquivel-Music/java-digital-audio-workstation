@@ -46,6 +46,7 @@ import javafx.scene.layout.VBox;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -148,6 +149,7 @@ import static org.mockito.Mockito.spy;
  * is bounded at 30 s.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class RecordStartPreparesTheTakeOffTheFxThreadTest {
 
     private static final long TAKE_BUDGET_NANOS = TimeUnit.SECONDS.toNanos(30);

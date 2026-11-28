@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.persistence;
 
 import com.benesquivelmusic.daw.core.persistence.journal.ProjectContext;
 import com.benesquivelmusic.daw.core.persistence.journal.RecoveryScanner;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -19,6 +20,7 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.Assertions.*;
 
+@Tag("slow")
 class CheckpointOrderingProvenanceTest {
     @TempDir Path folder;
 

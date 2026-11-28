@@ -12,6 +12,7 @@ import com.benesquivelmusic.daw.sdk.audio.FormatChangeReason;
 import com.benesquivelmusic.daw.sdk.audio.MockAudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -53,6 +54,7 @@ import static org.assertj.core.api.Assertions.tuple;
  * controller's tick seam with an injected clock, except where the monitor's
  * own thread is the subject.
  */
+@Tag("slow")
 class EngineHealthMonitorTest {
 
     private static final long TICK_NANOS = TimeUnit.MILLISECONDS.toNanos(DefaultAudioEngineController.ENGINE_HEALTH_TICK_MILLIS);

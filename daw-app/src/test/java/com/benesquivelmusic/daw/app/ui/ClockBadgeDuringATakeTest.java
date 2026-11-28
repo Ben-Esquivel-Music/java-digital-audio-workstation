@@ -20,6 +20,7 @@ import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -64,6 +65,7 @@ import static org.assertj.core.api.Assertions.tuple;
  * device while the driver side names the device it resolved, as ASIO does.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class ClockBadgeDuringATakeTest {
 
     private static final ClockSource INTERNAL = new ClockSource(0, "Internal", true, new ClockKind.Internal());

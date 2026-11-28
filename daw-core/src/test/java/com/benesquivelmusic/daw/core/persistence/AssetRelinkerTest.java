@@ -12,6 +12,7 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.TempoChangeEvent;
 import com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -35,6 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * file on a worker, applying it on the owner thread, and what the next save
  * writes.
  */
+@Tag("slow")
 class AssetRelinkerTest {
 
     private static final int RATE = 48_000;

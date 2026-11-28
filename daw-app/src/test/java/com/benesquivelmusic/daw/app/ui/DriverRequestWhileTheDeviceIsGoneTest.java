@@ -10,6 +10,7 @@ import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.FormatChangeReason;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -36,6 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * is handled once the loss has ended, or dropped if that Reconnect fails; and
  * a reopen that is scheduled or running refuses the stall verdict.
  */
+@Tag("slow")
 class DriverRequestWhileTheDeviceIsGoneTest {
 
     private static final AudioFormat FORMAT = new AudioFormat(48_000.0, 2, 24, 128);

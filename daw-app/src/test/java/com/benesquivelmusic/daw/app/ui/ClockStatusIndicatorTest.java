@@ -40,6 +40,7 @@ import javafx.scene.paint.Paint;
 import javafx.scene.paint.Stop;
 import javafx.stage.Stage;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -90,6 +91,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * engine and a real take.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class ClockStatusIndicatorTest {
 
     private static final DeviceId INTERFACE = new DeviceId(MockAudioBackend.NAME, "Interface A");

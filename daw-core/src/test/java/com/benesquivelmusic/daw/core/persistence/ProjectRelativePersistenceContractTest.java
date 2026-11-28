@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.core.recording.SegmentWriter;
 import com.benesquivelmusic.daw.core.recording.TakeDirectories;
 import com.benesquivelmusic.daw.core.track.Track;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.DisabledOnOs;
 import org.junit.jupiter.api.condition.EnabledOnOs;
@@ -40,6 +41,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * {@link DawProject} whose metadata path is that directory, and one clip
  * carrying both segments' absolute paths.</p>
  */
+@Tag("slow")
 class ProjectRelativePersistenceContractTest {
 
     private static final String TAKE_DIR_NAME = "2026-09-28T10-00-00_take-0001";

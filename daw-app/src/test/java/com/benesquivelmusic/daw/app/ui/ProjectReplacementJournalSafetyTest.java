@@ -17,6 +17,7 @@ import javafx.scene.control.Button;
 import javafx.scene.control.DialogPane;
 import javafx.stage.Stage;
 import javafx.stage.Window;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -39,6 +40,7 @@ import static com.benesquivelmusic.daw.app.ui.SaveFlowFixture.*;
 import static org.assertj.core.api.Assertions.*;
 
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class ProjectReplacementJournalSafetyTest {
     @TempDir Path workspace;
 

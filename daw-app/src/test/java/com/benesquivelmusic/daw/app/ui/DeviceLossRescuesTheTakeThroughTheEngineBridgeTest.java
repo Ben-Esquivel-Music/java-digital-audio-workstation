@@ -12,6 +12,7 @@ import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -51,6 +52,7 @@ import static org.assertj.core.api.Assertions.within;
  * the stock mock.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class DeviceLossRescuesTheTakeThroughTheEngineBridgeTest {
 
     /** A status text production never writes: overwritten before a loss whose own status write is under test. */

@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.track.Track;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -34,6 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * none.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class ProjectOpenRehydratesAudioTest {
 
     @TempDir

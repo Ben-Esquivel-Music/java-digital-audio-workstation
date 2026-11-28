@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.core.persistence.CheckpointTestSupport.TestSourc
 import com.benesquivelmusic.daw.sdk.event.AutoSaveListener;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -33,6 +34,7 @@ import static org.assertj.core.api.Assertions.tuple;
  * naming the generation that reported it — and nothing a throwing listener
  * could turn into another outcome.
  */
+@Tag("slow")
 class CheckpointEventChannelTest {
 
     private static final Duration INTERVAL = Duration.ofHours(1);

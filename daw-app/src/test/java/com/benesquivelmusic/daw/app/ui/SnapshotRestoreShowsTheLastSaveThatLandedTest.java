@@ -14,6 +14,7 @@ import javafx.scene.Scene;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -47,6 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * successful one, so the two times read apart on the cell.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class SnapshotRestoreShowsTheLastSaveThatLandedTest {
 
     private static final DateTimeFormatter CLOCK = DateTimeFormatter.ofPattern("HH:mm:ss", Locale.ROOT);

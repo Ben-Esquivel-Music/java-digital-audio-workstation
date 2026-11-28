@@ -10,6 +10,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -29,6 +30,7 @@ import static org.assertj.core.api.Assertions.tuple;
  * the person's terms and keeps the state DEVICE_LOST, and does nothing once
  * the loss is over.
  */
+@Tag("slow")
 class ReconnectLostDeviceTest {
 
     private static final String CHECK = ". Check that it is connected and powered, then choose Reconnect again,"

@@ -14,6 +14,7 @@ import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.MockAudioBackend;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -38,6 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the take is stopped for it, nothing records and nothing is marked.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class TakeClockMarksOfTheTransportTest {
 
     @TempDir

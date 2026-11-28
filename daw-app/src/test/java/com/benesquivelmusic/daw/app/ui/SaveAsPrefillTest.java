@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.project.DawProject;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -41,6 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * space with the same folder and name.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class SaveAsPrefillTest {
 
     /** 2026-10-27 14:32:05 UTC: the takeover stamp's moment. */

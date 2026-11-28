@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -49,6 +50,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the bind call itself: {@code rebuildViewModels()} must contain
  * {@code engineBinder.bind(}.</p>
  */
+@Tag("slow")
 final class EngineBinderConformanceTest {
 
     /** The one file allowed to call the engine setters. */

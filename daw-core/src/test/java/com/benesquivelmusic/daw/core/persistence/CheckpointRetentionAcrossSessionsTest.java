@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.persistence.CheckpointTestSupport.ManualOwn
 import com.benesquivelmusic.daw.core.persistence.CheckpointTestSupport.Recorder;
 import com.benesquivelmusic.daw.core.persistence.CheckpointTestSupport.TestSource;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -32,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * prune that fails — even with an {@link Error} — never fails the checkpoint
  * it follows.
  */
+@Tag("slow")
 class CheckpointRetentionAcrossSessionsTest {
 
     private static final int CAP = 3;

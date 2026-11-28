@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.persistence.backup;
 
 import com.benesquivelmusic.daw.core.persistence.AtomicFileWriter;
 import com.benesquivelmusic.daw.sdk.persistence.BackupRetentionPolicy;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -19,6 +20,7 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@Tag("slow")
 class BackupRetentionPolicyStoreTest {
 
     /** The six keys {@link BackupRetentionPolicyStore#toJson} writes, in its order. */

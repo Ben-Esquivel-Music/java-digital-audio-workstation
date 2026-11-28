@@ -11,6 +11,7 @@ import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -48,6 +49,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * repeated gets a fresh id, logged only, and the regions resolve by the id
  * as saved.
  */
+@Tag("slow")
 class TakeStackPersistenceTest {
 
     private static final AudioFormat FORMAT = new AudioFormat(48_000.0, 2, 24, 256);

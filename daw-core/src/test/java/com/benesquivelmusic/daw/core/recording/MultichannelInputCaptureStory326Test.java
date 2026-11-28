@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.track.*;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.audio.*;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -19,6 +20,7 @@ import static org.assertj.core.api.Assertions.*;
 import static com.benesquivelmusic.daw.core.recording.RecordedAudioTestSupport.*;
 
 @ExtendWith(CaptureFlushThreadLeakGuard.class)
+@Tag("slow")
 class MultichannelInputCaptureStory326Test {
     @TempDir Path directory;
     private static final com.benesquivelmusic.daw.core.audio.AudioFormat FORMAT =

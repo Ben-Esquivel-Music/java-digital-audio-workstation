@@ -33,7 +33,7 @@ jobs:
             libmp3lame0 libmp3lame-dev libfdk-aac2 libfdk-aac-dev
 
       - name: Build and test
-        run: xvfb-run --auto-servernum mvn -B clean verify
+        run: xvfb-run --auto-servernum mvn -B -Pall-tests clean verify
 
       - name: Upload test reports
         if: always()

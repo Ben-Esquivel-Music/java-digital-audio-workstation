@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -24,6 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * and journal are still being written.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class ClosingNoteFollowsTheWaitTest {
 
     @TempDir

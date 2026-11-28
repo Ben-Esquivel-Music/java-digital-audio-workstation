@@ -14,6 +14,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -53,6 +54,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * figures and ends its sampling (ruling E245).
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class TakeDropoutsAndClockMarksTest {
 
     @TempDir

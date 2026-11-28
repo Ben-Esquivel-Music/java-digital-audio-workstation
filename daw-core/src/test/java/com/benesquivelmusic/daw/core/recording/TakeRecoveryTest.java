@@ -9,6 +9,7 @@ import com.benesquivelmusic.daw.core.recording.TakeRecovery.RecoveredTake;
 import com.benesquivelmusic.daw.core.recording.TakeRecovery.Unrecoverable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -66,6 +67,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * sealed take with an orphan is no candidate; one take's failure never
  * hides the next.
  */
+@Tag("slow")
 class TakeRecoveryTest {
 
     private static final String TRACK = "vocal";

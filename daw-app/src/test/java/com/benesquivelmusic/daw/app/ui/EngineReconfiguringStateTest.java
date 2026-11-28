@@ -11,6 +11,7 @@ import com.benesquivelmusic.daw.sdk.audio.MockAudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 import com.benesquivelmusic.daw.sdk.audio.XrunEvent;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -33,6 +34,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * guard publishes nothing; a reconfigure refused whole still ends STOPPED.
  * The xrun publisher outlives each detector the apply rebuilds.
  */
+@Tag("slow")
 class EngineReconfiguringStateTest {
 
     private static final AudioEngineController.Request MOCK_AT_256 = new AudioEngineController.Request(

@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.transport;
 
 import com.benesquivelmusic.daw.core.transport.Transport.ChangeKind;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -61,6 +62,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * fixed implementation — a failure is always a real violation, never a timing
  * artefact.</p>
  */
+@Tag("slow")
 class TransportStopVersusAdvanceRaceTest {
 
     /** Bounded, deterministic in runtime: no sleeps, barrier-synchronized. */

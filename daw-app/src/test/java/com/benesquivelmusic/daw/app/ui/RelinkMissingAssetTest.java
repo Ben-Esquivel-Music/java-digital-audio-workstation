@@ -19,6 +19,7 @@ import javafx.scene.control.Label;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -62,6 +63,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * dispatcher.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class RelinkMissingAssetTest {
 
     private static final String SHORTER = "tone.wav holds 0.25 s; its clips use up to 1.00 s. Use it anyway?";

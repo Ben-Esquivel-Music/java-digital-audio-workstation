@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.persistence.LockConflictResolution;
 import com.benesquivelmusic.daw.core.persistence.ProjectLock;
 import com.benesquivelmusic.daw.core.persistence.ProjectLockManager;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -47,6 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * sleep.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class CheckpointWritersPerFolderAcrossASwitchTest {
 
     @TempDir

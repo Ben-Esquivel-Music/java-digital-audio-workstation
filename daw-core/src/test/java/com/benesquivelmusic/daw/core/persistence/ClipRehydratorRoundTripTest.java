@@ -20,6 +20,7 @@ import com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata;
 import com.benesquivelmusic.daw.sdk.export.AudioMetadata;
 import com.benesquivelmusic.daw.sdk.export.DitherType;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -39,6 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * deserializer and the production {@link ClipRehydrator} (Persistence
  * Integrity book §5.1 round-trip contract, Audio row; §5.3 steps 4 and 5).
  */
+@Tag("slow")
 class ClipRehydratorRoundTripTest {
 
     private static final int PROJECT_RATE = 48_000;

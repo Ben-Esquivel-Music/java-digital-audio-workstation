@@ -14,6 +14,7 @@ import javafx.scene.input.KeyEvent;
 import javafx.scene.input.MouseEvent;
 import javafx.stage.Stage;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -52,6 +53,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * its own, closed — its fence lowered — after it.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class CloseSurfacesTakeInputWhileTheWindowIsInertTest {
 
     /**

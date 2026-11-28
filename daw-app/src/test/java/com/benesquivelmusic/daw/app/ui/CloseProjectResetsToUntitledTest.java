@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.core.transport.TransportState;
 import javafx.scene.control.Menu;
 import javafx.scene.control.MenuItem;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -49,6 +50,7 @@ import static org.mockito.Mockito.verify;
  * with the future story that owns them.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class CloseProjectResetsToUntitledTest {
 
     @TempDir

@@ -17,6 +17,7 @@ import javafx.scene.layout.VBox;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -81,6 +82,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@link #SCAN_WINDOW}; no dialog is shown.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class MigrationRollBackAndRecoveryGuardTest {
 
     /** How long a recovery scan is given to report; the non-vacuity leg shows a started one does within it. */

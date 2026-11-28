@@ -35,7 +35,7 @@ An open-source, state-of-the-art Digital Audio Workstation (DAW) built with **Ja
 ## Building
 
 ```bash
-# Build all modules and run tests
+# Build all modules and run tests, except the slow test classes
 mvn clean verify
 
 # Build without tests
@@ -112,7 +112,7 @@ Contributions are welcome! Here's how to get started:
 1. **Fork** this repository and clone your fork locally.
 2. **Create a branch** for your change: `git checkout -b feature/my-feature`.
 3. **Make your changes**, following the existing code style and conventions.
-4. **Run the tests** to make sure everything passes: `mvn clean verify`.
+4. **Run the tests** to make sure everything passes: `mvn clean verify`, which leaves out the slow test classes (see [CONTRIBUTING.md](CONTRIBUTING.md#slow-test-classes) for the command that runs them).
 5. **Commit** your changes with a clear, descriptive message.
 6. **Push** your branch and open a **Pull Request** against the `main` branch.
 

@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.analysis;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
@@ -10,6 +11,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
 /** Public-process regressions against unquantized 400 ms and 3 s observations. */
+@Tag("slow")
 class LoudnessMeterGateBoundaryTest {
 
     private static final int RATE = 48_000;

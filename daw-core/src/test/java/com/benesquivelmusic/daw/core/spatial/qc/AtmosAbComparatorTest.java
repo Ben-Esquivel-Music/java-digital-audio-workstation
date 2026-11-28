@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.spatial.qc;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.Random;
@@ -16,6 +17,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *   <li>{@link #recoversTwentyMillisecondAlignmentToWithinOneSample()}</li>
  * </ul>
  */
+@Tag("slow")
 class AtmosAbComparatorTest {
 
     private static final double SAMPLE_RATE = 48_000.0;

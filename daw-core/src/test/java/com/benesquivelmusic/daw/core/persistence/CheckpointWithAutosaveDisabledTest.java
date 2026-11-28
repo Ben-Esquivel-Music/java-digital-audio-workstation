@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.persistence.CheckpointTestSupport.Recorder;
 import com.benesquivelmusic.daw.core.persistence.CheckpointTestSupport.TestSource;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -40,6 +41,7 @@ import static org.assertj.core.api.Assertions.tuple;
  * between the two never stops the checkpoints, and a re-arm that a disable
  * overtakes is never reported.
  */
+@Tag("slow")
 class CheckpointWithAutosaveDisabledTest {
 
     private static final Duration INTERVAL = Duration.ofHours(1);

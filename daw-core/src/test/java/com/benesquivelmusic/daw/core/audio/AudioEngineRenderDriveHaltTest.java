@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.MockAudioBackend;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -41,6 +42,7 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
  * health record, so the counts and samples asserted here are the ones the
  * application's drain will read.
  */
+@Tag("slow")
 class AudioEngineRenderDriveHaltTest {
 
     /** 22 consecutive faulted blocks halt the drive at 2048 frames and 44.1 kHz (ruling E8). */

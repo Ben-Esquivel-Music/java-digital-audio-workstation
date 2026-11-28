@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.persistence.SaveTestSupport.Gate;
 import com.benesquivelmusic.daw.core.persistence.SaveTestSupport.RecordingMover;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -52,6 +53,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code .project.lock} is left. A named-snapshot copy queued on the save
  * writer before the close is owed work too.
  */
+@Tag("slow")
 class LockHandOffTest {
 
     /** The project-manager calls that close or replace the open project. */

@@ -10,6 +10,7 @@ import com.benesquivelmusic.daw.sdk.event.RecordingListener;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -60,6 +61,7 @@ import static org.assertj.core.api.Assertions.tuple;
  * that must not end a take, idempotent stop, and the thread's identity.
  */
 @ExtendWith(CaptureFlushThreadLeakGuard.class)
+@Tag("slow")
 class RecordingPipelineFlushServiceTest {
 
     private static final long BLOCK_BYTES = (long) BLOCK_FRAMES * RampCaptureTestSupport.BYTES_PER_FRAME_MONO_16;

@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.persistence.CheckpointTestSupport.CountingC
 import com.benesquivelmusic.daw.core.persistence.CheckpointTestSupport.Recorder;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -32,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * manager and a new start over the same folder, on the clock seam; no
  * retention policy is set, so the cap prunes.
  */
+@Tag("slow")
 class CheckpointRestartOrderTest {
 
     private static final Instant NOW = CountingClock.NOW;

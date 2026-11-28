@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.persistence;
 
 import com.benesquivelmusic.daw.sdk.event.AutoSaveListener;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -18,6 +19,7 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@Tag("slow")
 class CheckpointManagerTest {
 
     private static final long TIMEOUT_SECONDS = 10;

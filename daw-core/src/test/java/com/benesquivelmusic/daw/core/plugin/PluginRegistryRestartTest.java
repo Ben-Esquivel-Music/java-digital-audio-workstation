@@ -17,6 +17,7 @@ import com.benesquivelmusic.daw.sdk.editor.PluginManifest;
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -53,6 +54,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * restore runs keeps every listed entry in the file, and the startup sweep
  * keeps a JAR staged meanwhile. No test touches the real {@code ~/.daw}.
  */
+@Tag("slow")
 class PluginRegistryRestartTest {
 
     @TempDir

@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -59,6 +60,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * DOCTYPE disabled) and the Java source via line-oriented regex, so the
  * test does not require the JavaFX toolkit.
  */
+@Tag("slow")
 final class NumericClassAuditTest {
 
     private static final String FXML_RESOURCE =

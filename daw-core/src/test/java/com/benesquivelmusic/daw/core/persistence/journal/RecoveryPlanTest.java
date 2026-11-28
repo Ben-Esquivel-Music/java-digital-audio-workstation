@@ -12,6 +12,7 @@ import com.benesquivelmusic.daw.sdk.event.ClipEvent;
 import com.benesquivelmusic.daw.sdk.event.DawEvent;
 import com.benesquivelmusic.daw.sdk.event.MixerEvent;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -46,6 +47,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * writer or, for an older version's journal, with raw segments; fixed clocks and
  * explicit file times, no platform gating.
  */
+@Tag("slow")
 class RecoveryPlanTest {
 
     private static final Instant NOW = Instant.parse("2026-10-25T12:00:00Z");

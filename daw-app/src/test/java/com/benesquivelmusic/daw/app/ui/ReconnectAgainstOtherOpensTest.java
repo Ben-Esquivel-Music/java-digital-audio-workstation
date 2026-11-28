@@ -10,6 +10,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -41,6 +42,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * its thread could not start; it says why it failed in one of four fixed
  * reasons, and a device with no name to show is "the audio device".
  */
+@Tag("slow")
 class ReconnectAgainstOtherOpensTest {
 
     private static final String CHECK = ". Check that it is connected and powered, then choose Reconnect again,"

@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -40,6 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * where the recovered count can only be bounded.
  */
 @ExtendWith(CaptureFlushThreadLeakGuard.class)
+@Tag("slow")
 class TakeRecoveryAfterAbandonedWritersContractTest {
 
     /** ≈ 2 minutes at 48 kHz in 512-frame blocks: 11,250 blocks = 5,760,000 frames = 11.5 MB of 16-bit mono. */

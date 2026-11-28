@@ -353,7 +353,7 @@ and the canonical sample-rate menu.
 
 The dedicated **`.github/workflows/windows-asioshim.yml`** lane
 provisions the Steinberg ASIO SDK from the `ASIO_SDK_ZIP_BASE64`
-repository secret, sets `ASIO_SDK_DIR`, runs `mvn -B verify`, and
+repository secret, sets `ASIO_SDK_DIR`, runs `mvn -B -Pall-tests -DskipTests=false verify`, and
 asserts that `daw-app/target/dist/native/windows-x64/asioshim.dll`
 exists after the assembly phase. The job is path-filtered so it only
 runs when the ASIO surface changes: `daw-core/native/asio/`, the

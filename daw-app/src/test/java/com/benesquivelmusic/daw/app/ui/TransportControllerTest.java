@@ -54,6 +54,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -100,6 +101,7 @@ import static org.assertj.core.api.Assertions.tuple;
  * holds the Stop/Loop buttons (their state is binder-driven).</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class TransportControllerTest {
 
     @Test

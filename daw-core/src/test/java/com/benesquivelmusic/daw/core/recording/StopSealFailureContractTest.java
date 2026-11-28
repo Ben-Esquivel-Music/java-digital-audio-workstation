@@ -10,6 +10,7 @@ import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.event.RecordingListener;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -50,6 +51,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@link PipelineLifecycleTestSupport#LIFECYCLE_GUARD}.
  */
 @ExtendWith(CaptureFlushThreadLeakGuard.class)
+@Tag("slow")
 class StopSealFailureContractTest {
 
     private static final long GIB = 1L << 30;

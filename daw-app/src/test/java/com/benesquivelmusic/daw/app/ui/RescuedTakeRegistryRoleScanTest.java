@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -40,6 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * files it is expected to, and the positive counterpart of each rule is
  * asserted on the real sources.
  */
+@Tag("slow")
 class RescuedTakeRegistryRoleScanTest {
 
     private static final String RAM_FEEDER = "captureRecordingFrames";

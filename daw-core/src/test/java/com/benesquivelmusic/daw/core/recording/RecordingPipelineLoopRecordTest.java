@@ -17,6 +17,7 @@ import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -37,6 +38,7 @@ import static org.assertj.core.api.Assertions.offset;
  * the last whole lap selected and its comp clip on the main lane.
  */
 @ExtendWith(CaptureFlushThreadLeakGuard.class)
+@Tag("slow")
 class RecordingPipelineLoopRecordTest {
 
     @TempDir

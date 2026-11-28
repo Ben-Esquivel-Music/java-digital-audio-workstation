@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.sdk.editor.PluginCategory;
 import com.benesquivelmusic.daw.sdk.editor.PluginManifest;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -36,6 +37,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code plugins} folder; the exit can wait for a pending write; the sweep
  * deletes only what no entry holds.
  */
+@Tag("slow")
 class InstalledPluginStoreTest {
 
     private static final String NOT_SAVED = "Plugin registry: the list of installed plugins could not be saved"

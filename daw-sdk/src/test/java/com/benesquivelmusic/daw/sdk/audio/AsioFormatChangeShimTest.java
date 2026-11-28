@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.sdk.audio;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
@@ -22,6 +23,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * Unit tests for {@link AsioFormatChangeShim} — story 218 FFM upcall
  * plumbing for ASIO's {@code asioMessage} host-callback.
  */
+@Tag("slow")
 class AsioFormatChangeShimTest {
 
     private static final DeviceId DEVICE = new DeviceId("ASIO", "Mock ASIO Device");

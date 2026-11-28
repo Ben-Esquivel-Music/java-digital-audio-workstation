@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.app.logging.ExitHoldingLogManager;
 import com.benesquivelmusic.daw.app.ui.plugin.fixtures.JarOnlyExceptions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -42,6 +43,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * closing every handler a sink added so that the temporary folder can be
  * deleted on Windows.</p>
  */
+@Tag("slow")
 class LogSinkTest {
 
     private static final String LOGGER = "com.example.logsink";

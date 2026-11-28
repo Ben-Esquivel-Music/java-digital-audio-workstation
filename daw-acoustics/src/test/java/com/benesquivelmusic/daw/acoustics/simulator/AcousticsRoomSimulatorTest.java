@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.sdk.spatial.ImpulseResponse;
 import com.benesquivelmusic.daw.sdk.spatial.RoomSimulationConfig;
 import com.benesquivelmusic.daw.sdk.telemetry.*;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -11,6 +12,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.*;
 
+@Tag("slow")
 class AcousticsRoomSimulatorTest {
 
     private static final int SAMPLE_RATE = 48000;

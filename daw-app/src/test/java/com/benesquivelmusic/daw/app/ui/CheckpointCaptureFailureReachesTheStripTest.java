@@ -17,6 +17,7 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -60,6 +61,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * detaches the listener on teardown.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class CheckpointCaptureFailureReachesTheStripTest {
 
     private static final AutoSaveConfig SHORT_CADENCE = new AutoSaveConfig(Duration.ofMillis(150), 10, true);

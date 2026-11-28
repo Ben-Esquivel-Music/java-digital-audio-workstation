@@ -12,6 +12,7 @@ import com.benesquivelmusic.daw.core.recording.TakeManifest.SegmentState;
 import com.benesquivelmusic.daw.core.recording.TakeManifest.TrackEntry;
 import com.benesquivelmusic.daw.core.track.Track;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -56,6 +57,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * own Save As methods; the plan's free-space refusal through
  * {@link ProjectFolderCopy}'s volume seam.
  */
+@Tag("slow")
 class SaveAsCopiesTheProjectTest {
 
     @TempDir

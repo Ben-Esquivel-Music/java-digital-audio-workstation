@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.persistence.journal;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
 import com.benesquivelmusic.daw.core.project.DawProject;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -30,6 +31,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * rotation request, whatever order checkpoints arrive in and whichever thread
  * calls.
  */
+@Tag("slow")
 class CheckpointBoundaryAfterMarkerContractTest {
 
     private static final Instant T0 = Instant.parse("2027-02-14T21:30:00Z");

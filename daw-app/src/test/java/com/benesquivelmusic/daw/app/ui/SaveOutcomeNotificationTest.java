@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.persistence.ProjectLockManager;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -39,6 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * replaced it.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class SaveOutcomeNotificationTest {
 
     private static final String HEAD_FAILURE = "injected head write failure";

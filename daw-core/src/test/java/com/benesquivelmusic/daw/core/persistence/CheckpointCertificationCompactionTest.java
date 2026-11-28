@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.persistence;
 
 import com.benesquivelmusic.daw.sdk.persistence.BackupRetentionPolicy;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -24,6 +25,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@Tag("slow")
 class CheckpointCertificationCompactionTest {
     @TempDir Path folder;
 

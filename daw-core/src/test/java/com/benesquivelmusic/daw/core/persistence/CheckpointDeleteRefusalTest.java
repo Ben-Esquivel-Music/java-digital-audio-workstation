@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.persistence.CheckpointTestSupport.Recorder;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -41,6 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the delete throws, an {@link Error} too, is a refusal. The checkpoint just
  * written stays a success and no listener hears of a refusal.
  */
+@Tag("slow")
 class CheckpointDeleteRefusalTest {
 
     private static final int CAP = 3;

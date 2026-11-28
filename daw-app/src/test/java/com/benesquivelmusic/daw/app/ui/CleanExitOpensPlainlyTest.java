@@ -17,6 +17,7 @@ import com.benesquivelmusic.daw.sdk.audio.BackendFallbackEvent;
 import com.benesquivelmusic.daw.sdk.event.TransportEvent;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -58,6 +59,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * return, keeps out of the journal.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class CleanExitOpensPlainlyTest {
 
     @TempDir

@@ -10,6 +10,7 @@ import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.MockAudioBackend;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -30,6 +31,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * re-arms the heartbeat watchdog's start-up allowance, a switch on another
  * device does not (ruling E107).
  */
+@Tag("slow")
 class ClockSourceSelectionTest {
 
     private static final AudioFormat FORMAT = new AudioFormat(48_000.0, 2, 24, 128);

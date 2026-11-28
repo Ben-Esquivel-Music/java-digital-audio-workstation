@@ -2,11 +2,13 @@ package com.benesquivelmusic.daw.core.midi.javasound;
 
 import com.benesquivelmusic.daw.sdk.midi.MidiEvent;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@Tag("slow")
 class JavaSoundRendererTest {
 
     @Test

@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -52,6 +53,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * line says why the backup exists and points to the open's WARNING lines; it
  * counts nothing (studio-engineer ruling Q6).
  */
+@Tag("slow")
 class DegradedOpenBackupTest {
 
     /** A degraded open's backup, as {@code ProjectManager} names it. */

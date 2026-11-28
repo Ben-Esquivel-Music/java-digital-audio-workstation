@@ -29,6 +29,7 @@ import javafx.application.Platform;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -76,6 +77,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * window's audio health drain.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class CountInRecordStartTest {
 
     private static final long WAIT_BUDGET_NANOS = TimeUnit.SECONDS.toNanos(30);
