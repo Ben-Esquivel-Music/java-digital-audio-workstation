@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.persistence.CheckpointTestSupport.CountingC
 import com.benesquivelmusic.daw.sdk.persistence.BackupRetentionPolicy;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -48,6 +49,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * retried per pass; and a checkpoint whose size cannot be read never
  * abandons the pass.
  */
+@Tag("slow")
 class CheckpointRetentionPolicyScopeTest {
 
     /** A cap no scenario here reaches: the policy alone prunes. */

@@ -13,6 +13,7 @@ import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -46,6 +47,7 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
  * <p>Async assertions use one generous guard budget
  * ({@link #GUARD_BUDGET_MILLIS}) and await conditions, never sleeps.</p>
  */
+@Tag("slow")
 class AudioEngineOutputTest {
 
     private static final AudioFormat FORMAT = new AudioFormat(44_100.0, 2, 16, 512);

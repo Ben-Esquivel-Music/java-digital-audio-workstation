@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.event.RecordingListener;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -53,6 +54,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * with the real channel closed, so nothing keeps the test from cleaning up.</p>
  */
 @ExtendWith(CaptureFlushThreadLeakGuard.class)
+@Tag("slow")
 class LoopStandbyLifecycleContractTest {
 
     private static final String FLUSH_THREAD = CaptureFlushService.THREAD_NAME;

@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.core.persistence.journal.ProjectContext;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -39,6 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * close no longer pending — and a failure of it is logged only.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class ACloseStepThatThrowsEndsTheRunTest {
 
     @TempDir

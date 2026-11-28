@@ -10,6 +10,7 @@ import com.benesquivelmusic.daw.core.plugin.LoadedPlugin;
 import com.benesquivelmusic.daw.core.plugin.PluginResolution;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.session.SessionManager;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
@@ -29,6 +30,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+@Tag("slow")
 class OpenRecoveryGateTest {
     @TempDir Path workspace;
     private final AtomicInteger decisions = new AtomicInteger();

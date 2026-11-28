@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.persistence;
 
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -81,6 +82,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * on real files; no fake file system. Tests that make symbolic links skip
  * where the account may not create them.
  */
+@Tag("slow")
 class AtomicFileWriterTest {
 
     private static final String OLD = "<daw-project>old</daw-project>";

@@ -11,6 +11,7 @@ import com.benesquivelmusic.daw.sdk.event.TransportEvent;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -43,6 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * closing checkpoint can be written, which the INFO line says instead.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class ClosingCheckpointFailureDoesNotStopTheExitTest {
 
     @TempDir

@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -95,6 +96,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * offender's line is its source line ({@link SourceScanSupport#stripComments}
  * closes each comment to one space).</p>
  */
+@Tag("slow")
 final class ProjectActionGateScanTest {
 
     /** Where a site needs no read of the gate, and why. */

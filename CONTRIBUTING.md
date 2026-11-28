@@ -12,6 +12,84 @@ On headless systems use `xvfb-run`:
 xvfb-run -a mvn verify
 ```
 
+### Slow test classes
+
+A new test class that takes 1.5 seconds or more in its surefire report
+on the reference machine, with no other build running, carries
+`@Tag("slow")` (`org.junit.jupiter.api.Tag`) on its class declaration,
+and so does any class that a run there lists at 3 seconds or more. The
+margin between the two lines keeps the reports of a default build free
+of classes at 3 seconds or more: class times vary from run to run, so an
+untagged class that a later run lists between the lines needs no tag.
+Decide a new class's tag from a run on an otherwise idle
+machine, because class times rise by half or more while
+another build runs. The default build leaves these classes out, so a
+full local build is shorter. On the reference Windows machine on
+2026-11-27 the default build took 05:51, against 22:38 for every test in
+one run. The slow classes alone took 19:02 there.
+
+```bash
+mvn verify                 # every test class except those tagged slow; make test
+mvn -Pslow-tests verify    # only the classes tagged slow; make slow-tests
+mvn -Pall-tests verify     # every test, as CI runs it; make all-tests
+```
+
+The default build and the slow run together run every test once. A
+class named with `-Dtest=` runs whether or not it is tagged slow. The
+`long-tests` and `dsp-rebaseline` profiles apply no tag filter, so each
+runs what it ran before the tag existed.
+
+CI runs every test, the classes tagged `slow` included, on every pull
+request, and `main` is landed only from a green CI run. That run is on
+Linux. A few slow classes also test paths that exist only on Windows,
+for example a folder reached through a junction or an administrative
+share, a copy of a project folder that kept its name and creation time
+and carries this session's own lock, a delete refused by a sharing
+violation, or a file made unreadable by an ACL. No CI job runs them:
+`windows-asioshim.yml` runs only for changes to its own paths or when
+started by hand, and skips its build while its SDK secret is unset.
+Before you push a change listed under "When to run the slow classes
+locally", run the slow classes on Windows, or say in the pull request
+that you did not.
+
+#### When to run the slow classes locally
+
+Run the slow classes (`mvn -Pslow-tests verify`; `make slow-tests` on
+Linux) before pushing changes that touch:
+
+- capture and take writing
+  (`daw-core/src/main/java/com/benesquivelmusic/daw/core/recording/`,
+  `daw-app/src/main/java/com/benesquivelmusic/daw/app/ui/recording/`,
+  and `RecordCoordinator.java` and `TransportController.java` in
+  `daw-app/src/main/java/com/benesquivelmusic/daw/app/ui/`),
+- the transport
+  (`daw-core/src/main/java/com/benesquivelmusic/daw/core/transport/`),
+- project files on disk: save, Save As, the project lock, checkpoints,
+  relink, the session journal and recovery
+  (`daw-core/src/main/java/com/benesquivelmusic/daw/core/persistence/`,
+  `journal/` included),
+- exit, close and open in the application (`ExitCoordinator.java`,
+  `ProjectFolderCloser.java`, `ProjectLifecycleController.java`,
+  `SaveAsFlow.java`, `OpenRecoveryGate.java` and
+  `SessionJournalEnding.java` in
+  `daw-app/src/main/java/com/benesquivelmusic/daw/app/ui/`;
+  `daw-app/src/main/java/com/benesquivelmusic/daw/app/DawApplication.java`;
+  `daw-app/src/main/java/com/benesquivelmusic/daw/app/logging/`),
+- the audio engine, devices and the clock
+  (`daw-core/src/main/java/com/benesquivelmusic/daw/core/audio/`,
+  `daw-sdk/src/main/java/com/benesquivelmusic/daw/sdk/audio/`, and
+  `DefaultAudioEngineController.java`, `DeviceLossReactions.java`,
+  `EngineHealthFeed.java` and `ClockStatusIndicator.java` in
+  `daw-app/src/main/java/com/benesquivelmusic/daw/app/ui/`),
+- metering and export
+  (`daw-core/src/main/java/com/benesquivelmusic/daw/core/analysis/`,
+  `daw-core/src/main/java/com/benesquivelmusic/daw/core/export/`),
+- a test helper or fixture that a class tagged `slow` uses,
+- the test selection: the surefire configuration or profiles in
+  `pom.xml` or a module's `pom.xml`, or the `mvn` line of
+  `.github/workflows/ci.yml`. After such a change, also check that the
+  CI test total did not drop.
+
 ### Visual regression / snapshot tests
 
 `daw-app` ships visual-regression tests that render JavaFX views into

@@ -9,6 +9,7 @@ import com.benesquivelmusic.daw.core.persistence.journal.JournalState;
 import com.benesquivelmusic.daw.core.persistence.journal.ProjectContext;
 import com.benesquivelmusic.daw.core.project.DawProject;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -43,6 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code ProjectInstallationInputFenceTest} and {@code WindowLifetimeDisposalTest}).</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class ScheduledCheckpointsKeepRunningWhileACloseWaitsTest {
 
     private static final AutoSaveConfig EVERY_200_MS = new AutoSaveConfig(Duration.ofMillis(200), 10, true);

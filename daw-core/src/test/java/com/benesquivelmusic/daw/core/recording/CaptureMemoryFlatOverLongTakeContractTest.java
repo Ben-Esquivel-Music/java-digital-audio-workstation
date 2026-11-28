@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -61,6 +62,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the start and the stop by {@link PipelineLifecycleTestSupport#LIFECYCLE_GUARD}.</p>
  */
 @ExtendWith(CaptureFlushThreadLeakGuard.class)
+@Tag("slow")
 class CaptureMemoryFlatOverLongTakeContractTest {
 
     private static final String CAPTURE_PACKAGE = RecordingSession.class.getPackageName();

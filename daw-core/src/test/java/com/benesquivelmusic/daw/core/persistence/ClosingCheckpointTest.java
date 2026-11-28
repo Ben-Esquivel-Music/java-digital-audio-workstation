@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.persistence.CheckpointTestSupport.Recorder;
 import com.benesquivelmusic.daw.core.project.DawProject;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -43,6 +44,7 @@ import static org.assertj.core.api.Assertions.tuple;
  * and {@code isCheckpointed} tells whether the live revision is in a
  * checkpoint already (trigger (ii)).
  */
+@Tag("slow")
 class ClosingCheckpointTest {
 
     private static final Duration INTERVAL = Duration.ofHours(1);

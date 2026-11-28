@@ -193,7 +193,7 @@ jobs:
           # daw-core/native/asio/README.md.
           DAW_REQUIRE_ASIOSHIM: '1'
         run: |
-          mvn -B -DskipTests=false verify
+          mvn -B -Pall-tests -DskipTests=false verify
 
       - name: Verify bundled distribution contains asioshim.dll
         if: steps.sdk.outputs.skipped != 'true'

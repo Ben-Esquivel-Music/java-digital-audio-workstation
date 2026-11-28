@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import javafx.scene.control.Menu;
 import javafx.scene.control.MenuItem;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -36,6 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * application's stop after the protocol ran disposes nothing again.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class ExitProtocolOrderTest {
 
     private static final List<ExitCoordinator.ExitStep> AN_EXIT = List.of(ExitCoordinator.ExitStep.INTERCEPT,

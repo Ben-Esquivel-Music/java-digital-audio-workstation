@@ -14,6 +14,7 @@ import com.benesquivelmusic.daw.sdk.event.TransportEvent;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -50,6 +51,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the closing checkpoint's trigger (i) follows the records offered.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class SessionJournalEndingTest {
 
     @TempDir

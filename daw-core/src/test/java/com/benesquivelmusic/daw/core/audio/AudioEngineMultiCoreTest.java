@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -25,6 +26,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * Verifies that {@link AudioEngine} wires the multi-core graph scheduler
  * (story 125) into the live render path.
  */
+@Tag("slow")
 class AudioEngineMultiCoreTest {
 
     @Test

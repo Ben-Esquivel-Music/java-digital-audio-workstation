@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.sdk.event.RecordingListener;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -33,6 +34,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * kept — counts are exact, and every {@link RecordingSegment} names a real
  * file.
  */
+@Tag("slow")
 class RecordingSessionTest {
 
     /** CD quality: 2 channels × 16 bit = 4 bytes per frame. */

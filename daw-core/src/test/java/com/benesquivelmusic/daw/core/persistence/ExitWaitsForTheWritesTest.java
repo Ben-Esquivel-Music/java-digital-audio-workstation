@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.persistence.SaveTestSupport.RecordingMover;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -47,6 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * registry's store) is waited for after them, under the same deadline, also
  * when no save is pending.
  */
+@Tag("slow")
 class ExitWaitsForTheWritesTest {
 
     /** A bound for the checkpoints' {@code stop()} short enough to run out while a checkpoint is held. */

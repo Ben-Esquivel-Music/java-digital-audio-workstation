@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -44,6 +45,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * replace would follow it; otherwise nothing is copied and it stays owed.
  * Every test is skipped where the account may not create symbolic links.
  */
+@Tag("slow")
 class ProjectFileSymbolicLinkTest {
 
     private static final String NOT_A_DAW_FILE =

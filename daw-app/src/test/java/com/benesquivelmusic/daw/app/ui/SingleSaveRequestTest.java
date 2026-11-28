@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.persistence.ProjectLockManager;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -38,6 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * observed, and held, through the {@code AtomicFileWriter} mover seam.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class SingleSaveRequestTest {
 
     @TempDir

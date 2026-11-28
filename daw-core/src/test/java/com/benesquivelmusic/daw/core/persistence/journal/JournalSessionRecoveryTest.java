@@ -10,6 +10,7 @@ import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.sdk.event.DispatchMode;
 import com.benesquivelmusic.daw.sdk.event.MixerEvent;
 import com.benesquivelmusic.daw.sdk.persistence.BackupRetentionPolicy;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -44,6 +45,7 @@ import static org.assertj.core.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+@Tag("slow")
 class JournalSessionRecoveryTest {
     @TempDir Path folder;
     private static final Instant NOW = Instant.parse("2026-10-25T12:00:00Z");

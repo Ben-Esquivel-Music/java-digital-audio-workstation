@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.analysis;
 
 import com.benesquivelmusic.daw.sdk.visualization.LoudnessHistoryPoint;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -20,6 +21,7 @@ import static org.assertj.core.api.Assertions.offset;
  * independently (absolute gate −70 LUFS, relative gate −20 LU below the
  * absolute-gated power mean, P95 − P10 with the former rank convention).
  */
+@Tag("slow")
 class LoudnessMeterBoundedMemoryTest {
 
     /** Small rate + large block keep a multi-hour drive to a few seconds of wall clock. */

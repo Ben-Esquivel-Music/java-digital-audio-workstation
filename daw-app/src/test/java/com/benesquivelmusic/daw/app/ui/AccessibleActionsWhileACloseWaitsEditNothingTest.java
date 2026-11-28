@@ -58,6 +58,7 @@ import javafx.stage.Window;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -116,6 +117,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * javafx skill §14: accessible activation stays live outside the fence).</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class AccessibleActionsWhileACloseWaitsEditNothingTest {
 
     private static final PseudoClass ACTIVE = PseudoClass.getPseudoClass("active");

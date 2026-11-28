@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.persistence.LockConflictResolution;
 import com.benesquivelmusic.daw.core.persistence.ProjectLockManager;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -34,6 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * ({@code ProjectClosePromptsTest} pins each content variant's words.)
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class UnsavedChangesPromptAtExitTest {
 
     @TempDir

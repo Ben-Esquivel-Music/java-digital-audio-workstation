@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.track.Track;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -36,6 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * and renders nothing when the guard says no.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class RenderReadinessGuardTest {
 
     private static final String EXPORT_ONE_SILENT = "1 clip has missing audio and will be silent. Export anyway?";

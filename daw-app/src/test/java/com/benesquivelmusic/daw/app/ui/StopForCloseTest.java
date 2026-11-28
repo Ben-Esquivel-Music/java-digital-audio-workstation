@@ -15,6 +15,7 @@ import com.benesquivelmusic.daw.sdk.event.TransportEvent;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -49,6 +50,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * transport is stopped, out of post-roll, with nothing recording.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class StopForCloseTest {
 
     /** A post-roll that outlasts an audio take's preparation: eight bars at {@link #SLOW_TEMPO}, 96 s. */

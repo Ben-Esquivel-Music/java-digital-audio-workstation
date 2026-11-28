@@ -9,6 +9,7 @@ import com.benesquivelmusic.daw.core.recording.TakeManifest.SealedBy;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -36,6 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * stamped, and the transport's lap the render thread stamped (see
  * {@link #publish}).
  */
+@Tag("slow")
 class TakeMarksInPunchAndLoopTakesTest {
 
     private static final int BLOCK = 8;

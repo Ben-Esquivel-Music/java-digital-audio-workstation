@@ -18,6 +18,7 @@ import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 import java.util.Optional;
 
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -55,6 +56,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * {@link AudioEngine} without a native backend; only verifies the format
  * mutation path and the post-reconfigure callback.
  */
+@Tag("slow")
 class DefaultAudioEngineControllerTest {
 
     @Test

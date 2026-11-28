@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -62,6 +63,7 @@ import static org.assertj.core.api.Assertions.fail;
  * bounded by {@link RampCaptureTestSupport#HANG_GUARD}.</p>
  */
 @ExtendWith(CaptureFlushThreadLeakGuard.class)
+@Tag("slow")
 class StopFenceTailIntegrityContractTest {
 
     private static final long GIB = 1L << 30;

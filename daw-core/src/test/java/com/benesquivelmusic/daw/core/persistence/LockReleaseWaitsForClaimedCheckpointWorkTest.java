@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.persistence;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -30,6 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * its own; the manager carries on with a fresh lease. With nothing owed the
  * release still runs on that thread, never the caller's.
  */
+@Tag("slow")
 class LockReleaseWaitsForClaimedCheckpointWorkTest {
 
     /** The project-manager calls that end the open project's checkpoints and release its lease. */

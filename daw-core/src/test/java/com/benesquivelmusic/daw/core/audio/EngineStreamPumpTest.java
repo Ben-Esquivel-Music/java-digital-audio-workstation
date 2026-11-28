@@ -13,6 +13,7 @@ import com.benesquivelmusic.daw.core.metering.MeterTapPoint;
 import com.benesquivelmusic.daw.core.project.DawProject;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -48,6 +49,7 @@ import static org.assertj.core.api.Assertions.fail;
  * ({@value #GUARD_BUDGET_MILLIS}&nbsp;ms) and await conditions, never
  * sleeps.</p>
  */
+@Tag("slow")
 class EngineStreamPumpTest {
 
     private static final AudioFormat FORMAT = new AudioFormat(48_000.0, 2, 24, 128);

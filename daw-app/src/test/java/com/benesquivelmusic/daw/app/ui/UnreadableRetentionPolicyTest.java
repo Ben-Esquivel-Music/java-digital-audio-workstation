@@ -17,6 +17,7 @@ import javafx.scene.control.Button;
 import javafx.scene.control.TextField;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -75,6 +76,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * nothing is armed.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class UnreadableRetentionPolicyTest {
 
     private static final String NOT_READ = "Checkpoint retention could not be read, so no checkpoints are deleted."

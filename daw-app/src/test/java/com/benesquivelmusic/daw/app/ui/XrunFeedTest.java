@@ -16,6 +16,7 @@ import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 import com.benesquivelmusic.daw.sdk.audio.XrunEvent;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -49,6 +50,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * seam; the health clock stands still, so the heartbeat watchdog decides
  * nothing unless a test moves it.
  */
+@Tag("slow")
 class XrunFeedTest {
 
     private static final AudioFormat FORMAT = new AudioFormat(48_000.0, 2, 24, 128);

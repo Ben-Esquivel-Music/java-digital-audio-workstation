@@ -3,12 +3,14 @@ package com.benesquivelmusic.daw.core.plugin;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 import static org.assertj.core.api.Assertions.*;
 
+@Tag("slow")
 class SignalGeneratorPluginTest {
 
     private SignalGeneratorPlugin plugin;

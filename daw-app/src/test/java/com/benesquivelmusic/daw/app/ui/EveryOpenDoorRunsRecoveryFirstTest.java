@@ -21,6 +21,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -53,6 +54,7 @@ import static org.junit.jupiter.api.Assumptions.assumeFalse;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class EveryOpenDoorRunsRecoveryFirstTest {
     enum Door { FILE, HUB, CONTINUE, ARCHIVE, RECOVER }
     @TempDir Path workspace;

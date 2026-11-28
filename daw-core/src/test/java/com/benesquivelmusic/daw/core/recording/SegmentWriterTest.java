@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.recording;
 import com.benesquivelmusic.daw.core.export.WavExporter;
 import com.benesquivelmusic.daw.sdk.export.AudioMetadata;
 import com.benesquivelmusic.daw.sdk.export.DitherType;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -24,6 +25,7 @@ import static org.assertj.core.api.Assertions.within;
  * {@link SegmentWriter} — the streaming WAV segment grammar of story 323
  * (book §3.4, §4.4, §5.3; context D7).
  */
+@Tag("slow")
 class SegmentWriterTest {
 
     private static final double SAMPLE_RATE = 48_000.0;

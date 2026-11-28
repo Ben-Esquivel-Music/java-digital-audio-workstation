@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.persistence.SaveTestSupport.Gate;
 import com.benesquivelmusic.daw.core.persistence.SaveTestSupport.RecordingMover;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -44,6 +45,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@link ProjectManager#whenLockChecked()} reads the lock off the caller and
  * reports a steal without ever failing. None of them blocks its caller.
  */
+@Tag("slow")
 class WritersIdleTest {
 
     private static final Duration HELD = Duration.ofMillis(300);

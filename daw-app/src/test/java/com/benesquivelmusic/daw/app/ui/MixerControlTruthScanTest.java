@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -89,6 +90,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * earlier scan let through; the third is the Optional-unwrap shape it
  * identified by construction).</p>
  */
+@Tag("slow")
 final class MixerControlTruthScanTest {
 
     /**

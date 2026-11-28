@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.persistence.journal;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
 import com.benesquivelmusic.daw.core.project.DawProject;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -32,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code offer} refuses the marker — retires nothing: the fact and the
  * since-checkpoint count stay as they were.
  */
+@Tag("slow")
 class JournalWriterMutationBoundaryTest {
 
     private static final Instant NOW = Instant.parse("2026-10-28T12:00:00Z");

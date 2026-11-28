@@ -68,6 +68,7 @@ import javafx.util.StringConverter;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -124,6 +125,7 @@ import static org.assertj.core.api.Assertions.within;
  * at its own guard line and never leaks its FX work into the next test.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class UiScaleLayoutTest {
 
     private static final int WIDTH = 1280;

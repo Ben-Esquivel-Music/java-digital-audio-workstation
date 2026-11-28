@@ -6,6 +6,7 @@ import javafx.stage.WindowEvent;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -29,6 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * asking nothing. A Close Project asked while a close runs is refused.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class ExitUpgradesACloseProjectTest {
 
     @TempDir

@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app;
 
 import com.benesquivelmusic.daw.app.logging.ExitHoldingLogManager;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -25,6 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * exit wait is written by the default handler at the reset, on the JDK's
  * {@code Logging-Cleaner} thread, before the closing line.
  */
+@Tag("slow")
 class ExitWaitLinesReachTheLogTest {
 
     private static final String PERSISTENCE_SEAM =

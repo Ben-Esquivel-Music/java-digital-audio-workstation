@@ -10,6 +10,7 @@ import com.benesquivelmusic.daw.core.persistence.journal.ProjectContext;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -58,6 +59,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * unsaved changes exits without a dialog, writing nothing.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class StolenLockAtExitTest {
 
     private static final String HOLDER = "“Song A” was taken over by alice on Studio-PC (process 42).";

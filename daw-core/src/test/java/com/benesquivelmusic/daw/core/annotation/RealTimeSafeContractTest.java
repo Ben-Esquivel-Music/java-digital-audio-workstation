@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor;
 import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 
@@ -232,6 +233,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>These checks run as part of {@code mvn test} and fail the build if
  * the contract is broken.</p>
  */
+@Tag("slow")
 class RealTimeSafeContractTest {
 
     /** Root package scanned for {@code @RealTimeSafe} declarations. */

@@ -9,6 +9,7 @@ import com.benesquivelmusic.daw.core.session.SessionManager;
 import com.benesquivelmusic.daw.sdk.event.MixerEvent;
 import com.benesquivelmusic.daw.sdk.event.TransportEvent;
 import javafx.application.Platform;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -33,6 +34,7 @@ import static com.benesquivelmusic.daw.app.ui.SaveFlowFixture.*;
 import static org.assertj.core.api.Assertions.*;
 
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class JournalCaptureIntegrationTest {
     @TempDir Path workspace;
 

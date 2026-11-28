@@ -26,6 +26,7 @@ import javafx.scene.text.TextBoundsType;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
@@ -53,6 +54,7 @@ import static org.assertj.core.api.Assertions.within;
  * checked by {@code LevelMeterDisplayUiScaleTest}.)
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class UiScaleCanvasTextTest {
 
     private Preferences prefs;

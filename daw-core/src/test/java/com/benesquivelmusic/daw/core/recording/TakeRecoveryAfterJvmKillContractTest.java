@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.core.recording.TakeManifest.SegmentState;
 import com.benesquivelmusic.daw.core.recording.TakeManifest.TrackEntry;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestReporter;
 import org.junit.jupiter.api.Timeout;
@@ -87,6 +88,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * behind is what a manifest whose writes keep failing through a second
  * rotation leaves.</p>
  */
+@Tag("slow")
 class TakeRecoveryAfterJvmKillContractTest {
 
     /** Two minutes at 48 kHz: the recorder is killed once it has reported this many frames flushed. */

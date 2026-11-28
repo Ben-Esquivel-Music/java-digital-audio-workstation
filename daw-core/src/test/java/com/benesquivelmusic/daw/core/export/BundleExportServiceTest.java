@@ -15,6 +15,7 @@ import com.benesquivelmusic.daw.sdk.export.MasterFormat;
 import com.benesquivelmusic.daw.sdk.export.StemMetadata;
 import com.benesquivelmusic.daw.sdk.export.StemSpec;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -32,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.offset;
 
+@Tag("slow")
 class BundleExportServiceTest {
 
     private static final int SAMPLE_RATE = 44_100;

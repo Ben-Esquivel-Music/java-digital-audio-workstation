@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.plugin.BuiltInPlugin;
 import com.benesquivelmusic.daw.core.plugin.BuiltInPluginCategory;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
@@ -54,6 +55,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>This is the test-time twin of the compile-time check planned for
  * the dawg-annotations harness (story 114).</p>
  */
+@Tag("slow")
 class DspRegressionCoverageTest {
 
     static {

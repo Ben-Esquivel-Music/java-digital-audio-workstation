@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -60,6 +61,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code dawg-annotations-reflection} rules for adding one (§4, "Adding a
  * new reflection consumer") do not apply, and it reads no annotation.</p>
  */
+@Tag("slow")
 class AppProjectWritesGoThroughTheAtomicWriterTest {
 
     /** The daw-core sentinel whose write primitives this one counts, relative to the repository root. */

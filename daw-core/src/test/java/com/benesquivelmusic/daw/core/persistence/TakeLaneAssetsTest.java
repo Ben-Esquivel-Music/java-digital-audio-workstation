@@ -16,6 +16,7 @@ import com.benesquivelmusic.daw.core.recording.SegmentFile;
 import com.benesquivelmusic.daw.core.track.Track;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -46,6 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * per lane with lane-specific content and a distinct signal on each of
  * their two channels, decoded at their native rate as a recorded take is.</p>
  */
+@Tag("slow")
 class TakeLaneAssetsTest {
 
     private static final int RATE = 48_000;

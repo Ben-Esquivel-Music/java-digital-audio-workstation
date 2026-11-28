@@ -21,6 +21,7 @@ import javafx.scene.control.Label;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -65,6 +66,7 @@ import static org.assertj.core.api.Assertions.tuple;
  * bounded at 5 s; every wait for a real disk at 30 s.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class StopPublishesTheTakeOnALaterFxTurnTest {
 
     private static final long TAKE_BUDGET_NANOS = TimeUnit.SECONDS.toNanos(30);

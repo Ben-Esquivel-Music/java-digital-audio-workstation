@@ -31,6 +31,7 @@ import javafx.stage.Stage;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
@@ -83,6 +84,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * a distinct channel gain ({@link #renderBlocksAtDistinctGain}).</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class MixerViewMeterFeedTest {
 
     private static final double SAMPLE_RATE = 48_000.0;

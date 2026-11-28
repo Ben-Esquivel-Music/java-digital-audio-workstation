@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.recording.TakeManifest.TrackEntry;
 import com.benesquivelmusic.daw.core.recording.TakeRecovery.RecoveredTake;
 import com.benesquivelmusic.daw.core.recording.TakeRecovery.Unrecoverable;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -49,6 +50,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * there changed. Each case aborts where the platform refuses to create a
  * symbolic link ({@link RampCaptureTestSupport#assumeSymbolicLinks}).
  */
+@Tag("slow")
 class TakeRecoveryNeverFollowsALinkTest {
 
     private static final String TRACK = "vocal";

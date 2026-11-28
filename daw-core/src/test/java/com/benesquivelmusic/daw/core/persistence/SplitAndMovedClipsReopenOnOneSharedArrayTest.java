@@ -18,6 +18,7 @@ import com.benesquivelmusic.daw.sdk.export.DitherType;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -44,6 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * new {@link ProjectManager}; the production {@link ClipRehydrator} and file
  * decoder load it again.
  */
+@Tag("slow")
 class SplitAndMovedClipsReopenOnOneSharedArrayTest {
 
     private static final int SOURCE_RATE = 22_050;

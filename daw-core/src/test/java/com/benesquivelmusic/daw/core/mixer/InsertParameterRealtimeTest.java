@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.mixer;
 import com.benesquivelmusic.daw.core.mixer.classpath.AllocatingParameterProcessor;
 import com.benesquivelmusic.daw.core.mixer.classpath.InsertParameterAllocationMain;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -34,6 +35,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * processor whose setter allocates is measured the same way, to show the
  * method reports an allocation.
  */
+@Tag("slow")
 class InsertParameterRealtimeTest {
 
     /** The bound, in bytes, of what one processor's measured window may allocate. */

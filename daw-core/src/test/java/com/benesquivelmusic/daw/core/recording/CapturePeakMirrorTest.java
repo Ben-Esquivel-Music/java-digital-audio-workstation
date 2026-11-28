@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.recording;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -15,6 +16,7 @@ import static org.assertj.core.api.Assertions.fail;
  * left out of the fold wherever it is; infinities are ordered like any
  * other sample.
  */
+@Tag("slow")
 class CapturePeakMirrorTest {
 
     private static final int BUCKETS = CapturePeakMirror.BUCKETS;

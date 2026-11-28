@@ -11,6 +11,7 @@ import com.benesquivelmusic.daw.core.transport.TimelineRulerModel;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -45,6 +46,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * on the first save; an absent attribute stays a silent default, and an
  * entry at beat 0 that repeats the beat-0 attributes is logged only.
  */
+@Tag("slow")
 class TempoMapPersistenceTest {
 
     private static final AudioFormat FORMAT = new AudioFormat(48_000.0, 2, 24, 256);

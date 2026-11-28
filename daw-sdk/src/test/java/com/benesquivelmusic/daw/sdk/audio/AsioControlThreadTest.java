@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.sdk.audio;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -50,6 +51,7 @@ import static org.assertj.core.api.Assertions.fail;
  * abandoned task onto it would wedge — or now fail fast — every later ASIO
  * test in this JVM.</p>
  */
+@Tag("slow")
 class AsioControlThreadTest {
 
     private static final Duration TINY_BUDGET = Duration.ofMillis(200);

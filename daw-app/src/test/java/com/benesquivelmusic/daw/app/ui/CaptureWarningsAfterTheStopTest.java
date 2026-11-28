@@ -12,6 +12,7 @@ import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -35,6 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * failed. The test speaks as the take's capture thread through the warning sink the coordinator installed.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class CaptureWarningsAfterTheStopTest {
 
     private static final AudioFormat FORMAT = new AudioFormat(48_000, 2, 16, 1024);

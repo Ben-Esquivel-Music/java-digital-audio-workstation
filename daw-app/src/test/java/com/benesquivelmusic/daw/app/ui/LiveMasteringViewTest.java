@@ -24,6 +24,7 @@ import javafx.scene.control.Slider;
 import javafx.scene.image.WritableImage;
 import javafx.scene.layout.StackPane;
 import javafx.stage.Stage;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
@@ -39,6 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class LiveMasteringViewTest {
     private static final AudioFormat FORMAT = new AudioFormat(48_000, 2, 24, 512);
 

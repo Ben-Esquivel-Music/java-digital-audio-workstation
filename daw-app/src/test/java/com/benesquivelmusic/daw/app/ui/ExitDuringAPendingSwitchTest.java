@@ -33,6 +33,7 @@ import javafx.stage.Window;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -95,6 +96,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * logged at INFO; with no close, it is written.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class ExitDuringAPendingSwitchTest {
 
     /** The title of the named snapshot's name dialog. */

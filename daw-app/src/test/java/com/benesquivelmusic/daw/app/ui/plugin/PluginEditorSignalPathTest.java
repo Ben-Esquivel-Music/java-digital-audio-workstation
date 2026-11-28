@@ -37,6 +37,7 @@ import javafx.scene.control.ToggleButton;
 import javafx.scene.image.WritableImage;
 import javafx.scene.layout.StackPane;
 import javafx.stage.Stage;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -57,6 +58,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class PluginEditorSignalPathTest {
     private static final PluginEditorSession.Deps DEPS = new PluginEditorSession.Deps(() -> 48_000, null, null, null);
 

@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app;
 
 import com.benesquivelmusic.daw.app.logging.ExitHoldingLogManager;
 import com.benesquivelmusic.daw.app.ui.plugin.fixtures.JarOnlyExceptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -43,6 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       write's WARNING, with its exception, and the launch carries on.</li>
  * </ul>
  */
+@Tag("slow")
 class PackagedLaunchLoggingTest {
 
     private static final String APPLICATION_MANAGER = "log manager: " + ExitHoldingLogManager.class.getName();

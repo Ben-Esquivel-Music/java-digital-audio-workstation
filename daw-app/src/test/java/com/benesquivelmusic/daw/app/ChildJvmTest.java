@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app;
 
 import org.assertj.core.api.SoftAssertions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -53,6 +54,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * interrupts longer than {@link ChildJvm#DESTROY_BOUND} to end, and adds a
  * failure of its own to the test's as suppressed rather than replacing it.</p>
  */
+@Tag("slow")
 class ChildJvmTest {
 
     /** The longest the test waits for the child to write its process id. */

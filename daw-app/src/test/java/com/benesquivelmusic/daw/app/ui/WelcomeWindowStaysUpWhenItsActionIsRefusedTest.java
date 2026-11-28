@@ -16,6 +16,7 @@ import javafx.stage.WindowEvent;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -55,6 +56,7 @@ import static org.assertj.core.api.Assertions.tuple;
  * cancel.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class WelcomeWindowStaysUpWhenItsActionIsRefusedTest {
 
     /** A gated action of the Welcome window. */

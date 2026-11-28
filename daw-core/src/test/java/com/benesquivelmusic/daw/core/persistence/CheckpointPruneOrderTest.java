@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.persistence;
 import com.benesquivelmusic.daw.core.persistence.CheckpointTestSupport.CountingClock;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -27,6 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * a later time zone, a clock that ran ahead, a clock set back — and the
  * newest writes still survive; the display order stays the stamps'.
  */
+@Tag("slow")
 class CheckpointPruneOrderTest {
 
     private static final int CAP = 3;

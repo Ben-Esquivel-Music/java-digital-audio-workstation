@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.persistence.LockConflictResolution;
 import com.benesquivelmusic.daw.core.persistence.ProjectLock;
 import com.benesquivelmusic.daw.core.persistence.ProjectLockManager;
 import com.benesquivelmusic.daw.core.project.DawProject;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -23,6 +24,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 @ExtendWith(JavaFxToolkitExtension.class)
+@Tag("slow")
 class ActiveProjectAliasTest {
     enum Action { OPEN, DISCARD }
 
